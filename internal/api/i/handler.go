@@ -5,29 +5,27 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/misskey-dev/misskey-go/internal/entity"
-	"github.com/misskey-dev/misskey-go/internal/model"
+	"github.com/misskey-dev/misskey-go/internal/repository"
 	"github.com/misskey-dev/misskey-go/internal/server/middleware"
-	"gorm.io/gorm"
 )
 
 // Handler handles account-related API endpoints.
 type Handler struct {
-	db *gorm.DB
+	userRepo repository.UserRepository
 }
 
 // NewHandler creates a new account Handler.
-func NewHandler(db *gorm.DB) *Handler {
-	return &Handler{db: db}
+func NewHandler(userRepo repository.UserRepository) *Handler {
+	return &Handler{userRepo: userRepo}
 }
 
 // Me handles POST /api/i - returns the authenticated user's info.
 func (h *Handler) Me(c echo.Context) error {
 	user := middleware.GetUser(c)
 
-	var profile model.UserProfile
-	h.db.First(&profile, "\"userId\" = ?", user.ID)
+	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
 
-	detailed := entity.PackUserDetailed(user, &profile)
+	detailed := entity.PackUserDetailed(user, profile)
 
 	// /api/i returns additional private fields
 	resp := map[string]any{
@@ -55,23 +53,26 @@ func (h *Handler) Me(c echo.Context) error {
 		"followersCount":    detailed.FollowersCount,
 		"followingCount":    detailed.FollowingCount,
 		"notesCount":        detailed.NotesCount,
-		// Private fields
-		"email":                           profile.Email,
-		"emailVerified":                   profile.EmailVerified,
-		"autoAcceptFollowed":              profile.AutoAcceptFollowed,
-		"noCrawle":                        profile.NoCrawle,
-		"preventAiLearning":               profile.PreventAiLearning,
-		"alwaysMarkNsfw":                  profile.AlwaysMarkNsfw,
-		"autoSensitive":                   profile.AutoSensitive,
-		"carefulBot":                      profile.CarefulBot,
-		"injectFeaturedNote":              profile.InjectFeaturedNote,
-		"receiveAnnouncementEmail":        profile.ReceiveAnnouncementEmail,
-		"twoFactorEnabled":                profile.TwoFactorEnabled,
-		"securityKeysAvailable":           profile.SecurityKeysAvailable,
-		"usePasswordLessLogin":            profile.UsePasswordLessLogin,
-		"hasUnreadNotification":           false,
-		"hasPendingReceivedFollowRequest": false,
 	}
+
+	// Private fields
+	if profile != nil {
+		resp["email"] = profile.Email
+		resp["emailVerified"] = profile.EmailVerified
+		resp["autoAcceptFollowed"] = profile.AutoAcceptFollowed
+		resp["noCrawle"] = profile.NoCrawle
+		resp["preventAiLearning"] = profile.PreventAiLearning
+		resp["alwaysMarkNsfw"] = profile.AlwaysMarkNsfw
+		resp["autoSensitive"] = profile.AutoSensitive
+		resp["carefulBot"] = profile.CarefulBot
+		resp["injectFeaturedNote"] = profile.InjectFeaturedNote
+		resp["receiveAnnouncementEmail"] = profile.ReceiveAnnouncementEmail
+		resp["twoFactorEnabled"] = profile.TwoFactorEnabled
+		resp["securityKeysAvailable"] = profile.SecurityKeysAvailable
+		resp["usePasswordLessLogin"] = profile.UsePasswordLessLogin
+	}
+	resp["hasUnreadNotification"] = false
+	resp["hasPendingReceivedFollowRequest"] = false
 
 	return c.JSON(http.StatusOK, resp)
 }

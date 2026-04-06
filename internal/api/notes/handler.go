@@ -9,19 +9,20 @@ import (
 	"github.com/misskey-dev/misskey-go/internal/entity"
 	"github.com/misskey-dev/misskey-go/internal/misc/id"
 	"github.com/misskey-dev/misskey-go/internal/model"
+	"github.com/misskey-dev/misskey-go/internal/repository"
 	"github.com/misskey-dev/misskey-go/internal/server/middleware"
-	"gorm.io/gorm"
 )
 
 // Handler handles note-related API endpoints.
 type Handler struct {
-	db    *gorm.DB
-	idGen id.Generator
+	noteRepo repository.NoteRepository
+	pollRepo repository.PollRepository
+	idGen    id.Generator
 }
 
 // NewHandler creates a new notes Handler.
-func NewHandler(db *gorm.DB, idGen id.Generator) *Handler {
-	return &Handler{db: db, idGen: idGen}
+func NewHandler(noteRepo repository.NoteRepository, pollRepo repository.PollRepository, idGen id.Generator) *Handler {
+	return &Handler{noteRepo: noteRepo, pollRepo: pollRepo, idGen: idGen}
 }
 
 // CreateRequest is the request body for notes/create.
@@ -104,7 +105,7 @@ func (h *Handler) Create(c echo.Context) error {
 		note.Mentions = extractMentions(*req.Text)
 	}
 
-	if err := h.db.Create(&note).Error; err != nil {
+	if err := h.noteRepo.Create(&note); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{
 			"error": map[string]any{
 				"message": "Internal error.",
@@ -131,14 +132,20 @@ func (h *Handler) Create(c echo.Context) error {
 			t := time.UnixMilli(*req.Poll.ExpiresAt)
 			poll.ExpiresAt = &t
 		}
-		h.db.Create(&poll)
+		_ = h.pollRepo.Create(&poll)
+		_ = h.noteRepo.Update(&note, "hasPoll", true)
 		note.HasPoll = true
-		h.db.Model(&note).Update("hasPoll", true)
 	}
 
 	// Userをpreloadして返す
-	h.db.Preload("User").First(&note, "id = ?", noteID)
+	loaded, _ := h.noteRepo.FindByIDWithUser(noteID)
+	if loaded != nil {
+		return c.JSON(http.StatusOK, map[string]any{
+			"createdNote": entity.PackNote(loaded, h.idGen),
+		})
+	}
 
+	note.User = user
 	return c.JSON(http.StatusOK, map[string]any{
 		"createdNote": entity.PackNote(&note, h.idGen),
 	})
@@ -162,8 +169,8 @@ func (h *Handler) Show(c echo.Context) error {
 		})
 	}
 
-	var note model.Note
-	if err := h.db.Preload("User").First(&note, "id = ?", req.NoteID).Error; err != nil {
+	note, err := h.noteRepo.FindByIDWithUser(req.NoteID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]any{
 			"error": map[string]any{
 				"message": "No such note.",
@@ -173,7 +180,7 @@ func (h *Handler) Show(c echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, entity.PackNote(&note, h.idGen))
+	return c.JSON(http.StatusOK, entity.PackNote(note, h.idGen))
 }
 
 // DeleteRequest is the request body for notes/delete.
@@ -196,8 +203,8 @@ func (h *Handler) Delete(c echo.Context) error {
 		})
 	}
 
-	var note model.Note
-	if err := h.db.First(&note, "id = ?", req.NoteID).Error; err != nil {
+	note, err := h.noteRepo.FindByID(req.NoteID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]any{
 			"error": map[string]any{
 				"message": "No such note.",
@@ -217,7 +224,7 @@ func (h *Handler) Delete(c echo.Context) error {
 		})
 	}
 
-	h.db.Delete(&note)
+	_ = h.noteRepo.Delete(note)
 
 	return c.NoContent(http.StatusNoContent)
 }

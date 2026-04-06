@@ -8,7 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/misskey-dev/misskey-go/internal/model"
-	"gorm.io/gorm"
+	"github.com/misskey-dev/misskey-go/internal/repository"
 )
 
 type contextKey string
@@ -17,12 +17,13 @@ const UserContextKey contextKey = "misskeyUser"
 
 // AuthMiddleware provides token-based authentication.
 type AuthMiddleware struct {
-	db *gorm.DB
+	userRepo        repository.UserRepository
+	accessTokenRepo repository.AccessTokenRepository
 }
 
 // NewAuthMiddleware creates a new AuthMiddleware.
-func NewAuthMiddleware(db *gorm.DB) *AuthMiddleware {
-	return &AuthMiddleware{db: db}
+func NewAuthMiddleware(userRepo repository.UserRepository, accessTokenRepo repository.AccessTokenRepository) *AuthMiddleware {
+	return &AuthMiddleware{userRepo: userRepo, accessTokenRepo: accessTokenRepo}
 }
 
 // Authenticate is an Echo middleware that extracts and validates the user token.
@@ -92,16 +93,14 @@ func extractToken(c echo.Context) string {
 
 func (a *AuthMiddleware) resolveUser(token string) (*model.User, error) {
 	// まずnative tokenで検索
-	var user model.User
-	err := a.db.Where("token = ?", token).First(&user).Error
+	user, err := a.userRepo.FindByToken(token)
 	if err == nil {
-		return &user, nil
+		return user, nil
 	}
 
 	// access tokenのhashで検索
 	hash := sha256Hash(token)
-	var accessToken model.AccessToken
-	err = a.db.Where("hash = ?", hash).Preload("User").First(&accessToken).Error
+	accessToken, err := a.accessTokenRepo.FindByHash(hash)
 	if err != nil {
 		return nil, err
 	}

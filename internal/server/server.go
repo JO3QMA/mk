@@ -9,6 +9,8 @@ import (
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
 	"github.com/misskey-dev/misskey-go/internal/config"
+	"github.com/misskey-dev/misskey-go/internal/core/cache"
+	"github.com/misskey-dev/misskey-go/internal/repository"
 	"github.com/misskey-dev/misskey-go/internal/server/middleware"
 	"gorm.io/gorm"
 )
@@ -18,11 +20,12 @@ type Server struct {
 	echo   *echo.Echo
 	config *config.Config
 	db     *gorm.DB
+	redis  *cache.RedisClients
 	auth   *middleware.AuthMiddleware
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, db *gorm.DB) *Server {
+func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -39,13 +42,17 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 	}))
 
-	auth := middleware.NewAuthMiddleware(db)
+	userRepo := repository.NewUserRepository(db)
+	accessTokenRepo := repository.NewAccessTokenRepository(db)
+
+	auth := middleware.NewAuthMiddleware(userRepo, accessTokenRepo)
 	e.Use(auth.Authenticate())
 
 	s := &Server{
 		echo:   e,
 		config: cfg,
 		db:     db,
+		redis:  redis,
 		auth:   auth,
 	}
 

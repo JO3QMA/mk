@@ -169,6 +169,8 @@ type Config struct {
 const defaultMaxFileSize int64 = 262144000
 
 // Load reads the Misskey YAML configuration and returns a resolved Config.
+// Environment variables with the prefix MK_ override YAML values.
+// Nested keys use underscore separation (e.g. MK_DB_HOST overrides db.host).
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 	v.SetConfigFile(configPath)
@@ -178,12 +180,37 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	// 環境変数によるオーバーライド
+	v.SetEnvPrefix("MK")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	// 主要な設定キーを明示的にバインド（Viperは既知のキーのみ環境変数を適用する）
+	bindEnvKeys(v)
+
 	var src Source
 	if err := v.Unmarshal(&src); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
 	return resolve(&src)
+}
+
+// bindEnvKeys binds environment variables to known configuration keys.
+func bindEnvKeys(v *viper.Viper) {
+	keys := []string{
+		"url", "port", "socket",
+		"db.host", "db.port", "db.db", "db.user", "db.pass",
+		"redis.host", "redis.port", "redis.pass", "redis.db", "redis.username",
+		"redisForPubsub.host", "redisForPubsub.port", "redisForPubsub.pass",
+		"redisForJobQueue.host", "redisForJobQueue.port", "redisForJobQueue.pass",
+		"redisForTimelines.host", "redisForTimelines.port", "redisForTimelines.pass",
+		"redisForReactions.host", "redisForReactions.port", "redisForReactions.pass",
+		"id", "maxFileSize",
+	}
+	for _, k := range keys {
+		_ = v.BindEnv(k)
+	}
 }
 
 func resolve(src *Source) (*Config, error) {

@@ -49,7 +49,7 @@ func main() {
 	defer redisClients.Close()
 
 	// HTTPサーバー起動
-	srv := server.New(cfg, db)
+	srv := server.New(cfg, db, redisClients)
 
 	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -5,26 +5,33 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/misskey-dev/misskey-go/internal/config"
-	"github.com/misskey-dev/misskey-go/internal/model"
-	"gorm.io/gorm"
+	"github.com/misskey-dev/misskey-go/internal/repository"
 )
 
 // Handler handles meta-related API endpoints.
 type Handler struct {
-	config *config.Config
-	db     *gorm.DB
+	config   *config.Config
+	metaRepo repository.MetaRepository
 }
 
 // NewHandler creates a new meta Handler.
-func NewHandler(cfg *config.Config, db *gorm.DB) *Handler {
-	return &Handler{config: cfg, db: db}
+func NewHandler(cfg *config.Config, metaRepo repository.MetaRepository) *Handler {
+	return &Handler{config: cfg, metaRepo: metaRepo}
 }
 
 // Meta returns server metadata.
 // POST /api/meta
 func (h *Handler) Meta(c echo.Context) error {
-	var m model.Meta
-	h.db.First(&m)
+	m, err := h.metaRepo.Fetch()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{
+				"message": "Internal error.",
+				"code":    "INTERNAL_ERROR",
+				"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
+			},
+		})
+	}
 
 	resp := map[string]any{
 		"maintainerName":         m.MaintainerName,
