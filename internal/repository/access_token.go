@@ -1,7 +1,7 @@
 package repository
 
 import (
-	"github.com/misskey-dev/misskey-go/internal/model"
+	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
 

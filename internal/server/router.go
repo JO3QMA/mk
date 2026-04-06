@@ -4,13 +4,13 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
-	"github.com/misskey-dev/misskey-go/internal/api/i"
-	"github.com/misskey-dev/misskey-go/internal/api/meta"
-	"github.com/misskey-dev/misskey-go/internal/api/notes"
-	"github.com/misskey-dev/misskey-go/internal/api/users"
-	"github.com/misskey-dev/misskey-go/internal/misc/id"
-	"github.com/misskey-dev/misskey-go/internal/repository"
-	"github.com/misskey-dev/misskey-go/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/api/i"
+	"github.com/shiroha-a/mk/internal/api/meta"
+	"github.com/shiroha-a/mk/internal/api/notes"
+	"github.com/shiroha-a/mk/internal/api/users"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 func (s *Server) setupRoutes() {

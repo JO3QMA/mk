@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
-	"github.com/misskey-dev/misskey-go/internal/misc/id"
-	"github.com/misskey-dev/misskey-go/internal/model"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"

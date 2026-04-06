@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
-	"github.com/misskey-dev/misskey-go/internal/config"
-	"github.com/misskey-dev/misskey-go/internal/repository"
+	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/repository"
 )
 
 // Handler handles meta-related API endpoints.

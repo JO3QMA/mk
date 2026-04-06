@@ -1,7 +1,7 @@
 package testutil
 
 import (
-	"github.com/misskey-dev/misskey-go/internal/model"
+	"github.com/shiroha-a/mk/internal/model"
 )
 
 // MockUserRepository is a test double for repository.UserRepository.

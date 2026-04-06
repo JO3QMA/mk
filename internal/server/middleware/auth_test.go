@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
-	"github.com/misskey-dev/misskey-go/internal/model"
-	"github.com/misskey-dev/misskey-go/internal/testutil"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 )
 

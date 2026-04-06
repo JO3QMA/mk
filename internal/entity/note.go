@@ -1,8 +1,8 @@
 package entity
 
 import (
-	"github.com/misskey-dev/misskey-go/internal/misc/id"
-	"github.com/misskey-dev/misskey-go/internal/model"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/datatypes"
 )
 

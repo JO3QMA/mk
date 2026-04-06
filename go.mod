@@ -1,4 +1,4 @@
-module github.com/misskey-dev/misskey-go
+module github.com/shiroha-a/mk
 
 go 1.25.0
 

@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v4"
-	"github.com/misskey-dev/misskey-go/internal/model"
-	"github.com/misskey-dev/misskey-go/internal/repository"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 )
 
 type contextKey string

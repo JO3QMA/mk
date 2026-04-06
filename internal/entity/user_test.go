@@ -3,7 +3,7 @@ package entity
 import (
 	"testing"
 
-	"github.com/misskey-dev/misskey-go/internal/model"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/datatypes"
 )

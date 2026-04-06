@@ -4,9 +4,9 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
-	"github.com/misskey-dev/misskey-go/internal/entity"
-	"github.com/misskey-dev/misskey-go/internal/repository"
-	"github.com/misskey-dev/misskey-go/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles account-related API endpoints.

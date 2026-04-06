@@ -9,10 +9,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/misskey-dev/misskey-go/internal/config"
-	"github.com/misskey-dev/misskey-go/internal/core/cache"
-	"github.com/misskey-dev/misskey-go/internal/model"
-	"github.com/misskey-dev/misskey-go/internal/server"
+	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/core/cache"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server"
 )
 
 func main() {

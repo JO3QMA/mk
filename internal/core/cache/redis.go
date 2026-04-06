@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/misskey-dev/misskey-go/internal/config"
+	"github.com/shiroha-a/mk/internal/config"
 	"github.com/redis/go-redis/v9"
 )
 

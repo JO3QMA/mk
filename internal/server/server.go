@@ -8,10 +8,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
-	"github.com/misskey-dev/misskey-go/internal/config"
-	"github.com/misskey-dev/misskey-go/internal/core/cache"
-	"github.com/misskey-dev/misskey-go/internal/repository"
-	"github.com/misskey-dev/misskey-go/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/core/cache"
+	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 	"gorm.io/gorm"
 )
 
