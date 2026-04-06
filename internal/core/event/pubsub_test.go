@@ -134,3 +134,54 @@ func TestPubSubService_MultipleChannels(t *testing.T) {
 	assert.Contains(t, results["a"], "msg_a")
 	assert.Contains(t, results["b"], "msg_b")
 }
+
+func TestPubSubService_Unsubscribe_NotSubscribed(t *testing.T) {
+	svc := NewPubSubService(testRedis.Client, "test:")
+	defer svc.Close()
+
+	// 未登録チャンネルのUnsubscribeはエラーなし
+	err := svc.Unsubscribe("nonexistent")
+	assert.NoError(t, err)
+}
+
+func TestPubSubService_Close_WithSubscriptions(t *testing.T) {
+	svc := NewPubSubService(testRedis.Client, "test:")
+	ctx := context.Background()
+
+	svc.Subscribe(ctx, "close1", func(data []byte) {})
+	svc.Subscribe(ctx, "close2", func(data []byte) {})
+
+	time.Sleep(100 * time.Millisecond)
+
+	err := svc.Close()
+	assert.NoError(t, err)
+}
+
+func TestPubSubService_Close_AlreadyClosed(t *testing.T) {
+	svc := NewPubSubService(testRedis.Client, "test:")
+	ctx := context.Background()
+
+	svc.Subscribe(ctx, "doublecl", func(data []byte) {})
+	time.Sleep(100 * time.Millisecond)
+
+	// 内部のPubSubを手動で閉じてからCloseを呼ぶ→sub.Close()がエラーを返す
+	svc.mu.Lock()
+	for _, sub := range svc.subs {
+		sub.Close()
+	}
+	svc.mu.Unlock()
+
+	// svc.Close()は内部でsub.Close()エラーをログに出すが、nilを返す
+	err := svc.Close()
+	assert.NoError(t, err)
+}
+
+func TestPubSubService_Publish_MarshalError(t *testing.T) {
+	svc := NewPubSubService(testRedis.Client, "test:")
+	ctx := context.Background()
+	defer svc.Close()
+
+	// chanがJSONにmarshalできない
+	err := svc.Publish(ctx, "ch", make(chan int))
+	assert.Error(t, err)
+}

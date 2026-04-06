@@ -270,6 +270,163 @@ func TestDelete_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+func TestCreate_InvalidJSON(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	user := &model.User{ID: "user1", Username: "testuser"}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader("{invalid"))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	err := h.Create(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_WithVisibleUserIDs(t *testing.T) {
+	h, noteRepo := newTestHandler(t)
+
+	user := &model.User{
+		ID:                "user1",
+		Username:          "testuser",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	body := `{"text": "secret", "visibility": "specified", "visibleUserIds": ["user2", "user3"]}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	err := h.Create(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	for _, note := range noteRepo.Notes {
+		assert.Equal(t, model.NoteVisibility("specified"), note.Visibility)
+		assert.Equal(t, []string{"user2", "user3"}, []string(note.VisibleUserIDs))
+	}
+}
+
+func TestCreate_WithPollExpiresAt(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(noteRepo, pollRepo, idGen)
+
+	user := &model.User{
+		ID:                "user1",
+		Username:          "testuser",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	body := `{"text": "Vote!", "poll": {"choices": ["A", "B"], "multiple": true, "expiresAt": 1700000000000}}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	err := h.Create(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	for _, poll := range pollRepo.Polls {
+		assert.NotNil(t, poll.ExpiresAt)
+		assert.True(t, poll.Multiple)
+	}
+}
+
+func TestCreate_RepoError(t *testing.T) {
+	noteRepo := &failingNoteRepo{}
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(noteRepo, pollRepo, idGen)
+
+	user := &model.User{ID: "user1", Username: "testuser"}
+
+	body := `{"text": "will fail"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	err := h.Create(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestCreate_FindByIDWithUserFails(t *testing.T) {
+	noteRepo := &findFailNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(noteRepo, pollRepo, idGen)
+
+	user := &model.User{
+		ID:                "user1",
+		Username:          "testuser",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	body := `{"text": "fallback path"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	err := h.Create(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestDelete_InvalidJSON(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	user := &model.User{ID: "user1", Username: "testuser"}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/delete", strings.NewReader("{invalid"))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	err := h.Delete(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingNoteRepo always returns errors on Create.
+type failingNoteRepo struct{}
+
+func (f *failingNoteRepo) Create(_ *model.Note) error             { return testutil.ErrNotFound }
+func (f *failingNoteRepo) FindByID(_ string) (*model.Note, error) { return nil, testutil.ErrNotFound }
+func (f *failingNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
+func (f *failingNoteRepo) Delete(_ *model.Note) error                  { return nil }
+func (f *failingNoteRepo) Update(_ *model.Note, _ string, _ any) error { return nil }
+
+// findFailNoteRepo creates successfully but FindByIDWithUser always fails.
+type findFailNoteRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (f *findFailNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
+
 func TestExtractMentions(t *testing.T) {
 	tests := []struct {
 		text     string

@@ -3,9 +3,11 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -153,6 +155,19 @@ func (t *TestRedis) Teardown(ctx context.Context) {
 // FlushAll clears all Redis data.
 func (t *TestRedis) FlushAll(ctx context.Context) {
 	t.Client.FlushAll(ctx)
+}
+
+// Host returns the Redis host.
+func (t *TestRedis) Host() string {
+	host, _, _ := net.SplitHostPort(t.Addr)
+	return host
+}
+
+// Port returns the Redis port.
+func (t *TestRedis) Port() int {
+	_, port, _ := net.SplitHostPort(t.Addr)
+	p, _ := strconv.Atoi(port)
+	return p
 }
 
 // SkipIfNoDocker skips the test if Docker is not available.

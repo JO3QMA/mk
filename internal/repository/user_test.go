@@ -111,3 +111,21 @@ func TestUserRepository_FindProfileByUserID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, &desc, found.Description)
 }
+
+func TestUserRepository_FindProfileByUserID_NotFound(t *testing.T) {
+	repo := NewUserRepository(testDB)
+
+	_, err := repo.FindProfileByUserID("nonexistent_user")
+	assert.Error(t, err)
+}
+
+func TestUserRepository_FindByUsernameLower_NotFound(t *testing.T) {
+	repo := NewUserRepository(testDB)
+
+	_, err := repo.FindByUsernameLower("doesnotexist", nil)
+	assert.Error(t, err)
+
+	host := "nowhere.example.com"
+	_, err = repo.FindByUsernameLower("doesnotexist", &host)
+	assert.Error(t, err)
+}

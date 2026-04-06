@@ -165,3 +165,32 @@ func TestShow_WithProfile(t *testing.T) {
 	assert.Equal(t, "Hello, I'm a test user", resp["description"])
 	assert.Equal(t, "Tokyo", resp["location"])
 }
+
+func TestShow_InvalidJSON(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader("{invalid"))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	err := h.Show(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestShow_UsernameNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	body := `{"username": "nonexistent"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	err := h.Show(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}

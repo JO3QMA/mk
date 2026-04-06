@@ -104,3 +104,10 @@ func TestNoteRepository_FindByID_NotFound(t *testing.T) {
 	_, err := repo.FindByID("nonexistent_note")
 	assert.Error(t, err)
 }
+
+func TestNoteRepository_FindByIDWithUser_NotFound(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+
+	_, err := repo.FindByIDWithUser("nonexistent_note")
+	assert.Error(t, err)
+}

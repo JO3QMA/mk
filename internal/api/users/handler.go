@@ -48,28 +48,21 @@ func (h *Handler) Show(c echo.Context) error {
 		})
 	}
 
-	var userID string
+	var err error
 	if req.UserID != nil {
-		user, err := h.userRepo.FindByID(*req.UserID)
-		if err != nil {
+		user, findErr := h.userRepo.FindByID(*req.UserID)
+		if findErr != nil {
 			return noSuchUser(c)
 		}
-		userID = user.ID
-	} else {
-		user, err := h.userRepo.FindByUsernameLower(*req.Username, req.Host)
-		if err != nil {
-			return noSuchUser(c)
-		}
-		userID = user.ID
+		profile, _ := h.userRepo.FindProfileByUserID(user.ID)
+		return c.JSON(http.StatusOK, entity.PackUserDetailed(user, profile))
 	}
 
-	user, err := h.userRepo.FindByID(userID)
+	user, err := h.userRepo.FindByUsernameLower(*req.Username, req.Host)
 	if err != nil {
 		return noSuchUser(c)
 	}
-
 	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
-
 	return c.JSON(http.StatusOK, entity.PackUserDetailed(user, profile))
 }
 

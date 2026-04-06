@@ -122,9 +122,30 @@ func TestULID_Monotonic(t *testing.T) {
 func TestParseTime_InvalidInput(t *testing.T) {
 	methods := []string{"aid", "aidx", "meid", "objectid", "ulid"}
 	for _, m := range methods {
-		t.Run(m, func(t *testing.T) {
+		t.Run(m+"_too_short", func(t *testing.T) {
 			g, _ := NewGenerator(m)
 			_, err := g.ParseTime("x")
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestParseTime_InvalidChars(t *testing.T) {
+	tests := []struct {
+		method string
+		id     string
+	}{
+		// 長さは足りるがParseIntが失敗する文字を含む
+		{"aid", "!!!!!!!!00"},        // base36に!は無効
+		{"aidx", "!!!!!!!!00000000"}, // base36に!は無効
+		{"meid", "ZZZZZZZZZZZZ000000000000"},
+		{"objectid", "ZZZZZZZZ0000000000000000"},
+		{"ulid", "&&&&&&&&&&0000000000000000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			g, _ := NewGenerator(tt.method)
+			_, err := g.ParseTime(tt.id)
 			assert.Error(t, err)
 		})
 	}

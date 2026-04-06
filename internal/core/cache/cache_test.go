@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +28,46 @@ func TestMain(m *testing.M) {
 
 	testRedis.Teardown(ctx)
 	os.Exit(code)
+}
+
+func TestNewRedisClients(t *testing.T) {
+	cfg := &config.Config{
+		Redis:             config.RedisOptions{Host: testRedis.Host(), Port: testRedis.Port()},
+		RedisForPubsub:    config.RedisOptions{Host: testRedis.Host(), Port: testRedis.Port()},
+		RedisForJobQueue:  config.RedisOptions{Host: testRedis.Host(), Port: testRedis.Port()},
+		RedisForTimelines: config.RedisOptions{Host: testRedis.Host(), Port: testRedis.Port()},
+		RedisForReactions: config.RedisOptions{Host: testRedis.Host(), Port: testRedis.Port()},
+	}
+
+	clients, err := NewRedisClients(cfg)
+	require.NoError(t, err)
+	assert.NotNil(t, clients.Default)
+	assert.NotNil(t, clients.Pubsub)
+	assert.NotNil(t, clients.JobQueue)
+	assert.NotNil(t, clients.Timelines)
+	assert.NotNil(t, clients.Reactions)
+
+	require.NoError(t, clients.Close())
+}
+
+func TestNewRedisClients_ConnectionFail(t *testing.T) {
+	cfg := &config.Config{
+		Redis:             config.RedisOptions{Host: "invalid-host", Port: 1},
+		RedisForPubsub:    config.RedisOptions{Host: "invalid-host", Port: 1},
+		RedisForJobQueue:  config.RedisOptions{Host: "invalid-host", Port: 1},
+		RedisForTimelines: config.RedisOptions{Host: "invalid-host", Port: 1},
+		RedisForReactions: config.RedisOptions{Host: "invalid-host", Port: 1},
+	}
+
+	_, err := NewRedisClients(cfg)
+	assert.Error(t, err)
+}
+
+func TestKeyPrefix(t *testing.T) {
+	cfg := &config.Config{
+		Redis: config.RedisOptions{Prefix: "myhost"},
+	}
+	assert.Equal(t, "myhost:", KeyPrefix(cfg))
 }
 
 func newTestCacheService() *CacheService {
@@ -93,6 +135,84 @@ func TestCacheService_Exists(t *testing.T) {
 	exists, err = svc.Exists(ctx, "yep")
 	require.NoError(t, err)
 	assert.True(t, exists)
+}
+
+func TestCacheService_Get_UnmarshalError(t *testing.T) {
+	svc := newTestCacheService()
+	ctx := context.Background()
+	testRedis.FlushAll(ctx)
+
+	// 生のバイト列を直接Redisにセットして、JSONとしてパースできないデータを作る
+	testRedis.Client.Set(ctx, "test:badkey", "not-valid-json{{{", time.Minute)
+
+	var got map[string]string
+	found, err := svc.Get(ctx, "badkey", &got)
+	assert.False(t, found)
+	assert.Error(t, err)
+}
+
+func TestCacheService_Set_MarshalError(t *testing.T) {
+	svc := newTestCacheService()
+	ctx := context.Background()
+
+	// chanはJSONにmarshalできない
+	err := svc.Set(ctx, "badval", make(chan int), time.Minute)
+	assert.Error(t, err)
+}
+
+func TestCacheService_Get_RedisError(t *testing.T) {
+	// 閉じたクライアントでエラーを発生させる
+	closedClient := redis.NewClient(&redis.Options{Addr: "localhost:1"})
+	closedClient.Close()
+	svc := &CacheService{client: closedClient, prefix: "test:"}
+	ctx := context.Background()
+
+	var got string
+	found, err := svc.Get(ctx, "key", &got)
+	assert.False(t, found)
+	assert.Error(t, err)
+}
+
+func TestCacheService_Exists_RedisError(t *testing.T) {
+	closedClient := redis.NewClient(&redis.Options{Addr: "localhost:1"})
+	closedClient.Close()
+	svc := &CacheService{client: closedClient, prefix: "test:"}
+	ctx := context.Background()
+
+	exists, err := svc.Exists(ctx, "key")
+	assert.False(t, exists)
+	assert.Error(t, err)
+}
+
+func TestRedisClients_Close_AllFresh(t *testing.T) {
+	addr := testRedis.Client.Options().Addr
+	clients := &RedisClients{
+		Default:   redis.NewClient(&redis.Options{Addr: addr}),
+		Pubsub:    redis.NewClient(&redis.Options{Addr: addr}),
+		JobQueue:  redis.NewClient(&redis.Options{Addr: addr}),
+		Timelines: redis.NewClient(&redis.Options{Addr: addr}),
+		Reactions: redis.NewClient(&redis.Options{Addr: addr}),
+	}
+
+	err := clients.Close()
+	assert.NoError(t, err)
+}
+
+func TestRedisClients_Close_AlreadyClosed(t *testing.T) {
+	addr := testRedis.Client.Options().Addr
+	alreadyClosed := redis.NewClient(&redis.Options{Addr: addr})
+	alreadyClosed.Close()
+
+	clients := &RedisClients{
+		Default:   alreadyClosed,
+		Pubsub:    redis.NewClient(&redis.Options{Addr: addr}),
+		JobQueue:  redis.NewClient(&redis.Options{Addr: addr}),
+		Timelines: redis.NewClient(&redis.Options{Addr: addr}),
+		Reactions: redis.NewClient(&redis.Options{Addr: addr}),
+	}
+
+	err := clients.Close()
+	assert.Error(t, err)
 }
 
 func TestCacheService_TTLExpiry(t *testing.T) {

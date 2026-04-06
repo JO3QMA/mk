@@ -141,6 +141,41 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+func TestAuthenticate_AccessToken(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	tokenRepo := testutil.NewMockAccessTokenRepository()
+
+	user := &model.User{ID: "user3", Username: "tokenuser"}
+	// native tokenには登録しない→access tokenのhashで検索される
+	// SHA256("access_secret") = 予め計算したhash
+	accessSecret := "access_secret"
+	hash := sha256Hash(accessSecret)
+	tokenRepo.Tokens[hash] = &model.AccessToken{
+		ID:     "at1",
+		Hash:   hash,
+		UserID: user.ID,
+		User:   user,
+	}
+
+	auth := NewAuthMiddleware(userRepo, tokenRepo)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+accessSecret)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	handler := auth.Authenticate()(func(c echo.Context) error {
+		u := GetUser(c)
+		assert.NotNil(t, u)
+		assert.Equal(t, "user3", u.ID)
+		return c.String(http.StatusOK, "ok")
+	})
+
+	err := handler(c)
+	assert.NoError(t, err)
+}
+
 func TestGetUser_NoUser(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

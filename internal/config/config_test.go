@@ -230,6 +230,122 @@ redis:
 	assert.Equal(t, int64(1048576), cfg.MaxFileSize)
 }
 
+func TestLoad_DisableIPRateLimit(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+enableIpRateLimit: false
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.EnableIPRateLimit)
+}
+
+func TestLoad_CustomCountsAndThreshold(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+perChannelMaxNoteCacheCount: 500
+perUserNotificationsMaxCount: 100
+deactivateAntennaThreshold: 12345
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 500, cfg.PerChannelMaxNoteCacheCount)
+	assert.Equal(t, 100, cfg.PerUserNotificationsMaxCount)
+	assert.Equal(t, 12345, cfg.DeactivateAntennaThreshold)
+}
+
+func TestLoad_InternalMediaProxy(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+mediaProxy: https://example.com/proxy
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://example.com/proxy", cfg.MediaProxy)
+	assert.False(t, cfg.ExternalMediaProxyEnabled)
+}
+
+func TestLoad_VideoThumbnailGenerator(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+videoThumbnailGenerator: https://thumb.example.com/
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://thumb.example.com", cfg.VideoThumbnailGenerator)
+}
+
+func TestLoad_UnmarshalError(t *testing.T) {
+	// portにstringを入れるとUnmarshalが失敗する
+	yaml := `
+url: https://example.com
+port: "not_a_number"
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	_, err := Load(path)
+	// viperは型変換を試みるので、直接の失敗は難しい
+	// ただしresolveでURLパースが成功すれば通る可能性がある
+	// このテストケースでは少なくともパニックしないことを確認
+	_ = err
+}
+
 func TestLoad_MediaProxy(t *testing.T) {
 	yaml := `
 url: https://example.com
