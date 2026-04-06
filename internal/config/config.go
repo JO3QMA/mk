@@ -1,0 +1,325 @@
+package config
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
+// RedisOptions represents Redis connection configuration.
+type RedisOptions struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Family   int    `mapstructure:"family"`
+	Pass     string `mapstructure:"pass"`
+	DB       int    `mapstructure:"db"`
+	Prefix   string `mapstructure:"prefix"`
+	Username string `mapstructure:"username"`
+}
+
+// DBOptions represents PostgreSQL connection configuration.
+type DBOptions struct {
+	Host         string            `mapstructure:"host"`
+	Port         int               `mapstructure:"port"`
+	DB           string            `mapstructure:"db"`
+	User         string            `mapstructure:"user"`
+	Pass         string            `mapstructure:"pass"`
+	DisableCache bool              `mapstructure:"disableCache"`
+	Extra        map[string]string `mapstructure:"extra"`
+}
+
+// MeilisearchOptions represents Meilisearch configuration.
+type MeilisearchOptions struct {
+	Host   string `mapstructure:"host"`
+	Port   string `mapstructure:"port"`
+	APIKey string `mapstructure:"apiKey"`
+	SSL    bool   `mapstructure:"ssl"`
+	Index  string `mapstructure:"index"`
+	Scope  string `mapstructure:"scope"`
+}
+
+// FulltextSearchOptions represents fulltext search configuration.
+type FulltextSearchOptions struct {
+	Provider string `mapstructure:"provider"`
+}
+
+// LoggingOptions represents logging configuration.
+type LoggingOptions struct {
+	SQL *SQLLoggingOptions `mapstructure:"sql"`
+}
+
+// SQLLoggingOptions represents SQL logging configuration.
+type SQLLoggingOptions struct {
+	DisableQueryTruncation bool `mapstructure:"disableQueryTruncation"`
+	EnableQueryParamLog    bool `mapstructure:"enableQueryParamLogging"`
+}
+
+// Source represents the raw YAML configuration file structure.
+type Source struct {
+	URL                    string                 `mapstructure:"url"`
+	Port                   int                    `mapstructure:"port"`
+	Socket                 string                 `mapstructure:"socket"`
+	ChmodSocket            string                 `mapstructure:"chmodSocket"`
+	DisableHSTS            bool                   `mapstructure:"disableHsts"`
+	EnableIPRateLimit      *bool                  `mapstructure:"enableIpRateLimit"`
+	DB                     DBOptions              `mapstructure:"db"`
+	DBReplications         bool                   `mapstructure:"dbReplications"`
+	Redis                  RedisOptions           `mapstructure:"redis"`
+	RedisForPubsub         *RedisOptions          `mapstructure:"redisForPubsub"`
+	RedisForJobQueue       *RedisOptions          `mapstructure:"redisForJobQueue"`
+	RedisForTimelines      *RedisOptions          `mapstructure:"redisForTimelines"`
+	RedisForReactions      *RedisOptions          `mapstructure:"redisForReactions"`
+	FulltextSearch         *FulltextSearchOptions `mapstructure:"fulltextSearch"`
+	Meilisearch            *MeilisearchOptions    `mapstructure:"meilisearch"`
+	SetupPassword          string                 `mapstructure:"setupPassword"`
+	Proxy                  string                 `mapstructure:"proxy"`
+	ProxySmtp              string                 `mapstructure:"proxySmtp"`
+	ProxyBypassHosts       []string               `mapstructure:"proxyBypassHosts"`
+	AllowedPrivateNetworks []string               `mapstructure:"allowedPrivateNetworks"`
+	MaxFileSize            *int64                 `mapstructure:"maxFileSize"`
+	ClusterLimit           *int                   `mapstructure:"clusterLimit"`
+	ID                     string                 `mapstructure:"id"`
+	OutgoingAddress        string                 `mapstructure:"outgoingAddress"`
+	OutgoingAddressFamily  string                 `mapstructure:"outgoingAddressFamily"`
+
+	DeliverJobConcurrency      *int `mapstructure:"deliverJobConcurrency"`
+	InboxJobConcurrency        *int `mapstructure:"inboxJobConcurrency"`
+	RelationshipJobConcurrency *int `mapstructure:"relationshipJobConcurrency"`
+	DeliverJobPerSec           *int `mapstructure:"deliverJobPerSec"`
+	InboxJobPerSec             *int `mapstructure:"inboxJobPerSec"`
+	RelationshipJobPerSec      *int `mapstructure:"relationshipJobPerSec"`
+	DeliverJobMaxAttempts      *int `mapstructure:"deliverJobMaxAttempts"`
+	InboxJobMaxAttempts        *int `mapstructure:"inboxJobMaxAttempts"`
+
+	MediaProxy              string          `mapstructure:"mediaProxy"`
+	VideoThumbnailGenerator string          `mapstructure:"videoThumbnailGenerator"`
+	Logging                 *LoggingOptions `mapstructure:"logging"`
+
+	PerChannelMaxNoteCacheCount  *int   `mapstructure:"perChannelMaxNoteCacheCount"`
+	PerUserNotificationsMaxCount *int   `mapstructure:"perUserNotificationsMaxCount"`
+	DeactivateAntennaThreshold   *int   `mapstructure:"deactivateAntennaThreshold"`
+	PidFile                      string `mapstructure:"pidFile"`
+}
+
+// Config represents the resolved application configuration.
+type Config struct {
+	Version  string
+	URL      string
+	Port     int
+	Socket   string
+	Host     string
+	Hostname string
+	Scheme   string
+	WsScheme string
+	WsURL    string
+	APIURL   string
+	AuthURL  string
+	DriveURL string
+
+	DisableHSTS       bool
+	EnableIPRateLimit bool
+	SetupPassword     string
+
+	DB             DBOptions
+	DBReplications bool
+
+	Redis             RedisOptions
+	RedisForPubsub    RedisOptions
+	RedisForJobQueue  RedisOptions
+	RedisForTimelines RedisOptions
+	RedisForReactions RedisOptions
+
+	FulltextSearch *FulltextSearchOptions
+	Meilisearch    *MeilisearchOptions
+
+	ID string
+
+	Proxy                  string
+	ProxySmtp              string
+	ProxyBypassHosts       []string
+	AllowedPrivateNetworks []string
+
+	MaxFileSize           int64
+	ClusterLimit          *int
+	OutgoingAddress       string
+	OutgoingAddressFamily string
+
+	DeliverJobConcurrency      *int
+	InboxJobConcurrency        *int
+	RelationshipJobConcurrency *int
+	DeliverJobPerSec           *int
+	InboxJobPerSec             *int
+	RelationshipJobPerSec      *int
+	DeliverJobMaxAttempts      *int
+	InboxJobMaxAttempts        *int
+
+	MediaProxy                   string
+	ExternalMediaProxyEnabled    bool
+	VideoThumbnailGenerator      string
+	UserAgent                    string
+	PerChannelMaxNoteCacheCount  int
+	PerUserNotificationsMaxCount int
+	DeactivateAntennaThreshold   int
+	PidFile                      string
+	Logging                      *LoggingOptions
+}
+
+const defaultMaxFileSize int64 = 262144000
+
+// Load reads the Misskey YAML configuration and returns a resolved Config.
+func Load(configPath string) (*Config, error) {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+
+	if err := v.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var src Source
+	if err := v.Unmarshal(&src); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	return resolve(&src)
+}
+
+func resolve(src *Source) (*Config, error) {
+	parsedURL, err := url.Parse(src.URL)
+	if err != nil || parsedURL.Host == "" {
+		return nil, fmt.Errorf("invalid url: %s", src.URL)
+	}
+
+	host := parsedURL.Host
+	hostname := parsedURL.Hostname()
+	scheme := strings.TrimSuffix(parsedURL.Scheme, ":")
+	wsScheme := strings.Replace(scheme, "http", "ws", 1)
+
+	maxFileSize := defaultMaxFileSize
+	if src.MaxFileSize != nil {
+		maxFileSize = *src.MaxFileSize
+	}
+
+	enableIPRateLimit := true
+	if src.EnableIPRateLimit != nil {
+		enableIPRateLimit = *src.EnableIPRateLimit
+	}
+
+	redis := resolveRedis(src.Redis, host)
+
+	perChannelMaxNoteCacheCount := 1000
+	if src.PerChannelMaxNoteCacheCount != nil {
+		perChannelMaxNoteCacheCount = *src.PerChannelMaxNoteCacheCount
+	}
+	perUserNotificationsMaxCount := 500
+	if src.PerUserNotificationsMaxCount != nil {
+		perUserNotificationsMaxCount = *src.PerUserNotificationsMaxCount
+	}
+	deactivateAntennaThreshold := 1000 * 60 * 60 * 24 * 7
+	if src.DeactivateAntennaThreshold != nil {
+		deactivateAntennaThreshold = *src.DeactivateAntennaThreshold
+	}
+
+	internalMediaProxy := fmt.Sprintf("%s://%s/proxy", scheme, host)
+	mediaProxy := internalMediaProxy
+	externalMediaProxyEnabled := false
+	if src.MediaProxy != "" {
+		mp := strings.TrimRight(src.MediaProxy, "/")
+		if mp != internalMediaProxy {
+			externalMediaProxyEnabled = true
+		}
+		mediaProxy = mp
+	}
+
+	cfg := &Config{
+		Version:  "2026.3.2", // Misskeyバージョンと合わせる
+		URL:      parsedURL.Scheme + "://" + parsedURL.Host,
+		Port:     src.Port,
+		Socket:   src.Socket,
+		Host:     host,
+		Hostname: hostname,
+		Scheme:   scheme,
+		WsScheme: wsScheme,
+		WsURL:    fmt.Sprintf("%s://%s", wsScheme, host),
+		APIURL:   fmt.Sprintf("%s://%s/api", scheme, host),
+		AuthURL:  fmt.Sprintf("%s://%s/auth", scheme, host),
+		DriveURL: fmt.Sprintf("%s://%s/files", scheme, host),
+
+		DisableHSTS:       src.DisableHSTS,
+		EnableIPRateLimit: enableIPRateLimit,
+		SetupPassword:     src.SetupPassword,
+
+		DB:             src.DB,
+		DBReplications: src.DBReplications,
+
+		Redis:             redis,
+		RedisForPubsub:    resolveRedisOrDefault(src.RedisForPubsub, redis, host),
+		RedisForJobQueue:  resolveRedisOrDefault(src.RedisForJobQueue, redis, host),
+		RedisForTimelines: resolveRedisOrDefault(src.RedisForTimelines, redis, host),
+		RedisForReactions: resolveRedisOrDefault(src.RedisForReactions, redis, host),
+
+		FulltextSearch: src.FulltextSearch,
+		Meilisearch:    src.Meilisearch,
+
+		ID: src.ID,
+
+		Proxy:                  src.Proxy,
+		ProxySmtp:              src.ProxySmtp,
+		ProxyBypassHosts:       src.ProxyBypassHosts,
+		AllowedPrivateNetworks: src.AllowedPrivateNetworks,
+
+		MaxFileSize:           maxFileSize,
+		ClusterLimit:          src.ClusterLimit,
+		OutgoingAddress:       src.OutgoingAddress,
+		OutgoingAddressFamily: src.OutgoingAddressFamily,
+
+		DeliverJobConcurrency:      src.DeliverJobConcurrency,
+		InboxJobConcurrency:        src.InboxJobConcurrency,
+		RelationshipJobConcurrency: src.RelationshipJobConcurrency,
+		DeliverJobPerSec:           src.DeliverJobPerSec,
+		InboxJobPerSec:             src.InboxJobPerSec,
+		RelationshipJobPerSec:      src.RelationshipJobPerSec,
+		DeliverJobMaxAttempts:      src.DeliverJobMaxAttempts,
+		InboxJobMaxAttempts:        src.InboxJobMaxAttempts,
+
+		MediaProxy:                   mediaProxy,
+		ExternalMediaProxyEnabled:    externalMediaProxyEnabled,
+		VideoThumbnailGenerator:      strings.TrimRight(src.VideoThumbnailGenerator, "/"),
+		UserAgent:                    fmt.Sprintf("Misskey/%s (%s)", "2026.3.2", src.URL),
+		PerChannelMaxNoteCacheCount:  perChannelMaxNoteCacheCount,
+		PerUserNotificationsMaxCount: perUserNotificationsMaxCount,
+		DeactivateAntennaThreshold:   deactivateAntennaThreshold,
+		PidFile:                      src.PidFile,
+		Logging:                      src.Logging,
+	}
+
+	return cfg, nil
+}
+
+func resolveRedis(opts RedisOptions, host string) RedisOptions {
+	if opts.Prefix == "" {
+		opts.Prefix = host
+	}
+	return opts
+}
+
+func resolveRedisOrDefault(opts *RedisOptions, fallback RedisOptions, host string) RedisOptions {
+	if opts == nil {
+		return fallback
+	}
+	return resolveRedis(*opts, host)
+}
+
+// DSN returns the PostgreSQL connection string.
+func (c *Config) DSN() string {
+	sslMode := "disable"
+	if v, ok := c.DB.Extra["ssl"]; ok && v == "true" {
+		sslMode = "require"
+	}
+	return fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		c.DB.Host, c.DB.Port, c.DB.User, c.DB.Pass, c.DB.DB, sslMode,
+	)
+}

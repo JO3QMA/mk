@@ -1,0 +1,64 @@
+package model
+
+import (
+	"github.com/lib/pq"
+	"gorm.io/datatypes"
+)
+
+// FollowingVisibility represents the visibility of following list.
+type FollowingVisibility string
+
+const (
+	FollowingVisibilityPublic    FollowingVisibility = "public"
+	FollowingVisibilityFollowers FollowingVisibility = "followers"
+	FollowingVisibilityPrivate   FollowingVisibility = "private"
+)
+
+// UserProfile represents the `user_profile` table.
+type UserProfile struct {
+	UserID                    string              `gorm:"column:userId;type:varchar(32);primaryKey" json:"userId"`
+	Location                  *string             `gorm:"column:location;type:varchar(128)" json:"location"`
+	Birthday                  *string             `gorm:"column:birthday;type:char(10)" json:"birthday"`
+	Description               *string             `gorm:"column:description;type:varchar(2048)" json:"description"`
+	FollowedMessage           *string             `gorm:"column:followedMessage;type:varchar(256)" json:"followedMessage"`
+	Fields                    datatypes.JSON      `gorm:"column:fields;type:jsonb;default:'[]'" json:"fields"`
+	VerifiedLinks             pq.StringArray      `gorm:"column:verifiedLinks;type:varchar[];default:'{}'" json:"verifiedLinks"`
+	Lang                      *string             `gorm:"column:lang;type:varchar(32)" json:"lang"`
+	URL                       *string             `gorm:"column:url;type:varchar(512)" json:"url"`
+	Email                     *string             `gorm:"column:email;type:varchar(128)" json:"email"`
+	EmailVerifyCode           *string             `gorm:"column:emailVerifyCode;type:varchar(128)" json:"emailVerifyCode"`
+	EmailVerified             bool                `gorm:"column:emailVerified;default:false" json:"emailVerified"`
+	EmailNotificationTypes    datatypes.JSON      `gorm:"column:emailNotificationTypes;type:jsonb;default:'[\"follow\",\"receiveFollowRequest\"]'" json:"emailNotificationTypes"`
+	PublicReactions           bool                `gorm:"column:publicReactions;default:true" json:"publicReactions"`
+	FollowingVisibility       FollowingVisibility `gorm:"column:followingVisibility;type:following_visibility_enum;default:'public'" json:"followingVisibility"`
+	FollowersVisibility       FollowingVisibility `gorm:"column:followersVisibility;type:followers_visibility_enum;default:'public'" json:"followersVisibility"`
+	TwoFactorTempSecret       *string             `gorm:"column:twoFactorTempSecret;type:varchar(128)" json:"-"`
+	TwoFactorSecret           *string             `gorm:"column:twoFactorSecret;type:varchar(128)" json:"-"`
+	TwoFactorEnabled          bool                `gorm:"column:twoFactorEnabled;default:false" json:"twoFactorEnabled"`
+	SecurityKeysAvailable     bool                `gorm:"column:securityKeysAvailable;default:false" json:"securityKeysAvailable"`
+	UsePasswordLessLogin      bool                `gorm:"column:usePasswordLessLogin;default:false" json:"usePasswordLessLogin"`
+	Password                  *string             `gorm:"column:password;type:varchar(128)" json:"-"`
+	ModerationNote            *string             `gorm:"column:moderationNote;type:varchar(8192);default:''" json:"moderationNote"`
+	AutoAcceptFollowed        bool                `gorm:"column:autoAcceptFollowed;default:false" json:"autoAcceptFollowed"`
+	NoCrawle                  bool                `gorm:"column:noCrawle;default:false" json:"noCrawle"`
+	PreventAiLearning         bool                `gorm:"column:preventAiLearning;default:true" json:"preventAiLearning"`
+	AlwaysMarkNsfw            bool                `gorm:"column:alwaysMarkNsfw;default:false" json:"alwaysMarkNsfw"`
+	AutoSensitive             bool                `gorm:"column:autoSensitive;default:false" json:"autoSensitive"`
+	CarefulBot                bool                `gorm:"column:carefulBot;default:false" json:"carefulBot"`
+	InjectFeaturedNote        bool                `gorm:"column:injectFeaturedNote;default:true" json:"injectFeaturedNote"`
+	ReceiveAnnouncementEmail  bool                `gorm:"column:receiveAnnouncementEmail;default:true" json:"receiveAnnouncementEmail"`
+	PinnedPageID              *string             `gorm:"column:pinnedPageId;type:varchar(32)" json:"pinnedPageId"`
+	EnableWordMute            bool                `gorm:"column:enableWordMute;default:false" json:"enableWordMute"`
+	MutedWords                datatypes.JSON      `gorm:"column:mutedWords;type:jsonb;default:'[]'" json:"mutedWords"`
+	HardMutedWords            datatypes.JSON      `gorm:"column:hardMutedWords;type:jsonb;default:'[]'" json:"hardMutedWords"`
+	MutedInstances            datatypes.JSON      `gorm:"column:mutedInstances;type:jsonb;default:'[]'" json:"mutedInstances"`
+	NotificationRecieveConfig datatypes.JSON      `gorm:"column:notificationRecieveConfig;type:jsonb;default:'{}'" json:"notificationRecieveConfig"`
+	LoggedInDates             pq.StringArray      `gorm:"column:loggedInDates;type:varchar(32)[];default:'{}'" json:"loggedInDates"`
+	Achievements              datatypes.JSON      `gorm:"column:achievements;type:jsonb;default:'[]'" json:"achievements"`
+	UserHost                  *string             `gorm:"column:userHost;type:varchar(128)" json:"userHost"`
+
+	// Relations
+	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
+}
+
+func (UserProfile) TableName() string { return "user_profile" }

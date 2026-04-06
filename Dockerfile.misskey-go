@@ -1,0 +1,24 @@
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey
+
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+
+COPY --from=builder /app/built/misskey /app/misskey
+
+EXPOSE 3000
+
+ENTRYPOINT ["/app/misskey"]
+CMD ["-config", ".config/default.yml"]
