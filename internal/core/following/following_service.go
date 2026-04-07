@@ -51,6 +51,15 @@ type NotificationHook interface {
 	OnFollowAccepted(followerID, followeeID string)
 }
 
+// FederationHook is invoked after follow/unfollow/accept events involving a
+// remote user so that the ActivityPub layer can deliver Follow/Undo/Accept
+// activities. パッケージ間の循環依存を避けるためinterfaceで受け取る。
+type FederationHook interface {
+	OnLocalFollowed(follower, followee *model.User)
+	OnLocalUnfollowed(follower, followee *model.User)
+	OnLocalFollowAccepted(follower, followee *model.User)
+}
+
 // Service manages following relationships and follow requests.
 type Service struct {
 	userRepo          repository.UserRepository
@@ -59,6 +68,7 @@ type Service struct {
 	idGen             id.Generator
 	notificationHook  NotificationHook
 	blockingChecker   BlockingChecker
+	federationHook    FederationHook
 }
 
 // NewService creates a new following Service.
@@ -84,6 +94,12 @@ func (s *Service) SetNotificationHook(h NotificationHook) {
 // SetBlockingChecker attaches a BlockingChecker used by Follow.
 func (s *Service) SetBlockingChecker(c BlockingChecker) {
 	s.blockingChecker = c
+}
+
+// SetFederationHook attaches a FederationHook used to dispatch Follow / Undo /
+// Accept activities to remote inboxes.
+func (s *Service) SetFederationHook(h FederationHook) {
+	s.federationHook = h
 }
 
 // Follow creates a following relationship from follower to followee.
@@ -174,6 +190,9 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 	if s.notificationHook != nil {
 		s.notificationHook.OnFollowed(followerID, followeeID)
 	}
+	if s.federationHook != nil {
+		s.federationHook.OnLocalFollowed(follower, followee)
+	}
 
 	return &FollowResult{Following: f}, nil
 }
@@ -196,6 +215,15 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 	}
 	if err := s.userRepo.IncrementFollowersCount(followeeID, -1); err != nil {
 		return err
+	}
+	if s.federationHook != nil {
+		// hook 呼び出しに必要なユーザー情報を取得する。失敗してもベストエフォートで
+		// continue する。
+		follower, ferr := s.userRepo.FindByID(followerID)
+		followee, eerr := s.userRepo.FindByID(followeeID)
+		if ferr == nil && eerr == nil {
+			s.federationHook.OnLocalUnfollowed(follower, followee)
+		}
 	}
 	return nil
 }
@@ -228,6 +256,13 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 	}
 	if s.notificationHook != nil {
 		s.notificationHook.OnFollowAccepted(req.FollowerID, req.FolloweeID)
+	}
+	if s.federationHook != nil {
+		follower, ferr := s.userRepo.FindByID(req.FollowerID)
+		followee, eerr := s.userRepo.FindByID(req.FolloweeID)
+		if ferr == nil && eerr == nil {
+			s.federationHook.OnLocalFollowAccepted(follower, followee)
+		}
 	}
 	return nil
 }

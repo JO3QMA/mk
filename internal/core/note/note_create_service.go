@@ -62,6 +62,13 @@ type NotificationHook interface {
 	OnNoteCreated(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note)
 }
 
+// FederationHook is invoked after a note has been persisted so that the
+// ActivityPub layer can deliver the note to remote followers.
+// パッケージ間の循環依存を避けるためinterfaceで受け取る (実装は core/federation)。
+type FederationHook interface {
+	OnNoteCreated(note *model.Note, author *model.User)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
 	noteRepo         repository.NoteRepository
@@ -70,6 +77,7 @@ type CreateService struct {
 	idGen            id.Generator
 	fanoutHook       TimelineFanoutHook
 	notificationHook NotificationHook
+	federationHook   FederationHook
 }
 
 // NewCreateService creates a new CreateService.
@@ -100,6 +108,11 @@ func (s *CreateService) SetFanoutHook(h TimelineFanoutHook) {
 // SetNotificationHook attaches a NotificationHook invoked on note creation.
 func (s *CreateService) SetNotificationHook(h NotificationHook) {
 	s.notificationHook = h
+}
+
+// SetFederationHook attaches a FederationHook invoked on note creation.
+func (s *CreateService) SetFederationHook(h FederationHook) {
+	s.federationHook = h
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -235,6 +248,10 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// 通知も同様にベストエフォート。
 	if s.notificationHook != nil {
 		s.notificationHook.OnNoteCreated(finalNote, in.User, replyTarget, renoteTarget)
+	}
+	// AP配信もベストエフォート。
+	if s.federationHook != nil {
+		s.federationHook.OnNoteCreated(finalNote, in.User)
 	}
 
 	return finalNote, nil

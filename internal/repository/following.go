@@ -13,6 +13,10 @@ type FollowingRepository interface {
 	Exists(followerID, followeeID string) (bool, error)
 	ListFollowers(userID string, limit, offset int) ([]*model.Following, error)
 	ListFollowing(userID string, limit, offset int) ([]*model.Following, error)
+	// ListRemoteFollowerInboxes returns the deduplicated list of inbox URLs for
+	// remote followers of userID. sharedInbox を持つフォロワーは sharedInbox
+	// に集約され、無いフォロワーは個別inboxを返す。
+	ListRemoteFollowerInboxes(userID string) ([]string, error)
 }
 
 type followingRepository struct {
@@ -72,4 +76,32 @@ func (r *followingRepository) ListFollowing(userID string, limit, offset int) ([
 		return nil, err
 	}
 	return rows, nil
+}
+
+// ListRemoteFollowerInboxes returns deduplicated inbox URLs for remote
+// followers. sharedInbox を優先し、無い場合のみ個別 inbox を使う。
+//
+// SQLは以下の流れ:
+//  1. follower がリモート (host IS NOT NULL) のフォロワーをjoin
+//  2. sharedInbox があれば sharedInbox、無ければ inbox を選択
+//  3. NULL/空文字列を除外し DISTINCT で重複排除
+func (r *followingRepository) ListRemoteFollowerInboxes(userID string) ([]string, error) {
+	var inboxes []string
+	err := r.db.
+		Table(`"following" AS f`).
+		Select(`DISTINCT COALESCE(NULLIF(u."sharedInbox", ''), u.inbox) AS inbox`).
+		Joins(`JOIN "user" u ON u.id = f."followerId"`).
+		Where(`f."followeeId" = ? AND u.host IS NOT NULL AND (u."sharedInbox" IS NOT NULL OR u.inbox IS NOT NULL)`, userID).
+		Pluck("inbox", &inboxes).Error
+	if err != nil {
+		return nil, err
+	}
+	// COALESCE が NULL を返す可能性があるため、空文字を除去
+	out := make([]string, 0, len(inboxes))
+	for _, inb := range inboxes {
+		if inb != "" {
+			out = append(out, inb)
+		}
+	}
+	return out, nil
 }

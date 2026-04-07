@@ -31,6 +31,8 @@ import (
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -104,6 +106,13 @@ func (s *Server) setupRoutes() {
 	apFetcher := corefederation.NewAPFetcher(apClient)
 	federationResolver := corefederation.NewResolver(userRepo, apFetcher, idGen)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, userRepo)
+
+	// AP delivery: DeliverService + フック登録 + asynq processor 登録
+	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
+	noteCreateService.SetFederationHook(corefederation.NewNoteDeliveryHook(deliverService, apRenderer, idGen, userRepo))
+	followingService.SetFederationHook(corefederation.NewFollowingDeliveryHook(deliverService, apRenderer, apURLs))
+	deliverProcessor := processors.NewDeliverProcessor(apClient)
+	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {

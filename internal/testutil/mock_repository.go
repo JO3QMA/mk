@@ -624,13 +624,47 @@ func (m *MockPollVoteRepository) ListByNoteID(noteID string) ([]*model.PollVote,
 	return rows, nil
 }
 
+// MockUserKeypairRepository is a test double for repository.UserKeypairRepository.
+type MockUserKeypairRepository struct {
+	Keypairs map[string]*model.UserKeypair // keyed by userID
+}
+
+func NewMockUserKeypairRepository() *MockUserKeypairRepository {
+	return &MockUserKeypairRepository{Keypairs: make(map[string]*model.UserKeypair)}
+}
+
+func (m *MockUserKeypairRepository) Create(k *model.UserKeypair) error {
+	m.Keypairs[k.UserID] = k
+	return nil
+}
+
+func (m *MockUserKeypairRepository) FindByUserID(userID string) (*model.UserKeypair, error) {
+	k, ok := m.Keypairs[userID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return k, nil
+}
+
 // MockFollowingRepository is a test double for repository.FollowingRepository.
 type MockFollowingRepository struct {
 	Followings map[string]*model.Following // keyed by ID
+	// RemoteInboxes stores per-followee inbox lists used by
+	// ListRemoteFollowerInboxes. テスト側で明示的に登録する。
+	RemoteInboxes map[string][]string
 }
 
 func NewMockFollowingRepository() *MockFollowingRepository {
-	return &MockFollowingRepository{Followings: make(map[string]*model.Following)}
+	return &MockFollowingRepository{
+		Followings:    make(map[string]*model.Following),
+		RemoteInboxes: make(map[string][]string),
+	}
+}
+
+// ListRemoteFollowerInboxes returns the inbox URLs registered for the given
+// followee. テストでは MockFollowingRepository.RemoteInboxes を直接埋めて使う。
+func (m *MockFollowingRepository) ListRemoteFollowerInboxes(userID string) ([]string, error) {
+	return m.RemoteInboxes[userID], nil
 }
 
 func (m *MockFollowingRepository) Create(f *model.Following) error {

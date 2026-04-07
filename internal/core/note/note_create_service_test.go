@@ -449,3 +449,29 @@ func TestCreateService_FanoutHookCalledOnFallbackPath(t *testing.T) {
 	// fallbackパスではin.Userが埋め込まれる
 	assert.Equal(t, user, hook.note.User)
 }
+
+// recordingFederationHook captures federation hook calls for tests.
+type recordingFederationHook struct {
+	called bool
+	note   *model.Note
+	user   *model.User
+}
+
+func (h *recordingFederationHook) OnNoteCreated(n *model.Note, u *model.User) {
+	h.called = true
+	h.note = n
+	h.user = u
+}
+
+func TestCreateService_FederationHookInvoked(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{User: user, Text: &text})
+	require.NoError(t, err)
+	assert.True(t, hook.called)
+	assert.Equal(t, created.ID, hook.note.ID)
+}

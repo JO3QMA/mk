@@ -620,3 +620,89 @@ func TestService_NotificationHook_OnAccept(t *testing.T) {
 	require.NoError(t, svc.AcceptRequest("alice", "bob"))
 	assert.Equal(t, []string{"bob->alice"}, hook.accepts)
 }
+
+// recordingFederationHook captures federation hook invocations for assertion.
+type recordingFederationHook struct {
+	follows   []string
+	unfollows []string
+	accepts   []string
+}
+
+func (h *recordingFederationHook) OnLocalFollowed(follower, followee *model.User) {
+	h.follows = append(h.follows, follower.ID+"->"+followee.ID)
+}
+
+func (h *recordingFederationHook) OnLocalUnfollowed(follower, followee *model.User) {
+	h.unfollows = append(h.unfollows, follower.ID+"->"+followee.ID)
+}
+
+func (h *recordingFederationHook) OnLocalFollowAccepted(follower, followee *model.User) {
+	h.accepts = append(h.accepts, follower.ID+"->"+followee.ID)
+}
+
+func TestService_FederationHook_OnFollow(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alice->bob"}, hook.follows)
+}
+
+func TestService_FederationHook_OnUnfollow(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	require.NoError(t, svc.Unfollow("alice", "bob"))
+	assert.Equal(t, []string{"alice->bob"}, hook.unfollows)
+}
+
+func TestService_FederationHook_OnUnfollow_UserLookupFailure(t *testing.T) {
+	// follower の repo から FindByID が失敗する経路: alice をフォロー後に
+	// repo から削除する。
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	delete(ur.Users, "alice")
+	require.NoError(t, svc.Unfollow("alice", "bob"))
+	assert.Empty(t, hook.unfollows)
+}
+
+func TestService_FederationHook_OnAccept(t *testing.T) {
+	svc, ur, _, frRepo := newSvc(t)
+	addUser(t, ur, "alice", true)
+	addUser(t, ur, "bob", false)
+	frRepo.Requests["req"] = &model.FollowRequest{ID: "req", FollowerID: "bob", FolloweeID: "alice"}
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	require.NoError(t, svc.AcceptRequest("alice", "bob"))
+	assert.Equal(t, []string{"bob->alice"}, hook.accepts)
+}
+
+func TestService_FederationHook_OnAccept_UserLookupFailure(t *testing.T) {
+	svc, ur, _, frRepo := newSvc(t)
+	addUser(t, ur, "alice", true)
+	addUser(t, ur, "bob", false)
+	frRepo.Requests["req"] = &model.FollowRequest{ID: "req", FollowerID: "bob", FolloweeID: "alice"}
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	// follower (bob) を消してから accept する → hook 呼ばれない
+	delete(ur.Users, "bob")
+	require.NoError(t, svc.AcceptRequest("alice", "bob"))
+	assert.Empty(t, hook.accepts)
+}

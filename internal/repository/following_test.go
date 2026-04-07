@@ -120,6 +120,58 @@ func TestFollowingRepository_QueryErrors(t *testing.T) {
 
 	_, err = repo.ListFollowing("a", 10, 0)
 	assert.Error(t, err)
+
+	_, err = repo.ListRemoteFollowerInboxes("a")
+	assert.Error(t, err)
+}
+
+func TestFollowingRepository_ListRemoteFollowerInboxes(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+
+	// Local followee (id を短く保つ — token は char(16) なので "tok_"+id<=16)
+	followee := insertTestUser(t, "u_inb_fe", "inbfe")
+	defer cleanupUser(t, followee.ID)
+
+	// Remote follower with sharedInbox
+	host := "remote.example"
+	sharedInbox1 := "https://remote.example/inbox"
+	inbox1 := "https://remote.example/users/r1/inbox"
+	uri1 := "https://remote.example/users/r1"
+	require.NoError(t, testDB.Exec(`INSERT INTO "user" (id, username, "usernameLower", host, uri, inbox, "sharedInbox", "avatarDecorations") VALUES (?, ?, ?, ?, ?, ?, ?, '[]')`,
+		"u_inb_r1", "r1", "r1", host, uri1, inbox1, sharedInbox1).Error)
+	defer cleanupUser(t, "u_inb_r1")
+
+	// Remote follower with same sharedInbox (集約対象)
+	inbox2 := "https://remote.example/users/r2/inbox"
+	uri2 := "https://remote.example/users/r2"
+	require.NoError(t, testDB.Exec(`INSERT INTO "user" (id, username, "usernameLower", host, uri, inbox, "sharedInbox", "avatarDecorations") VALUES (?, ?, ?, ?, ?, ?, ?, '[]')`,
+		"u_inb_r2", "r2", "r2", host, uri2, inbox2, sharedInbox1).Error)
+	defer cleanupUser(t, "u_inb_r2")
+
+	// Remote follower without sharedInbox (個別inboxを返す)
+	host2 := "other.example"
+	inbox3 := "https://other.example/users/r3/inbox"
+	uri3 := "https://other.example/users/r3"
+	require.NoError(t, testDB.Exec(`INSERT INTO "user" (id, username, "usernameLower", host, uri, inbox, "avatarDecorations") VALUES (?, ?, ?, ?, ?, ?, '[]')`,
+		"u_inb_r3", "r3", "r3", host2, uri3, inbox3).Error)
+	defer cleanupUser(t, "u_inb_r3")
+
+	// Local follower (除外対象)
+	local := insertTestUser(t, "u_inb_lo", "inblo")
+	defer cleanupUser(t, local.ID)
+
+	insertFollowing(t, "fl_inb_1", "u_inb_r1", followee.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_inb_1")
+	insertFollowing(t, "fl_inb_2", "u_inb_r2", followee.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_inb_2")
+	insertFollowing(t, "fl_inb_3", "u_inb_r3", followee.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_inb_3")
+	insertFollowing(t, "fl_inb_4", local.ID, followee.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_inb_4")
+
+	inboxes, err := repo.ListRemoteFollowerInboxes(followee.ID)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{sharedInbox1, inbox3}, inboxes)
 }
 
 func TestUserRepository_IncrementFollowingCount(t *testing.T) {
