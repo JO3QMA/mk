@@ -7,8 +7,10 @@ import (
 
 // UserRepository provides data access for users.
 type UserRepository interface {
+	Create(u *model.User) error
 	FindByID(id string) (*model.User, error)
 	FindByToken(token string) (*model.User, error)
+	FindByURI(uri string) (*model.User, error)
 	FindByUsernameLower(username string, host *string) (*model.User, error)
 	FindProfileByUserID(userID string) (*model.UserProfile, error)
 	IncrementFollowingCount(userID string, delta int) error
@@ -27,9 +29,21 @@ func NewUserRepository(db *gorm.DB) UserRepository {
 	return &userRepository{db: db}
 }
 
+func (r *userRepository) Create(u *model.User) error {
+	return r.db.Create(u).Error
+}
+
 func (r *userRepository) FindByID(id string) (*model.User, error) {
 	var user model.User
 	if err := r.db.First(&user, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (r *userRepository) FindByURI(uri string) (*model.User, error) {
+	var user model.User
+	if err := r.db.Where("uri = ?", uri).First(&user).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil

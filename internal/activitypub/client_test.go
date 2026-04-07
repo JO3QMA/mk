@@ -149,3 +149,39 @@ func TestNewClient_DefaultHTTPClient(t *testing.T) {
 	c := NewClient(nil, "")
 	assert.NotNil(t, c)
 }
+
+func TestClient_FetchUnsigned_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/activity+json")
+		_, _ = w.Write([]byte(`{"id":"https://example.com/x"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "test-ua")
+	body, err := c.FetchUnsigned(srv.URL + "/x")
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "https://example.com/x")
+}
+
+func TestClient_FetchUnsigned_NonOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "")
+	_, err := c.FetchUnsigned(srv.URL)
+	assert.Error(t, err)
+}
+
+func TestClient_FetchUnsigned_BadURL(t *testing.T) {
+	c := NewClient(nil, "")
+	_, err := c.FetchUnsigned("://bad")
+	assert.Error(t, err)
+}
+
+func TestClient_FetchUnsigned_NetworkError(t *testing.T) {
+	c := NewClient(nil, "")
+	_, err := c.FetchUnsigned("http://127.0.0.1:1/")
+	assert.Error(t, err)
+}

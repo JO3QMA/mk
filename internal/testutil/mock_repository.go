@@ -22,12 +22,26 @@ func NewMockUserRepository() *MockUserRepository {
 	}
 }
 
+func (m *MockUserRepository) Create(u *model.User) error {
+	m.Users[u.ID] = u
+	return nil
+}
+
 func (m *MockUserRepository) FindByID(id string) (*model.User, error) {
 	u, ok := m.Users[id]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	return u, nil
+}
+
+func (m *MockUserRepository) FindByURI(uri string) (*model.User, error) {
+	for _, u := range m.Users {
+		if u.URI != nil && *u.URI == uri {
+			return u, nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func (m *MockUserRepository) FindByToken(token string) (*model.User, error) {

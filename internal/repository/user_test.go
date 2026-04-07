@@ -24,6 +24,40 @@ func insertTestUser(t *testing.T, id, username string) *model.User {
 	return user
 }
 
+func TestUserRepository_CreateAndFindByURI(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	uri := "https://remote.example/users/remote1"
+	host := "remote.example"
+	u := &model.User{
+		ID:                "remote1",
+		Username:          "remote1",
+		UsernameLower:     "remote1",
+		URI:               &uri,
+		Host:              &host,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, repo.Create(u))
+	defer cleanupUser(t, u.ID)
+
+	got, err := repo.FindByURI(uri)
+	require.NoError(t, err)
+	assert.Equal(t, "remote1", got.ID)
+}
+
+func TestUserRepository_FindByURI_NotFound(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	_, err := repo.FindByURI("https://nope.example/x")
+	assert.Error(t, err)
+}
+
+func TestUserRepository_Create_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	err := repo.Create(&model.User{ID: "x", Username: "x", UsernameLower: "x"})
+	assert.Error(t, err)
+}
+
 func cleanupUser(t *testing.T, id string) {
 	t.Helper()
 	testDB.Exec(`DELETE FROM "user_profile" WHERE "userId" = ?`, id)

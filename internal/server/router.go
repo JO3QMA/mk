@@ -10,6 +10,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/drive"
 	"github.com/shiroha-a/mk/internal/api/following"
 	"github.com/shiroha-a/mk/internal/api/i"
+	"github.com/shiroha-a/mk/internal/api/inbox"
 	"github.com/shiroha-a/mk/internal/api/meta"
 	"github.com/shiroha-a/mk/internal/api/mute"
 	"github.com/shiroha-a/mk/internal/api/nodeinfo"
@@ -20,6 +21,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
+	corefederation "github.com/shiroha-a/mk/internal/core/federation"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
@@ -98,6 +100,10 @@ func (s *Server) setupRoutes() {
 	// ActivityPub
 	apURLs := activitypub.NewURLBuilder(s.config.URL)
 	apRenderer := activitypub.NewRenderer(apURLs)
+	apClient := activitypub.NewClient(nil, "misskey-go/"+s.config.Version)
+	apFetcher := corefederation.NewAPFetcher(apClient)
+	federationResolver := corefederation.NewResolver(userRepo, apFetcher, idGen)
+	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, userRepo)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
@@ -205,6 +211,11 @@ func (s *Server) setupRoutes() {
 
 	nodeinfoHandler := nodeinfo.NewHandler(s.config)
 	s.echo.GET("/nodeinfo/2.1", nodeinfoHandler.Version2_1)
+
+	// Inbox endpoints
+	inboxHandler := inbox.NewHandler(federationResolver, federationProcessor)
+	s.echo.POST("/inbox", inboxHandler.Inbox)
+	s.echo.POST("/users/:id/inbox", inboxHandler.Inbox)
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)
