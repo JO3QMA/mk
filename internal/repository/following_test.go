@@ -1,0 +1,151 @@
+package repository
+
+import (
+	"context"
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func insertFollowing(t *testing.T, id, followerID, followeeID string) *model.Following {
+	t.Helper()
+	f := &model.Following{
+		ID:         id,
+		FollowerID: followerID,
+		FolloweeID: followeeID,
+	}
+	require.NoError(t, testDB.Create(f).Error)
+	return f
+}
+
+func TestFollowingRepository_Create_FindByPair(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	follower := insertTestUser(t, "u_fl_1", "follower1")
+	defer cleanupUser(t, follower.ID)
+	followee := insertTestUser(t, "u_fl_2", "followee1")
+	defer cleanupUser(t, followee.ID)
+
+	f := &model.Following{
+		ID:         "fl_1",
+		FollowerID: follower.ID,
+		FolloweeID: followee.ID,
+	}
+	require.NoError(t, repo.Create(f))
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, f.ID)
+
+	found, err := repo.FindByPair(follower.ID, followee.ID)
+	require.NoError(t, err)
+	assert.Equal(t, f.ID, found.ID)
+}
+
+func TestFollowingRepository_FindByPair_NotFound(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	_, err := repo.FindByPair("ghost1", "ghost2")
+	assert.Error(t, err)
+}
+
+func TestFollowingRepository_Exists(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	follower := insertTestUser(t, "u_fl_3", "follower3")
+	defer cleanupUser(t, follower.ID)
+	followee := insertTestUser(t, "u_fl_4", "followee4")
+	defer cleanupUser(t, followee.ID)
+
+	exists, err := repo.Exists(follower.ID, followee.ID)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	insertFollowing(t, "fl_2", follower.ID, followee.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_2")
+
+	exists, err = repo.Exists(follower.ID, followee.ID)
+	require.NoError(t, err)
+	assert.True(t, exists)
+}
+
+func TestFollowingRepository_Delete(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	follower := insertTestUser(t, "u_fl_5", "follower5")
+	defer cleanupUser(t, follower.ID)
+	followee := insertTestUser(t, "u_fl_6", "followee6")
+	defer cleanupUser(t, followee.ID)
+
+	f := insertFollowing(t, "fl_3", follower.ID, followee.ID)
+	require.NoError(t, repo.Delete(f))
+
+	exists, err := repo.Exists(follower.ID, followee.ID)
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestFollowingRepository_ListFollowers_ListFollowing(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	a := insertTestUser(t, "u_fl_7", "user7")
+	defer cleanupUser(t, a.ID)
+	b := insertTestUser(t, "u_fl_8", "user8")
+	defer cleanupUser(t, b.ID)
+	c := insertTestUser(t, "u_fl_9", "user9")
+	defer cleanupUser(t, c.ID)
+
+	insertFollowing(t, "fl_4", a.ID, b.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_4")
+	insertFollowing(t, "fl_5", c.ID, b.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_5")
+	insertFollowing(t, "fl_6", a.ID, c.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_6")
+
+	followers, err := repo.ListFollowers(b.ID, 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, followers, 2)
+
+	followingsOfA, err := repo.ListFollowing(a.ID, 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, followingsOfA, 2)
+}
+
+func TestFollowingRepository_QueryErrors(t *testing.T) {
+	// cancelledなcontextを使ってgorm経由でerrorを発生させる
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	db := testDB.WithContext(ctx)
+	repo := NewFollowingRepository(db)
+
+	_, err := repo.Exists("a", "b")
+	assert.Error(t, err)
+
+	_, err = repo.ListFollowers("a", 10, 0)
+	assert.Error(t, err)
+
+	_, err = repo.ListFollowing("a", 10, 0)
+	assert.Error(t, err)
+}
+
+func TestUserRepository_IncrementFollowingCount(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	user := insertTestUser(t, "u_inc_1", "incuser")
+	defer cleanupUser(t, user.ID)
+
+	require.NoError(t, repo.IncrementFollowingCount(user.ID, 1))
+	found, _ := repo.FindByID(user.ID)
+	assert.Equal(t, 1, found.FollowingCount)
+
+	require.NoError(t, repo.IncrementFollowingCount(user.ID, -1))
+	found, _ = repo.FindByID(user.ID)
+	assert.Equal(t, 0, found.FollowingCount)
+}
+
+func TestUserRepository_IncrementFollowersCount(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	user := insertTestUser(t, "u_inc_2", "incuser2")
+	defer cleanupUser(t, user.ID)
+
+	require.NoError(t, repo.IncrementFollowersCount(user.ID, 1))
+	found, _ := repo.FindByID(user.ID)
+	assert.Equal(t, 1, found.FollowersCount)
+
+	require.NoError(t, repo.IncrementFollowersCount(user.ID, -1))
+	found, _ = repo.FindByID(user.ID)
+	assert.Equal(t, 0, found.FollowersCount)
+}

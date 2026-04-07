@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS "follow_request" CASCADE;

@@ -1,0 +1,199 @@
+// Package following implements the following/* API endpoints.
+package following
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+	corefollowing "github.com/shiroha-a/mk/internal/core/following"
+	coreuser "github.com/shiroha-a/mk/internal/core/user"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+)
+
+// Handler handles following-related API endpoints.
+type Handler struct {
+	followingService *corefollowing.Service
+	userService      *coreuser.Service
+}
+
+// NewHandler creates a new following Handler.
+func NewHandler(followingService *corefollowing.Service, userService *coreuser.Service) *Handler {
+	return &Handler{followingService: followingService, userService: userService}
+}
+
+// CreateRequest is the request body for following/create.
+type CreateRequest struct {
+	UserID      string `json:"userId"`
+	WithReplies *bool  `json:"withReplies"`
+}
+
+// Create handles POST /api/following/create.
+func (h *Handler) Create(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req CreateRequest
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return invalidParam(c)
+	}
+
+	// followeeを先に取得し、エラー時はNO_SUCH_USERを返す
+	bundle, err := h.userService.ShowByID(req.UserID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, errEnvelope("No such user.", "NO_SUCH_USER", "fcd2eef9-a9b2-4c4f-8624-038099e90aa5"))
+	}
+
+	if _, err := h.followingService.Follow(me.ID, req.UserID); err != nil {
+		switch {
+		case errors.Is(err, corefollowing.ErrSelfFollow):
+			return c.JSON(http.StatusBadRequest, errEnvelope("Followee is yourself.", "FOLLOWEE_IS_YOURSELF", "26fbe7bb-a331-4857-af17-205b426669a9"))
+		case errors.Is(err, corefollowing.ErrAlreadyFollowing), errors.Is(err, corefollowing.ErrAlreadyRequested):
+			return c.JSON(http.StatusBadRequest, errEnvelope("You are already following that user.", "ALREADY_FOLLOWING", "35387507-38c7-4cb9-9197-300b93783fa0"))
+		default:
+			return internalError(c)
+		}
+	}
+
+	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
+}
+
+// DeleteRequest is the request body for following/delete.
+type DeleteRequest struct {
+	UserID string `json:"userId"`
+}
+
+// Delete handles POST /api/following/delete.
+func (h *Handler) Delete(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req DeleteRequest
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return invalidParam(c)
+	}
+
+	bundle, err := h.userService.ShowByID(req.UserID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, errEnvelope("No such user.", "NO_SUCH_USER", "5b12c78d-2b28-4dca-99d2-f56139b42ff8"))
+	}
+
+	if err := h.followingService.Unfollow(me.ID, req.UserID); err != nil {
+		switch {
+		case errors.Is(err, corefollowing.ErrSelfFollow):
+			return c.JSON(http.StatusBadRequest, errEnvelope("Followee is yourself.", "FOLLOWEE_IS_YOURSELF", "d9e400b9-36b0-4808-b1d8-79e707f1296c"))
+		case errors.Is(err, corefollowing.ErrNotFollowing):
+			return c.JSON(http.StatusBadRequest, errEnvelope("You are not following that user.", "NOT_FOLLOWING", "5dbf82f5-c92b-40b1-87d1-6c8c0741fd09"))
+		default:
+			return internalError(c)
+		}
+	}
+
+	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
+}
+
+// RequestActionRequest is the shared request body for following/requests/{accept,reject,cancel}.
+type RequestActionRequest struct {
+	UserID string `json:"userId"`
+}
+
+// AcceptRequest handles POST /api/following/requests/accept.
+func (h *Handler) AcceptRequest(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req RequestActionRequest
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return invalidParam(c)
+	}
+
+	if err := h.followingService.AcceptRequest(me.ID, req.UserID); err != nil {
+		if errors.Is(err, corefollowing.ErrRequestNotFound) {
+			return c.JSON(http.StatusNotFound, errEnvelope("No such follow request.", "NO_FOLLOW_REQUEST", "bcde4f8b-0913-4614-8881-614e522fb041"))
+		}
+		return internalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// RejectRequest handles POST /api/following/requests/reject.
+func (h *Handler) RejectRequest(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req RequestActionRequest
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return invalidParam(c)
+	}
+
+	if err := h.followingService.RejectRequest(me.ID, req.UserID); err != nil {
+		if errors.Is(err, corefollowing.ErrRequestNotFound) {
+			return c.JSON(http.StatusNotFound, errEnvelope("No such follow request.", "NO_FOLLOW_REQUEST", "abc2ffa6-25b2-4380-ba99-321ff3a94555"))
+		}
+		return internalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// CancelRequest handles POST /api/following/requests/cancel.
+func (h *Handler) CancelRequest(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req RequestActionRequest
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return invalidParam(c)
+	}
+
+	if err := h.followingService.CancelRequest(me.ID, req.UserID); err != nil {
+		if errors.Is(err, corefollowing.ErrRequestNotFound) {
+			return c.JSON(http.StatusNotFound, errEnvelope("No such follow request.", "NO_FOLLOW_REQUEST", "17447091-ea95-43eb-a7d4-c78cb2853c20"))
+		}
+		return internalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// ListRequestsResponseItem represents a single received follow request.
+type ListRequestsResponseItem struct {
+	ID       string              `json:"id"`
+	Follower entity.UserDetailed `json:"follower"`
+	Followee entity.UserDetailed `json:"followee"`
+}
+
+// ListRequests handles POST /api/following/requests/list.
+func (h *Handler) ListRequests(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	requests, err := h.followingService.ListReceivedRequests(me.ID, 100, 0)
+	if err != nil {
+		return internalError(c)
+	}
+
+	out := make([]ListRequestsResponseItem, 0, len(requests))
+	for _, r := range requests {
+		item := ListRequestsResponseItem{ID: r.ID}
+		if b, err := h.userService.ShowByID(r.FollowerID); err == nil {
+			item.Follower = entity.PackUserDetailed(b.User, b.Profile)
+		}
+		if b, err := h.userService.ShowByID(r.FolloweeID); err == nil {
+			item.Followee = entity.PackUserDetailed(b.User, b.Profile)
+		}
+		out = append(out, item)
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+func invalidParam(c echo.Context) error {
+	return c.JSON(http.StatusBadRequest, errEnvelope("Invalid param.", "INVALID_PARAM", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+}
+
+func internalError(c echo.Context) error {
+	return c.JSON(http.StatusInternalServerError, errEnvelope("Internal error.", "INTERNAL_ERROR", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+}
+
+func errEnvelope(message, code, id string) map[string]any {
+	return map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"code":    code,
+			"id":      id,
+		},
+	}
+}

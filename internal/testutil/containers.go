@@ -76,7 +76,7 @@ func (t *TestDB) Teardown(ctx context.Context) {
 // TruncateAll truncates all data tables for test isolation.
 func (t *TestDB) TruncateAll() {
 	tables := []string{
-		"poll", "note_reaction", "access_token", "following",
+		"poll", "note_reaction", "access_token", "follow_request", "following",
 		"note", "user_keypair", "user_profile", "emoji",
 		"drive_file", "drive_folder", "instance", "meta", `"user"`,
 	}
@@ -86,19 +86,32 @@ func (t *TestDB) TruncateAll() {
 }
 
 func applyMigration(db *gorm.DB) error {
-	migrationPath := findMigrationFile()
-	sql, err := os.ReadFile(migrationPath)
+	files, err := findMigrationFiles()
 	if err != nil {
-		return fmt.Errorf("failed to read migration file %s: %w", migrationPath, err)
+		return err
 	}
-	return db.Exec(string(sql)).Error
+	for _, path := range files {
+		sql, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read migration file %s: %w", path, err)
+		}
+		if err := db.Exec(string(sql)).Error; err != nil {
+			return fmt.Errorf("failed to apply migration %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
-func findMigrationFile() string {
+func findMigrationFiles() ([]string, error) {
 	// プロジェクトルートからの相対パスで探す
 	_, thisFile, _, _ := runtime.Caller(0)
 	projectRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
-	return filepath.Join(projectRoot, "migration", "000001_initial.up.sql")
+	dir := filepath.Join(projectRoot, "migration")
+	matches, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
+	if err != nil {
+		return nil, err
+	}
+	return matches, nil
 }
 
 // TestRedis holds a test Redis container and client.

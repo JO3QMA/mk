@@ -61,6 +61,20 @@ func (m *MockUserRepository) FindProfileByUserID(userID string) (*model.UserProf
 	return p, nil
 }
 
+func (m *MockUserRepository) IncrementFollowingCount(userID string, delta int) error {
+	if u, ok := m.Users[userID]; ok {
+		u.FollowingCount += delta
+	}
+	return nil
+}
+
+func (m *MockUserRepository) IncrementFollowersCount(userID string, delta int) error {
+	if u, ok := m.Users[userID]; ok {
+		u.FollowersCount += delta
+	}
+	return nil
+}
+
 // MockNoteRepository is a test double for repository.NoteRepository.
 type MockNoteRepository struct {
 	Notes map[string]*model.Note
@@ -141,4 +155,132 @@ func NewMockPollRepository() *MockPollRepository {
 func (m *MockPollRepository) Create(poll *model.Poll) error {
 	m.Polls[poll.NoteID] = poll
 	return nil
+}
+
+// MockFollowingRepository is a test double for repository.FollowingRepository.
+type MockFollowingRepository struct {
+	Followings map[string]*model.Following // keyed by ID
+}
+
+func NewMockFollowingRepository() *MockFollowingRepository {
+	return &MockFollowingRepository{Followings: make(map[string]*model.Following)}
+}
+
+func (m *MockFollowingRepository) Create(f *model.Following) error {
+	m.Followings[f.ID] = f
+	return nil
+}
+
+func (m *MockFollowingRepository) Delete(f *model.Following) error {
+	delete(m.Followings, f.ID)
+	return nil
+}
+
+func (m *MockFollowingRepository) FindByPair(followerID, followeeID string) (*model.Following, error) {
+	for _, f := range m.Followings {
+		if f.FollowerID == followerID && f.FolloweeID == followeeID {
+			return f, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockFollowingRepository) Exists(followerID, followeeID string) (bool, error) {
+	_, err := m.FindByPair(followerID, followeeID)
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (m *MockFollowingRepository) ListFollowers(userID string, limit, offset int) ([]*model.Following, error) {
+	var rows []*model.Following
+	for _, f := range m.Followings {
+		if f.FolloweeID == userID {
+			rows = append(rows, f)
+		}
+	}
+	return paginate(rows, limit, offset), nil
+}
+
+func (m *MockFollowingRepository) ListFollowing(userID string, limit, offset int) ([]*model.Following, error) {
+	var rows []*model.Following
+	for _, f := range m.Followings {
+		if f.FollowerID == userID {
+			rows = append(rows, f)
+		}
+	}
+	return paginate(rows, limit, offset), nil
+}
+
+// MockFollowRequestRepository is a test double for repository.FollowRequestRepository.
+type MockFollowRequestRepository struct {
+	Requests map[string]*model.FollowRequest
+}
+
+func NewMockFollowRequestRepository() *MockFollowRequestRepository {
+	return &MockFollowRequestRepository{Requests: make(map[string]*model.FollowRequest)}
+}
+
+func (m *MockFollowRequestRepository) Create(r *model.FollowRequest) error {
+	m.Requests[r.ID] = r
+	return nil
+}
+
+func (m *MockFollowRequestRepository) Delete(r *model.FollowRequest) error {
+	delete(m.Requests, r.ID)
+	return nil
+}
+
+func (m *MockFollowRequestRepository) FindByPair(followerID, followeeID string) (*model.FollowRequest, error) {
+	for _, r := range m.Requests {
+		if r.FollowerID == followerID && r.FolloweeID == followeeID {
+			return r, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockFollowRequestRepository) Exists(followerID, followeeID string) (bool, error) {
+	_, err := m.FindByPair(followerID, followeeID)
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (m *MockFollowRequestRepository) ListReceived(userID string, limit, offset int) ([]*model.FollowRequest, error) {
+	var rows []*model.FollowRequest
+	for _, r := range m.Requests {
+		if r.FolloweeID == userID {
+			rows = append(rows, r)
+		}
+	}
+	return paginateRequests(rows, limit, offset), nil
+}
+
+func (m *MockFollowRequestRepository) ListSent(userID string, limit, offset int) ([]*model.FollowRequest, error) {
+	var rows []*model.FollowRequest
+	for _, r := range m.Requests {
+		if r.FollowerID == userID {
+			rows = append(rows, r)
+		}
+	}
+	return paginateRequests(rows, limit, offset), nil
+}
+
+func paginate(rows []*model.Following, limit, offset int) []*model.Following {
+	if offset >= len(rows) {
+		return nil
+	}
+	end := min(offset+limit, len(rows))
+	return rows[offset:end]
+}
+
+func paginateRequests(rows []*model.FollowRequest, limit, offset int) []*model.FollowRequest {
+	if offset >= len(rows) {
+		return nil
+	}
+	end := min(offset+limit, len(rows))
+	return rows[offset:end]
 }

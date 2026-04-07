@@ -1,0 +1,392 @@
+package following
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	corefollowing "github.com/shiroha-a/mk/internal/core/following"
+	coreuser "github.com/shiroha-a/mk/internal/core/user"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+)
+
+// stubError is a sentinel error for repository failures in tests.
+var stubError = errors.New("stub error")
+
+// failingUserRepo wraps MockUserRepository and forces counter operations to fail.
+// This produces errors from the service that bubble up to the handler's default
+// error branches.
+type failingUserRepo struct {
+	*testutil.MockUserRepository
+}
+
+func (f *failingUserRepo) IncrementFollowingCount(_ string, _ int) error { return stubError }
+func (f *failingUserRepo) IncrementFollowersCount(_ string, _ int) error { return stubError }
+
+// failingFollowRequestRepo wraps MockFollowRequestRepository and forces Delete
+// to fail.
+type failingFollowRequestRepo struct {
+	*testutil.MockFollowRequestRepository
+}
+
+func (f *failingFollowRequestRepo) Delete(_ *model.FollowRequest) error { return stubError }
+
+// failingListReqRepo wraps MockFollowRequestRepository and makes ListReceived fail.
+type failingListReqRepo struct {
+	*testutil.MockFollowRequestRepository
+}
+
+func (f *failingListReqRepo) ListReceived(_ string, _, _ int) ([]*model.FollowRequest, error) {
+	return nil, stubError
+}
+
+// newHandlerWithFailingCounters builds a handler whose user-counter increments fail.
+// This makes Follow/Unfollow/AcceptRequest return non-domain errors and exercises
+// the handler's default error branches.
+func newHandlerWithFailingCounters(t *testing.T) (*Handler, *testutil.MockUserRepository, *testutil.MockFollowingRepository, *testutil.MockFollowRequestRepository) {
+	t.Helper()
+	mockUR := testutil.NewMockUserRepository()
+	userRepo := &failingUserRepo{MockUserRepository: mockUR}
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	uSvc := coreuser.NewService(userRepo)
+	return NewHandler(fSvc, uSvc), mockUR, fRepo, frRepo
+}
+
+// newHandlerWithFailingRequestDelete builds a handler whose FollowRequest Delete fails.
+func newHandlerWithFailingRequestDelete(t *testing.T) (*Handler, *testutil.MockUserRepository, *testutil.MockFollowRequestRepository) {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	mockFRR := testutil.NewMockFollowRequestRepository()
+	frRepo := &failingFollowRequestRepo{MockFollowRequestRepository: mockFRR}
+	fRepo := testutil.NewMockFollowingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	uSvc := coreuser.NewService(userRepo)
+	return NewHandler(fSvc, uSvc), userRepo, mockFRR
+}
+
+// newHandlerWithFailingListReceived builds a handler whose ListReceived fails.
+func newHandlerWithFailingListReceived(t *testing.T) (*Handler, *testutil.MockUserRepository) {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	mockFRR := testutil.NewMockFollowRequestRepository()
+	frRepo := &failingListReqRepo{MockFollowRequestRepository: mockFRR}
+	fRepo := testutil.NewMockFollowingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	uSvc := coreuser.NewService(userRepo)
+	return NewHandler(fSvc, uSvc), userRepo
+}
+
+func newTestHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	uSvc := coreuser.NewService(userRepo)
+	return NewHandler(fSvc, uSvc), userRepo
+}
+
+func addUser(repo *testutil.MockUserRepository, id string, locked bool) *model.User {
+	u := &model.User{
+		ID:                id,
+		Username:          id,
+		UsernameLower:     id,
+		IsLocked:          locked,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users[id] = u
+	return u
+}
+
+func postJSON(h echo.HandlerFunc, body string, me *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if me != nil {
+		c.Set(string(middleware.UserContextKey), me)
+	}
+	_ = h(c)
+	return rec
+}
+
+func TestCreate_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", false)
+
+	rec := postJSON(h.Create, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "bob", resp["id"])
+}
+
+func TestCreate_LockedReturnsOK(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", true)
+
+	rec := postJSON(h.Create, `{"userId": "bob"}`, alice)
+	// 鍵アカウントへのフォローもbobのプロフィールを返す
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestCreate_SelfFollow(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.Create, `{"userId": "alice"}`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_AlreadyFollowing(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", false)
+	postJSON(h.Create, `{"userId": "bob"}`, alice)
+
+	rec := postJSON(h.Create, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_FolloweeNotFound(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.Create, `{"userId": "ghost"}`, alice)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestCreate_InvalidParam(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.Create, `{}`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_InvalidJSON(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.Create, `{invalid`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", false)
+	postJSON(h.Create, `{"userId": "bob"}`, alice)
+
+	rec := postJSON(h.Delete, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestDelete_UserNotFound(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.Delete, `{"userId": "ghost"}`, alice)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestDelete_NotFollowing(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", false)
+
+	rec := postJSON(h.Delete, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_SelfFollow(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.Delete, `{"userId": "alice"}`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_InvalidParam(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.Delete, `{}`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRequests_AcceptRejectCancel(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	bob := addUser(repo, "bob", true)
+
+	// alice -> bob (locked) creates request
+	postJSON(h.Create, `{"userId": "bob"}`, alice)
+
+	// list received by bob
+	rec := postJSON(h.ListRequests, `{}`, bob)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var listResp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
+	assert.Len(t, listResp, 1)
+
+	// bob accepts
+	rec = postJSON(h.AcceptRequest, `{"userId": "alice"}`, bob)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestAcceptRequest_NotFound(t *testing.T) {
+	h, repo := newTestHandler(t)
+	bob := addUser(repo, "bob", false)
+
+	rec := postJSON(h.AcceptRequest, `{"userId": "alice"}`, bob)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAcceptRequest_InvalidParam(t *testing.T) {
+	h, repo := newTestHandler(t)
+	bob := addUser(repo, "bob", false)
+
+	rec := postJSON(h.AcceptRequest, `{}`, bob)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRejectRequest_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	bob := addUser(repo, "bob", true)
+	postJSON(h.Create, `{"userId": "bob"}`, alice)
+
+	rec := postJSON(h.RejectRequest, `{"userId": "alice"}`, bob)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestRejectRequest_NotFound(t *testing.T) {
+	h, repo := newTestHandler(t)
+	bob := addUser(repo, "bob", false)
+
+	rec := postJSON(h.RejectRequest, `{"userId": "alice"}`, bob)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestRejectRequest_InvalidParam(t *testing.T) {
+	h, repo := newTestHandler(t)
+	bob := addUser(repo, "bob", false)
+
+	rec := postJSON(h.RejectRequest, `{}`, bob)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCancelRequest_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", true)
+	postJSON(h.Create, `{"userId": "bob"}`, alice)
+
+	rec := postJSON(h.CancelRequest, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestCancelRequest_NotFound(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.CancelRequest, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestCancelRequest_InvalidParam(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+
+	rec := postJSON(h.CancelRequest, `{}`, alice)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestListRequests_Empty(t *testing.T) {
+	h, repo := newTestHandler(t)
+	bob := addUser(repo, "bob", false)
+
+	rec := postJSON(h.ListRequests, `{}`, bob)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- failing-repo tests for handler default branches ---
+
+func TestCreate_InternalError(t *testing.T) {
+	h, repo, _, _ := newHandlerWithFailingCounters(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", false)
+
+	rec := postJSON(h.Create, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestDelete_InternalError(t *testing.T) {
+	h, repo, fRepo, _ := newHandlerWithFailingCounters(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", false)
+	// 既存のfollowingを直接挿入してUnfollowに到達させる
+	fRepo.Followings["x"] = &model.Following{ID: "x", FollowerID: "alice", FolloweeID: "bob"}
+
+	rec := postJSON(h.Delete, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestAcceptRequest_InternalError(t *testing.T) {
+	h, repo, _, frRepo := newHandlerWithFailingCounters(t)
+	addUser(repo, "alice", false)
+	bob := addUser(repo, "bob", true)
+	frRepo.Requests["r"] = &model.FollowRequest{ID: "r", FollowerID: "alice", FolloweeID: "bob"}
+
+	rec := postJSON(h.AcceptRequest, `{"userId": "alice"}`, bob)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRejectRequest_InternalError(t *testing.T) {
+	h, repo, frRepo := newHandlerWithFailingRequestDelete(t)
+	addUser(repo, "alice", false)
+	bob := addUser(repo, "bob", true)
+	frRepo.Requests["r"] = &model.FollowRequest{ID: "r", FollowerID: "alice", FolloweeID: "bob"}
+
+	rec := postJSON(h.RejectRequest, `{"userId": "alice"}`, bob)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestCancelRequest_InternalError(t *testing.T) {
+	h, repo, frRepo := newHandlerWithFailingRequestDelete(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", true)
+	frRepo.Requests["r"] = &model.FollowRequest{ID: "r", FollowerID: "alice", FolloweeID: "bob"}
+
+	rec := postJSON(h.CancelRequest, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestListRequests_InternalError(t *testing.T) {
+	h, repo := newHandlerWithFailingListReceived(t)
+	bob := addUser(repo, "bob", false)
+
+	rec := postJSON(h.ListRequests, `{}`, bob)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
