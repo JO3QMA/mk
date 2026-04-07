@@ -12,8 +12,13 @@ type NoteRepository interface {
 	FindByIDWithUser(id string) (*model.Note, error)
 	Delete(note *model.Note) error
 	Update(note *model.Note, column string, value any) error
+	IncrementCount(noteID, column string, delta int) error
 	ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	FindManyByIDsWithUser(ids []string) ([]*model.Note, error)
+	ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
+	ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
+	ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
+	Search(query string, untilID, sinceID string, limit int) ([]*model.Note, error)
 }
 
 type noteRepository struct {
@@ -53,11 +58,93 @@ func (r *noteRepository) Update(note *model.Note, column string, value any) erro
 	return r.db.Model(note).Update(column, value).Error
 }
 
+// IncrementCount adjusts a counter column on the note row by delta.
+// 集計列の更新はGORMのUpdateColumnでSQL式を直接適用する。
+func (r *noteRepository) IncrementCount(noteID, column string, delta int) error {
+	return r.db.Model(&model.Note{}).
+		Where("id = ?", noteID).
+		UpdateColumn(column, gorm.Expr("\""+column+"\" + ?", delta)).Error
+}
+
 // ListByUserID returns the user's notes ordered by id DESC, optionally
 // constrained by sinceID/untilID for keyset pagination.
 func (r *noteRepository) ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
 	q := r.db.Preload("User").Where("\"userId\" = ?", userID)
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// ListRenotesOf returns notes whose renoteId equals noteID, ordered by id DESC.
+// テキストやファイルを伴わない pure renote だけでなく quote renote も含む。
+func (r *noteRepository) ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	var notes []*model.Note
+	q := r.db.Preload("User").Where("\"renoteId\" = ?", noteID)
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// ListRepliesOf returns notes whose replyId equals noteID, ordered by id DESC.
+// すべてのユーザーからの返信を返す(ミュート判定はServiceで行う)。
+func (r *noteRepository) ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	var notes []*model.Note
+	q := r.db.Preload("User").Where("\"replyId\" = ?", noteID)
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// ListChildrenOf returns notes that are either replies or quote-renotes of the given noteID.
+// notes/childrenでスレッドツリーの直下を取得するために使用する。
+func (r *noteRepository) ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	var notes []*model.Note
+	q := r.db.Preload("User").
+		Where("\"replyId\" = ? OR \"renoteId\" = ?", noteID, noteID)
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// Search returns notes whose text matches the given query (case-insensitive substring search).
+// Phase 4でMeilisearchへ置き換える前提のシンプルなDB検索。
+func (r *noteRepository) Search(query string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	var notes []*model.Note
+	q := r.db.Preload("User").
+		Where("text ILIKE ?", "%"+query+"%").
+		Where("visibility IN ?", []string{
+			string(model.NoteVisibilityPublic),
+			string(model.NoteVisibilityHome),
+		})
 	if untilID != "" {
 		q = q.Where("id < ?", untilID)
 	}

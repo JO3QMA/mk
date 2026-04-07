@@ -45,7 +45,7 @@ func newCreateService(t *testing.T) (*note.CreateService, *testutil.MockNoteRepo
 	noteRepo := testutil.NewMockNoteRepository()
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	svc := note.NewCreateService(noteRepo, pollRepo, idGen)
+	svc := note.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	return svc, noteRepo, pollRepo
 }
 
@@ -108,7 +108,14 @@ func TestCreateService_FileIDsOnly(t *testing.T) {
 }
 
 func TestCreateService_RenoteOnly(t *testing.T) {
-	svc, _, _ := newCreateService(t)
+	svc, noteRepo, _ := newCreateService(t)
+
+	// renote先のノートを事前に作成しておく
+	noteRepo.Notes["note1"] = &model.Note{
+		ID:         "note1",
+		UserID:     "other",
+		Visibility: model.NoteVisibilityPublic,
+	}
 
 	user := &model.User{ID: "user1"}
 	renoteID := "note1"
@@ -118,6 +125,8 @@ func TestCreateService_RenoteOnly(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, &renoteID, created.RenoteID)
+	// pure renoteなのでrenoteCountが+1される
+	assert.Equal(t, int16(1), noteRepo.Notes["note1"].RenoteCount)
 }
 
 func TestCreateService_VisibleUserIDs(t *testing.T) {
@@ -171,7 +180,7 @@ func TestCreateService_NoteRepoCreateError(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	noteRepo := &failingNoteRepoCreate{MockNoteRepository: testutil.NewMockNoteRepository()}
 	pollRepo := testutil.NewMockPollRepository()
-	svc := note.NewCreateService(noteRepo, pollRepo, idGen)
+	svc := note.NewCreateService(noteRepo, pollRepo, idGen, nil)
 
 	user := &model.User{ID: "u1"}
 	text := "x"
@@ -183,7 +192,7 @@ func TestCreateService_PollRepoCreateError(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	noteRepo := testutil.NewMockNoteRepository()
 	pollRepo := &failingPollRepo{}
-	svc := note.NewCreateService(noteRepo, pollRepo, idGen)
+	svc := note.NewCreateService(noteRepo, pollRepo, idGen, nil)
 
 	user := &model.User{ID: "u1"}
 	text := "x"
@@ -199,7 +208,7 @@ func TestCreateService_NoteRepoUpdateError(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	noteRepo := &failingNoteRepoUpdate{MockNoteRepository: testutil.NewMockNoteRepository()}
 	pollRepo := testutil.NewMockPollRepository()
-	svc := note.NewCreateService(noteRepo, pollRepo, idGen)
+	svc := note.NewCreateService(noteRepo, pollRepo, idGen, nil)
 
 	user := &model.User{ID: "u1"}
 	text := "x"
@@ -215,7 +224,7 @@ func TestCreateService_FindByIDWithUserFails(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	noteRepo := &findFailNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
 	pollRepo := testutil.NewMockPollRepository()
-	svc := note.NewCreateService(noteRepo, pollRepo, idGen)
+	svc := note.NewCreateService(noteRepo, pollRepo, idGen, nil)
 
 	user := &model.User{ID: "u1"}
 	text := "x"
@@ -235,6 +244,12 @@ func TestExtractMentions(t *testing.T) {
 		{"@solo", []string{"solo"}},
 		{"@", nil},
 		{"", nil},
+		// 重複は除去される
+		{"@alice and @alice again", []string{"alice"}},
+		// リモートメンション
+		{"hi @alice@example.com", []string{"alice@example.com"}},
+		// テキスト内の埋め込み
+		{"foo@bar baz@qux", []string{"bar", "qux"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.text, func(t *testing.T) {
@@ -242,3 +257,114 @@ func TestExtractMentions(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractMentionStructs(t *testing.T) {
+	out := note.ExtractMentionStructs("hi @alice and @bob@example.com and @alice")
+	require.Len(t, out, 2)
+	assert.Equal(t, "alice", out[0].Username)
+	assert.Equal(t, "", out[0].Host)
+	assert.Equal(t, "bob", out[1].Username)
+	assert.Equal(t, "example.com", out[1].Host)
+
+	assert.Empty(t, note.ExtractMentionStructs("nothing here"))
+}
+
+func TestCreateService_ReplyTargetNotFound(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+
+	user := &model.User{ID: "u1"}
+	text := "x"
+	replyID := "ghost"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text, ReplyID: &replyID})
+	require.ErrorIs(t, err, note.ErrReplyTargetNotFound)
+}
+
+func TestCreateService_RenoteTargetNotFound(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+
+	user := &model.User{ID: "u1"}
+	renoteID := "ghost"
+	_, err := svc.Create(note.CreateInput{User: user, RenoteID: &renoteID})
+	require.ErrorIs(t, err, note.ErrRenoteTargetNotFound)
+}
+
+func TestCreateService_CannotReplyToInvisibleNote(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteRepo.Notes["secret"] = &model.Note{
+		ID: "secret", UserID: "author", Visibility: model.NoteVisibilityFollowers,
+	}
+
+	user := &model.User{ID: "viewer"}
+	text := "x"
+	replyID := "secret"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text, ReplyID: &replyID})
+	require.ErrorIs(t, err, note.ErrCannotReplyToInvisibleNote)
+}
+
+func TestCreateService_CannotRenoteInvisibleNote(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteRepo.Notes["secret"] = &model.Note{
+		ID: "secret", UserID: "author", Visibility: model.NoteVisibilityFollowers,
+	}
+
+	user := &model.User{ID: "viewer"}
+	renoteID := "secret"
+	_, err := svc.Create(note.CreateInput{User: user, RenoteID: &renoteID})
+	require.ErrorIs(t, err, note.ErrCannotRenoteInvisibleNote)
+}
+
+func TestCreateService_ReplyHappyPath(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteRepo.Notes["target"] = &model.Note{
+		ID: "target", UserID: "author", Visibility: model.NoteVisibilityPublic,
+	}
+
+	user := &model.User{ID: "u1"}
+	text := "ack"
+	replyID := "target"
+	created, err := svc.Create(note.CreateInput{User: user, Text: &text, ReplyID: &replyID})
+	require.NoError(t, err)
+	assert.Equal(t, &replyID, created.ReplyID)
+	// repliesCountが更新される
+	assert.Equal(t, int16(1), noteRepo.Notes["target"].RepliesCount)
+}
+
+func TestCreateService_QuoteRenoteDoesNotIncrementRenoteCount(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteRepo.Notes["target"] = &model.Note{
+		ID: "target", UserID: "author", Visibility: model.NoteVisibilityPublic,
+	}
+
+	user := &model.User{ID: "u1"}
+	text := "quoted!"
+	renoteID := "target"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text, RenoteID: &renoteID})
+	require.NoError(t, err)
+	// quote renoteなのでrenoteCountは増えない
+	assert.Equal(t, int16(0), noteRepo.Notes["target"].RenoteCount)
+}
+
+func TestIsPureRenote(t *testing.T) {
+	target := "x"
+	choices := []string{"a", "b"}
+
+	cases := []struct {
+		name string
+		in   note.CreateInput
+		want bool
+	}{
+		{"no renote", note.CreateInput{}, false},
+		{"pure", note.CreateInput{RenoteID: &target}, true},
+		{"with text", note.CreateInput{RenoteID: &target, Text: ptrString("hi")}, false},
+		{"with cw", note.CreateInput{RenoteID: &target, CW: ptrString("warn")}, false},
+		{"with file", note.CreateInput{RenoteID: &target, FileIDs: []string{"f1"}}, false},
+		{"with poll", note.CreateInput{RenoteID: &target, Poll: &note.PollInput{Choices: choices}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, note.IsPureRenoteForTest(tc.in))
+		})
+	}
+}
+
+func ptrString(s string) *string { return &s }

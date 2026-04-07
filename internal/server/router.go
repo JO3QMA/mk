@@ -33,8 +33,9 @@ func (s *Server) setupRoutes() {
 	piningRepo := repository.NewUserNotePiningRepository(s.db)
 
 	// Core services
-	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
 	noteDeleteService := corenote.NewDeleteService(noteRepo)
+	noteQueryService := corenote.NewQueryService(noteRepo, followingRepo)
 	userService := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
 
@@ -51,10 +52,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/ping", metaHandler.Ping)
 
 	// Notes endpoints
-	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, idGen)
+	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, idGen)
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())
+	api.POST("/notes/renotes", notesHandler.Renotes)
+	api.POST("/notes/replies", notesHandler.Replies)
+	api.POST("/notes/children", notesHandler.Children)
+	api.POST("/notes/conversation", notesHandler.Conversation)
+	api.POST("/notes/search", notesHandler.Search)
+	api.POST("/notes/state", notesHandler.State, middleware.RequireAuth())
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)

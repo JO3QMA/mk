@@ -3,7 +3,7 @@ package note
 
 import (
 	"errors"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -15,6 +15,14 @@ import (
 var (
 	// ErrNoteContentRequired is returned when text, fileIds and renoteId are all empty.
 	ErrNoteContentRequired = errors.New("text, fileIds, or renoteId is required")
+	// ErrReplyTargetNotFound is returned when the replyId references a missing note.
+	ErrReplyTargetNotFound = errors.New("reply target not found")
+	// ErrRenoteTargetNotFound is returned when the renoteId references a missing note.
+	ErrRenoteTargetNotFound = errors.New("renote target not found")
+	// ErrCannotReplyToInvisibleNote is returned when the replier cannot see the reply target.
+	ErrCannotReplyToInvisibleNote = errors.New("cannot reply to this note")
+	// ErrCannotRenoteInvisibleNote is returned when the renoter cannot see the renote target.
+	ErrCannotRenoteInvisibleNote = errors.New("cannot renote this note")
 )
 
 // CreateInput is the input parameter for CreateService.Create.
@@ -42,17 +50,26 @@ type PollInput struct {
 
 // CreateService provides note creation logic.
 type CreateService struct {
-	noteRepo repository.NoteRepository
-	pollRepo repository.PollRepository
-	idGen    id.Generator
+	noteRepo      repository.NoteRepository
+	pollRepo      repository.PollRepository
+	followingRepo repository.FollowingRepository
+	idGen         id.Generator
 }
 
 // NewCreateService creates a new CreateService.
-func NewCreateService(noteRepo repository.NoteRepository, pollRepo repository.PollRepository, idGen id.Generator) *CreateService {
+// followingRepo は省略可 (nil)。指定された場合、followers可視性ノートへの
+// reply/renoteで閲覧権限を厳格にチェックする。
+func NewCreateService(
+	noteRepo repository.NoteRepository,
+	pollRepo repository.PollRepository,
+	idGen id.Generator,
+	followingRepo repository.FollowingRepository,
+) *CreateService {
 	return &CreateService{
-		noteRepo: noteRepo,
-		pollRepo: pollRepo,
-		idGen:    idGen,
+		noteRepo:      noteRepo,
+		pollRepo:      pollRepo,
+		followingRepo: followingRepo,
+		idGen:         idGen,
 	}
 }
 
@@ -73,6 +90,30 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		visibility = model.NoteVisibilityPublic
 	}
 
+	// reply/renote先のノートを取得し、閲覧権限を確認する。
+	// 取得したノートは、後段のカウンタ更新と非正規化フィールドの埋め込みに使う。
+	var replyTarget, renoteTarget *model.Note
+	if in.ReplyID != nil {
+		t, err := s.noteRepo.FindByIDWithUser(*in.ReplyID)
+		if err != nil {
+			return nil, ErrReplyTargetNotFound
+		}
+		if !CanSeeNote(in.User, t, s.followingRepo) {
+			return nil, ErrCannotReplyToInvisibleNote
+		}
+		replyTarget = t
+	}
+	if in.RenoteID != nil {
+		t, err := s.noteRepo.FindByIDWithUser(*in.RenoteID)
+		if err != nil {
+			return nil, ErrRenoteTargetNotFound
+		}
+		if !CanSeeNote(in.User, t, s.followingRepo) {
+			return nil, ErrCannotRenoteInvisibleNote
+		}
+		renoteTarget = t
+	}
+
 	now := time.Now()
 	noteID := s.idGen.Generate(now)
 
@@ -91,17 +132,39 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		UserHost:           in.User.Host,
 	}
 
+	// reply/renote先の非正規化フィールドを埋める
+	if replyTarget != nil {
+		note.ReplyUserID = &replyTarget.UserID
+		note.ReplyUserHost = replyTarget.UserHost
+	}
+	if renoteTarget != nil {
+		note.RenoteUserID = &renoteTarget.UserID
+		note.RenoteUserHost = renoteTarget.UserHost
+		note.RenoteChannelID = renoteTarget.ChannelID
+	}
+
 	if in.VisibleUserIDs != nil {
 		note.VisibleUserIDs = in.VisibleUserIDs
 	}
 
-	// 簡易的なメンション抽出: Phase 2 Step DでMFM対応の本実装に置き換える
+	// メンションの抽出。MFM完全対応はPhase 4で行うが、@username[@host]形式は
+	// この時点で確実にメンションとして解釈する必要がある。
 	if in.Text != nil {
 		note.Mentions = ExtractMentions(*in.Text)
 	}
 
 	if err := s.noteRepo.Create(note); err != nil {
 		return nil, err
+	}
+
+	// reply/renote先のカウンタを更新する。
+	// quote renoteの場合 (text/cw/poll/fileを伴うrenote) は renoteCount を増やさず、
+	// 純粋なrenoteのみ集計する。これはMisskey本家の挙動に揃えている。
+	if replyTarget != nil {
+		_ = s.noteRepo.IncrementCount(replyTarget.ID, "repliesCount", 1)
+	}
+	if renoteTarget != nil && isPureRenote(in) {
+		_ = s.noteRepo.IncrementCount(renoteTarget.ID, "renoteCount", 1)
 	}
 
 	// 投票が指定されていればPollレコードを作成しnote.hasPollを更新
@@ -135,15 +198,90 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	return note, nil
 }
 
+// mentionRegex matches @username and @username@host occurrences anywhere in
+// text. Misskey本家のクライアント実装(misskey-js)と同じく、ユーザー名は
+// 英数とアンダースコアおよびハイフンからなり、長さは制限しない。
+// ホスト部はドメイン形式 (英数・ハイフン・ドット) を許容する。
+var mentionRegex = regexp.MustCompile(`@([A-Za-z0-9_-]+)(?:@([A-Za-z0-9.\-]+))?`)
+
+// Mention represents a single user mention extracted from note text.
+type Mention struct {
+	Username string
+	Host     string // ホスト指定がない場合は空文字
+}
+
 // ExtractMentions extracts mention usernames from a note text.
-// This is a temporary simplistic implementation; Phase 2 Step D will replace
-// it with a full MFM-aware extractor.
+// 戻り値はusername (ホストなしの場合) または "username@host" (リモートユーザー指定の場合)。
+// Misskeyのnote.mentions列はユーザーIDの配列だが、本サービスではユーザー解決を
+// 別レイヤで行う前提で、ここではユーザー名形式のままで返す。重複は除去する。
 func ExtractMentions(text string) []string {
-	var mentions []string
-	for w := range strings.FieldsSeq(text) {
-		if strings.HasPrefix(w, "@") && len(w) > 1 {
-			mentions = append(mentions, strings.TrimPrefix(w, "@"))
-		}
+	matches := mentionRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
 	}
-	return mentions
+	seen := make(map[string]struct{}, len(matches))
+	var out []string
+	for _, m := range matches {
+		username := m[1]
+		host := ""
+		if len(m) >= 3 {
+			host = m[2]
+		}
+		key := username
+		if host != "" {
+			key = username + "@" + host
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
+}
+
+// ExtractMentionStructs returns the mentions as structured Mention values.
+// 主にNotificationServiceなどリモート/ローカル区別を要する呼び出し向け。
+func ExtractMentionStructs(text string) []Mention {
+	matches := mentionRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	var out []Mention
+	for _, m := range matches {
+		username := m[1]
+		host := ""
+		if len(m) >= 3 {
+			host = m[2]
+		}
+		key := username + "@" + host
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, Mention{Username: username, Host: host})
+	}
+	return out
+}
+
+// isPureRenote reports whether the create request is a pure renote (no text,
+// no cw, no poll, no files). 純粋なrenoteのみがrenoteCountに反映される。
+func isPureRenote(in CreateInput) bool {
+	if in.RenoteID == nil {
+		return false
+	}
+	if in.Text != nil && *in.Text != "" {
+		return false
+	}
+	if in.CW != nil && *in.CW != "" {
+		return false
+	}
+	if len(in.FileIDs) > 0 {
+		return false
+	}
+	if in.Poll != nil && len(in.Poll.Choices) > 0 {
+		return false
+	}
+	return true
 }

@@ -1,6 +1,8 @@
 package testutil
 
 import (
+	"strings"
+
 	"github.com/shiroha-a/mk/internal/model"
 )
 
@@ -213,6 +215,91 @@ func (m *MockNoteRepository) Delete(note *model.Note) error {
 
 func (m *MockNoteRepository) Update(note *model.Note, column string, value any) error {
 	return nil
+}
+
+// IncrementCount mutates the in-memory note's counter column for tests.
+func (m *MockNoteRepository) IncrementCount(noteID, column string, delta int) error {
+	n, ok := m.Notes[noteID]
+	if !ok {
+		return ErrNotFound
+	}
+	switch column {
+	case "renoteCount":
+		n.RenoteCount += int16(delta)
+	case "repliesCount":
+		n.RepliesCount += int16(delta)
+	}
+	return nil
+}
+
+// ListRenotesOf returns notes whose renoteId equals noteID.
+func (m *MockNoteRepository) ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return n.RenoteID != nil && *n.RenoteID == noteID
+	}, untilID, sinceID, limit), nil
+}
+
+// ListRepliesOf returns notes whose replyId equals noteID.
+func (m *MockNoteRepository) ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return n.ReplyID != nil && *n.ReplyID == noteID
+	}, untilID, sinceID, limit), nil
+}
+
+// ListChildrenOf returns notes that reply to or quote the given noteID.
+func (m *MockNoteRepository) ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		if n.ReplyID != nil && *n.ReplyID == noteID {
+			return true
+		}
+		if n.RenoteID != nil && *n.RenoteID == noteID {
+			return true
+		}
+		return false
+	}, untilID, sinceID, limit), nil
+}
+
+// Search returns public/home notes whose text contains query (case-insensitive).
+func (m *MockNoteRepository) Search(query string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	q := strings.ToLower(query)
+	return m.listFiltered(func(n *model.Note) bool {
+		if n.Visibility != model.NoteVisibilityPublic && n.Visibility != model.NoteVisibilityHome {
+			return false
+		}
+		if n.Text == nil {
+			return false
+		}
+		return strings.Contains(strings.ToLower(*n.Text), q)
+	}, untilID, sinceID, limit), nil
+}
+
+// listFiltered iterates the in-memory notes, applies filter, sorts by id desc,
+// and returns up to `limit` entries.
+func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID, sinceID string, limit int) []*model.Note {
+	var out []*model.Note
+	for _, n := range m.Notes {
+		if !filter(n) {
+			continue
+		}
+		if untilID != "" && n.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && n.ID <= sinceID {
+			continue
+		}
+		out = append(out, n)
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[i].ID < out[j].ID {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func (m *MockNoteRepository) ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error) {

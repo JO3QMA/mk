@@ -186,4 +186,197 @@ func TestNoteRepository_QueryErrors(t *testing.T) {
 
 	_, err = repo.FindManyByIDsWithUser([]string{"a"})
 	assert.Error(t, err)
+
+	_, err = repo.ListRenotesOf("a", "", "", 10)
+	assert.Error(t, err)
+
+	_, err = repo.ListRepliesOf("a", "", "", 10)
+	assert.Error(t, err)
+
+	_, err = repo.ListChildrenOf("a", "", "", 10)
+	assert.Error(t, err)
+
+	_, err = repo.Search("a", "", "", 10)
+	assert.Error(t, err)
+
+	err = repo.IncrementCount("a", "renoteCount", 1)
+	assert.Error(t, err)
+}
+
+func TestNoteRepository_IncrementCount(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_inc_1", "incuser")
+	defer cleanupUser(t, user.ID)
+
+	note := &model.Note{
+		ID:         "n_inc_1",
+		UserID:     user.ID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(note))
+	defer cleanupNote(t, note.ID)
+
+	require.NoError(t, repo.IncrementCount(note.ID, "renoteCount", 2))
+	require.NoError(t, repo.IncrementCount(note.ID, "repliesCount", 3))
+
+	found, err := repo.FindByID(note.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int16(2), found.RenoteCount)
+	assert.Equal(t, int16(3), found.RepliesCount)
+}
+
+func TestNoteRepository_ListRenotesOf(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_lr_1", "lruser")
+	defer cleanupUser(t, user.ID)
+
+	// 元ノート
+	parent := &model.Note{
+		ID: "n_lr_parent", UserID: user.ID, Visibility: model.NoteVisibilityPublic,
+		Reactions: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(parent))
+	defer cleanupNote(t, parent.ID)
+
+	// 3件のrenote
+	parentID := parent.ID
+	for _, id := range []string{"n_lr_r1", "n_lr_r2", "n_lr_r3"} {
+		n := &model.Note{
+			ID: id, UserID: user.ID, Visibility: model.NoteVisibilityPublic,
+			RenoteID:  &parentID,
+			Reactions: datatypes.JSON([]byte("{}")),
+		}
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, id)
+	}
+
+	out, err := repo.ListRenotesOf(parent.ID, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 3)
+	assert.Equal(t, "n_lr_r3", out[0].ID)
+
+	out, err = repo.ListRenotesOf(parent.ID, "n_lr_r3", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 2)
+
+	out, err = repo.ListRenotesOf(parent.ID, "", "n_lr_r1", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 2)
+}
+
+func TestNoteRepository_ListRepliesOf(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_lp_1", "lpuser")
+	defer cleanupUser(t, user.ID)
+
+	parent := &model.Note{
+		ID: "n_lp_parent", UserID: user.ID, Visibility: model.NoteVisibilityPublic,
+		Reactions: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(parent))
+	defer cleanupNote(t, parent.ID)
+
+	parentID := parent.ID
+	for _, id := range []string{"n_lp_r1", "n_lp_r2"} {
+		n := &model.Note{
+			ID: id, UserID: user.ID, Visibility: model.NoteVisibilityPublic,
+			ReplyID:   &parentID,
+			Reactions: datatypes.JSON([]byte("{}")),
+		}
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, id)
+	}
+
+	out, err := repo.ListRepliesOf(parent.ID, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 2)
+
+	out, err = repo.ListRepliesOf(parent.ID, "n_lp_r2", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+
+	out, err = repo.ListRepliesOf(parent.ID, "", "n_lp_r1", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+}
+
+func TestNoteRepository_ListChildrenOf(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_lc_1", "lcuser")
+	defer cleanupUser(t, user.ID)
+
+	parent := &model.Note{
+		ID: "n_lc_parent", UserID: user.ID, Visibility: model.NoteVisibilityPublic,
+		Reactions: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(parent))
+	defer cleanupNote(t, parent.ID)
+
+	parentID := parent.ID
+	// 1件はreply, 1件はquote renote (IDの辞書順を昇順 c1 < c2 にしておく)
+	reply := &model.Note{
+		ID: "n_lc_c1", UserID: user.ID, Visibility: model.NoteVisibilityPublic,
+		ReplyID:   &parentID,
+		Reactions: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(reply))
+	defer cleanupNote(t, reply.ID)
+
+	quote := &model.Note{
+		ID: "n_lc_c2", UserID: user.ID, Visibility: model.NoteVisibilityPublic,
+		RenoteID:  &parentID,
+		Reactions: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(quote))
+	defer cleanupNote(t, quote.ID)
+
+	out, err := repo.ListChildrenOf(parent.ID, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 2)
+
+	out, err = repo.ListChildrenOf(parent.ID, "n_lc_c2", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+	assert.Equal(t, "n_lc_c1", out[0].ID)
+
+	out, err = repo.ListChildrenOf(parent.ID, "", "n_lc_c1", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+	assert.Equal(t, "n_lc_c2", out[0].ID)
+}
+
+func TestNoteRepository_Search(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_se_1", "seuser")
+	defer cleanupUser(t, user.ID)
+
+	hello := "Hello world this is searchable"
+	other := "completely different"
+	private := "Hello but private"
+
+	notes := []*model.Note{
+		{ID: "n_se_1", UserID: user.ID, Text: &hello, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_2", UserID: user.ID, Text: &other, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_3", UserID: user.ID, Text: &private, Visibility: model.NoteVisibilityFollowers, Reactions: datatypes.JSON([]byte("{}"))},
+	}
+	for _, n := range notes {
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, n.ID)
+	}
+
+	out, err := repo.Search("hello", "", "", 10)
+	require.NoError(t, err)
+	// public/homeのみマッチ。followers可視性のn_se_3は含まれない
+	assert.Len(t, out, 1)
+	assert.Equal(t, "n_se_1", out[0].ID)
+
+	// untilID/sinceIDの分岐を踏む
+	out, err = repo.Search("hello", "n_se_2", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+
+	out, err = repo.Search("hello", "", "a", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
 }
