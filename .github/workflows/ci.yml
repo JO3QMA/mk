@@ -31,12 +31,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # 単一のtestステップで全パッケージを実行する。
-      # api/notes と api/notifications が testcontainers Redis を要求するため
-      # 旧構成のような unit/integration 分割は無くしている。
+      # テスト対象は go list でテストファイルのあるパッケージのみに絞る。
+      # 全パッケージ展開だと cmd/* や internal/{model,server,testutil} のような
+      # テスト不要な package が 0% としてカウントされ、全体カバレッジが落ちる。
       - name: Run all tests with coverage
         run: |
-          go test ./... \
+          PKGS=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | tr '\n' ' ')
+          echo "Testing packages: $PKGS"
+          go test $PKGS \
             -race \
             -count=1 \
             -timeout 10m \
