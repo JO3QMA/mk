@@ -4,16 +4,20 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/activitypub"
+	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
 	"github.com/shiroha-a/mk/internal/api/drive"
 	"github.com/shiroha-a/mk/internal/api/following"
 	"github.com/shiroha-a/mk/internal/api/i"
 	"github.com/shiroha-a/mk/internal/api/meta"
 	"github.com/shiroha-a/mk/internal/api/mute"
+	"github.com/shiroha-a/mk/internal/api/nodeinfo"
 	"github.com/shiroha-a/mk/internal/api/notes"
 	"github.com/shiroha-a/mk/internal/api/notifications"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
 	"github.com/shiroha-a/mk/internal/api/users"
+	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
@@ -51,6 +55,7 @@ func (s *Server) setupRoutes() {
 	pollVoteRepo := repository.NewPollVoteRepository(s.db)
 	driveFileRepo := repository.NewDriveFileRepository(s.db)
 	driveFolderRepo := repository.NewDriveFolderRepository(s.db)
+	keypairRepo := repository.NewUserKeypairRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -89,6 +94,10 @@ func (s *Server) setupRoutes() {
 	// Drive (LocalStorage)
 	driveStorage := coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
 	driveService := coredrive.NewService(driveFileRepo, driveFolderRepo, driveStorage, idGen)
+
+	// ActivityPub
+	apURLs := activitypub.NewURLBuilder(s.config.URL)
+	apRenderer := activitypub.NewRenderer(apURLs)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
@@ -182,6 +191,20 @@ func (s *Server) setupRoutes() {
 		defer body.Close()
 		return c.Stream(http.StatusOK, "application/octet-stream", body)
 	})
+
+	// ActivityPub resource endpoints
+	apHandler := ap.NewHandler(apRenderer, userService, noteQueryService, keypairRepo, idGen)
+	s.echo.GET("/users/:id", apHandler.User)
+	s.echo.GET("/notes/:id", apHandler.Note)
+
+	// Discovery endpoints
+	wellknownHandler := wellknown.NewHandler(apURLs, userService, s.config.Host)
+	s.echo.GET("/.well-known/webfinger", wellknownHandler.Webfinger)
+	s.echo.GET("/.well-known/host-meta", wellknownHandler.HostMeta)
+	s.echo.GET("/.well-known/nodeinfo", wellknownHandler.NodeInfoDiscovery)
+
+	nodeinfoHandler := nodeinfo.NewHandler(s.config)
+	s.echo.GET("/nodeinfo/2.1", nodeinfoHandler.Version2_1)
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)
