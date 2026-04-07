@@ -1,0 +1,157 @@
+package notification
+
+import (
+	"context"
+	"log/slog"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
+)
+
+// Hook implements the various NotificationHook interfaces exposed by other
+// services. Single struct in order to share the underlying Service and
+// userRepo dependencies.
+type Hook struct {
+	svc      *Service
+	userRepo repository.UserRepository
+}
+
+// NewHook constructs a Hook bound to a NotificationService and userRepo.
+// userRepo is used to look up host information when filtering remote users
+// (リモートユーザーへの通知は不要なので除外する)。
+func NewHook(svc *Service, userRepo repository.UserRepository) *Hook {
+	return &Hook{svc: svc, userRepo: userRepo}
+}
+
+// OnNoteCreated is called by note.CreateService after persisting a new note.
+// Reply/Renote/Mention の通知を非同期に作成する。
+func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
+	if n == nil || author == nil {
+		return
+	}
+	ctx := context.Background()
+
+	// reply: 親ノートの投稿者がローカルユーザーなら通知
+	if replyTarget != nil && replyTarget.UserID != author.ID {
+		h.notifyLocalUser(ctx, replyTarget.UserID, CreateInput{
+			NotifieeID: replyTarget.UserID,
+			NotifierID: author.ID,
+			Type:       TypeReply,
+			NoteID:     n.ID,
+		})
+	}
+
+	// renote / quote: 対象ノートの投稿者へ通知
+	if renoteTarget != nil && renoteTarget.UserID != author.ID {
+		t := TypeRenote
+		if isQuote(n) {
+			t = TypeQuote
+		}
+		h.notifyLocalUser(ctx, renoteTarget.UserID, CreateInput{
+			NotifieeID: renoteTarget.UserID,
+			NotifierID: author.ID,
+			Type:       t,
+			NoteID:     n.ID,
+		})
+	}
+
+	// mentions: note.Mentions はローカルユーザー名のリスト想定
+	for _, name := range n.Mentions {
+		if name == "" {
+			continue
+		}
+		mentioned, err := h.userRepo.FindByUsernameLower(name, nil)
+		if err != nil {
+			continue
+		}
+		if mentioned.ID == author.ID {
+			continue
+		}
+		// reply先と同じユーザーには replyとmentionの両方を出さない
+		if replyTarget != nil && replyTarget.UserID == mentioned.ID {
+			continue
+		}
+		h.notifyLocalUser(ctx, mentioned.ID, CreateInput{
+			NotifieeID: mentioned.ID,
+			NotifierID: author.ID,
+			Type:       TypeMention,
+			NoteID:     n.ID,
+		})
+	}
+}
+
+// OnFollowed records a follow notification on the followee's stream.
+func (h *Hook) OnFollowed(followerID, followeeID string) {
+	h.notifyLocalUser(context.Background(), followeeID, CreateInput{
+		NotifieeID: followeeID,
+		NotifierID: followerID,
+		Type:       TypeFollow,
+	})
+}
+
+// OnFollowRequested records a "follow request received" notification.
+func (h *Hook) OnFollowRequested(followerID, followeeID string) {
+	h.notifyLocalUser(context.Background(), followeeID, CreateInput{
+		NotifieeID: followeeID,
+		NotifierID: followerID,
+		Type:       TypeReceiveFollowReq,
+	})
+}
+
+// OnFollowAccepted records a notification on the requester's side.
+func (h *Hook) OnFollowAccepted(followerID, followeeID string) {
+	h.notifyLocalUser(context.Background(), followerID, CreateInput{
+		NotifieeID: followerID,
+		NotifierID: followeeID,
+		Type:       TypeFollowRequestAccept,
+	})
+}
+
+// OnReactionCreated records a reaction notification on the note author's stream.
+func (h *Hook) OnReactionCreated(notifieeID, notifierID, noteID, reaction string) {
+	h.notifyLocalUser(context.Background(), notifieeID, CreateInput{
+		NotifieeID: notifieeID,
+		NotifierID: notifierID,
+		Type:       TypeReaction,
+		NoteID:     noteID,
+		Reaction:   reaction,
+	})
+}
+
+// notifyLocalUser dispatches a notification only when the notifiee is a local
+// user (host == nil). リモートユーザーへの通知はAP連合経由で送られるので
+// ローカルストリームには入れない。
+func (h *Hook) notifyLocalUser(ctx context.Context, notifieeID string, in CreateInput) {
+	if h.userRepo != nil {
+		u, err := h.userRepo.FindByID(notifieeID)
+		if err != nil {
+			return
+		}
+		if u.Host != nil {
+			return
+		}
+	}
+	if _, err := h.svc.Create(ctx, in); err != nil {
+		slog.Warn("notification create failed", "type", in.Type, "notifiee", notifieeID, "err", err)
+	}
+}
+
+// isQuote reports whether the note is a quote renote (renote with text/cw/files/poll).
+func isQuote(n *model.Note) bool {
+	if n.RenoteID == nil {
+		return false
+	}
+	if n.Text != nil && *n.Text != "" {
+		return true
+	}
+	if n.CW != nil && *n.CW != "" {
+		return true
+	}
+	if len(n.FileIDs) > 0 {
+		return true
+	}
+	if n.HasPoll {
+		return true
+	}
+	return false
+}

@@ -308,3 +308,46 @@ func TestIsPureRenote_Variants(t *testing.T) {
 }
 
 func ptrString(s string) *string { return &s }
+
+// recordingNotificationHook captures reaction notification calls.
+type recordingNotificationHook struct {
+	called   bool
+	notifiee string
+	notifier string
+	noteID   string
+	reaction string
+}
+
+func (h *recordingNotificationHook) OnReactionCreated(notifieeID, notifierID, noteID, rx string) {
+	h.called = true
+	h.notifiee = notifieeID
+	h.notifier = notifierID
+	h.noteID = noteID
+	h.reaction = rx
+}
+
+func TestService_NotificationHook_OnReaction(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	hook := &recordingNotificationHook{}
+	svc.SetNotificationHook(hook)
+
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.NoError(t, err)
+	assert.True(t, hook.called)
+	assert.Equal(t, "author", hook.notifiee)
+	assert.Equal(t, "viewer", hook.notifier)
+	assert.Equal(t, "n1", hook.noteID)
+	assert.Equal(t, "👍", hook.reaction)
+}
+
+func TestService_NotificationHook_SelfReactionSkipped(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "viewer", model.NoteVisibilityPublic)
+	hook := &recordingNotificationHook{}
+	svc.SetNotificationHook(hook)
+
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.NoError(t, err)
+	assert.False(t, hook.called)
+}

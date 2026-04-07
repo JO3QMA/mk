@@ -8,9 +8,11 @@ import (
 	"github.com/shiroha-a/mk/internal/api/i"
 	"github.com/shiroha-a/mk/internal/api/meta"
 	"github.com/shiroha-a/mk/internal/api/notes"
+	"github.com/shiroha-a/mk/internal/api/notifications"
 	"github.com/shiroha-a/mk/internal/api/users"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
+	corenotification "github.com/shiroha-a/mk/internal/core/notification"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
@@ -50,6 +52,13 @@ func (s *Server) setupRoutes() {
 
 	// Reactions
 	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
+
+	// Notifications (Redis Streams)
+	notificationService := corenotification.NewService(s.redis.Default, idGen)
+	notificationHook := corenotification.NewHook(notificationService, userRepo)
+	noteCreateService.SetNotificationHook(notificationHook)
+	followingService.SetNotificationHook(notificationHook)
+	reactionService.SetNotificationHook(notificationHook)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
@@ -96,6 +105,11 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
 	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())
 	api.POST("/i/unpin", iHandler.Unpin, middleware.RequireAuth())
+
+	// Notifications endpoints
+	notificationsHandler := notifications.NewHandler(notificationService, idGen)
+	api.POST("/i/notifications", notificationsHandler.Show, middleware.RequireAuth())
+	api.POST("/notifications/mark-all-as-read", notificationsHandler.MarkAllAsRead, middleware.RequireAuth())
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)

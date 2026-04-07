@@ -35,12 +35,21 @@ type FollowResult struct {
 	Request *model.FollowRequest
 }
 
+// NotificationHook is invoked after follow/follow-request events to create
+// notification entries. パッケージ間の循環依存を避けるためinterfaceで受け取る。
+type NotificationHook interface {
+	OnFollowed(followerID, followeeID string)
+	OnFollowRequested(followerID, followeeID string)
+	OnFollowAccepted(followerID, followeeID string)
+}
+
 // Service manages following relationships and follow requests.
 type Service struct {
 	userRepo          repository.UserRepository
 	followingRepo     repository.FollowingRepository
 	followRequestRepo repository.FollowRequestRepository
 	idGen             id.Generator
+	notificationHook  NotificationHook
 }
 
 // NewService creates a new following Service.
@@ -56,6 +65,11 @@ func NewService(
 		followRequestRepo: followRequestRepo,
 		idGen:             idGen,
 	}
+}
+
+// SetNotificationHook attaches a NotificationHook used by Follow/AcceptRequest.
+func (s *Service) SetNotificationHook(h NotificationHook) {
+	s.notificationHook = h
 }
 
 // Follow creates a following relationship from follower to followee.
@@ -104,6 +118,9 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		if err := s.followRequestRepo.Create(req); err != nil {
 			return nil, err
 		}
+		if s.notificationHook != nil {
+			s.notificationHook.OnFollowRequested(followerID, followeeID)
+		}
 		return &FollowResult{Request: req}, nil
 	}
 
@@ -124,6 +141,10 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 	}
 	if err := s.userRepo.IncrementFollowersCount(followeeID, 1); err != nil {
 		return nil, err
+	}
+
+	if s.notificationHook != nil {
+		s.notificationHook.OnFollowed(followerID, followeeID)
 	}
 
 	return &FollowResult{Following: f}, nil
@@ -176,6 +197,9 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 	}
 	if err := s.userRepo.IncrementFollowersCount(req.FolloweeID, 1); err != nil {
 		return err
+	}
+	if s.notificationHook != nil {
+		s.notificationHook.OnFollowAccepted(req.FollowerID, req.FolloweeID)
 	}
 	return nil
 }

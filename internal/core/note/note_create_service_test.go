@@ -396,6 +396,40 @@ func TestCreateService_FanoutHookInvoked(t *testing.T) {
 	assert.Equal(t, user, hook.user)
 }
 
+// recordingNotificationHook captures notification calls for tests.
+type recordingNotificationHook struct {
+	called       bool
+	gotNote      *model.Note
+	gotAuthor    *model.User
+	gotReplyTgt  *model.Note
+	gotRenoteTgt *model.Note
+}
+
+func (h *recordingNotificationHook) OnNoteCreated(n *model.Note, u *model.User, reply, renote *model.Note) {
+	h.called = true
+	h.gotNote = n
+	h.gotAuthor = u
+	h.gotReplyTgt = reply
+	h.gotRenoteTgt = renote
+}
+
+func TestCreateService_NotificationHookInvoked(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteRepo.Notes["target"] = &model.Note{
+		ID: "target", UserID: "author", Visibility: model.NoteVisibilityPublic,
+	}
+	hook := &recordingNotificationHook{}
+	svc.SetNotificationHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hi"
+	replyID := "target"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text, ReplyID: &replyID})
+	require.NoError(t, err)
+	assert.True(t, hook.called)
+	assert.Equal(t, "target", hook.gotReplyTgt.ID)
+}
+
 func TestCreateService_FanoutHookCalledOnFallbackPath(t *testing.T) {
 	// FindByIDWithUser失敗時もfanoutは発火する
 	idGen, _ := id.NewGenerator("aidx")

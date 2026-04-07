@@ -503,3 +503,56 @@ func TestAcceptRequest_IncrementFollowersError(t *testing.T) {
 	err := svc.AcceptRequest("bob", "alice")
 	assert.ErrorIs(t, err, stubError)
 }
+
+// recordingHook captures notification hook calls.
+type recordingHook struct {
+	follows  []string
+	requests []string
+	accepts  []string
+}
+
+func (h *recordingHook) OnFollowed(followerID, followeeID string) {
+	h.follows = append(h.follows, followerID+"->"+followeeID)
+}
+func (h *recordingHook) OnFollowRequested(followerID, followeeID string) {
+	h.requests = append(h.requests, followerID+"->"+followeeID)
+}
+func (h *recordingHook) OnFollowAccepted(followerID, followeeID string) {
+	h.accepts = append(h.accepts, followerID+"->"+followeeID)
+}
+
+func TestService_NotificationHook_OnFollow(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	hook := &recordingHook{}
+	svc.SetNotificationHook(hook)
+
+	_, err := svc.Follow("bob", "alice")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bob->alice"}, hook.follows)
+}
+
+func TestService_NotificationHook_OnFollowRequest(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", true)
+	addUser(t, ur, "bob", false)
+	hook := &recordingHook{}
+	svc.SetNotificationHook(hook)
+
+	_, err := svc.Follow("bob", "alice")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bob->alice"}, hook.requests)
+}
+
+func TestService_NotificationHook_OnAccept(t *testing.T) {
+	svc, ur, _, frRepo := newSvc(t)
+	addUser(t, ur, "alice", true)
+	addUser(t, ur, "bob", false)
+	frRepo.Requests["req"] = &model.FollowRequest{ID: "req", FollowerID: "bob", FolloweeID: "alice"}
+	hook := &recordingHook{}
+	svc.SetNotificationHook(hook)
+
+	require.NoError(t, svc.AcceptRequest("alice", "bob"))
+	assert.Equal(t, []string{"bob->alice"}, hook.accepts)
+}

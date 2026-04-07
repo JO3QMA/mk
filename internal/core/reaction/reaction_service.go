@@ -50,13 +50,19 @@ var legacyMap = map[string]string{
 // ":smile@example.com:".
 var customEmojiPattern = regexp.MustCompile(`^:([\w+\-]+)(?:@([\w.\-]+))?:$`)
 
+// NotificationHook is invoked after a reaction is created.
+type NotificationHook interface {
+	OnReactionCreated(notifieeID, notifierID, noteID, reaction string)
+}
+
 // Service manages note reactions.
 type Service struct {
-	noteRepo      repository.NoteRepository
-	reactionRepo  repository.NoteReactionRepository
-	emojiRepo     repository.EmojiRepository
-	followingRepo repository.FollowingRepository
-	idGen         id.Generator
+	noteRepo         repository.NoteRepository
+	reactionRepo     repository.NoteReactionRepository
+	emojiRepo        repository.EmojiRepository
+	followingRepo    repository.FollowingRepository
+	idGen            id.Generator
+	notificationHook NotificationHook
 }
 
 // NewService constructs a new ReactionService.
@@ -74,6 +80,11 @@ func NewService(
 		followingRepo: followingRepo,
 		idGen:         idGen,
 	}
+}
+
+// SetNotificationHook attaches a NotificationHook used after Create succeeds.
+func (s *Service) SetNotificationHook(h NotificationHook) {
+	s.notificationHook = h
 }
 
 // Create attaches a reaction by user to the target note.
@@ -122,6 +133,12 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 		return "", err
 	}
 	_ = s.noteRepo.IncrementReaction(target.ID, reaction, 1)
+
+	// 通知発行 (自分自身へのリアクションは内部で抑制される)
+	if s.notificationHook != nil && target.UserID != user.ID {
+		s.notificationHook.OnReactionCreated(target.UserID, user.ID, target.ID, reaction)
+	}
+
 	return reaction, nil
 }
 

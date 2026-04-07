@@ -55,13 +55,21 @@ type TimelineFanoutHook interface {
 	OnNoteCreated(note *model.Note, author *model.User)
 }
 
+// NotificationHook is invoked after a note has been persisted so that the
+// notification subsystem can create notification entries for mentions, replies,
+// renotes, etc. パッケージ間の循環依存を避けるためinterfaceで受け取る。
+type NotificationHook interface {
+	OnNoteCreated(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
-	noteRepo      repository.NoteRepository
-	pollRepo      repository.PollRepository
-	followingRepo repository.FollowingRepository
-	idGen         id.Generator
-	fanoutHook    TimelineFanoutHook
+	noteRepo         repository.NoteRepository
+	pollRepo         repository.PollRepository
+	followingRepo    repository.FollowingRepository
+	idGen            id.Generator
+	fanoutHook       TimelineFanoutHook
+	notificationHook NotificationHook
 }
 
 // NewCreateService creates a new CreateService.
@@ -87,6 +95,11 @@ func NewCreateService(
 // 簡単に差し替え可能にする。
 func (s *CreateService) SetFanoutHook(h TimelineFanoutHook) {
 	s.fanoutHook = h
+}
+
+// SetNotificationHook attaches a NotificationHook invoked on note creation.
+func (s *CreateService) SetNotificationHook(h NotificationHook) {
+	s.notificationHook = h
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -218,6 +231,10 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// 既に保存済みなので、ハンドラへはエラーを返さずベストエフォートとする。
 	if s.fanoutHook != nil {
 		s.fanoutHook.OnNoteCreated(finalNote, in.User)
+	}
+	// 通知も同様にベストエフォート。
+	if s.notificationHook != nil {
+		s.notificationHook.OnNoteCreated(finalNote, in.User, replyTarget, renoteTarget)
 	}
 
 	return finalNote, nil
