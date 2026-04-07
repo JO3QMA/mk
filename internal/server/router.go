@@ -18,6 +18,7 @@ import (
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
+	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
@@ -45,6 +46,7 @@ func (s *Server) setupRoutes() {
 	blockingRepo := repository.NewBlockingRepository(s.db)
 	mutingRepo := repository.NewMutingRepository(s.db)
 	renoteMutingRepo := repository.NewRenoteMutingRepository(s.db)
+	pollVoteRepo := repository.NewPollVoteRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -76,6 +78,10 @@ func (s *Server) setupRoutes() {
 	reactionService.SetBlockingChecker(blockingService)
 	notificationHook.SetMuteChecker(mutingService)
 
+	// Polls
+	pollService := corepoll.NewService(noteRepo, pollRepo, pollVoteRepo, followingRepo, idGen)
+	pollService.SetNotificationHook(notificationHook)
+
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -89,7 +95,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/ping", metaHandler.Ping)
 
 	// Notes endpoints
-	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, idGen)
+	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, idGen)
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())
@@ -106,6 +112,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/reactions", notesHandler.Reactions)
 	api.POST("/notes/reactions/create", notesHandler.ReactionsCreate, middleware.RequireAuth())
 	api.POST("/notes/reactions/delete", notesHandler.ReactionsDelete, middleware.RequireAuth())
+	api.POST("/notes/polls/vote", notesHandler.PollsVote, middleware.RequireAuth())
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)

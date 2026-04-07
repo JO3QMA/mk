@@ -31,7 +31,9 @@ func (f *failingNoteRepoUpdate) Update(_ *model.Note, _ string, _ any) error {
 // failingPollRepo fails on Create.
 type failingPollRepo struct{}
 
-func (f *failingPollRepo) Create(_ *model.Poll) error { return stubError }
+func (f *failingPollRepo) Create(_ *model.Poll) error                 { return stubError }
+func (f *failingPollRepo) FindByNoteID(_ string) (*model.Poll, error) { return nil, stubError }
+func (f *failingPollRepo) IncrementVote(_ string, _ int, _ int) error { return nil }
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct{ *testutil.MockNoteRepository }

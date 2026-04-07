@@ -83,7 +83,7 @@ func newTimelineHandler(t *testing.T, noteRepo *testutil.MockNoteRepository, tl 
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	return NewHandler(noteRepo, createSvc, deleteSvc, querySvc, tl, nil, idGen)
+	return NewHandler(noteRepo, createSvc, deleteSvc, querySvc, tl, nil, nil, idGen)
 }
 
 // seedTimelineNote creates a note in the repo and returns its id.

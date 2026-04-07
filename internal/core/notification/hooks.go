@@ -131,6 +131,18 @@ func (h *Hook) OnReactionCreated(notifieeID, notifierID, noteID, reaction string
 	})
 }
 
+// OnPollVote records a poll vote notification on the note author's stream.
+func (h *Hook) OnPollVote(notifieeID, notifierID, noteID string, choice int) {
+	c := choice
+	h.notifyLocalUser(context.Background(), notifieeID, CreateInput{
+		NotifieeID: notifieeID,
+		NotifierID: notifierID,
+		Type:       TypePollVote,
+		NoteID:     noteID,
+		Choice:     &c,
+	})
+}
+
 // notifyLocalUser dispatches a notification only when the notifiee is a local
 // user (host == nil). リモートユーザーへの通知はAP連合経由で送られるので
 // ローカルストリームには入れない。Muteしているnotifierからの通知も抑制する。

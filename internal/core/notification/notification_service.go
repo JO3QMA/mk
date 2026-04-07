@@ -24,6 +24,7 @@ const (
 	TypeRenote              Type = "renote"
 	TypeQuote               Type = "quote"
 	TypeReaction            Type = "reaction"
+	TypePollVote            Type = "pollVote"
 	TypeReceiveFollowReq    Type = "receiveFollowRequest"
 	TypeFollowRequestAccept Type = "followRequestAccepted"
 )
@@ -50,6 +51,7 @@ type Notification struct {
 	NotifierID string         `json:"notifierId,omitempty"`
 	NoteID     string         `json:"noteId,omitempty"`
 	Reaction   string         `json:"reaction,omitempty"`
+	Choice     *int           `json:"choice,omitempty"`
 	Extra      map[string]any `json:"extra,omitempty"`
 }
 
@@ -60,6 +62,7 @@ type CreateInput struct {
 	Type       Type
 	NoteID     string
 	Reaction   string
+	Choice     *int
 	Extra      map[string]any
 }
 
@@ -98,6 +101,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 		NotifierID: in.NotifierID,
 		NoteID:     in.NoteID,
 		Reaction:   in.Reaction,
+		Choice:     in.Choice,
 		Extra:      in.Extra,
 	}
 

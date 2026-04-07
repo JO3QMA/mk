@@ -547,6 +547,69 @@ func (m *MockPollRepository) Create(poll *model.Poll) error {
 	return nil
 }
 
+func (m *MockPollRepository) FindByNoteID(noteID string) (*model.Poll, error) {
+	p, ok := m.Polls[noteID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return p, nil
+}
+
+func (m *MockPollRepository) IncrementVote(noteID string, choice int, delta int) error {
+	p, ok := m.Polls[noteID]
+	if !ok {
+		return ErrNotFound
+	}
+	if choice < 0 || choice >= len(p.Votes) {
+		return nil
+	}
+	p.Votes[choice] += int64(delta)
+	return nil
+}
+
+// MockPollVoteRepository is a test double for repository.PollVoteRepository.
+type MockPollVoteRepository struct {
+	Votes map[string]*model.PollVote // keyed by id
+}
+
+func NewMockPollVoteRepository() *MockPollVoteRepository {
+	return &MockPollVoteRepository{Votes: make(map[string]*model.PollVote)}
+}
+
+func (m *MockPollVoteRepository) Create(v *model.PollVote) error {
+	m.Votes[v.ID] = v
+	return nil
+}
+
+func (m *MockPollVoteRepository) FindByUserAndChoice(userID, noteID string, choice int) (*model.PollVote, error) {
+	for _, v := range m.Votes {
+		if v.UserID == userID && v.NoteID == noteID && v.Choice == choice {
+			return v, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockPollVoteRepository) CountByUserAndNote(userID, noteID string) (int64, error) {
+	var n int64
+	for _, v := range m.Votes {
+		if v.UserID == userID && v.NoteID == noteID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MockPollVoteRepository) ListByNoteID(noteID string) ([]*model.PollVote, error) {
+	var rows []*model.PollVote
+	for _, v := range m.Votes {
+		if v.NoteID == noteID {
+			rows = append(rows, v)
+		}
+	}
+	return rows, nil
+}
+
 // MockFollowingRepository is a test double for repository.FollowingRepository.
 type MockFollowingRepository struct {
 	Followings map[string]*model.Following // keyed by ID

@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/core/note"
+	"github.com/shiroha-a/mk/internal/core/poll"
 	"github.com/shiroha-a/mk/internal/core/reaction"
 	"github.com/shiroha-a/mk/internal/core/timeline"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -24,12 +25,13 @@ type Handler struct {
 	queryService    *note.QueryService
 	timelineService *timeline.Service
 	reactionService *reaction.Service
+	pollService     *poll.Service
 	idGen           id.Generator
 }
 
 // NewHandler creates a new notes Handler.
-// queryService/timelineService/reactionServiceがnilの場合は対応する
-// エンドポイントは利用不可となる (テストで一部だけ初期化する用途を許容する)。
+// queryService/timelineService/reactionService/pollServiceがnilの場合は
+// 対応するエンドポイントは利用不可となる (テストで一部だけ初期化する用途を許容する)。
 func NewHandler(
 	noteRepo repository.NoteRepository,
 	createService *note.CreateService,
@@ -37,6 +39,7 @@ func NewHandler(
 	queryService *note.QueryService,
 	timelineService *timeline.Service,
 	reactionService *reaction.Service,
+	pollService *poll.Service,
 	idGen id.Generator,
 ) *Handler {
 	return &Handler{
@@ -46,6 +49,7 @@ func NewHandler(
 		queryService:    queryService,
 		timelineService: timelineService,
 		reactionService: reactionService,
+		pollService:     pollService,
 		idGen:           idGen,
 	}
 }

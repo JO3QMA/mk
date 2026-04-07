@@ -178,6 +178,19 @@ func TestHook_OnFollowAccepted(t *testing.T) {
 	assert.Equal(t, TypeFollowRequestAccept, out[0].Type)
 }
 
+func TestHook_OnPollVote(t *testing.T) {
+	h, svc, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	h.OnPollVote("alice", "bob", "n1", 2)
+
+	out, err := svc.List(context.Background(), "alice", 10)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, TypePollVote, out[0].Type)
+	require.NotNil(t, out[0].Choice)
+	assert.Equal(t, 2, *out[0].Choice)
+}
+
 func TestHook_OnReactionCreated(t *testing.T) {
 	h, svc, repo := newTestHook(t)
 	addLocalUser(repo, "alice", "alice")
