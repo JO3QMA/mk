@@ -1,0 +1,230 @@
+package notes
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
+	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+)
+
+var testRedis *testutil.TestRedis
+
+// TestMain provisions a shared Redis container for the timeline handler tests.
+// 既存の non-timeline テスト群はRedisを必要としないので、コンテナ起動失敗時は
+// テストを単純にスキップして他テストの実行を妨げないようにしている。
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+	tr, err := testutil.SetupRedis(ctx)
+	if err != nil {
+		log.Printf("redis setup failed: %v (skipping timeline handler tests)", err)
+	} else {
+		testRedis = tr
+	}
+	code := m.Run()
+	if testRedis != nil {
+		testRedis.Teardown(ctx)
+	}
+	os.Exit(code)
+}
+
+// requireRedis skips the test if no Redis container is available.
+func requireRedis(t *testing.T) {
+	t.Helper()
+	if testRedis == nil {
+		t.Skip("redis container not available")
+	}
+}
+
+// newRealTimelineService creates a coretimeline.Service backed by the shared
+// Redis container.
+func newRealTimelineService(t *testing.T, noteRepo *testutil.MockNoteRepository) (*coretimeline.Service, *coretimeline.FanoutTimelineService) {
+	t.Helper()
+	requireRedis(t)
+	testRedis.FlushAll(context.Background())
+	idGen, _ := id.NewGenerator("aidx")
+	fanout := coretimeline.NewFanoutTimelineService(testRedis.Client, idGen)
+	svc := coretimeline.NewService(fanout, noteRepo, testutil.NewMockFollowingRepository())
+	return svc, fanout
+}
+
+// closedRedisClient returns a redis.Client whose connection has been closed,
+// so any command on it returns an error.
+func closedRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+	c := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	_ = c.Close()
+	return c
+}
+
+func newFailingTimelineService(t *testing.T) *coretimeline.Service {
+	t.Helper()
+	idGen, _ := id.NewGenerator("aidx")
+	fanout := coretimeline.NewFanoutTimelineService(closedRedisClient(t), idGen)
+	return coretimeline.NewService(fanout, testutil.NewMockNoteRepository(), nil)
+}
+
+func newTimelineHandler(t *testing.T, noteRepo *testutil.MockNoteRepository, tl *coretimeline.Service) *Handler {
+	t.Helper()
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	return NewHandler(noteRepo, createSvc, deleteSvc, querySvc, tl, idGen)
+}
+
+// seedTimelineNote creates a note in the repo and returns its id.
+func seedTimelineNote(repo *testutil.MockNoteRepository) string {
+	idGen, _ := id.NewGenerator("aidx")
+	noteID := idGen.Generate(time.Now())
+	repo.Notes[noteID] = &model.Note{
+		ID:         noteID,
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User: &model.User{
+			ID:                "author",
+			Username:          "author",
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+	}
+	return noteID
+}
+
+func TestTimeline_AuthRequired(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	h := newTimelineHandler(t, noteRepo, newFailingTimelineService(t))
+
+	c, rec := newJSONRequest(t, "/api/notes/timeline", `{}`)
+	require.NoError(t, h.Timeline(c))
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestTimeline_InvalidJSON(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	h := newTimelineHandler(t, noteRepo, newFailingTimelineService(t))
+
+	c, rec := newJSONRequest(t, "/api/notes/timeline", `{invalid`)
+	setAuthUser(c, &model.User{ID: "u"})
+	require.NoError(t, h.Timeline(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestTimeline_FanoutError(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	h := newTimelineHandler(t, noteRepo, newFailingTimelineService(t))
+
+	c, rec := newJSONRequest(t, "/api/notes/timeline", `{}`)
+	setAuthUser(c, &model.User{ID: "u"})
+	require.NoError(t, h.Timeline(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestLocalTimeline_FanoutError(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	h := newTimelineHandler(t, noteRepo, newFailingTimelineService(t))
+
+	c, rec := newJSONRequest(t, "/api/notes/local-timeline", `{}`)
+	require.NoError(t, h.LocalTimeline(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestGlobalTimeline_FanoutError(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	h := newTimelineHandler(t, noteRepo, newFailingTimelineService(t))
+
+	c, rec := newJSONRequest(t, "/api/notes/global-timeline", `{}`)
+	require.NoError(t, h.GlobalTimeline(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestHybridTimeline_AuthRequired(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	h := newTimelineHandler(t, noteRepo, newFailingTimelineService(t))
+
+	c, rec := newJSONRequest(t, "/api/notes/hybrid-timeline", `{}`)
+	require.NoError(t, h.HybridTimeline(c))
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestHybridTimeline_FanoutError(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	h := newTimelineHandler(t, noteRepo, newFailingTimelineService(t))
+
+	c, rec := newJSONRequest(t, "/api/notes/hybrid-timeline", `{}`)
+	setAuthUser(c, &model.User{ID: "u"})
+	require.NoError(t, h.HybridTimeline(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestTimeline_HappyPathHome(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteID := seedTimelineNote(noteRepo)
+	tl, fanout := newRealTimelineService(t, noteRepo)
+	require.NoError(t, fanout.Push(context.Background(), coretimeline.HomeTimelineName("viewer"), noteID, 100))
+
+	h := newTimelineHandler(t, noteRepo, tl)
+	c, rec := newJSONRequest(t, "/api/notes/timeline", `{}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.Timeline(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+}
+
+func TestTimeline_HappyPathLocal(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteID := seedTimelineNote(noteRepo)
+	tl, fanout := newRealTimelineService(t, noteRepo)
+	require.NoError(t, fanout.Push(context.Background(), coretimeline.LocalTimeline, noteID, 100))
+
+	h := newTimelineHandler(t, noteRepo, tl)
+	// limit clamping もここで踏んでおく
+	c, rec := newJSONRequest(t, "/api/notes/local-timeline", `{"limit":1000}`)
+	require.NoError(t, h.LocalTimeline(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+}
+
+func TestTimeline_HappyPathGlobal(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteID := seedTimelineNote(noteRepo)
+	tl, fanout := newRealTimelineService(t, noteRepo)
+	require.NoError(t, fanout.Push(context.Background(), coretimeline.GlobalTimeline, noteID, 100))
+
+	h := newTimelineHandler(t, noteRepo, tl)
+	c, rec := newJSONRequest(t, "/api/notes/global-timeline", `{}`)
+	require.NoError(t, h.GlobalTimeline(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestTimeline_HappyPathHybrid(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteID := seedTimelineNote(noteRepo)
+	tl, fanout := newRealTimelineService(t, noteRepo)
+	ctx := context.Background()
+	require.NoError(t, fanout.Push(ctx, coretimeline.HomeTimelineName("viewer"), noteID, 100))
+
+	h := newTimelineHandler(t, noteRepo, tl)
+	c, rec := newJSONRequest(t, "/api/notes/hybrid-timeline", `{}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.HybridTimeline(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+}

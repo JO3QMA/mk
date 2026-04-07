@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/users"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
+	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -39,6 +40,11 @@ func (s *Server) setupRoutes() {
 	userService := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
 
+	// Timeline services (Redis-backed fanout)
+	fanoutTimelineService := coretimeline.NewFanoutTimelineService(s.redis.Timelines, idGen)
+	timelineService := coretimeline.NewService(fanoutTimelineService, noteRepo, followingRepo)
+	noteCreateService.SetFanoutHook(coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo))
+
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -52,7 +58,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/ping", metaHandler.Ping)
 
 	// Notes endpoints
-	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, idGen)
+	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, idGen)
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())
@@ -62,6 +68,10 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/conversation", notesHandler.Conversation)
 	api.POST("/notes/search", notesHandler.Search)
 	api.POST("/notes/state", notesHandler.State, middleware.RequireAuth())
+	api.POST("/notes/timeline", notesHandler.Timeline, middleware.RequireAuth())
+	api.POST("/notes/local-timeline", notesHandler.LocalTimeline)
+	api.POST("/notes/global-timeline", notesHandler.GlobalTimeline)
+	api.POST("/notes/hybrid-timeline", notesHandler.HybridTimeline, middleware.RequireAuth())
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)

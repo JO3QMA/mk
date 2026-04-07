@@ -25,7 +25,7 @@ func newQueryHandler(t *testing.T) (*Handler, *testutil.MockNoteRepository) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, idGen)
 	return h, noteRepo
 }
 
@@ -271,7 +271,7 @@ func newFailingQueryHandler(t *testing.T) *Handler {
 	createSvc := corenote.NewCreateService(repo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(repo)
 	querySvc := corenote.NewQueryService(repo, nil)
-	return NewHandler(repo, createSvc, deleteSvc, querySvc, idGen)
+	return NewHandler(repo, createSvc, deleteSvc, querySvc, nil, idGen)
 }
 
 func TestRenotes_RepoError(t *testing.T) {
@@ -349,7 +349,7 @@ func TestShow_FallbackNoQueryService(t *testing.T) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	// queryServiceなしで初期化することでフォールバック経路を取る
-	h := NewHandler(noteRepo, createSvc, deleteSvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, nil, nil, idGen)
 
 	seedPublicNote(noteRepo, "n1")
 	c, rec := newJSONRequest(t, "/api/notes/show", `{"noteId":"n1"}`)

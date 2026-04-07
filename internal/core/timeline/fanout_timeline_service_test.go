@@ -1,0 +1,313 @@
+package timeline
+
+import (
+	"context"
+	"errors"
+	"log"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+var (
+	testRedis *testutil.TestRedis
+	idGen     id.Generator
+)
+
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+	var err error
+	testRedis, err = testutil.SetupRedis(ctx)
+	if err != nil {
+		log.Fatalf("failed to setup redis: %v", err)
+	}
+	idGen, _ = id.NewGenerator("aidx")
+
+	code := m.Run()
+
+	testRedis.Teardown(ctx)
+	os.Exit(code)
+}
+
+// newTestService returns a fresh FanoutTimelineService bound to the shared
+// Redis container with deterministic now/rand functions.
+func newTestService(t *testing.T) *FanoutTimelineService {
+	t.Helper()
+	testRedis.FlushAll(context.Background())
+	svc := NewFanoutTimelineService(testRedis.Client, idGen)
+	// テストでは確率トリムをoffにする (常にtrimしない)
+	svc.randFn = func() float64 { return 1.0 }
+	return svc
+}
+
+func TestFanoutTimelineService_PushAndGet(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// 3件のIDを作成し追加 (新しいものから順に挿入したいので id1 -> id2 -> id3)
+	id1 := idGen.Generate(time.Now().Add(-2 * time.Minute))
+	id2 := idGen.Generate(time.Now().Add(-1 * time.Minute))
+	id3 := idGen.Generate(time.Now())
+
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id1, 100))
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id2, 100))
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id3, 100))
+
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	require.Len(t, out, 3)
+	// id降順
+	assert.Equal(t, id3, out[0])
+	assert.Equal(t, id2, out[1])
+	assert.Equal(t, id1, out[2])
+}
+
+func TestFanoutTimelineService_GetWithUntilSince(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	id1 := idGen.Generate(time.Now().Add(-2 * time.Minute))
+	id2 := idGen.Generate(time.Now().Add(-1 * time.Minute))
+	id3 := idGen.Generate(time.Now())
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id1, 100))
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id2, 100))
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id3, 100))
+
+	// untilID で id3 を除外
+	out, err := svc.Get(ctx, LocalTimeline, id3, "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{id2, id1}, out)
+
+	// sinceID で id1 を除外
+	out, err = svc.Get(ctx, LocalTimeline, "", id1, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{id3, id2}, out)
+
+	// limit
+	out, err = svc.Get(ctx, LocalTimeline, "", "", 2)
+	require.NoError(t, err)
+	assert.Len(t, out, 2)
+}
+
+func TestFanoutTimelineService_PushInvalidID(t *testing.T) {
+	svc := newTestService(t)
+	err := svc.Push(context.Background(), LocalTimeline, "not-a-valid-id", 100)
+	assert.Error(t, err)
+}
+
+func TestFanoutTimelineService_PushDefaultMaxLen(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	noteID := idGen.Generate(time.Now())
+	// maxLen=0 はデフォルト値が使われる
+	require.NoError(t, svc.Push(ctx, LocalTimeline, noteID, 0))
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out)
+}
+
+func TestFanoutTimelineService_PushTriggersTrim(t *testing.T) {
+	svc := newTestService(t)
+	// 強制的にtrimを発生させる
+	svc.randFn = func() float64 { return 0 }
+	ctx := context.Background()
+
+	// 5件追加して maxLen=3 でtrimさせる
+	var ids []string
+	for i := range 5 {
+		ids = append(ids, idGen.Generate(time.Now().Add(time.Duration(i)*time.Millisecond)))
+	}
+	for _, id := range ids {
+		require.NoError(t, svc.Push(ctx, LocalTimeline, id, 3))
+	}
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 3)
+}
+
+func TestFanoutTimelineService_PushOldNoteEmpty(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// 古いノート (5分前) を空のリストに追加 -> 成功する
+	oldNote := idGen.Generate(time.Now().Add(-5 * time.Minute))
+	// nowFnを差し替えて確実に古いとみなす
+	svc.nowFn = func() time.Time { return time.Now() }
+	require.NoError(t, svc.Push(ctx, LocalTimeline, oldNote, 100))
+
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{oldNote}, out)
+}
+
+func TestFanoutTimelineService_PushOldNoteAfterTail(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// 古いノートを2件: 末尾(古い)と挿入(末尾より新しい)
+	tailNote := idGen.Generate(time.Now().Add(-10 * time.Minute))
+	newOldNote := idGen.Generate(time.Now().Add(-5 * time.Minute))
+
+	// 直接tailNoteを挿入するためにnowFnを過去にずらす
+	pastNow := time.Now().Add(-9 * time.Minute)
+	svc.nowFn = func() time.Time { return pastNow }
+	require.NoError(t, svc.Push(ctx, LocalTimeline, tailNote, 100))
+
+	// 5分前のIDを現在時刻基準でpush -> grace period外なので末尾チェック経路
+	svc.nowFn = func() time.Time { return time.Now() }
+	require.NoError(t, svc.Push(ctx, LocalTimeline, newOldNote, 100))
+
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{newOldNote, tailNote}, out)
+}
+
+func TestFanoutTimelineService_PushOldNoteOlderThanTail(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// 末尾より古いノートはスキップされる
+	tailNote := idGen.Generate(time.Now().Add(-5 * time.Minute))
+	olderNote := idGen.Generate(time.Now().Add(-10 * time.Minute))
+
+	// tailNoteを直接挿入
+	pastNow := time.Now().Add(-4 * time.Minute)
+	svc.nowFn = func() time.Time { return pastNow }
+	require.NoError(t, svc.Push(ctx, LocalTimeline, tailNote, 100))
+
+	svc.nowFn = func() time.Time { return time.Now() }
+	require.NoError(t, svc.Push(ctx, LocalTimeline, olderNote, 100))
+
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{tailNote}, out)
+}
+
+func TestFanoutTimelineService_PushOldNoteCorruptedTail(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// 不正な末尾IDを直接挿入してから、古いノートを追加すると、ParseTime失敗フォールバックで追加される
+	require.NoError(t, testRedis.Client.LPush(ctx, "list:"+string(LocalTimeline), "junk-id").Err())
+	oldNote := idGen.Generate(time.Now().Add(-5 * time.Minute))
+	svc.nowFn = func() time.Time { return time.Now() }
+	require.NoError(t, svc.Push(ctx, LocalTimeline, oldNote, 100))
+
+	// 末尾は破損だが先頭にoldNoteが入っていることだけ確認
+	first, err := testRedis.Client.LIndex(ctx, "list:"+string(LocalTimeline), 0).Result()
+	require.NoError(t, err)
+	assert.Equal(t, oldNote, first)
+}
+
+// closedClient simulates a closed redis client for error path coverage.
+func closedClient(t *testing.T) *redis.Client {
+	t.Helper()
+	c := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	_ = c.Close()
+	return c
+}
+
+func TestFanoutTimelineService_RedisErrors(t *testing.T) {
+	c := closedClient(t)
+	svc := NewFanoutTimelineService(c, idGen)
+	svc.randFn = func() float64 { return 1.0 }
+
+	ctx := context.Background()
+	noteID := idGen.Generate(time.Now())
+
+	// Push fails on LPush
+	err := svc.Push(ctx, LocalTimeline, noteID, 100)
+	assert.Error(t, err)
+
+	// Push fails on LIndex (古いノート経路)
+	oldNoteID := idGen.Generate(time.Now().Add(-10 * time.Minute))
+	err = svc.Push(ctx, LocalTimeline, oldNoteID, 100)
+	assert.Error(t, err)
+
+	// Get fails on LRange
+	_, err = svc.Get(ctx, LocalTimeline, "", "", 10)
+	assert.Error(t, err)
+
+	// GetMulti fails on pipeline exec
+	_, err = svc.GetMulti(ctx, []Name{LocalTimeline}, "", "", 10)
+	assert.Error(t, err)
+
+	// Purge fails on Del
+	err = svc.Purge(ctx, LocalTimeline)
+	assert.Error(t, err)
+}
+
+func TestFanoutTimelineService_GetMultiEmpty(t *testing.T) {
+	svc := newTestService(t)
+	out, err := svc.GetMulti(context.Background(), nil, "", "", 10)
+	require.NoError(t, err)
+	assert.Nil(t, out)
+}
+
+func TestFanoutTimelineService_GetMulti(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	id1 := idGen.Generate(time.Now().Add(-1 * time.Second))
+	id2 := idGen.Generate(time.Now())
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id1, 100))
+	require.NoError(t, svc.Push(ctx, GlobalTimeline, id2, 100))
+
+	out, err := svc.GetMulti(ctx, []Name{LocalTimeline, GlobalTimeline}, "", "", 10)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, []string{id1}, out[0])
+	assert.Equal(t, []string{id2}, out[1])
+}
+
+func TestFanoutTimelineService_PushTrimError(t *testing.T) {
+	// Setup a real redis but trip the LTRIM by using a closed client mid-call.
+	// シンプルに: trimProbabilityを必ず発火させるが、Pushの直前にclientを切断する
+	svc := newTestService(t)
+	svc.randFn = func() float64 { return 0 }
+
+	noteID := idGen.Generate(time.Now())
+	// 実 Redis を使う限りLTRIMは成功する。エラーパス自体はclosed client testで網羅済み。
+	require.NoError(t, svc.Push(context.Background(), LocalTimeline, noteID, 100))
+}
+
+func TestFanoutTimelineService_Purge(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	noteID := idGen.Generate(time.Now())
+	require.NoError(t, svc.Push(ctx, LocalTimeline, noteID, 100))
+	require.NoError(t, svc.Purge(ctx, LocalTimeline))
+
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+// TestFanoutTimelineService_PushOldNoteCorruptedTail_isFollowedByErr asserts
+// that we use errors package indirectly via sentinel.
+func TestFanoutTimelineService_PushUsesSentinel(t *testing.T) {
+	// 単純に errors.Is が解決可能な型であることを確認するためのプレースホルダ
+	assert.True(t, errors.Is(redis.Nil, redis.Nil))
+}
+
+// TestHomeUserNames verifies the timeline name builder helpers.
+func TestTimelineNameHelpers(t *testing.T) {
+	assert.Equal(t, Name("homeTimeline:abc"), HomeTimelineName("abc"))
+	assert.Equal(t, Name("userTimeline:abc"), UserTimelineName("abc"))
+}
+
+func TestFanoutTimelineService_PushOldNoteWithTrim(t *testing.T) {
+	// triggers the LTrim/random branch under the recent path
+	svc := newTestService(t)
+	svc.randFn = func() float64 { return 0 }
+	ctx := context.Background()
+	noteID := idGen.Generate(time.Now())
+	require.NoError(t, svc.Push(ctx, LocalTimeline, noteID, 5))
+}

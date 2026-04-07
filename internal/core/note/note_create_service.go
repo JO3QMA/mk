@@ -48,17 +48,26 @@ type PollInput struct {
 	ExpiresAt *time.Time
 }
 
+// TimelineFanoutHook is invoked after a note has been persisted so that the
+// timeline subsystem can deliver the note to interested feeds. パッケージ間の
+// 循環依存を避けるためinterfaceで受け取る (実装は core/timeline)。
+type TimelineFanoutHook interface {
+	OnNoteCreated(note *model.Note, author *model.User)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
 	noteRepo      repository.NoteRepository
 	pollRepo      repository.PollRepository
 	followingRepo repository.FollowingRepository
 	idGen         id.Generator
+	fanoutHook    TimelineFanoutHook
 }
 
 // NewCreateService creates a new CreateService.
 // followingRepo は省略可 (nil)。指定された場合、followers可視性ノートへの
 // reply/renoteで閲覧権限を厳格にチェックする。
+// fanoutHookも省略可 (nil)。設定されていればnote作成成功時にコールバックされる。
 func NewCreateService(
 	noteRepo repository.NoteRepository,
 	pollRepo repository.PollRepository,
@@ -71,6 +80,13 @@ func NewCreateService(
 		followingRepo: followingRepo,
 		idGen:         idGen,
 	}
+}
+
+// SetFanoutHook attaches a TimelineFanoutHook to be invoked on note creation.
+// 後付けセッターにすることで、Wireのような循環依存問題を起こさず、テストでも
+// 簡単に差し替え可能にする。
+func (s *CreateService) SetFanoutHook(h TimelineFanoutHook) {
+	s.fanoutHook = h
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -191,11 +207,20 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	}
 
 	// Userリレーションをpreloadして返す。失敗時は引数のUserをそのまま埋めて返す
+	finalNote := note
 	if loaded, err := s.noteRepo.FindByIDWithUser(noteID); err == nil && loaded != nil {
-		return loaded, nil
+		finalNote = loaded
+	} else {
+		finalNote.User = in.User
 	}
-	note.User = in.User
-	return note, nil
+
+	// 永続化が成功してからtimelineへ配信する。fanoutが失敗してもnote自体は
+	// 既に保存済みなので、ハンドラへはエラーを返さずベストエフォートとする。
+	if s.fanoutHook != nil {
+		s.fanoutHook.OnNoteCreated(finalNote, in.User)
+	}
+
+	return finalNote, nil
 }
 
 // mentionRegex matches @username and @username@host occurrences anywhere in

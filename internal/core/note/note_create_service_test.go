@@ -368,3 +368,48 @@ func TestIsPureRenote(t *testing.T) {
 }
 
 func ptrString(s string) *string { return &s }
+
+// recordingHook captures fanout invocations for tests.
+type recordingHook struct {
+	called bool
+	note   *model.Note
+	user   *model.User
+}
+
+func (h *recordingHook) OnNoteCreated(n *model.Note, u *model.User) {
+	h.called = true
+	h.note = n
+	h.user = u
+}
+
+func TestCreateService_FanoutHookInvoked(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	hook := &recordingHook{}
+	svc.SetFanoutHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{User: user, Text: &text})
+	require.NoError(t, err)
+	assert.True(t, hook.called)
+	assert.Equal(t, created.ID, hook.note.ID)
+	assert.Equal(t, user, hook.user)
+}
+
+func TestCreateService_FanoutHookCalledOnFallbackPath(t *testing.T) {
+	// FindByIDWithUser失敗時もfanoutは発火する
+	idGen, _ := id.NewGenerator("aidx")
+	noteRepo := &findFailNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	pollRepo := testutil.NewMockPollRepository()
+	svc := note.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	hook := &recordingHook{}
+	svc.SetFanoutHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text})
+	require.NoError(t, err)
+	assert.True(t, hook.called)
+	// fallbackパスではin.Userが埋め込まれる
+	assert.Equal(t, user, hook.note.User)
+}

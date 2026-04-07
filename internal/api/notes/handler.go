@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/core/note"
+	"github.com/shiroha-a/mk/internal/core/timeline"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -16,29 +17,32 @@ import (
 
 // Handler handles note-related API endpoints.
 type Handler struct {
-	noteRepo      repository.NoteRepository
-	createService *note.CreateService
-	deleteService *note.DeleteService
-	queryService  *note.QueryService
-	idGen         id.Generator
+	noteRepo        repository.NoteRepository
+	createService   *note.CreateService
+	deleteService   *note.DeleteService
+	queryService    *note.QueryService
+	timelineService *timeline.Service
+	idGen           id.Generator
 }
 
 // NewHandler creates a new notes Handler.
-// queryServiceがnilの場合は読み取り系の新エンドポイントは利用不可となる
-// (テストで一部だけ初期化する用途を許容する)。
+// queryService/timelineServiceがnilの場合は対応する読み取り系エンドポイント
+// は利用不可となる (テストで一部だけ初期化する用途を許容する)。
 func NewHandler(
 	noteRepo repository.NoteRepository,
 	createService *note.CreateService,
 	deleteService *note.DeleteService,
 	queryService *note.QueryService,
+	timelineService *timeline.Service,
 	idGen id.Generator,
 ) *Handler {
 	return &Handler{
-		noteRepo:      noteRepo,
-		createService: createService,
-		deleteService: deleteService,
-		queryService:  queryService,
-		idGen:         idGen,
+		noteRepo:        noteRepo,
+		createService:   createService,
+		deleteService:   deleteService,
+		queryService:    queryService,
+		timelineService: timelineService,
+		idGen:           idGen,
 	}
 }
 
