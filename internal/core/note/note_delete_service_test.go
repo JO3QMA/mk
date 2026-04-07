@@ -48,3 +48,45 @@ func TestDeleteService_NilUser(t *testing.T) {
 	err := svc.Delete(nil, "x")
 	require.Error(t, err)
 }
+
+// failingDeleteRepo wraps MockNoteRepository to fail on Delete only.
+type failingDeleteRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (r *failingDeleteRepo) Delete(_ *model.Note) error {
+	return errors.New("delete failed")
+}
+
+func TestDeleteService_RepoDeleteError(t *testing.T) {
+	mockRepo := testutil.NewMockNoteRepository()
+	mockRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "user1"}
+	svc := note.NewDeleteService(&failingDeleteRepo{MockNoteRepository: mockRepo})
+	err := svc.Delete(&model.User{ID: "user1"}, "n1")
+	require.Error(t, err)
+}
+
+// recordingDeleteFederationHook captures delete federation calls.
+type recordingDeleteFederationHook struct {
+	called bool
+	author *model.User
+	note   *model.Note
+}
+
+func (h *recordingDeleteFederationHook) OnNoteDeleted(author *model.User, n *model.Note) {
+	h.called = true
+	h.author = author
+	h.note = n
+}
+
+func TestDeleteService_FederationHookInvoked(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "user1"}
+	svc := note.NewDeleteService(noteRepo)
+	hook := &recordingDeleteFederationHook{}
+	svc.SetFederationHook(hook)
+
+	require.NoError(t, svc.Delete(&model.User{ID: "user1"}, "n1"))
+	assert.True(t, hook.called)
+	assert.Equal(t, "n1", hook.note.ID)
+}

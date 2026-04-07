@@ -388,3 +388,56 @@ func TestService_NotificationHook_SelfReactionSkipped(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, hook.called)
 }
+
+// recordingFederationHook captures reaction federation calls.
+type recordingFederationHook struct {
+	added   []string // noteID:reaction
+	removed []string
+}
+
+func (h *recordingFederationHook) OnReactionAdded(_ *model.User, target *model.Note, rx string) {
+	h.added = append(h.added, target.ID+":"+rx)
+}
+
+func (h *recordingFederationHook) OnReactionRemoved(_ *model.User, target *model.Note, rx string) {
+	h.removed = append(h.removed, target.ID+":"+rx)
+}
+
+func TestService_FederationHook_OnCreate(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"n1:👍"}, hook.added)
+	assert.Empty(t, hook.removed)
+}
+
+func TestService_FederationHook_OnReplace(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.NoError(t, err)
+	_, err = svc.Create(&model.User{ID: "viewer"}, "n1", "🎉")
+	require.NoError(t, err)
+	// 置き換え時には Removed (古い) → Added (新しい) の順に発火
+	assert.Equal(t, []string{"n1:👍", "n1:🎉"}, hook.added)
+	assert.Equal(t, []string{"n1:👍"}, hook.removed)
+}
+
+func TestService_FederationHook_OnDelete(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	hook := &recordingFederationHook{}
+	svc.SetFederationHook(hook)
+
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.NoError(t, err)
+	require.NoError(t, svc.Delete(&model.User{ID: "viewer"}, "n1"))
+	assert.Equal(t, []string{"n1:👍"}, hook.removed)
+}

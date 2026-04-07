@@ -138,6 +138,13 @@ type Like struct {
 	Content string `json:"content,omitempty"`
 }
 
+// Tombstone represents a deleted object placeholder used as the object of a
+// Delete activity.
+type Tombstone struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
 // Announce represents a Renote (boost) activity.
 type Announce struct {
 	Activity

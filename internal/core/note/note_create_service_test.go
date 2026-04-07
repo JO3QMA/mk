@@ -475,3 +475,27 @@ func TestCreateService_FederationHookInvoked(t *testing.T) {
 	assert.True(t, hook.called)
 	assert.Equal(t, created.ID, hook.note.ID)
 }
+
+func TestIsPureRenote_ModelNote(t *testing.T) {
+	renoteID := "r1"
+	text := "x"
+	cw := "x"
+	cases := []struct {
+		name string
+		n    *model.Note
+		want bool
+	}{
+		{"nil", nil, false},
+		{"no renote", &model.Note{}, false},
+		{"pure", &model.Note{RenoteID: &renoteID}, true},
+		{"with text", &model.Note{RenoteID: &renoteID, Text: &text}, false},
+		{"with cw", &model.Note{RenoteID: &renoteID, CW: &cw}, false},
+		{"with files", &model.Note{RenoteID: &renoteID, FileIDs: []string{"f"}}, false},
+		{"with poll", &model.Note{RenoteID: &renoteID, HasPoll: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, note.IsPureRenote(tc.n))
+		})
+	}
+}

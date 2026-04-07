@@ -20,18 +20,20 @@ func newNoteDeliveryHook(t *testing.T) (
 	*testutil.MockUserRepository,
 	*testutil.MockFollowingRepository,
 	*testutil.MockUserKeypairRepository,
+	*testutil.MockNoteRepository,
 ) {
 	t.Helper()
 	enq := &stubEnqueuer{}
 	userRepo := testutil.NewMockUserRepository()
 	followingRepo := testutil.NewMockFollowingRepository()
 	keypairRepo := testutil.NewMockUserKeypairRepository()
+	noteRepo := testutil.NewMockNoteRepository()
 	urls := activitypub.NewURLBuilder("https://example.com")
 	deliver := federation.NewDeliverService(enq, userRepo, followingRepo, keypairRepo, urls)
 	renderer := activitypub.NewRenderer(urls)
 	idGen, _ := id.NewGenerator("aidx")
-	hook := federation.NewNoteDeliveryHook(deliver, renderer, idGen, userRepo)
-	return hook, enq, userRepo, followingRepo, keypairRepo
+	hook := federation.NewNoteDeliveryHook(deliver, renderer, urls, idGen, userRepo, noteRepo)
+	return hook, enq, userRepo, followingRepo, keypairRepo, noteRepo
 }
 
 func makeLocalAuthor(t *testing.T, userRepo *testutil.MockUserRepository, keypairRepo *testutil.MockUserKeypairRepository) *model.User {
@@ -56,7 +58,7 @@ func makeNote(authorID string, visibility model.NoteVisibility) *model.Note {
 }
 
 func TestNoteDeliveryHook_Public_Followers(t *testing.T) {
-	hook, enq, userRepo, followingRepo, keypairRepo := newNoteDeliveryHook(t)
+	hook, enq, userRepo, followingRepo, keypairRepo, _ := newNoteDeliveryHook(t)
 	author := makeLocalAuthor(t, userRepo, keypairRepo)
 	followingRepo.RemoteInboxes[author.ID] = []string{"https://r.example/inbox"}
 	note := makeNote(author.ID, model.NoteVisibilityPublic)
@@ -72,7 +74,7 @@ func TestNoteDeliveryHook_Public_Followers(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_Home_DeliversToFollowers(t *testing.T) {
-	hook, enq, userRepo, followingRepo, keypairRepo := newNoteDeliveryHook(t)
+	hook, enq, userRepo, followingRepo, keypairRepo, _ := newNoteDeliveryHook(t)
 	author := makeLocalAuthor(t, userRepo, keypairRepo)
 	followingRepo.RemoteInboxes[author.ID] = []string{"https://r.example/inbox"}
 	note := makeNote(author.ID, model.NoteVisibilityHome)
@@ -82,7 +84,7 @@ func TestNoteDeliveryHook_Home_DeliversToFollowers(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_FollowersOnly_DeliversToFollowers(t *testing.T) {
-	hook, enq, userRepo, followingRepo, keypairRepo := newNoteDeliveryHook(t)
+	hook, enq, userRepo, followingRepo, keypairRepo, _ := newNoteDeliveryHook(t)
 	author := makeLocalAuthor(t, userRepo, keypairRepo)
 	followingRepo.RemoteInboxes[author.ID] = []string{"https://r.example/inbox"}
 	note := makeNote(author.ID, model.NoteVisibilityFollowers)
@@ -92,7 +94,7 @@ func TestNoteDeliveryHook_FollowersOnly_DeliversToFollowers(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_LocalOnly_Skips(t *testing.T) {
-	hook, enq, userRepo, _, keypairRepo := newNoteDeliveryHook(t)
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
 	author := makeLocalAuthor(t, userRepo, keypairRepo)
 	note := makeNote(author.ID, model.NoteVisibilityPublic)
 	note.LocalOnly = true
@@ -102,7 +104,7 @@ func TestNoteDeliveryHook_LocalOnly_Skips(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_RemoteAuthor_Skips(t *testing.T) {
-	hook, enq, _, _, _ := newNoteDeliveryHook(t)
+	hook, enq, _, _, _, _ := newNoteDeliveryHook(t)
 	host := "remote.example"
 	author := &model.User{ID: "bob", Username: "bob", Host: &host}
 	note := makeNote(author.ID, model.NoteVisibilityPublic)
@@ -112,7 +114,7 @@ func TestNoteDeliveryHook_RemoteAuthor_Skips(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_NilArgs(t *testing.T) {
-	hook, enq, _, _, _ := newNoteDeliveryHook(t)
+	hook, enq, _, _, _, _ := newNoteDeliveryHook(t)
 	// note nil
 	hook.OnNoteCreated(nil, &model.User{ID: "x"})
 	// author nil
@@ -121,7 +123,7 @@ func TestNoteDeliveryHook_NilArgs(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_Specified_RemoteUsers(t *testing.T) {
-	hook, enq, userRepo, _, keypairRepo := newNoteDeliveryHook(t)
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
 	author := makeLocalAuthor(t, userRepo, keypairRepo)
 
 	// 配信先: リモートユーザー1人 + ローカル1人 + 不在1人
@@ -139,7 +141,7 @@ func TestNoteDeliveryHook_Specified_RemoteUsers(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_Public_DeliverError_DoesNotPanic(t *testing.T) {
-	hook, enq, userRepo, followingRepo, _ := newNoteDeliveryHook(t)
+	hook, enq, userRepo, followingRepo, _, _ := newNoteDeliveryHook(t)
 	author := &model.User{ID: "alice", Username: "alice"}
 	userRepo.Users["alice"] = author
 	// keypair が無いので signerCredentials が失敗する → DeliverToFollowers は err
@@ -151,7 +153,7 @@ func TestNoteDeliveryHook_Public_DeliverError_DoesNotPanic(t *testing.T) {
 }
 
 func TestNoteDeliveryHook_Specified_DeliverError_DoesNotPanic(t *testing.T) {
-	hook, enq, userRepo, _, _ := newNoteDeliveryHook(t)
+	hook, enq, userRepo, _, _, _ := newNoteDeliveryHook(t)
 	author := &model.User{ID: "alice", Username: "alice"}
 	userRepo.Users["alice"] = author
 	host := "remote.example"
@@ -163,4 +165,73 @@ func TestNoteDeliveryHook_Specified_DeliverError_DoesNotPanic(t *testing.T) {
 
 	hook.OnNoteCreated(note, author)
 	assert.Empty(t, enq.calls) // signer key 不在で enqueue 失敗
+}
+
+func TestNoteDeliveryHook_PureRenote_LocalTarget_EmitsAnnounce(t *testing.T) {
+	hook, enq, userRepo, followingRepo, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+	followingRepo.RemoteInboxes[author.ID] = []string{"https://r.example/inbox"}
+
+	target := &model.Note{ID: "tgt1", UserID: "other", Visibility: model.NoteVisibilityPublic}
+	noteRepo.Notes["tgt1"] = target
+
+	renoteID := "tgt1"
+	renote := makeNote(author.ID, model.NoteVisibilityPublic)
+	renote.RenoteID = &renoteID
+
+	hook.OnNoteCreated(renote, author)
+	require.Len(t, enq.calls, 1)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(enq.calls[0].Body, &got))
+	assert.Equal(t, "Announce", got["type"])
+	assert.Equal(t, "https://example.com/notes/tgt1", got["object"])
+}
+
+func TestNoteDeliveryHook_PureRenote_RemoteTarget_UsesURI(t *testing.T) {
+	hook, enq, userRepo, followingRepo, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+	followingRepo.RemoteInboxes[author.ID] = []string{"https://r.example/inbox"}
+
+	uri := "https://remote.example/notes/orig"
+	target := &model.Note{ID: "tgt1", UserID: "remote", Visibility: model.NoteVisibilityPublic, URI: &uri}
+	noteRepo.Notes["tgt1"] = target
+
+	renoteID := "tgt1"
+	renote := makeNote(author.ID, model.NoteVisibilityPublic)
+	renote.RenoteID = &renoteID
+
+	hook.OnNoteCreated(renote, author)
+	require.Len(t, enq.calls, 1)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(enq.calls[0].Body, &got))
+	assert.Equal(t, "Announce", got["type"])
+	assert.Equal(t, uri, got["object"])
+}
+
+func TestNoteDeliveryHook_PureRenote_TargetNotFound(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	renoteID := "missing"
+	renote := makeNote(author.ID, model.NoteVisibilityPublic)
+	renote.RenoteID = &renoteID
+
+	hook.OnNoteCreated(renote, author)
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeliveryHook_PureRenote_DeliverError_DoesNotPanic(t *testing.T) {
+	hook, enq, userRepo, followingRepo, _, noteRepo := newNoteDeliveryHook(t)
+	author := &model.User{ID: "alice", Username: "alice"}
+	userRepo.Users["alice"] = author
+	followingRepo.RemoteInboxes[author.ID] = []string{"https://r.example/inbox"}
+	noteRepo.Notes["tgt"] = &model.Note{ID: "tgt", UserID: "other"}
+
+	renoteID := "tgt"
+	renote := makeNote(author.ID, model.NoteVisibilityPublic)
+	renote.RenoteID = &renoteID
+
+	hook.OnNoteCreated(renote, author)
+	assert.Empty(t, enq.calls)
 }

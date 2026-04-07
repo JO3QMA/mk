@@ -63,6 +63,14 @@ type NotificationHook interface {
 	OnReactionCreated(notifieeID, notifierID, noteID, reaction string)
 }
 
+// FederationHook is invoked after a reaction is created or removed so that
+// the ActivityPub layer can deliver Like / Undo Like activities. パッケージ間
+// の循環依存を避けるためinterfaceで受け取る (実装は core/federation)。
+type FederationHook interface {
+	OnReactionAdded(reactor *model.User, target *model.Note, reaction string)
+	OnReactionRemoved(reactor *model.User, target *model.Note, reaction string)
+}
+
 // Service manages note reactions.
 type Service struct {
 	noteRepo         repository.NoteRepository
@@ -72,6 +80,7 @@ type Service struct {
 	idGen            id.Generator
 	notificationHook NotificationHook
 	blockingChecker  BlockingChecker
+	federationHook   FederationHook
 }
 
 // NewService constructs a new ReactionService.
@@ -99,6 +108,12 @@ func (s *Service) SetNotificationHook(h NotificationHook) {
 // SetBlockingChecker attaches a BlockingChecker used by Create.
 func (s *Service) SetBlockingChecker(c BlockingChecker) {
 	s.blockingChecker = c
+}
+
+// SetFederationHook attaches a FederationHook used after Create / Delete
+// succeed.
+func (s *Service) SetFederationHook(h FederationHook) {
+	s.federationHook = h
 }
 
 // Create attaches a reaction by user to the target note.
@@ -144,6 +159,10 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 		}
 		// 集計列も古いリアクションを-1
 		_ = s.noteRepo.IncrementReaction(target.ID, existing.Reaction, -1)
+		// 連合先には古いリアクションを Undo Like で送る
+		if s.federationHook != nil {
+			s.federationHook.OnReactionRemoved(user, target, existing.Reaction)
+		}
 	}
 
 	rec := &model.NoteReaction{
@@ -160,6 +179,10 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 	// 通知発行 (自分自身へのリアクションは内部で抑制される)
 	if s.notificationHook != nil && target.UserID != user.ID {
 		s.notificationHook.OnReactionCreated(target.UserID, user.ID, target.ID, reaction)
+	}
+	// AP配信もベストエフォート。
+	if s.federationHook != nil {
+		s.federationHook.OnReactionAdded(user, target, reaction)
 	}
 
 	return reaction, nil
@@ -182,6 +205,9 @@ func (s *Service) Delete(user *model.User, noteID string) error {
 		return err
 	}
 	_ = s.noteRepo.IncrementReaction(target.ID, existing.Reaction, -1)
+	if s.federationHook != nil {
+		s.federationHook.OnReactionRemoved(user, target, existing.Reaction)
+	}
 	return nil
 }
 

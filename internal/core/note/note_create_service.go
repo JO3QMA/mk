@@ -344,3 +344,24 @@ func isPureRenote(in CreateInput) bool {
 	}
 	return true
 }
+
+// IsPureRenote reports whether the persisted note is a pure renote (no text,
+// no cw, no poll, no files). 連合先で Create と Announce を切り替える際に使う。
+func IsPureRenote(n *model.Note) bool {
+	if n == nil || n.RenoteID == nil {
+		return false
+	}
+	if n.Text != nil && *n.Text != "" {
+		return false
+	}
+	if n.CW != nil && *n.CW != "" {
+		return false
+	}
+	if len(n.FileIDs) > 0 {
+		return false
+	}
+	if n.HasPoll {
+		return false
+	}
+	return true
+}

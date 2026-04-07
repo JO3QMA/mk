@@ -186,6 +186,97 @@ func (r *Renderer) RenderAccept(actorID string, inner any) *Accept {
 	return a
 }
 
+// RenderLike returns a Like activity for the given reaction.
+// targetURI は対象ノートの canonical URI (リモートなら note.URI、ローカルなら
+// urls.NoteURI(note.ID))。
+func (r *Renderer) RenderLike(reactor *model.User, targetURI string, reaction string, likeID string) *Like {
+	l := &Like{
+		Activity: Activity{
+			Object: Object{
+				ID:   likeID,
+				Type: "Like",
+			},
+			Actor: r.urls.UserURI(reactor.ID),
+		},
+		Object:  targetURI,
+		Content: reaction,
+	}
+	AddContext(l)
+	return l
+}
+
+// RenderUndoLike wraps a previously emitted Like in an Undo activity.
+func (r *Renderer) RenderUndoLike(reactor *model.User, like *Like) *Undo {
+	u := &Undo{
+		Activity: Activity{
+			Object: Object{
+				ID:   like.ID + "/undo",
+				Type: "Undo",
+			},
+			Actor: r.urls.UserURI(reactor.ID),
+		},
+		Object: like,
+	}
+	AddContext(u)
+	return u
+}
+
+// RenderAnnounce returns an Announce activity for a pure renote.
+// targetURI は元ノートの URI (リモート / ローカル)。renoteID は renote 自身の ID。
+func (r *Renderer) RenderAnnounce(renoter *model.User, renoteID string, targetURI string) *Announce {
+	a := &Announce{
+		Activity: Activity{
+			Object: Object{
+				ID:   r.urls.NoteURI(renoteID) + "/activity",
+				Type: "Announce",
+			},
+			Actor: r.urls.UserURI(renoter.ID),
+			To:    []string{Public},
+			CC:    []string{r.urls.UserFollowers(renoter.ID)},
+		},
+		Object: targetURI,
+	}
+	AddContext(a)
+	return a
+}
+
+// RenderUndoAnnounce wraps a previously emitted Announce in an Undo activity.
+func (r *Renderer) RenderUndoAnnounce(renoter *model.User, announce *Announce) *Undo {
+	u := &Undo{
+		Activity: Activity{
+			Object: Object{
+				ID:   announce.ID + "/undo",
+				Type: "Undo",
+			},
+			Actor: r.urls.UserURI(renoter.ID),
+		},
+		Object: announce,
+	}
+	AddContext(u)
+	return u
+}
+
+// RenderDelete returns a Delete activity targeting the note URI. Object is a
+// Tombstone so receivers can match it to a previously known note.
+func (r *Renderer) RenderDelete(author *model.User, noteURI string) *Delete {
+	d := &Delete{
+		Activity: Activity{
+			Object: Object{
+				ID:   noteURI + "#Delete",
+				Type: "Delete",
+			},
+			Actor: r.urls.UserURI(author.ID),
+			To:    []string{Public},
+		},
+		Object: Tombstone{
+			ID:   noteURI,
+			Type: "Tombstone",
+		},
+	}
+	AddContext(d)
+	return d
+}
+
 // addressing computes to/cc lists for a note based on visibility.
 func (r *Renderer) addressing(n *model.Note) (to []string, cc []string) {
 	switch n.Visibility {

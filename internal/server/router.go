@@ -109,8 +109,10 @@ func (s *Server) setupRoutes() {
 
 	// AP delivery: DeliverService + フック登録 + asynq processor 登録
 	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
-	noteCreateService.SetFederationHook(corefederation.NewNoteDeliveryHook(deliverService, apRenderer, idGen, userRepo))
+	noteCreateService.SetFederationHook(corefederation.NewNoteDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo, noteRepo))
 	followingService.SetFederationHook(corefederation.NewFollowingDeliveryHook(deliverService, apRenderer, apURLs))
+	reactionService.SetFederationHook(corefederation.NewReactionDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo))
+	noteDeleteService.SetFederationHook(corefederation.NewNoteDeleteDeliveryHook(deliverService, apRenderer, apURLs))
 	deliverProcessor := processors.NewDeliverProcessor(apClient)
 	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 

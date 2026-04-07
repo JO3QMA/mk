@@ -189,3 +189,61 @@ func TestStringValue(t *testing.T) {
 	assert.Equal(t, "x", stringValue(&s))
 	assert.Equal(t, "", stringValue(nil))
 }
+
+func TestRenderer_RenderLike(t *testing.T) {
+	r := newRenderer()
+	reactor := &model.User{ID: "alice"}
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", "🎉", "https://example.com/likes/l1")
+	assert.Equal(t, "Like", l.Type)
+	assert.Equal(t, "https://example.com/users/alice", l.Actor)
+	assert.Equal(t, "https://remote.example/notes/n1", l.Object)
+	assert.Equal(t, "🎉", l.Content)
+	assert.Equal(t, "https://example.com/likes/l1", l.ID)
+}
+
+func TestRenderer_RenderUndoLike(t *testing.T) {
+	r := newRenderer()
+	reactor := &model.User{ID: "alice"}
+	like := r.RenderLike(reactor, "https://remote.example/notes/n1", "🎉", "https://example.com/likes/l1")
+	u := r.RenderUndoLike(reactor, like)
+	assert.Equal(t, "Undo", u.Type)
+	assert.Equal(t, "https://example.com/users/alice", u.Actor)
+	assert.Equal(t, "https://example.com/likes/l1/undo", u.ID)
+	require.NotNil(t, u.Object)
+}
+
+func TestRenderer_RenderAnnounce(t *testing.T) {
+	r := newRenderer()
+	renoter := &model.User{ID: "alice"}
+	a := r.RenderAnnounce(renoter, "renote1", "https://remote.example/notes/orig")
+	assert.Equal(t, "Announce", a.Type)
+	assert.Equal(t, "https://example.com/users/alice", a.Actor)
+	assert.Equal(t, "https://remote.example/notes/orig", a.Object)
+	assert.Equal(t, "https://example.com/notes/renote1/activity", a.ID)
+	assert.Contains(t, a.To, Public)
+	assert.Contains(t, a.CC, "https://example.com/users/alice/followers")
+}
+
+func TestRenderer_RenderUndoAnnounce(t *testing.T) {
+	r := newRenderer()
+	renoter := &model.User{ID: "alice"}
+	announce := r.RenderAnnounce(renoter, "renote1", "https://remote.example/notes/orig")
+	u := r.RenderUndoAnnounce(renoter, announce)
+	assert.Equal(t, "Undo", u.Type)
+	assert.Equal(t, "https://example.com/users/alice", u.Actor)
+	assert.Equal(t, announce.ID+"/undo", u.ID)
+}
+
+func TestRenderer_RenderDelete(t *testing.T) {
+	r := newRenderer()
+	author := &model.User{ID: "alice"}
+	d := r.RenderDelete(author, "https://example.com/notes/n1")
+	assert.Equal(t, "Delete", d.Type)
+	assert.Equal(t, "https://example.com/users/alice", d.Actor)
+	assert.Equal(t, "https://example.com/notes/n1#Delete", d.ID)
+	tomb, ok := d.Object.(Tombstone)
+	require.True(t, ok)
+	assert.Equal(t, "Tombstone", tomb.Type)
+	assert.Equal(t, "https://example.com/notes/n1", tomb.ID)
+	assert.Contains(t, d.To, Public)
+}
