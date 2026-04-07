@@ -8,6 +8,8 @@ import (
 	"github.com/shiroha-a/mk/internal/api/meta"
 	"github.com/shiroha-a/mk/internal/api/notes"
 	"github.com/shiroha-a/mk/internal/api/users"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
+	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -19,10 +21,16 @@ func (s *Server) setupRoutes() {
 		idGen, _ = id.NewGenerator("aidx")
 	}
 
+	// Repositories
 	userRepo := repository.NewUserRepository(s.db)
 	noteRepo := repository.NewNoteRepository(s.db)
 	metaRepo := repository.NewMetaRepository(s.db)
 	pollRepo := repository.NewPollRepository(s.db)
+
+	// Core services
+	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	noteDeleteService := corenote.NewDeleteService(noteRepo)
+	userService := coreuser.NewService(userRepo)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
@@ -37,16 +45,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/ping", metaHandler.Ping)
 
 	// Notes endpoints
-	notesHandler := notes.NewHandler(noteRepo, pollRepo, idGen)
+	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, idGen)
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())
 
 	// Users endpoints
-	usersHandler := users.NewHandler(userRepo)
+	usersHandler := users.NewHandler(userService)
 	api.POST("/users/show", usersHandler.Show)
 
 	// Account endpoints
-	iHandler := i.NewHandler(userRepo)
+	iHandler := i.NewHandler(userService)
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
 }

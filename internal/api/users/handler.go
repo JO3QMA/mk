@@ -4,18 +4,18 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
-	"github.com/shiroha-a/mk/internal/repository"
 )
 
 // Handler handles user-related API endpoints.
 type Handler struct {
-	userRepo repository.UserRepository
+	userService *user.Service
 }
 
 // NewHandler creates a new users Handler.
-func NewHandler(userRepo repository.UserRepository) *Handler {
-	return &Handler{userRepo: userRepo}
+func NewHandler(userService *user.Service) *Handler {
+	return &Handler{userService: userService}
 }
 
 // ShowRequest is the request body for users/show.
@@ -29,13 +29,7 @@ type ShowRequest struct {
 func (h *Handler) Show(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error": map[string]any{
-				"message": "Invalid param.",
-				"code":    "INVALID_PARAM",
-				"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-			},
-		})
+		return invalidParam(c)
 	}
 
 	if req.UserID == nil && req.Username == nil {
@@ -48,22 +42,32 @@ func (h *Handler) Show(c echo.Context) error {
 		})
 	}
 
-	var err error
+	var (
+		bundle *user.UserWithProfile
+		err    error
+	)
 	if req.UserID != nil {
-		user, findErr := h.userRepo.FindByID(*req.UserID)
-		if findErr != nil {
-			return noSuchUser(c)
-		}
-		profile, _ := h.userRepo.FindProfileByUserID(user.ID)
-		return c.JSON(http.StatusOK, entity.PackUserDetailed(user, profile))
+		bundle, err = h.userService.ShowByID(*req.UserID)
+	} else {
+		bundle, err = h.userService.ShowByUsername(*req.Username, req.Host)
 	}
 
-	user, err := h.userRepo.FindByUsernameLower(*req.Username, req.Host)
 	if err != nil {
+		// Service.ShowByID/ShowByUsernameはErrUserNotFoundのみ返す
 		return noSuchUser(c)
 	}
-	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
-	return c.JSON(http.StatusOK, entity.PackUserDetailed(user, profile))
+
+	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
+}
+
+func invalidParam(c echo.Context) error {
+	return c.JSON(http.StatusBadRequest, map[string]any{
+		"error": map[string]any{
+			"message": "Invalid param.",
+			"code":    "INVALID_PARAM",
+			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
+		},
+	})
 }
 
 func noSuchUser(c echo.Context) error {

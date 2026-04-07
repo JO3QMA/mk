@@ -4,32 +4,32 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
-	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles account-related API endpoints.
 type Handler struct {
-	userRepo repository.UserRepository
+	userService *user.Service
 }
 
 // NewHandler creates a new account Handler.
-func NewHandler(userRepo repository.UserRepository) *Handler {
-	return &Handler{userRepo: userRepo}
+func NewHandler(userService *user.Service) *Handler {
+	return &Handler{userService: userService}
 }
 
 // Me handles POST /api/i - returns the authenticated user's info.
 func (h *Handler) Me(c echo.Context) error {
-	user := middleware.GetUser(c)
+	u := middleware.GetUser(c)
 
-	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
+	profile := h.userService.GetProfile(u.ID)
 
-	detailed := entity.PackUserDetailed(user, profile)
+	detailed := entity.PackUserDetailed(u, profile)
 
 	// /api/i returns additional private fields
 	resp := map[string]any{
-		"id":                user.ID,
+		"id":                u.ID,
 		"name":              detailed.Name,
 		"username":          detailed.Username,
 		"host":              detailed.Host,

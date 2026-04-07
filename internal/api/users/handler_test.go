@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,8 @@ import (
 func newTestHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
 	t.Helper()
 	userRepo := testutil.NewMockUserRepository()
-	h := NewHandler(userRepo)
+	svc := coreuser.NewService(userRepo)
+	h := NewHandler(svc)
 	return h, userRepo
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -22,7 +23,9 @@ func newTestHandler(t *testing.T) (*Handler, *testutil.MockNoteRepository) {
 	noteRepo := testutil.NewMockNoteRepository()
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	h := NewHandler(noteRepo, pollRepo, idGen)
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, idGen)
 	return h, noteRepo
 }
 
@@ -85,7 +88,9 @@ func TestCreate_WithPoll(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	h := NewHandler(noteRepo, pollRepo, idGen)
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, idGen)
 
 	user := &model.User{
 		ID:                "user1",
@@ -318,7 +323,9 @@ func TestCreate_WithPollExpiresAt(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	h := NewHandler(noteRepo, pollRepo, idGen)
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, idGen)
 
 	user := &model.User{
 		ID:                "user1",
@@ -348,7 +355,9 @@ func TestCreate_RepoError(t *testing.T) {
 	noteRepo := &failingNoteRepo{}
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	h := NewHandler(noteRepo, pollRepo, idGen)
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, idGen)
 
 	user := &model.User{ID: "user1", Username: "testuser"}
 
@@ -369,7 +378,9 @@ func TestCreate_FindByIDWithUserFails(t *testing.T) {
 	noteRepo := &findFailNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	h := NewHandler(noteRepo, pollRepo, idGen)
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, idGen)
 
 	user := &model.User{
 		ID:                "user1",
@@ -427,6 +438,38 @@ func (f *findFailNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
 
+// deleteFailNoteRepo finds a note successfully but fails on Delete, used to
+// trigger the handler's default error path.
+type deleteFailNoteRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (f *deleteFailNoteRepo) Delete(_ *model.Note) error { return testutil.ErrNotFound }
+
+func TestDelete_RepoError(t *testing.T) {
+	mockRepo := testutil.NewMockNoteRepository()
+	mockRepo.Notes["note1"] = &model.Note{ID: "note1", UserID: "user1"}
+	noteRepo := &deleteFailNoteRepo{MockNoteRepository: mockRepo}
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, idGen)
+
+	user := &model.User{ID: "user1", Username: "testuser"}
+	body := `{"noteId": "note1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/delete", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	err := h.Delete(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
 func TestExtractMentions(t *testing.T) {
 	tests := []struct {
 		text     string
@@ -441,7 +484,7 @@ func TestExtractMentions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
-			result := extractMentions(tt.text)
+			result := corenote.ExtractMentions(tt.text)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
