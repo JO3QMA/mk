@@ -1,22 +1,25 @@
 package i
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles account-related API endpoints.
 type Handler struct {
 	userService *user.Service
+	idGen       id.Generator
 }
 
 // NewHandler creates a new account Handler.
-func NewHandler(userService *user.Service) *Handler {
-	return &Handler{userService: userService}
+func NewHandler(userService *user.Service, idGen id.Generator) *Handler {
+	return &Handler{userService: userService, idGen: idGen}
 }
 
 // Me handles POST /api/i - returns the authenticated user's info.
@@ -75,4 +78,138 @@ func (h *Handler) Me(c echo.Context) error {
 	resp["hasPendingReceivedFollowRequest"] = false
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// UpdateRequest is the request body for i/update.
+// 各フィールドはポインタで「未指定なら変更しない」セマンティクスを持つ。
+// 文字列のnullable化はrawMessageでなくJSONで対応するため省略している。
+type UpdateRequest struct {
+	Name              *string `json:"name"`
+	Description       *string `json:"description"`
+	Location          *string `json:"location"`
+	Birthday          *string `json:"birthday"`
+	Lang              *string `json:"lang"`
+	IsLocked          *bool   `json:"isLocked"`
+	IsBot             *bool   `json:"isBot"`
+	IsCat             *bool   `json:"isCat"`
+	IsExplorable      *bool   `json:"isExplorable"`
+	HideOnlineStatus  *bool   `json:"hideOnlineStatus"`
+	AlwaysMarkNsfw    *bool   `json:"alwaysMarkNsfw"`
+	AutoSensitive     *bool   `json:"autoSensitive"`
+	NoCrawle          *bool   `json:"noCrawle"`
+	PreventAiLearning *bool   `json:"preventAiLearning"`
+}
+
+// Update handles POST /api/i/update.
+func (h *Handler) Update(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req UpdateRequest
+	if err := c.Bind(&req); err != nil {
+		return invalidParam(c)
+	}
+
+	in := user.UpdateInput{
+		IsLocked:          req.IsLocked,
+		IsBot:             req.IsBot,
+		IsCat:             req.IsCat,
+		IsExplorable:      req.IsExplorable,
+		HideOnlineStatus:  req.HideOnlineStatus,
+		AlwaysMarkNsfw:    req.AlwaysMarkNsfw,
+		AutoSensitive:     req.AutoSensitive,
+		NoCrawle:          req.NoCrawle,
+		PreventAiLearning: req.PreventAiLearning,
+	}
+	if req.Name != nil {
+		in.Name = &req.Name
+	}
+	if req.Description != nil {
+		in.Description = &req.Description
+	}
+	if req.Location != nil {
+		in.Location = &req.Location
+	}
+	if req.Birthday != nil {
+		in.Birthday = &req.Birthday
+	}
+	if req.Lang != nil {
+		in.Lang = &req.Lang
+	}
+
+	bundle, err := h.userService.UpdateProfile(me.ID, in)
+	if err != nil {
+		if errors.Is(err, user.ErrUserNotFound) {
+			return c.JSON(http.StatusNotFound, errEnvelope("No such user.", "NO_SUCH_USER", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
+		}
+		return internalError(c)
+	}
+
+	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
+}
+
+// PinRequest is the request body for i/pin and i/unpin.
+type PinRequest struct {
+	NoteID string `json:"noteId"`
+}
+
+// Pin handles POST /api/i/pin.
+func (h *Handler) Pin(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req PinRequest
+	if err := c.Bind(&req); err != nil || req.NoteID == "" {
+		return invalidParam(c)
+	}
+
+	if err := h.userService.PinNote(me.ID, req.NoteID); err != nil {
+		switch {
+		case errors.Is(err, user.ErrNoteNotFound):
+			return c.JSON(http.StatusNotFound, errEnvelope("No such note.", "NO_SUCH_NOTE", "56734f8b-3928-431e-bf80-6ff87df40cb3"))
+		case errors.Is(err, user.ErrAlreadyPinned):
+			return c.JSON(http.StatusBadRequest, errEnvelope("That note has already been pinned.", "ALREADY_PINNED", "8b18c2b7-68fe-4edb-9892-c0cbaeb6c913"))
+		case errors.Is(err, user.ErrPinLimitExceeded):
+			return c.JSON(http.StatusBadRequest, errEnvelope("You can not pin notes any more.", "PIN_LIMIT_EXCEEDED", "72dab508-c64d-498f-8740-a8eec1ba385a"))
+		default:
+			return internalError(c)
+		}
+	}
+
+	return h.Me(c)
+}
+
+// Unpin handles POST /api/i/unpin.
+func (h *Handler) Unpin(c echo.Context) error {
+	me := middleware.GetUser(c)
+
+	var req PinRequest
+	if err := c.Bind(&req); err != nil || req.NoteID == "" {
+		return invalidParam(c)
+	}
+
+	if err := h.userService.UnpinNote(me.ID, req.NoteID); err != nil {
+		if errors.Is(err, user.ErrPinNotFound) {
+			return c.JSON(http.StatusNotFound, errEnvelope("No such note.", "NO_SUCH_NOTE", "454170ce-44d9-4d2a-94fc-e6854ec2f7d1"))
+		}
+		return internalError(c)
+	}
+
+	return h.Me(c)
+}
+
+func invalidParam(c echo.Context) error {
+	return c.JSON(http.StatusBadRequest, errEnvelope("Invalid param.", "INVALID_PARAM", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+}
+
+func internalError(c echo.Context) error {
+	return c.JSON(http.StatusInternalServerError, errEnvelope("Internal error.", "INTERNAL_ERROR", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+}
+
+func errEnvelope(message, code, id string) map[string]any {
+	return map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"code":    code,
+			"id":      id,
+		},
+	}
 }

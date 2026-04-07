@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
@@ -128,4 +129,61 @@ func TestUserRepository_FindByUsernameLower_NotFound(t *testing.T) {
 	host := "nowhere.example.com"
 	_, err = repo.FindByUsernameLower("doesnotexist", &host)
 	assert.Error(t, err)
+}
+
+func TestUserRepository_SearchByUsername(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	a := insertTestUser(t, "u_sb_1", "searchalpha")
+	defer cleanupUser(t, a.ID)
+	b := insertTestUser(t, "u_sb_2", "searchbeta")
+	defer cleanupUser(t, b.ID)
+
+	out, err := repo.SearchByUsername("search", 10, 0)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(out), 2)
+}
+
+func TestUserRepository_UpdateUser(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	user := insertTestUser(t, "u_up_1", "updateuser1")
+	defer cleanupUser(t, user.ID)
+
+	require.NoError(t, repo.UpdateUser(user.ID, map[string]any{"isLocked": true}))
+	found, _ := repo.FindByID(user.ID)
+	assert.True(t, found.IsLocked)
+
+	// 空フィールドはnoop
+	require.NoError(t, repo.UpdateUser(user.ID, map[string]any{}))
+}
+
+func TestUserRepository_SearchByUsername_QueryError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	db := testDB.WithContext(ctx)
+	repo := NewUserRepository(db)
+
+	_, err := repo.SearchByUsername("anything", 10, 0)
+	assert.Error(t, err)
+}
+
+func TestUserRepository_UpdateProfile(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	user := insertTestUser(t, "u_up_2", "updateuser2")
+	defer cleanupUser(t, user.ID)
+
+	desc := "initial"
+	profile := &model.UserProfile{
+		UserID:      user.ID,
+		Description: &desc,
+		Fields:      datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, testDB.Create(profile).Error)
+
+	newDesc := "updated"
+	require.NoError(t, repo.UpdateProfile(user.ID, map[string]any{"description": newDesc}))
+	found, _ := repo.FindProfileByUserID(user.ID)
+	assert.Equal(t, "updated", *found.Description)
+
+	// 空フィールドはnoop
+	require.NoError(t, repo.UpdateProfile(user.ID, map[string]any{}))
 }

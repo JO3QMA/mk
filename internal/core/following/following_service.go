@@ -207,3 +207,15 @@ func (s *Service) ListReceivedRequests(userID string, limit, offset int) ([]*mod
 func (s *Service) ListSentRequests(userID string, limit, offset int) ([]*model.FollowRequest, error) {
 	return s.followRequestRepo.ListSent(userID, limit, offset)
 }
+
+// ListReceivedFollowing returns followings where userID is the followee.
+// 「userIDをフォローしているユーザー」(=followers) を返す。
+func (s *Service) ListReceivedFollowing(userID string, limit, offset int) ([]*model.Following, error) {
+	return s.followingRepo.ListFollowers(userID, limit, offset)
+}
+
+// ListSentFollowing returns followings where userID is the follower.
+// 「userIDがフォローしているユーザー」を返す。
+func (s *Service) ListSentFollowing(userID string, limit, offset int) ([]*model.Following, error) {
+	return s.followingRepo.ListFollowing(userID, limit, offset)
+}

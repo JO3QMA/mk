@@ -294,6 +294,32 @@ func TestListReceivedRequests(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
+func TestListReceivedFollowing(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	addUser(t, userRepo, "carol", false)
+	_, _ = svc.Follow("bob", "alice")
+	_, _ = svc.Follow("carol", "alice")
+
+	rows, err := svc.ListReceivedFollowing("alice", 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+}
+
+func TestListSentFollowing(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	addUser(t, userRepo, "carol", false)
+	_, _ = svc.Follow("alice", "bob")
+	_, _ = svc.Follow("alice", "carol")
+
+	rows, err := svc.ListSentFollowing("alice", 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+}
+
 func TestListSentRequests(t *testing.T) {
 	svc, userRepo, _, _ := newSvc(t)
 	addUser(t, userRepo, "alice", false)

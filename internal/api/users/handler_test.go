@@ -6,9 +6,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
+	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -19,8 +22,14 @@ import (
 func newTestHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
 	t.Helper()
 	userRepo := testutil.NewMockUserRepository()
-	svc := coreuser.NewService(userRepo)
-	h := NewHandler(svc)
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	h := NewHandler(svc, fSvc, noteRepo, idGen)
 	return h, userRepo
 }
 
@@ -195,4 +204,257 @@ func TestShow_UsernameNotFound(t *testing.T) {
 	err := h.Show(c)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// --- post is a small helper that exercises a handler with an optional body ---
+
+func post(h echo.HandlerFunc, body string) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	_ = h(c)
+	return rec
+}
+
+// --- Search ---
+
+func TestSearch_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+
+	rec := post(h.Search, `{"query": "test"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 1)
+}
+
+func TestSearch_DefaultLimit(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+
+	rec := post(h.Search, `{"query": "test", "limit": 0}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestSearch_InvalidJSON(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := post(h.Search, `{invalid`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Notes ---
+
+func TestNotes_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+	// Insert a note via the noteRepo embedded in handler
+	idGen, _ := id.NewGenerator("aidx")
+	noteRepo := h.noteRepo.(*testutil.MockNoteRepository)
+	noteID := idGen.Generate(time.Now())
+	text := "hello"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+
+	rec := post(h.Notes, `{"userId": "user1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 1)
+}
+
+func TestNotes_LimitClamp(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+	rec := post(h.Notes, `{"userId": "user1", "limit": 9999}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNotes_UserNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := post(h.Notes, `{"userId": "ghost"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestNotes_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := post(h.Notes, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Followers / Following ---
+
+func TestFollowers_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+	// Add a follower relationship
+	repo.Users["follower1"] = &model.User{
+		ID:                "follower1",
+		Username:          "follower1",
+		UsernameLower:     "follower1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	fSvc := h.followingService
+	_, err := fSvc.Follow("follower1", "user1")
+	require.NoError(t, err)
+
+	rec := post(h.Followers, `{"userId": "user1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 1)
+}
+
+func TestFollowers_LimitClamp(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+	rec := post(h.Followers, `{"userId": "user1", "limit": 9999}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFollowers_UserNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := post(h.Followers, `{"userId": "ghost"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestFollowers_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := post(h.Followers, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestFollowing_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+	repo.Users["followee1"] = &model.User{
+		ID:                "followee1",
+		Username:          "followee1",
+		UsernameLower:     "followee1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	_, err := h.followingService.Follow("user1", "followee1")
+	require.NoError(t, err)
+
+	rec := post(h.Following, `{"userId": "user1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 1)
+}
+
+func TestFollowing_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := post(h.Following, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Internal error paths via failing repos ---
+
+type failingNoteRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (f *failingNoteRepo) ListByUserID(_ string, _, _ string, _ int) ([]*model.Note, error) {
+	return nil, assertErr
+}
+
+type failingUserRepo struct {
+	*testutil.MockUserRepository
+}
+
+func (f *failingUserRepo) SearchByUsername(_ string, _, _ int) ([]*model.User, error) {
+	return nil, assertErr
+}
+
+type failingFollowingRepo struct {
+	*testutil.MockFollowingRepository
+}
+
+func (f *failingFollowingRepo) ListFollowers(_ string, _, _ int) ([]*model.Following, error) {
+	return nil, assertErr
+}
+
+func (f *failingFollowingRepo) ListFollowing(_ string, _, _ int) ([]*model.Following, error) {
+	return nil, assertErr
+}
+
+var assertErr = &simpleErr{"stub"}
+
+type simpleErr struct{ msg string }
+
+func (e *simpleErr) Error() string { return e.msg }
+
+func newHandlerWithFailingNoteRepo(t *testing.T) *Handler {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	noteRepo := &failingNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	addTestUser(userRepo)
+	return NewHandler(svc, fSvc, noteRepo, idGen)
+}
+
+func newHandlerWithFailingSearch(t *testing.T) *Handler {
+	t.Helper()
+	mockUR := testutil.NewMockUserRepository()
+	addTestUser(mockUR)
+	userRepo := &failingUserRepo{MockUserRepository: mockUR}
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	return NewHandler(svc, fSvc, noteRepo, idGen)
+}
+
+func newHandlerWithFailingFollowing(t *testing.T) *Handler {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	addTestUser(userRepo)
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	fRepo := &failingFollowingRepo{MockFollowingRepository: testutil.NewMockFollowingRepository()}
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	return NewHandler(svc, fSvc, noteRepo, idGen)
+}
+
+func TestSearch_InternalError(t *testing.T) {
+	h := newHandlerWithFailingSearch(t)
+	rec := post(h.Search, `{"query": "test"}`)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestNotes_InternalError(t *testing.T) {
+	h := newHandlerWithFailingNoteRepo(t)
+	rec := post(h.Notes, `{"userId": "user1"}`)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestFollowers_InternalError(t *testing.T) {
+	h := newHandlerWithFailingFollowing(t)
+	rec := post(h.Followers, `{"userId": "user1"}`)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestFollowing_InternalError(t *testing.T) {
+	h := newHandlerWithFailingFollowing(t)
+	rec := post(h.Following, `{"userId": "user1"}`)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

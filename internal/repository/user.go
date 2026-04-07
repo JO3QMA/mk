@@ -13,6 +13,9 @@ type UserRepository interface {
 	FindProfileByUserID(userID string) (*model.UserProfile, error)
 	IncrementFollowingCount(userID string, delta int) error
 	IncrementFollowersCount(userID string, delta int) error
+	SearchByUsername(query string, limit, offset int) ([]*model.User, error)
+	UpdateUser(userID string, fields map[string]any) error
+	UpdateProfile(userID string, fields map[string]any) error
 }
 
 type userRepository struct {
@@ -72,4 +75,35 @@ func (r *userRepository) IncrementFollowersCount(userID string, delta int) error
 	return r.db.Model(&model.User{}).
 		Where("id = ?", userID).
 		UpdateColumn("followersCount", gorm.Expr("\"followersCount\" + ?", delta)).Error
+}
+
+// SearchByUsername returns users whose usernameLower starts with the given query.
+// Phase 4でMeilisearch統合予定だが、現状は単純なLIKE検索のみ。
+func (r *userRepository) SearchByUsername(query string, limit, offset int) ([]*model.User, error) {
+	var users []*model.User
+	if err := r.db.
+		Where("\"usernameLower\" LIKE ?", query+"%").
+		Order("\"followersCount\" DESC, id ASC").
+		Limit(limit).
+		Offset(offset).
+		Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// UpdateUser updates the given columns on the user table.
+func (r *userRepository) UpdateUser(userID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.User{}).Where("id = ?", userID).Updates(fields).Error
+}
+
+// UpdateProfile updates the given columns on the user_profile table.
+func (r *userRepository) UpdateProfile(userID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.UserProfile{}).Where("\"userId\" = ?", userID).Updates(fields).Error
 }

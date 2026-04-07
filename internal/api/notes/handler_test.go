@@ -428,6 +428,12 @@ func (f *failingNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
 }
 func (f *failingNoteRepo) Delete(_ *model.Note) error                  { return nil }
 func (f *failingNoteRepo) Update(_ *model.Note, _ string, _ any) error { return nil }
+func (f *failingNoteRepo) ListByUserID(_ string, _, _ string, _ int) ([]*model.Note, error) {
+	return nil, nil
+}
+func (f *failingNoteRepo) FindManyByIDsWithUser(_ []string) ([]*model.Note, error) {
+	return nil, nil
+}
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct {

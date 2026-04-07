@@ -30,11 +30,12 @@ func (s *Server) setupRoutes() {
 	pollRepo := repository.NewPollRepository(s.db)
 	followingRepo := repository.NewFollowingRepository(s.db)
 	followRequestRepo := repository.NewFollowRequestRepository(s.db)
+	piningRepo := repository.NewUserNotePiningRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen)
 	noteDeleteService := corenote.NewDeleteService(noteRepo)
-	userService := coreuser.NewService(userRepo)
+	userService := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
 
 	// Health check
@@ -56,12 +57,19 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())
 
 	// Users endpoints
-	usersHandler := users.NewHandler(userService)
+	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)
 	api.POST("/users/show", usersHandler.Show)
+	api.POST("/users/search", usersHandler.Search)
+	api.POST("/users/notes", usersHandler.Notes)
+	api.POST("/users/followers", usersHandler.Followers)
+	api.POST("/users/following", usersHandler.Following)
 
 	// Account endpoints
-	iHandler := i.NewHandler(userService)
+	iHandler := i.NewHandler(userService, idGen)
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
+	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
+	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())
+	api.POST("/i/unpin", iHandler.Unpin, middleware.RequireAuth())
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)

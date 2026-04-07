@@ -4,18 +4,35 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/repository"
 )
 
 // Handler handles user-related API endpoints.
 type Handler struct {
-	userService *user.Service
+	userService      *user.Service
+	followingService *corefollowing.Service
+	noteRepo         repository.NoteRepository
+	idGen            id.Generator
 }
 
 // NewHandler creates a new users Handler.
-func NewHandler(userService *user.Service) *Handler {
-	return &Handler{userService: userService}
+// followingService, noteRepo, idGen are optional for the bare /show endpoint.
+func NewHandler(
+	userService *user.Service,
+	followingService *corefollowing.Service,
+	noteRepo repository.NoteRepository,
+	idGen id.Generator,
+) *Handler {
+	return &Handler{
+		userService:      userService,
+		followingService: followingService,
+		noteRepo:         noteRepo,
+		idGen:            idGen,
+	}
 }
 
 // ShowRequest is the request body for users/show.
@@ -58,6 +75,175 @@ func (h *Handler) Show(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
+}
+
+// SearchRequest is the request body for users/search.
+type SearchRequest struct {
+	Query  string `json:"query"`
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+}
+
+// Search handles POST /api/users/search.
+func (h *Handler) Search(c echo.Context) error {
+	var req SearchRequest
+	if err := c.Bind(&req); err != nil {
+		return invalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+
+	users, err := h.userService.Search(req.Query, req.Limit, req.Offset)
+	if err != nil {
+		return internalError(c)
+	}
+
+	out := make([]entity.UserDetailed, 0, len(users))
+	for _, u := range users {
+		profile := h.userService.GetProfile(u.ID)
+		out = append(out, entity.PackUserDetailed(u, profile))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// NotesRequest is the request body for users/notes.
+type NotesRequest struct {
+	UserID  string `json:"userId"`
+	Limit   int    `json:"limit"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
+}
+
+// Notes handles POST /api/users/notes.
+func (h *Handler) Notes(c echo.Context) error {
+	var req NotesRequest
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return invalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+
+	if _, err := h.userService.ShowByID(req.UserID); err != nil {
+		return noSuchUser(c)
+	}
+
+	notes, err := h.noteRepo.ListByUserID(req.UserID, req.UntilID, req.SinceID, req.Limit)
+	if err != nil {
+		return internalError(c)
+	}
+
+	out := make([]entity.NoteEntity, 0, len(notes))
+	for _, n := range notes {
+		out = append(out, entity.PackNote(n, h.idGen))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// FollowersRequest is the request body for users/followers and users/following.
+type FollowersRequest struct {
+	UserID string `json:"userId"`
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+}
+
+// Followers handles POST /api/users/followers.
+func (h *Handler) Followers(c echo.Context) error {
+	return h.listRelations(c, true)
+}
+
+// Following handles POST /api/users/following.
+func (h *Handler) Following(c echo.Context) error {
+	return h.listRelations(c, false)
+}
+
+func (h *Handler) listRelations(c echo.Context, followers bool) error {
+	var req FollowersRequest
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return invalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+
+	if _, err := h.userService.ShowByID(req.UserID); err != nil {
+		return noSuchUser(c)
+	}
+
+	var (
+		rows []relationItem
+		err  error
+	)
+	if followers {
+		rows, err = h.collectFollowers(req)
+	} else {
+		rows, err = h.collectFollowing(req)
+	}
+	if err != nil {
+		return internalError(c)
+	}
+
+	return c.JSON(http.StatusOK, rows)
+}
+
+// relationItem represents a single entry in followers/following lists.
+type relationItem struct {
+	ID         string               `json:"id"`
+	FollowerID string               `json:"followerId"`
+	FolloweeID string               `json:"followeeId"`
+	Follower   *entity.UserDetailed `json:"follower,omitempty"`
+	Followee   *entity.UserDetailed `json:"followee,omitempty"`
+}
+
+func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error) {
+	rows, err := h.followingService.ListReceivedFollowing(req.UserID, req.Limit, req.Offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]relationItem, 0, len(rows))
+	for _, f := range rows {
+		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
+		if b, err := h.userService.ShowByID(f.FollowerID); err == nil {
+			d := entity.PackUserDetailed(b.User, b.Profile)
+			item.Follower = &d
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error) {
+	rows, err := h.followingService.ListSentFollowing(req.UserID, req.Limit, req.Offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]relationItem, 0, len(rows))
+	for _, f := range rows {
+		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
+		if b, err := h.userService.ShowByID(f.FolloweeID); err == nil {
+			d := entity.PackUserDetailed(b.User, b.Profile)
+			item.Followee = &d
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func internalError(c echo.Context) error {
+	return c.JSON(http.StatusInternalServerError, map[string]any{
+		"error": map[string]any{
+			"message": "Internal error.",
+			"code":    "INTERNAL_ERROR",
+			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
+		},
+	})
 }
 
 func invalidParam(c echo.Context) error {

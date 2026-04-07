@@ -61,7 +61,7 @@ func newHandlerWithFailingCounters(t *testing.T) (*Handler, *testutil.MockUserRe
 	frRepo := testutil.NewMockFollowRequestRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
-	uSvc := coreuser.NewService(userRepo)
+	uSvc := coreuser.NewService(userRepo, nil, nil, nil)
 	return NewHandler(fSvc, uSvc), mockUR, fRepo, frRepo
 }
 
@@ -74,7 +74,7 @@ func newHandlerWithFailingRequestDelete(t *testing.T) (*Handler, *testutil.MockU
 	fRepo := testutil.NewMockFollowingRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
-	uSvc := coreuser.NewService(userRepo)
+	uSvc := coreuser.NewService(userRepo, nil, nil, nil)
 	return NewHandler(fSvc, uSvc), userRepo, mockFRR
 }
 
@@ -87,7 +87,7 @@ func newHandlerWithFailingListReceived(t *testing.T) (*Handler, *testutil.MockUs
 	fRepo := testutil.NewMockFollowingRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
-	uSvc := coreuser.NewService(userRepo)
+	uSvc := coreuser.NewService(userRepo, nil, nil, nil)
 	return NewHandler(fSvc, uSvc), userRepo
 }
 
@@ -98,7 +98,7 @@ func newTestHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
 	frRepo := testutil.NewMockFollowRequestRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
-	uSvc := coreuser.NewService(userRepo)
+	uSvc := coreuser.NewService(userRepo, nil, nil, nil)
 	return NewHandler(fSvc, uSvc), userRepo
 }
 

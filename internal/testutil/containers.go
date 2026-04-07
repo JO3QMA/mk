@@ -76,7 +76,8 @@ func (t *TestDB) Teardown(ctx context.Context) {
 // TruncateAll truncates all data tables for test isolation.
 func (t *TestDB) TruncateAll() {
 	tables := []string{
-		"poll", "note_reaction", "access_token", "follow_request", "following",
+		"user_note_pining", "poll", "note_reaction", "access_token",
+		"follow_request", "following",
 		"note", "user_keypair", "user_profile", "emoji",
 		"drive_file", "drive_folder", "instance", "meta", `"user"`,
 	}
