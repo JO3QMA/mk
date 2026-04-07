@@ -53,6 +53,14 @@ func (h *Handler) ReactionsCreate(c echo.Context) error {
 					"id":      "eaccdc08-ddef-43fe-908f-d108faad57f5",
 				},
 			})
+		case errors.Is(err, reaction.ErrBlocked):
+			return c.JSON(http.StatusForbidden, map[string]any{
+				"error": map[string]any{
+					"message": "You are blocked by that user.",
+					"code":    "BLOCKED",
+					"id":      "e70412a4-7197-4726-8e74-f3e0deb92aa7",
+				},
+			})
 		}
 		return internalError(c)
 	}

@@ -25,7 +25,15 @@ var (
 	ErrRequestNotFound = errors.New("follow request not found")
 	// ErrAlreadyRequested is returned when a follow request already exists.
 	ErrAlreadyRequested = errors.New("already requested")
+	// ErrBlocked is returned when either party blocks the other.
+	ErrBlocked = errors.New("blocking relationship prevents this operation")
 )
+
+// BlockingChecker reports whether one user has blocked another. パッケージ間の
+// 循環依存を避けるためinterfaceで受け取る (実装は core/blocking)。
+type BlockingChecker interface {
+	IsBlocked(blockerID, blockeeID string) (bool, error)
+}
 
 // FollowResult represents the outcome of a Follow call.
 type FollowResult struct {
@@ -50,6 +58,7 @@ type Service struct {
 	followRequestRepo repository.FollowRequestRepository
 	idGen             id.Generator
 	notificationHook  NotificationHook
+	blockingChecker   BlockingChecker
 }
 
 // NewService creates a new following Service.
@@ -70,6 +79,11 @@ func NewService(
 // SetNotificationHook attaches a NotificationHook used by Follow/AcceptRequest.
 func (s *Service) SetNotificationHook(h NotificationHook) {
 	s.notificationHook = h
+}
+
+// SetBlockingChecker attaches a BlockingChecker used by Follow.
+func (s *Service) SetBlockingChecker(c BlockingChecker) {
+	s.blockingChecker = c
 }
 
 // Follow creates a following relationship from follower to followee.
@@ -98,6 +112,20 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		return nil, err
 	} else if exists {
 		return nil, ErrAlreadyFollowing
+	}
+
+	// ブロック関係があるとフォロー不可 (双方向で確認)
+	if s.blockingChecker != nil {
+		if blocked, err := s.blockingChecker.IsBlocked(followeeID, followerID); err != nil {
+			return nil, err
+		} else if blocked {
+			return nil, ErrBlocked
+		}
+		if blocked, err := s.blockingChecker.IsBlocked(followerID, followeeID); err != nil {
+			return nil, err
+		} else if blocked {
+			return nil, ErrBlocked
+		}
 	}
 
 	// Lockedアカウントへのフォローはリクエスト扱い

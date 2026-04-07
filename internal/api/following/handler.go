@@ -50,6 +50,8 @@ func (h *Handler) Create(c echo.Context) error {
 			return c.JSON(http.StatusBadRequest, errEnvelope("Followee is yourself.", "FOLLOWEE_IS_YOURSELF", "26fbe7bb-a331-4857-af17-205b426669a9"))
 		case errors.Is(err, corefollowing.ErrAlreadyFollowing), errors.Is(err, corefollowing.ErrAlreadyRequested):
 			return c.JSON(http.StatusBadRequest, errEnvelope("You are already following that user.", "ALREADY_FOLLOWING", "35387507-38c7-4cb9-9197-300b93783fa0"))
+		case errors.Is(err, corefollowing.ErrBlocked):
+			return c.JSON(http.StatusForbidden, errEnvelope("You are blocked by that user.", "BLOCKED", "c4ab57cc-4e41-45e9-bfd9-584f61e35ce0"))
 		default:
 			return internalError(c)
 		}

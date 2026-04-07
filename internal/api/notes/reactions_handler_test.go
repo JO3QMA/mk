@@ -104,6 +104,33 @@ func TestReactionsCreate_AlreadyReacted(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// stubBlockingChecker for reaction handler tests.
+type stubBlockingCheckerReact struct{}
+
+func (s *stubBlockingCheckerReact) IsBlocked(_, _ string) (bool, error) {
+	return true, nil
+}
+
+func TestReactionsCreate_Blocked(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	seedReactionNote(noteRepo, "n1", "public")
+	pollRepo := testutil.NewMockPollRepository()
+	reactRepo := testutil.NewMockNoteReactionRepository()
+	emojiRepo := testutil.NewMockEmojiRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
+	reactSvc.SetBlockingChecker(&stubBlockingCheckerReact{})
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, idGen)
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
 func TestReactionsCreate_PureRenote(t *testing.T) {
 	h, repo, _ := newReactionHandler(t)
 	target := "target"

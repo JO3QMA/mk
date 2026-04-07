@@ -28,7 +28,15 @@ var (
 	ErrReactionNotFound = errors.New("reaction not found")
 	// ErrCannotReactToPureRenote is returned when the user attempts to react to a pure renote.
 	ErrCannotReactToPureRenote = errors.New("cannot react to a pure renote")
+	// ErrBlocked is returned when the note author has blocked the reactor.
+	ErrBlocked = errors.New("blocked by note author")
 )
+
+// BlockingChecker reports whether one user has blocked another. パッケージ間の
+// 循環依存を避けるためinterfaceで受け取る (実装は core/blocking)。
+type BlockingChecker interface {
+	IsBlocked(blockerID, blockeeID string) (bool, error)
+}
 
 // legacyMap converts legacy text reactions like "like" or "love" to their
 // Unicode equivalents. Misskey本家のReactionServiceと同じ表を使用する。
@@ -63,6 +71,7 @@ type Service struct {
 	followingRepo    repository.FollowingRepository
 	idGen            id.Generator
 	notificationHook NotificationHook
+	blockingChecker  BlockingChecker
 }
 
 // NewService constructs a new ReactionService.
@@ -87,6 +96,11 @@ func (s *Service) SetNotificationHook(h NotificationHook) {
 	s.notificationHook = h
 }
 
+// SetBlockingChecker attaches a BlockingChecker used by Create.
+func (s *Service) SetBlockingChecker(c BlockingChecker) {
+	s.blockingChecker = c
+}
+
 // Create attaches a reaction by user to the target note.
 // 同じユーザーが既に同じリアクションをしている場合は ErrAlreadyReacted。
 // 異なるリアクションを既にしている場合は古い方を削除して新しい方を作成する。
@@ -101,6 +115,15 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 	}
 	if !note.CanSeeNote(user, target, s.followingRepo) {
 		return "", ErrNoteNotVisible
+	}
+
+	// 投稿者にブロックされている場合はリアクション不可
+	if s.blockingChecker != nil && target.UserID != user.ID {
+		if blocked, err := s.blockingChecker.IsBlocked(target.UserID, user.ID); err != nil {
+			return "", err
+		} else if blocked {
+			return "", ErrBlocked
+		}
 	}
 
 	// pure renote (text/cw/file/poll を伴わない renote) にはリアクションできない

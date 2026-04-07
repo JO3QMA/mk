@@ -227,6 +227,45 @@ func TestHook_NotifyServiceErrorLogged(t *testing.T) {
 	h.OnFollowed("bob", "alice")
 }
 
+// stubMuteChecker for hook tests.
+type stubMuteChecker struct {
+	muted bool
+	err   error
+}
+
+func (s *stubMuteChecker) IsMuted(_, _ string) (bool, error) {
+	return s.muted, s.err
+}
+
+func TestHook_NotifyMutedNotifierSkipped(t *testing.T) {
+	h, svc, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	h.SetMuteChecker(&stubMuteChecker{muted: true})
+
+	h.OnFollowed("bob", "alice")
+	out, _ := svc.List(context.Background(), "alice", 10)
+	assert.Empty(t, out)
+}
+
+func TestHook_NotifyMuteCheckerErrorAllowed(t *testing.T) {
+	h, svc, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	h.SetMuteChecker(&stubMuteChecker{err: errSentinel})
+
+	h.OnFollowed("bob", "alice")
+	out, _ := svc.List(context.Background(), "alice", 10)
+	// muteチェッカーがエラーを返した場合は通知を許可する
+	assert.Len(t, out, 1)
+}
+
+var errSentinel = newSentinelError("mute checker error")
+
+type sentinelError struct{ msg string }
+
+func (e *sentinelError) Error() string { return e.msg }
+
+func newSentinelError(s string) error { return &sentinelError{msg: s} }
+
 func TestIsQuote_Variants(t *testing.T) {
 	target := "x"
 	cases := []struct {

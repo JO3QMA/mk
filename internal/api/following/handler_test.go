@@ -176,6 +176,24 @@ func TestCreate_FolloweeNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// stubBlockedChecker reports the configured pair as blocked.
+type stubBlockedChecker struct{ blockerID, blockeeID string }
+
+func (s *stubBlockedChecker) IsBlocked(blockerID, blockeeID string) (bool, error) {
+	return blockerID == s.blockerID && blockeeID == s.blockeeID, nil
+}
+
+func TestCreate_Blocked(t *testing.T) {
+	h, repo := newTestHandler(t)
+	alice := addUser(repo, "alice", false)
+	addUser(repo, "bob", false)
+	// alice -> bob を follow しようとして bob が alice をブロックしている状況
+	h.followingService.SetBlockingChecker(&stubBlockedChecker{blockerID: "bob", blockeeID: "alice"})
+
+	rec := postJSON(h.Create, `{"userId": "bob"}`, alice)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
 func TestCreate_InvalidParam(t *testing.T) {
 	h, repo := newTestHandler(t)
 	alice := addUser(repo, "alice", false)

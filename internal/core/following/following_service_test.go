@@ -545,6 +545,70 @@ func TestService_NotificationHook_OnFollowRequest(t *testing.T) {
 	assert.Equal(t, []string{"bob->alice"}, hook.requests)
 }
 
+// stubBlockingChecker is a configurable BlockingChecker for tests.
+type stubBlockingChecker struct {
+	blockedPairs map[string]bool // "blockerID->blockeeID"
+	err          error
+}
+
+func (s *stubBlockingChecker) IsBlocked(blockerID, blockeeID string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.blockedPairs[blockerID+"->"+blockeeID], nil
+}
+
+func TestFollow_BlockedByFollowee(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	svc.SetBlockingChecker(&stubBlockingChecker{blockedPairs: map[string]bool{"alice->bob": true}})
+
+	_, err := svc.Follow("bob", "alice")
+	require.ErrorIs(t, err, following.ErrBlocked)
+}
+
+func TestFollow_BlockedFollowee(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	svc.SetBlockingChecker(&stubBlockingChecker{blockedPairs: map[string]bool{"bob->alice": true}})
+
+	_, err := svc.Follow("bob", "alice")
+	require.ErrorIs(t, err, following.ErrBlocked)
+}
+
+func TestFollow_BlockingCheckerReverseError(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	svc.SetBlockingChecker(&stubBlockingChecker{err: stubError})
+	_, err := svc.Follow("bob", "alice")
+	assert.ErrorIs(t, err, stubError)
+}
+
+// stubBlockingCheckerForwardError errors only on forward (follower->followee) check.
+type stubBlockingCheckerForwardError struct {
+	calls int
+}
+
+func (s *stubBlockingCheckerForwardError) IsBlocked(_, _ string) (bool, error) {
+	s.calls++
+	if s.calls == 2 {
+		return false, stubError
+	}
+	return false, nil
+}
+
+func TestFollow_BlockingCheckerForwardError(t *testing.T) {
+	svc, ur, _, _ := newSvc(t)
+	addUser(t, ur, "alice", false)
+	addUser(t, ur, "bob", false)
+	svc.SetBlockingChecker(&stubBlockingCheckerForwardError{})
+	_, err := svc.Follow("bob", "alice")
+	assert.ErrorIs(t, err, stubError)
+}
+
 func TestService_NotificationHook_OnAccept(t *testing.T) {
 	svc, ur, _, frRepo := newSvc(t)
 	addUser(t, ur, "alice", true)

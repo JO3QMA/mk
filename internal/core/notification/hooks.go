@@ -8,12 +8,19 @@ import (
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
+// MuteChecker reports whether muter has muted mutee. パッケージ間の循環依存を
+// 避けるためinterfaceで受け取る (実装は core/muting)。
+type MuteChecker interface {
+	IsMuted(muterID, muteeID string) (bool, error)
+}
+
 // Hook implements the various NotificationHook interfaces exposed by other
 // services. Single struct in order to share the underlying Service and
 // userRepo dependencies.
 type Hook struct {
-	svc      *Service
-	userRepo repository.UserRepository
+	svc         *Service
+	userRepo    repository.UserRepository
+	muteChecker MuteChecker
 }
 
 // NewHook constructs a Hook bound to a NotificationService and userRepo.
@@ -21,6 +28,12 @@ type Hook struct {
 // (リモートユーザーへの通知は不要なので除外する)。
 func NewHook(svc *Service, userRepo repository.UserRepository) *Hook {
 	return &Hook{svc: svc, userRepo: userRepo}
+}
+
+// SetMuteChecker attaches a MuteChecker. 通知前にmuteEEがmuterをmuteしている
+// 場合は通知をスキップする (Misskey本家の挙動)。
+func (h *Hook) SetMuteChecker(c MuteChecker) {
+	h.muteChecker = c
 }
 
 // OnNoteCreated is called by note.CreateService after persisting a new note.
@@ -120,7 +133,7 @@ func (h *Hook) OnReactionCreated(notifieeID, notifierID, noteID, reaction string
 
 // notifyLocalUser dispatches a notification only when the notifiee is a local
 // user (host == nil). リモートユーザーへの通知はAP連合経由で送られるので
-// ローカルストリームには入れない。
+// ローカルストリームには入れない。Muteしているnotifierからの通知も抑制する。
 func (h *Hook) notifyLocalUser(ctx context.Context, notifieeID string, in CreateInput) {
 	if h.userRepo != nil {
 		u, err := h.userRepo.FindByID(notifieeID)
@@ -128,6 +141,12 @@ func (h *Hook) notifyLocalUser(ctx context.Context, notifieeID string, in Create
 			return
 		}
 		if u.Host != nil {
+			return
+		}
+	}
+	// notifiee がnotifierをmuteしている場合は通知をスキップする
+	if h.muteChecker != nil && in.NotifierID != "" {
+		if muted, err := h.muteChecker.IsMuted(notifieeID, in.NotifierID); err == nil && muted {
 			return
 		}
 	}

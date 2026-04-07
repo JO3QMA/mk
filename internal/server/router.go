@@ -4,13 +4,18 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/blocking"
 	"github.com/shiroha-a/mk/internal/api/following"
 	"github.com/shiroha-a/mk/internal/api/i"
 	"github.com/shiroha-a/mk/internal/api/meta"
+	"github.com/shiroha-a/mk/internal/api/mute"
 	"github.com/shiroha-a/mk/internal/api/notes"
 	"github.com/shiroha-a/mk/internal/api/notifications"
+	"github.com/shiroha-a/mk/internal/api/renotemute"
 	"github.com/shiroha-a/mk/internal/api/users"
+	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
+	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
@@ -37,6 +42,9 @@ func (s *Server) setupRoutes() {
 	piningRepo := repository.NewUserNotePiningRepository(s.db)
 	reactionRepo := repository.NewNoteReactionRepository(s.db)
 	emojiRepo := repository.NewEmojiRepository(s.db)
+	blockingRepo := repository.NewBlockingRepository(s.db)
+	mutingRepo := repository.NewMutingRepository(s.db)
+	renoteMutingRepo := repository.NewRenoteMutingRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -59,6 +67,14 @@ func (s *Server) setupRoutes() {
 	noteCreateService.SetNotificationHook(notificationHook)
 	followingService.SetNotificationHook(notificationHook)
 	reactionService.SetNotificationHook(notificationHook)
+
+	// Blocking & Muting
+	blockingService := coreblocking.NewService(userRepo, blockingRepo, followingRepo, idGen)
+	mutingService := coremuting.NewService(userRepo, mutingRepo, idGen)
+	renoteMutingService := coremuting.NewRenoteService(userRepo, renoteMutingRepo, idGen)
+	followingService.SetBlockingChecker(blockingService)
+	reactionService.SetBlockingChecker(blockingService)
+	notificationHook.SetMuteChecker(mutingService)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
@@ -110,6 +126,24 @@ func (s *Server) setupRoutes() {
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)
 	api.POST("/i/notifications", notificationsHandler.Show, middleware.RequireAuth())
 	api.POST("/notifications/mark-all-as-read", notificationsHandler.MarkAllAsRead, middleware.RequireAuth())
+
+	// Blocking endpoints
+	blockingHandler := blocking.NewHandler(blockingService)
+	api.POST("/blocking/create", blockingHandler.Create, middleware.RequireAuth())
+	api.POST("/blocking/delete", blockingHandler.Delete, middleware.RequireAuth())
+	api.POST("/blocking/list", blockingHandler.List, middleware.RequireAuth())
+
+	// Mute endpoints
+	muteHandler := mute.NewHandler(mutingService)
+	api.POST("/mute/create", muteHandler.Create, middleware.RequireAuth())
+	api.POST("/mute/delete", muteHandler.Delete, middleware.RequireAuth())
+	api.POST("/mute/list", muteHandler.List, middleware.RequireAuth())
+
+	// Renote mute endpoints
+	renoteMuteHandler := renotemute.NewHandler(renoteMutingService)
+	api.POST("/renote-mute/create", renoteMuteHandler.Create, middleware.RequireAuth())
+	api.POST("/renote-mute/delete", renoteMuteHandler.Delete, middleware.RequireAuth())
+	api.POST("/renote-mute/list", renoteMuteHandler.List, middleware.RequireAuth())
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)

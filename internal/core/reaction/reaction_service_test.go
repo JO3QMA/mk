@@ -341,6 +341,43 @@ func TestService_NotificationHook_OnReaction(t *testing.T) {
 	assert.Equal(t, "👍", hook.reaction)
 }
 
+var stubReactionError = errors.New("reaction stub error")
+
+// stubBlockingChecker for tests.
+type stubBlockingChecker struct {
+	blocked bool
+	err     error
+}
+
+func (s *stubBlockingChecker) IsBlocked(_, _ string) (bool, error) {
+	return s.blocked, s.err
+}
+
+func TestService_Create_Blocked(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	svc.SetBlockingChecker(&stubBlockingChecker{blocked: true})
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.ErrorIs(t, err, reaction.ErrBlocked)
+}
+
+func TestService_Create_BlockingCheckerError(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	svc.SetBlockingChecker(&stubBlockingChecker{err: stubReactionError})
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	assert.ErrorIs(t, err, stubReactionError)
+}
+
+func TestService_Create_BlockingCheckerSelfSkipped(t *testing.T) {
+	// 自分自身のノートにはblockチェックが走らない
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "viewer", model.NoteVisibilityPublic)
+	svc.SetBlockingChecker(&stubBlockingChecker{blocked: true})
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.NoError(t, err)
+}
+
 func TestService_NotificationHook_SelfReactionSkipped(t *testing.T) {
 	svc, repo, _, _, _ := newService(t)
 	seedNote(repo, "n1", "viewer", model.NoteVisibilityPublic)
