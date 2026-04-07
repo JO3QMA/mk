@@ -7,11 +7,15 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"time"
 )
 
 // randReader is the entropy source used by GenerateRSAKeypair. テストで差し替え
 // 可能なように package-level の var にしている。
 var randReader io.Reader = rand.Reader
+
+// nowFunc returns the current time. テストで差し替え可能。
+var nowFunc = time.Now
 
 // GenerateRSAKeypair returns a fresh 2048-bit RSA keypair encoded as PEM
 // strings (private + public). 失敗時はエラーを返す。MarshalPKIXPublicKey は
