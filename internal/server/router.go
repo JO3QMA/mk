@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/users"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
+	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -32,6 +33,8 @@ func (s *Server) setupRoutes() {
 	followingRepo := repository.NewFollowingRepository(s.db)
 	followRequestRepo := repository.NewFollowRequestRepository(s.db)
 	piningRepo := repository.NewUserNotePiningRepository(s.db)
+	reactionRepo := repository.NewNoteReactionRepository(s.db)
+	emojiRepo := repository.NewEmojiRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -44,6 +47,9 @@ func (s *Server) setupRoutes() {
 	fanoutTimelineService := coretimeline.NewFanoutTimelineService(s.redis.Timelines, idGen)
 	timelineService := coretimeline.NewService(fanoutTimelineService, noteRepo, followingRepo)
 	noteCreateService.SetFanoutHook(coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo))
+
+	// Reactions
+	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
@@ -58,7 +64,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/ping", metaHandler.Ping)
 
 	// Notes endpoints
-	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, idGen)
+	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, idGen)
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())
@@ -72,6 +78,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/local-timeline", notesHandler.LocalTimeline)
 	api.POST("/notes/global-timeline", notesHandler.GlobalTimeline)
 	api.POST("/notes/hybrid-timeline", notesHandler.HybridTimeline, middleware.RequireAuth())
+	api.POST("/notes/reactions", notesHandler.Reactions)
+	api.POST("/notes/reactions/create", notesHandler.ReactionsCreate, middleware.RequireAuth())
+	api.POST("/notes/reactions/delete", notesHandler.ReactionsDelete, middleware.RequireAuth())
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)

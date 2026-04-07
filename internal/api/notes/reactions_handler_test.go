@@ -1,0 +1,293 @@
+package notes
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"testing"
+	"time"
+
+	corenote "github.com/shiroha-a/mk/internal/core/note"
+	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+)
+
+func newReactionHandler(t *testing.T) (*Handler, *testutil.MockNoteRepository, *testutil.MockNoteReactionRepository) {
+	t.Helper()
+	noteRepo := testutil.NewMockNoteRepository()
+	pollRepo := testutil.NewMockPollRepository()
+	reactRepo := testutil.NewMockNoteReactionRepository()
+	emojiRepo := testutil.NewMockEmojiRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, idGen)
+	return h, noteRepo, reactRepo
+}
+
+func seedReactionNote(repo *testutil.MockNoteRepository, id, vis string) {
+	repo.Notes[id] = &model.Note{
+		ID:         id,
+		UserID:     "author",
+		Visibility: model.NoteVisibility(vis),
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User: &model.User{
+			ID:                "author",
+			Username:          "author",
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+	}
+}
+
+func TestReactionsCreate_Success(t *testing.T) {
+	h, repo, _ := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1","reaction":"👍"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestReactionsCreate_InvalidParam(t *testing.T) {
+	h, _, _ := newReactionHandler(t)
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestReactionsCreate_InvalidJSON(t *testing.T) {
+	h, _, _ := newReactionHandler(t)
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{invalid`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestReactionsCreate_NoteNotFound(t *testing.T) {
+	h, _, _ := newReactionHandler(t)
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"ghost"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestReactionsCreate_NotVisible(t *testing.T) {
+	h, repo, _ := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "followers")
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestReactionsCreate_AlreadyReacted(t *testing.T) {
+	h, repo, _ := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+	// First reaction
+	c1, _ := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1","reaction":"👍"}`)
+	setAuthUser(c1, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c1))
+
+	// Same reaction again
+	c2, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1","reaction":"👍"}`)
+	setAuthUser(c2, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c2))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestReactionsCreate_PureRenote(t *testing.T) {
+	h, repo, _ := newReactionHandler(t)
+	target := "target"
+	repo.Notes["n1"] = &model.Note{
+		ID:         "n1",
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+		RenoteID:   &target,
+	}
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingReactionRepoForHandler returns a generic error from Create.
+type failingReactionRepoForHandler struct {
+	*testutil.MockNoteReactionRepository
+}
+
+func (f *failingReactionRepoForHandler) Create(_ *model.NoteReaction) error {
+	return errors.New("boom")
+}
+
+func TestReactionsCreate_RepoError(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	seedReactionNote(noteRepo, "n1", "public")
+	pollRepo := testutil.NewMockPollRepository()
+	reactRepo := &failingReactionRepoForHandler{MockNoteReactionRepository: testutil.NewMockNoteReactionRepository()}
+	emojiRepo := testutil.NewMockEmojiRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, idGen)
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestReactionsDelete_Success(t *testing.T) {
+	h, repo, _ := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+
+	// First add a reaction
+	c1, _ := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1"}`)
+	setAuthUser(c1, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsCreate(c1))
+
+	c2, rec := newJSONRequest(t, "/api/notes/reactions/delete", `{"noteId":"n1"}`)
+	setAuthUser(c2, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsDelete(c2))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestReactionsDelete_InvalidParam(t *testing.T) {
+	h, _, _ := newReactionHandler(t)
+	c, rec := newJSONRequest(t, "/api/notes/reactions/delete", `{}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsDelete(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestReactionsDelete_NoteNotFound(t *testing.T) {
+	h, _, _ := newReactionHandler(t)
+	c, rec := newJSONRequest(t, "/api/notes/reactions/delete", `{"noteId":"ghost"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsDelete(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestReactionsDelete_NotReacted(t *testing.T) {
+	h, repo, _ := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+	c, rec := newJSONRequest(t, "/api/notes/reactions/delete", `{"noteId":"n1"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsDelete(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// failingDeleteReactionRepo causes Delete to fail.
+type failingDeleteReactionRepo struct {
+	*testutil.MockNoteReactionRepository
+}
+
+func (f *failingDeleteReactionRepo) Delete(_ *model.NoteReaction) error {
+	return errors.New("delete boom")
+}
+
+func TestReactionsDelete_RepoError(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	seedReactionNote(noteRepo, "n1", "public")
+	pollRepo := testutil.NewMockPollRepository()
+	mock := testutil.NewMockNoteReactionRepository()
+	mock.Reactions["existing"] = &model.NoteReaction{
+		ID: "existing", UserID: "viewer", NoteID: "n1", Reaction: "👍",
+	}
+	reactRepo := &failingDeleteReactionRepo{MockNoteReactionRepository: mock}
+	emojiRepo := testutil.NewMockEmojiRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, idGen)
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions/delete", `{"noteId":"n1"}`)
+	setAuthUser(c, &model.User{ID: "viewer"})
+	require.NoError(t, h.ReactionsDelete(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestReactions_List_OK(t *testing.T) {
+	h, repo, reactRepo := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+	idGen, _ := id.NewGenerator("aidx")
+	// 有効なAIDを使うことで createdAt のパース経路もカバーする
+	rxID := idGen.Generate(timeNow())
+	reactRepo.Reactions[rxID] = &model.NoteReaction{
+		ID: rxID, UserID: "viewer", NoteID: "n1", Reaction: "👍",
+	}
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions", `{"noteId":"n1"}`)
+	require.NoError(t, h.Reactions(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+	assert.Equal(t, "👍", resp[0]["type"])
+	assert.NotEmpty(t, resp[0]["createdAt"])
+}
+
+func timeNow() time.Time {
+	return time.Now()
+}
+
+func TestReactions_List_LimitClamping(t *testing.T) {
+	h, repo, _ := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+	c, rec := newJSONRequest(t, "/api/notes/reactions", `{"noteId":"n1","limit":1000}`)
+	require.NoError(t, h.Reactions(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestReactions_List_InvalidParam(t *testing.T) {
+	h, _, _ := newReactionHandler(t)
+	c, rec := newJSONRequest(t, "/api/notes/reactions", `{}`)
+	require.NoError(t, h.Reactions(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestReactions_List_NoteNotFound(t *testing.T) {
+	h, _, _ := newReactionHandler(t)
+	c, rec := newJSONRequest(t, "/api/notes/reactions", `{"noteId":"ghost"}`)
+	require.NoError(t, h.Reactions(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// listFailingReactionRepo causes ListByNoteID to fail.
+type listFailingReactionRepo struct {
+	*testutil.MockNoteReactionRepository
+}
+
+func (f *listFailingReactionRepo) ListByNoteID(_, _, _ string, _ int, _ string) ([]*model.NoteReaction, error) {
+	return nil, errors.New("list boom")
+}
+
+func TestReactions_List_RepoError(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	seedReactionNote(noteRepo, "n1", "public")
+	pollRepo := testutil.NewMockPollRepository()
+	reactRepo := &listFailingReactionRepo{MockNoteReactionRepository: testutil.NewMockNoteReactionRepository()}
+	emojiRepo := testutil.NewMockEmojiRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, idGen)
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions", `{"noteId":"n1"}`)
+	require.NoError(t, h.Reactions(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}

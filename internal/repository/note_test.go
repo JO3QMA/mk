@@ -201,6 +201,38 @@ func TestNoteRepository_QueryErrors(t *testing.T) {
 
 	err = repo.IncrementCount("a", "renoteCount", 1)
 	assert.Error(t, err)
+
+	err = repo.IncrementReaction("a", "x", 1)
+	assert.Error(t, err)
+}
+
+func TestNoteRepository_IncrementReaction(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_irx_1", "irxuser")
+	defer cleanupUser(t, user.ID)
+
+	note := &model.Note{
+		ID:         "n_irx_1",
+		UserID:     user.ID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(note))
+	defer cleanupNote(t, note.ID)
+
+	require.NoError(t, repo.IncrementReaction(note.ID, "👍", 2))
+	require.NoError(t, repo.IncrementReaction(note.ID, "❤", 1))
+
+	found, err := repo.FindByID(note.ID)
+	require.NoError(t, err)
+	assert.Contains(t, string(found.Reactions), "👍")
+	assert.Contains(t, string(found.Reactions), "❤")
+
+	// 0以下になったキーは削除される
+	require.NoError(t, repo.IncrementReaction(note.ID, "👍", -2))
+	found, err = repo.FindByID(note.ID)
+	require.NoError(t, err)
+	assert.NotContains(t, string(found.Reactions), "👍")
 }
 
 func TestNoteRepository_IncrementCount(t *testing.T) {

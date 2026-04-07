@@ -13,6 +13,7 @@ type NoteRepository interface {
 	Delete(note *model.Note) error
 	Update(note *model.Note, column string, value any) error
 	IncrementCount(noteID, column string, delta int) error
+	IncrementReaction(noteID, reaction string, delta int) error
 	ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	FindManyByIDsWithUser(ids []string) ([]*model.Note, error)
 	ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
@@ -64,6 +65,23 @@ func (r *noteRepository) IncrementCount(noteID, column string, delta int) error 
 	return r.db.Model(&model.Note{}).
 		Where("id = ?", noteID).
 		UpdateColumn(column, gorm.Expr("\""+column+"\" + ?", delta)).Error
+}
+
+// IncrementReaction increments (or decrements when delta<0) the value of a
+// reaction key inside the note.reactions JSONB object. 0以下になったキーは
+// JSONBオブジェクトから完全に削除される。
+//
+// 結果値が正なら jsonb_set でカウントを上書き、0以下なら "reactions - key" で
+// キーごと削除する。 CASE 式で1クエリにまとめている。
+func (r *noteRepository) IncrementReaction(noteID, reaction string, delta int) error {
+	expr := "CASE WHEN COALESCE((reactions->>?)::int, 0) + ? > 0 " +
+		"THEN jsonb_set(reactions, ?, to_jsonb(COALESCE((reactions->>?)::int, 0) + ?)::jsonb, true) " +
+		"ELSE reactions - ?::text END"
+	pathArr := "{" + reaction + "}"
+	return r.db.Model(&model.Note{}).
+		Where("id = ?", noteID).
+		UpdateColumn("reactions",
+			gorm.Expr(expr, reaction, delta, pathArr, reaction, delta, reaction)).Error
 }
 
 // ListByUserID returns the user's notes ordered by id DESC, optionally

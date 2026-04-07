@@ -184,11 +184,15 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 
 // MockNoteRepository is a test double for repository.NoteRepository.
 type MockNoteRepository struct {
-	Notes map[string]*model.Note
+	Notes          map[string]*model.Note
+	ReactionCounts map[string]map[string]int // noteID -> reaction -> count
 }
 
 func NewMockNoteRepository() *MockNoteRepository {
-	return &MockNoteRepository{Notes: make(map[string]*model.Note)}
+	return &MockNoteRepository{
+		Notes:          make(map[string]*model.Note),
+		ReactionCounts: make(map[string]map[string]int),
+	}
 }
 
 func (m *MockNoteRepository) Create(note *model.Note) error {
@@ -229,6 +233,29 @@ func (m *MockNoteRepository) IncrementCount(noteID, column string, delta int) er
 	case "repliesCount":
 		n.RepliesCount += int16(delta)
 	}
+	return nil
+}
+
+// IncrementReaction adjusts an in-memory reaction count map.
+// テスト用に Reactions を JSON Map にデコードして加算する。
+func (m *MockNoteRepository) IncrementReaction(noteID, reaction string, delta int) error {
+	n, ok := m.Notes[noteID]
+	if !ok {
+		return ErrNotFound
+	}
+	if m.ReactionCounts == nil {
+		m.ReactionCounts = make(map[string]map[string]int)
+	}
+	if m.ReactionCounts[noteID] == nil {
+		m.ReactionCounts[noteID] = make(map[string]int)
+	}
+	c := m.ReactionCounts[noteID][reaction] + delta
+	if c <= 0 {
+		delete(m.ReactionCounts[noteID], reaction)
+	} else {
+		m.ReactionCounts[noteID][reaction] = c
+	}
+	_ = n // 実際のJSONBは更新しない
 	return nil
 }
 
@@ -338,6 +365,91 @@ func (m *MockNoteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note,
 		}
 	}
 	return out, nil
+}
+
+// MockNoteReactionRepository is a test double for repository.NoteReactionRepository.
+type MockNoteReactionRepository struct {
+	Reactions map[string]*model.NoteReaction // keyed by id
+	CreateErr error                          // optional error to return on Create
+}
+
+func NewMockNoteReactionRepository() *MockNoteReactionRepository {
+	return &MockNoteReactionRepository{Reactions: make(map[string]*model.NoteReaction)}
+}
+
+func (m *MockNoteReactionRepository) Create(r *model.NoteReaction) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Reactions[r.ID] = r
+	return nil
+}
+
+func (m *MockNoteReactionRepository) Delete(r *model.NoteReaction) error {
+	delete(m.Reactions, r.ID)
+	return nil
+}
+
+func (m *MockNoteReactionRepository) FindByPair(userID, noteID string) (*model.NoteReaction, error) {
+	for _, r := range m.Reactions {
+		if r.UserID == userID && r.NoteID == noteID {
+			return r, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID string, limit int, reaction string) ([]*model.NoteReaction, error) {
+	var rows []*model.NoteReaction
+	for _, r := range m.Reactions {
+		if r.NoteID != noteID {
+			continue
+		}
+		if reaction != "" && r.Reaction != reaction {
+			continue
+		}
+		if untilID != "" && r.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && r.ID <= sinceID {
+			continue
+		}
+		rows = append(rows, r)
+	}
+	// id降順
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+// MockEmojiRepository is a test double for repository.EmojiRepository.
+type MockEmojiRepository struct {
+	// keyed by "name@host" (host="" for local)
+	Emojis map[string]*model.Emoji
+}
+
+func NewMockEmojiRepository() *MockEmojiRepository {
+	return &MockEmojiRepository{Emojis: make(map[string]*model.Emoji)}
+}
+
+func (m *MockEmojiRepository) FindByNameAndHost(name string, host *string) (*model.Emoji, error) {
+	key := name + "@"
+	if host != nil {
+		key += *host
+	}
+	e, ok := m.Emojis[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return e, nil
 }
 
 // MockMetaRepository is a test double for repository.MetaRepository.

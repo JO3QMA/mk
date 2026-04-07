@@ -26,7 +26,7 @@ func newTestHandler(t *testing.T) (*Handler, *testutil.MockNoteRepository) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, idGen)
 	return h, noteRepo
 }
 
@@ -92,7 +92,7 @@ func TestCreate_WithPoll(t *testing.T) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, idGen)
 
 	user := &model.User{
 		ID:                "user1",
@@ -328,7 +328,7 @@ func TestCreate_WithPollExpiresAt(t *testing.T) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, idGen)
 
 	user := &model.User{
 		ID:                "user1",
@@ -361,7 +361,7 @@ func TestCreate_RepoError(t *testing.T) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, idGen)
 
 	user := &model.User{ID: "user1", Username: "testuser"}
 
@@ -385,7 +385,7 @@ func TestCreate_FindByIDWithUserFails(t *testing.T) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, idGen)
 
 	user := &model.User{
 		ID:                "user1",
@@ -431,9 +431,10 @@ func (f *failingNoteRepo) FindByID(_ string) (*model.Note, error) { return nil, 
 func (f *failingNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
-func (f *failingNoteRepo) Delete(_ *model.Note) error                     { return nil }
-func (f *failingNoteRepo) Update(_ *model.Note, _ string, _ any) error    { return nil }
-func (f *failingNoteRepo) IncrementCount(_ string, _ string, _ int) error { return nil }
+func (f *failingNoteRepo) Delete(_ *model.Note) error                        { return nil }
+func (f *failingNoteRepo) Update(_ *model.Note, _ string, _ any) error       { return nil }
+func (f *failingNoteRepo) IncrementCount(_ string, _ string, _ int) error    { return nil }
+func (f *failingNoteRepo) IncrementReaction(_ string, _ string, _ int) error { return nil }
 func (f *failingNoteRepo) ListByUserID(_ string, _, _ string, _ int) ([]*model.Note, error) {
 	return nil, nil
 }
@@ -479,7 +480,7 @@ func TestDelete_RepoError(t *testing.T) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, idGen)
 
 	user := &model.User{ID: "user1", Username: "testuser"}
 	body := `{"noteId": "note1"}`
