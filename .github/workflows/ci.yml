@@ -31,11 +31,31 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Unit tests
-        run: go test ./internal/api/... ./internal/config/... ./internal/entity/... ./internal/misc/... ./internal/server/middleware/... -v -race -count=1
+      # 単一のtestステップで全パッケージを実行する。
+      # api/notes と api/notifications が testcontainers Redis を要求するため
+      # 旧構成のような unit/integration 分割は無くしている。
+      - name: Run all tests with coverage
+        run: |
+          go test ./... \
+            -race \
+            -count=1 \
+            -timeout 10m \
+            -coverprofile=coverage.out \
+            -covermode=atomic
 
-      - name: Integration tests (PostgreSQL + Redis via testcontainers)
-        run: go test ./internal/repository/... ./internal/core/... -v -count=1 -timeout 5m
+      - name: Enforce 100% coverage
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $NF}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          awk -v c="$total" 'BEGIN { if (c+0 < 100) { print "FAIL: coverage " c "% is below 100%"; exit 1 } }'
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          if-no-files-found: ignore
 
   lint:
     runs-on: ubuntu-latest
