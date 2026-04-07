@@ -1,0 +1,216 @@
+package testutil
+
+import (
+	"github.com/shiroha-a/mk/internal/model"
+)
+
+// MockDriveFileRepository is a test double for repository.DriveFileRepository.
+type MockDriveFileRepository struct {
+	Files map[string]*model.DriveFile // keyed by ID
+}
+
+func NewMockDriveFileRepository() *MockDriveFileRepository {
+	return &MockDriveFileRepository{Files: make(map[string]*model.DriveFile)}
+}
+
+func (m *MockDriveFileRepository) Create(f *model.DriveFile) error {
+	m.Files[f.ID] = f
+	return nil
+}
+
+func (m *MockDriveFileRepository) FindByID(id string) (*model.DriveFile, error) {
+	f, ok := m.Files[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return f, nil
+}
+
+func (m *MockDriveFileRepository) FindByMD5(userID, md5 string) (*model.DriveFile, error) {
+	var match *model.DriveFile
+	for _, f := range m.Files {
+		if f.UserID != nil && *f.UserID == userID && f.MD5 == md5 {
+			if match == nil || f.ID > match.ID {
+				match = f
+			}
+		}
+	}
+	if match == nil {
+		return nil, ErrNotFound
+	}
+	return match, nil
+}
+
+func (m *MockDriveFileRepository) Update(id string, fields map[string]any) error {
+	f, ok := m.Files[id]
+	if !ok {
+		return ErrNotFound
+	}
+	applyDriveFileFields(f, fields)
+	return nil
+}
+
+func (m *MockDriveFileRepository) Delete(f *model.DriveFile) error {
+	delete(m.Files, f.ID)
+	return nil
+}
+
+func (m *MockDriveFileRepository) ListByUser(userID string, folderID *string, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
+	var rows []*model.DriveFile
+	for _, f := range m.Files {
+		if f.UserID == nil || *f.UserID != userID {
+			continue
+		}
+		if folderID == nil {
+			if f.FolderID != nil {
+				continue
+			}
+		} else {
+			if f.FolderID == nil || *f.FolderID != *folderID {
+				continue
+			}
+		}
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		rows = append(rows, f)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+func applyDriveFileFields(f *model.DriveFile, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				f.Name = s
+			}
+		case "comment":
+			if s, ok := v.(*string); ok {
+				f.Comment = s
+			}
+		case "isSensitive":
+			if b, ok := v.(bool); ok {
+				f.IsSensitive = b
+			}
+		case "folderId":
+			if s, ok := v.(*string); ok {
+				f.FolderID = s
+			}
+		}
+	}
+}
+
+// MockDriveFolderRepository is a test double for repository.DriveFolderRepository.
+type MockDriveFolderRepository struct {
+	Folders map[string]*model.DriveFolder
+	// FilesRef は HasChildren が参照するファイルストア。テストで紐づける。
+	FilesRef *MockDriveFileRepository
+}
+
+func NewMockDriveFolderRepository() *MockDriveFolderRepository {
+	return &MockDriveFolderRepository{Folders: make(map[string]*model.DriveFolder)}
+}
+
+func (m *MockDriveFolderRepository) Create(f *model.DriveFolder) error {
+	m.Folders[f.ID] = f
+	return nil
+}
+
+func (m *MockDriveFolderRepository) FindByID(id string) (*model.DriveFolder, error) {
+	f, ok := m.Folders[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return f, nil
+}
+
+func (m *MockDriveFolderRepository) Update(id string, fields map[string]any) error {
+	f, ok := m.Folders[id]
+	if !ok {
+		return ErrNotFound
+	}
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				f.Name = s
+			}
+		case "parentId":
+			if s, ok := v.(*string); ok {
+				f.ParentID = s
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockDriveFolderRepository) Delete(f *model.DriveFolder) error {
+	delete(m.Folders, f.ID)
+	return nil
+}
+
+func (m *MockDriveFolderRepository) ListByUser(userID string, parentID *string, untilID, sinceID string, limit int) ([]*model.DriveFolder, error) {
+	var rows []*model.DriveFolder
+	for _, f := range m.Folders {
+		if f.UserID == nil || *f.UserID != userID {
+			continue
+		}
+		if parentID == nil {
+			if f.ParentID != nil {
+				continue
+			}
+		} else {
+			if f.ParentID == nil || *f.ParentID != *parentID {
+				continue
+			}
+		}
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		rows = append(rows, f)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+func (m *MockDriveFolderRepository) HasChildren(folderID string) (bool, error) {
+	for _, f := range m.Folders {
+		if f.ParentID != nil && *f.ParentID == folderID {
+			return true, nil
+		}
+	}
+	if m.FilesRef != nil {
+		for _, f := range m.FilesRef.Files {
+			if f.FolderID != nil && *f.FolderID == folderID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}

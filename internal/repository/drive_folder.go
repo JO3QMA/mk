@@ -1,0 +1,82 @@
+package repository
+
+import (
+	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/gorm"
+)
+
+// DriveFolderRepository provides data access for the `drive_folder` table.
+type DriveFolderRepository interface {
+	Create(f *model.DriveFolder) error
+	FindByID(id string) (*model.DriveFolder, error)
+	Update(id string, fields map[string]any) error
+	Delete(f *model.DriveFolder) error
+	ListByUser(userID string, parentID *string, untilID, sinceID string, limit int) ([]*model.DriveFolder, error)
+	HasChildren(folderID string) (bool, error)
+}
+
+type driveFolderRepository struct {
+	db *gorm.DB
+}
+
+// NewDriveFolderRepository creates a new DriveFolderRepository.
+func NewDriveFolderRepository(db *gorm.DB) DriveFolderRepository {
+	return &driveFolderRepository{db: db}
+}
+
+func (r *driveFolderRepository) Create(f *model.DriveFolder) error {
+	return r.db.Create(f).Error
+}
+
+func (r *driveFolderRepository) FindByID(id string) (*model.DriveFolder, error) {
+	var f model.DriveFolder
+	if err := r.db.First(&f, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (r *driveFolderRepository) Update(id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.DriveFolder{}).Where("id = ?", id).Updates(fields).Error
+}
+
+func (r *driveFolderRepository) Delete(f *model.DriveFolder) error {
+	return r.db.Delete(f).Error
+}
+
+// ListByUser returns the user's folders. parentID=nil means root level
+// (parentId IS NULL); otherwise restricts to that parent.
+func (r *driveFolderRepository) ListByUser(userID string, parentID *string, untilID, sinceID string, limit int) ([]*model.DriveFolder, error) {
+	var rows []*model.DriveFolder
+	q := r.db.Where("\"userId\" = ?", userID)
+	if parentID == nil {
+		q = q.Where("\"parentId\" IS NULL")
+	} else {
+		q = q.Where("\"parentId\" = ?", *parentID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// HasChildren reports whether the folder has any nested folders or files.
+// 削除前のチェックに使用する。folder/file 両方を 1 クエリで EXISTS チェックする。
+func (r *driveFolderRepository) HasChildren(folderID string) (bool, error) {
+	var exists bool
+	err := r.db.Raw(`SELECT EXISTS (
+		SELECT 1 FROM "drive_folder" WHERE "parentId" = ?
+		UNION ALL
+		SELECT 1 FROM "drive_file" WHERE "folderId" = ?
+	)`, folderID, folderID).Scan(&exists).Error
+	return exists, err
+}

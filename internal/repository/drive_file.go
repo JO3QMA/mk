@@ -1,0 +1,82 @@
+package repository
+
+import (
+	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/gorm"
+)
+
+// DriveFileRepository provides data access for the `drive_file` table.
+type DriveFileRepository interface {
+	Create(f *model.DriveFile) error
+	FindByID(id string) (*model.DriveFile, error)
+	FindByMD5(userID, md5 string) (*model.DriveFile, error)
+	Update(id string, fields map[string]any) error
+	Delete(f *model.DriveFile) error
+	ListByUser(userID string, folderID *string, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
+}
+
+type driveFileRepository struct {
+	db *gorm.DB
+}
+
+// NewDriveFileRepository creates a new DriveFileRepository.
+func NewDriveFileRepository(db *gorm.DB) DriveFileRepository {
+	return &driveFileRepository{db: db}
+}
+
+func (r *driveFileRepository) Create(f *model.DriveFile) error {
+	return r.db.Create(f).Error
+}
+
+func (r *driveFileRepository) FindByID(id string) (*model.DriveFile, error) {
+	var f model.DriveFile
+	if err := r.db.First(&f, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// FindByMD5 returns the user's most recent file with the given md5 hash.
+func (r *driveFileRepository) FindByMD5(userID, md5 string) (*model.DriveFile, error) {
+	var f model.DriveFile
+	if err := r.db.
+		Where("\"userId\" = ? AND md5 = ?", userID, md5).
+		Order("id DESC").
+		First(&f).Error; err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (r *driveFileRepository) Update(id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.DriveFile{}).Where("id = ?", id).Updates(fields).Error
+}
+
+func (r *driveFileRepository) Delete(f *model.DriveFile) error {
+	return r.db.Delete(f).Error
+}
+
+// ListByUser returns the user's drive files. folderID=nil means root files
+// (folderId IS NULL); otherwise restricts to that folder.
+func (r *driveFileRepository) ListByUser(userID string, folderID *string, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
+	var rows []*model.DriveFile
+	q := r.db.Where("\"userId\" = ?", userID)
+	if folderID == nil {
+		q = q.Where("\"folderId\" IS NULL")
+	} else {
+		q = q.Where("\"folderId\" = ?", *folderID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}

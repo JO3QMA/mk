@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/blocking"
+	"github.com/shiroha-a/mk/internal/api/drive"
 	"github.com/shiroha-a/mk/internal/api/following"
 	"github.com/shiroha-a/mk/internal/api/i"
 	"github.com/shiroha-a/mk/internal/api/meta"
@@ -14,6 +15,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/renotemute"
 	"github.com/shiroha-a/mk/internal/api/users"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
+	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
@@ -47,6 +49,8 @@ func (s *Server) setupRoutes() {
 	mutingRepo := repository.NewMutingRepository(s.db)
 	renoteMutingRepo := repository.NewRenoteMutingRepository(s.db)
 	pollVoteRepo := repository.NewPollVoteRepository(s.db)
+	driveFileRepo := repository.NewDriveFileRepository(s.db)
+	driveFolderRepo := repository.NewDriveFolderRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -81,6 +85,10 @@ func (s *Server) setupRoutes() {
 	// Polls
 	pollService := corepoll.NewService(noteRepo, pollRepo, pollVoteRepo, followingRepo, idGen)
 	pollService.SetNotificationHook(notificationHook)
+
+	// Drive (LocalStorage)
+	driveStorage := coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
+	driveService := coredrive.NewService(driveFileRepo, driveFolderRepo, driveStorage, idGen)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
@@ -151,6 +159,29 @@ func (s *Server) setupRoutes() {
 	api.POST("/renote-mute/create", renoteMuteHandler.Create, middleware.RequireAuth())
 	api.POST("/renote-mute/delete", renoteMuteHandler.Delete, middleware.RequireAuth())
 	api.POST("/renote-mute/list", renoteMuteHandler.List, middleware.RequireAuth())
+
+	// Drive endpoints
+	driveHandler := drive.NewHandler(driveService, idGen)
+	api.POST("/drive/files/create", driveHandler.FilesCreate, middleware.RequireAuth())
+	api.POST("/drive/files/show", driveHandler.FilesShow, middleware.RequireAuth())
+	api.POST("/drive/files/update", driveHandler.FilesUpdate, middleware.RequireAuth())
+	api.POST("/drive/files/delete", driveHandler.FilesDelete, middleware.RequireAuth())
+	api.POST("/drive/files/find-by-hash", driveHandler.FilesFindByHash, middleware.RequireAuth())
+	api.POST("/drive/folders/create", driveHandler.FoldersCreate, middleware.RequireAuth())
+	api.POST("/drive/folders/show", driveHandler.FoldersShow, middleware.RequireAuth())
+	api.POST("/drive/folders/update", driveHandler.FoldersUpdate, middleware.RequireAuth())
+	api.POST("/drive/folders/delete", driveHandler.FoldersDelete, middleware.RequireAuth())
+
+	// Static file serving for LocalStorage
+	s.echo.GET("/files/:accessKey", func(c echo.Context) error {
+		key := c.Param("accessKey")
+		body, err := driveStorage.Get(key)
+		if err != nil {
+			return c.NoContent(http.StatusNotFound)
+		}
+		defer body.Close()
+		return c.Stream(http.StatusOK, "application/octet-stream", body)
+	})
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)
