@@ -3,6 +3,7 @@ package federation_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
@@ -389,6 +390,183 @@ func TestIngestNote_SensitiveWithoutSummary(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got.CW)
 	assert.Equal(t, "", *got.CW)
+}
+
+// --- TTL cache (Step G) -------------------------------------------------------
+
+func TestResolveActor_TTLRefresh(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	// LastFetchedAt が古いため refresh が走るはず
+	old := time.Now().Add(-48 * time.Hour)
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		LastFetchedAt: &old,
+	}
+	// 更新後の actor を返す
+	updated := `{
+		"id": "https://remote.example/users/alice",
+		"type": "Person",
+		"preferredUsername": "alice",
+		"name": "Alice Refreshed",
+		"inbox": "https://remote.example/users/alice/inbox-v2",
+		"endpoints": {"sharedInbox": "https://remote.example/inbox-v2"},
+		"publicKey": {"publicKeyPem": "REFRESHED"}
+	}`
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(updated)}, idGen)
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	require.NotNil(t, user.Name)
+	assert.Equal(t, "Alice Refreshed", *user.Name)
+	require.NotNil(t, user.Inbox)
+	assert.Equal(t, "https://remote.example/users/alice/inbox-v2", *user.Inbox)
+	require.NotNil(t, user.SharedInbox)
+	assert.Equal(t, "https://remote.example/inbox-v2", *user.SharedInbox)
+
+	pem, err := r.PublicKeyForActor("existing")
+	require.NoError(t, err)
+	assert.Contains(t, pem, "REFRESHED")
+}
+
+func TestResolveActor_NoRefreshWhenFresh(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	// LastFetchedAt が十分新しいので refresh は走らない (refreshActor は呼ばれない)
+	now := time.Now()
+	originalName := "Original"
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		Name:          &originalName,
+		LastFetchedAt: &now,
+	}
+	// fetcher が何を返しても name は更新されないはず
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	// 公開鍵キャッシュは空 → refreshPublicKey 経路を通る
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	require.NotNil(t, user.Name)
+	assert.Equal(t, "Original", *user.Name)
+
+	// publicKey は in-memory にキャッシュされたはず
+	pem, err := r.PublicKeyForActor("existing")
+	require.NoError(t, err)
+	assert.Contains(t, pem, "FAKE")
+}
+
+func TestResolveActor_TTLRefreshFetchError(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	old := time.Now().Add(-48 * time.Hour)
+	originalName := "Original"
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		Name:          &originalName,
+		LastFetchedAt: &old,
+	}
+	// fetcher エラーでも refresh はベストエフォートなので既存 user を返す
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{err: errors.New("net down")}, idGen)
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	assert.Equal(t, "Original", *user.Name)
+}
+
+func TestPublicKeyForActor_TTLExpiry(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	// 解決して publicKey をキャッシュする (現在時刻で fetched 扱い)
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+	pem, err := r.PublicKeyForActor(user.ID)
+	require.NoError(t, err)
+	assert.Contains(t, pem, "FAKE")
+
+	// 時計を進める → expired として miss するはず
+	r.SetClock(func() time.Time { return time.Now().Add(48 * time.Hour) })
+	_, err = r.PublicKeyForActor(user.ID)
+	assert.Error(t, err)
+}
+
+func TestResolver_SetClockNil(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	// nil を渡しても panic / 変更なし
+	r.SetClock(nil)
+	// 直後に呼んでもデフォルト clock のまま動く
+	_, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+}
+
+func TestResolveActor_FreshButCacheMissFetchError(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	now := time.Now()
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		LastFetchedAt: &now,
+	}
+	// publicKey は cache 空 → refreshPublicKey 経路に入るが fetcher はエラー
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{err: errors.New("net down")}, idGen)
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	assert.Equal(t, "existing", user.ID)
+	// fetch 失敗時もエラーは伝搬しない
+	_, perr := r.PublicKeyForActor("existing")
+	assert.Error(t, perr)
+}
+
+func TestResolver_SetActorTTL(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	// 0 / 負値は無視されデフォルト維持
+	r.SetActorTTL(0)
+	r.SetActorTTL(-1)
+	r.SetActorTTL(time.Minute)
+
+	// 1 分 TTL に設定し、LastFetchedAt が 5 分前のユーザーを refresh するか確認
+	uri := "https://remote.example/users/alice"
+	old := time.Now().Add(-5 * time.Minute)
+	originalName := "Original"
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		Name:          &originalName,
+		LastFetchedAt: &old,
+	}
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	require.NotNil(t, user.Name)
+	assert.Equal(t, "Alice", *user.Name) // sampleActor の name で上書き
 }
 
 func TestRefreshPublicKey_OnExistingUser_FetchError(t *testing.T) {

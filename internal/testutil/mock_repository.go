@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"strings"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 )
@@ -132,6 +133,18 @@ func applyUserFields(u *model.User, fields map[string]any) {
 		case "name":
 			if s, ok := v.(*string); ok {
 				u.Name = s
+			}
+		case "inbox":
+			if s, ok := v.(*string); ok {
+				u.Inbox = s
+			}
+		case "sharedInbox":
+			if s, ok := v.(*string); ok {
+				u.SharedInbox = s
+			}
+		case "lastFetchedAt":
+			if t, ok := v.(*time.Time); ok {
+				u.LastFetchedAt = t
 			}
 		case "isLocked":
 			if b, ok := v.(bool); ok {

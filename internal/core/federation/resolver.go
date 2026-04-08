@@ -32,18 +32,33 @@ var (
 	ErrInvalidNote = errors.New("invalid note document")
 )
 
+// DefaultActorTTL is the default duration after which a cached actor (and its
+// public key) is considered stale and refetched on next access.
+const DefaultActorTTL = 24 * time.Hour
+
+// publicKeyEntry stores a cached PEM together with the time it was fetched so
+// the resolver can detect TTL expiry.
+type publicKeyEntry struct {
+	pem       string
+	fetchedAt time.Time
+}
+
 // Resolver fetches remote actors / notes and persists them in the local
 // user / note tables.
 //
-// 公開鍵は別キャッシュ (in-memory map) で actorID → PEM を保持する。永続化は
-// 後続フェーズで user_keypair などに移す予定。
+// 公開鍵は別キャッシュ (in-memory map) で actorID → publicKeyEntry を保持
+// する。エントリは actorTTL を超えると miss として扱い、次回 ResolveActor 時
+// にリフレッシュされる。永続化は後続フェーズで user_publickey 相当のテーブル
+// に移す予定。
 type Resolver struct {
 	userRepo repository.UserRepository
 	noteRepo repository.NoteRepository
 	urls     *activitypub.URLBuilder
 	fetcher  HTTPFetcher
 	idGen    id.Generator
-	keys     map[string]string // userID → publicKeyPEM
+	keys     map[string]publicKeyEntry // userID → publicKey + fetchedAt
+	clock    func() time.Time          // テストで差し替える時計
+	actorTTL time.Duration             // アクター情報の最大寿命
 }
 
 // NewResolver constructs a Resolver.
@@ -62,25 +77,54 @@ func NewResolver(
 		urls:     urls,
 		fetcher:  fetcher,
 		idGen:    idGen,
-		keys:     map[string]string{},
+		keys:     map[string]publicKeyEntry{},
+		clock:    time.Now,
+		actorTTL: DefaultActorTTL,
 	}
 }
 
-// PublicKeyForActor returns the cached public key PEM for an actor ID.
+// SetClock replaces the clock used for TTL checks. Intended for tests.
+func (r *Resolver) SetClock(now func() time.Time) {
+	if now != nil {
+		r.clock = now
+	}
+}
+
+// SetActorTTL overrides the actor TTL used for cache freshness checks.
+// 0 以下を渡した場合は変更しない。
+func (r *Resolver) SetActorTTL(d time.Duration) {
+	if d > 0 {
+		r.actorTTL = d
+	}
+}
+
+// PublicKeyForActor returns the cached public key PEM for an actor ID. TTL を
+// 超過したエントリは miss として扱い、ErrPublicKeyMissing 相当のエラーを返す。
 func (r *Resolver) PublicKeyForActor(actorID string) (string, error) {
-	key, ok := r.keys[actorID]
+	entry, ok := r.keys[actorID]
 	if !ok {
 		return "", fmt.Errorf("public key for actor %q not cached", actorID)
 	}
-	return key, nil
+	if r.clock().Sub(entry.fetchedAt) > r.actorTTL {
+		// 期限切れ: キャッシュを破棄しエラーを返す。呼び出し側 (inbox handler 等)
+		// は ResolveActor を再実行することで refresh をトリガできる。
+		delete(r.keys, actorID)
+		return "", fmt.Errorf("public key for actor %q expired", actorID)
+	}
+	return entry.pem, nil
 }
 
 // ResolveActor returns the local model.User row for a remote actor URI,
-// fetching and creating it if necessary.
+// fetching and creating it if necessary. 既存ユーザーであっても LastFetchedAt
+// が actorTTL を超えていたら fetch しなおして name / inbox / sharedInbox /
+// publicKey を更新する。fetch 失敗時はベストエフォートで既存値を返す。
 func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	if existing, err := r.userRepo.FindByURI(uri); err == nil {
-		// 既存ユーザーであっても publicKey キャッシュが空なら fetch しなおす。
-		if _, cached := r.keys[existing.ID]; !cached {
+		if r.shouldRefreshActor(existing) {
+			r.refreshActor(existing, uri)
+		} else if _, cached := r.keys[existing.ID]; !cached {
+			// TTL 内であっても publicKey キャッシュが空 (再起動直後など) なら
+			// 取り直す。
 			r.refreshPublicKey(existing.ID, uri)
 		}
 		return existing, nil
@@ -96,7 +140,7 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		return nil, ErrInvalidActor
 	}
 
-	now := time.Now()
+	now := r.clock()
 	user := &model.User{
 		ID:            r.idGen.Generate(now),
 		Username:      actor.PreferredUsername,
@@ -115,8 +159,50 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	if err := r.userRepo.Create(user); err != nil {
 		return nil, err
 	}
-	r.keys[user.ID] = actor.PublicKey.PublicKeyPEM
+	r.cachePublicKey(user.ID, actor.PublicKey.PublicKeyPEM)
 	return user, nil
+}
+
+// shouldRefreshActor reports whether a cached user row is past its TTL and
+// should be refetched.
+func (r *Resolver) shouldRefreshActor(u *model.User) bool {
+	if u == nil || u.LastFetchedAt == nil {
+		return true
+	}
+	return r.clock().Sub(*u.LastFetchedAt) > r.actorTTL
+}
+
+// refreshActor refetches the remote actor document and updates mutable fields
+// on the local user row. 失敗してもエラーは返さず (呼び出し側はベストエフォート
+// で既存値を使う)、ログは呼び出し元側で残す。
+func (r *Resolver) refreshActor(existing *model.User, uri string) {
+	actor, err := r.fetchActor(uri)
+	if err != nil {
+		return
+	}
+	now := r.clock()
+	fields := map[string]any{
+		"lastFetchedAt": &now,
+	}
+	if actor.Name != "" {
+		name := actor.Name
+		fields["name"] = &name
+		existing.Name = &name
+	}
+	if actor.Inbox != "" {
+		inbox := actor.Inbox
+		fields["inbox"] = &inbox
+		existing.Inbox = &inbox
+	}
+	if actor.Endpoints.SharedInbox != "" {
+		shared := actor.Endpoints.SharedInbox
+		fields["sharedInbox"] = &shared
+		existing.SharedInbox = &shared
+	}
+	existing.LastFetchedAt = &now
+	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)
+	_ = r.userRepo.UpdateUser(existing.ID, fields)
+	r.cachePublicKey(existing.ID, actor.PublicKey.PublicKeyPEM)
 }
 
 // fetchActor fetches and decodes a remote actor document.
@@ -142,7 +228,13 @@ func (r *Resolver) refreshPublicKey(userID, uri string) {
 	if err != nil {
 		return
 	}
-	r.keys[userID] = actor.PublicKey.PublicKeyPEM
+	r.cachePublicKey(userID, actor.PublicKey.PublicKeyPEM)
+}
+
+// cachePublicKey stores a PEM in the in-memory cache with the current clock
+// reading as the fetch time.
+func (r *Resolver) cachePublicKey(userID, pem string) {
+	r.keys[userID] = publicKeyEntry{pem: pem, fetchedAt: r.clock()}
 }
 
 // ResolveActorByKeyID resolves an actor based on the keyId fragment URI.
