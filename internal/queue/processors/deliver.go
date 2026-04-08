@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/activitypub"
@@ -20,15 +21,63 @@ type HTTPSigner interface {
 	PostSigned(url string, body []byte, key *activitypub.PrivateKey) (*http.Response, error)
 }
 
+// ResponseHook is invoked after each HTTP attempt so the instance metadata
+// (isNotResponding / notRespondingSince) can be kept up to date. パッケージ間
+// の循環依存を避けるため interface で受け取る。実装は core/instance.Service。
+type ResponseHook interface {
+	RecordResponseSuccess(host string) error
+	RecordResponseError(host string) error
+}
+
 // DeliverProcessor handles ap:deliver tasks by posting the activity body to
 // the recipient inbox with an HTTP signature.
 type DeliverProcessor struct {
-	signer HTTPSigner
+	signer       HTTPSigner
+	responseHook ResponseHook
 }
 
 // NewDeliverProcessor constructs a DeliverProcessor.
 func NewDeliverProcessor(signer HTTPSigner) *DeliverProcessor {
 	return &DeliverProcessor{signer: signer}
+}
+
+// SetResponseHook attaches a ResponseHook used to update instance health flags.
+func (p *DeliverProcessor) SetResponseHook(h ResponseHook) {
+	p.responseHook = h
+}
+
+// hostFromInbox returns the host portion of an inbox URL, or "" if the URL is
+// not parseable. ResponseHook 通知用に共通化する。
+func hostFromInbox(inbox string) string {
+	u, err := url.Parse(inbox)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// recordSuccess is a best-effort wrapper around responseHook.RecordResponseSuccess.
+func (p *DeliverProcessor) recordSuccess(inbox string) {
+	if p.responseHook == nil {
+		return
+	}
+	host := hostFromInbox(inbox)
+	if host == "" {
+		return
+	}
+	_ = p.responseHook.RecordResponseSuccess(host)
+}
+
+// recordError is a best-effort wrapper around responseHook.RecordResponseError.
+func (p *DeliverProcessor) recordError(inbox string) {
+	if p.responseHook == nil {
+		return
+	}
+	host := hostFromInbox(inbox)
+	if host == "" {
+		return
+	}
+	_ = p.responseHook.RecordResponseError(host)
 }
 
 // Handle dispatches a single deliver task. The asynq runtime invokes this for
@@ -51,6 +100,7 @@ func (p *DeliverProcessor) Handle(_ context.Context, t *asynq.Task) error {
 		// ネットワークエラーや接続失敗はリトライする。
 		slog.Warn("ap deliver: post failed",
 			"inbox", payload.Inbox, "err", err)
+		p.recordError(payload.Inbox)
 		return err
 	}
 	defer func() {
@@ -60,23 +110,28 @@ func (p *DeliverProcessor) Handle(_ context.Context, t *asynq.Task) error {
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		p.recordSuccess(payload.Inbox)
 		return nil
 	case resp.StatusCode == http.StatusGone,
 		resp.StatusCode == http.StatusNotFound:
 		// 410 / 404: 受信側がもう存在しない。リトライしても無駄なのでスキップ。
+		// 「応答した」事自体は事実なので isNotResponding は解除する。
 		slog.Info("ap deliver: target gone",
 			"inbox", payload.Inbox, "status", resp.StatusCode)
+		p.recordSuccess(payload.Inbox)
 		return fmt.Errorf("target gone (%d): %w", resp.StatusCode, asynq.SkipRetry)
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		// その他の4xxは受信側の不正リクエスト扱い。リトライしてもまず通らないので
-		// スキップしてログに残す。
+		// その他の4xxは受信側の不正リクエスト扱い。HTTP として応答が返って
+		// きているので isNotResponding 状態は解除する。
 		slog.Warn("ap deliver: client error",
 			"inbox", payload.Inbox, "status", resp.StatusCode)
+		p.recordSuccess(payload.Inbox)
 		return fmt.Errorf("client error (%d): %w", resp.StatusCode, asynq.SkipRetry)
 	default:
-		// 5xx は受信側の一時的な障害。リトライさせる。
+		// 5xx は受信側の一時的な障害。リトライさせる + 不調状態としてマーク。
 		slog.Warn("ap deliver: server error",
 			"inbox", payload.Inbox, "status", resp.StatusCode)
+		p.recordError(payload.Inbox)
 		return errors.New("server error: " + resp.Status)
 	}
 }

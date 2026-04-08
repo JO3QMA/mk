@@ -211,6 +211,53 @@ func TestService_List(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
+// stubMetadataFetcher records the hosts it was asked to fetch.
+type stubMetadataFetcher struct {
+	hosts []string
+	err   error
+}
+
+func (s *stubMetadataFetcher) Fetch(host string) error {
+	s.hosts = append(s.hosts, host)
+	return s.err
+}
+
+func TestService_RegisterFromHost_TriggersMetadataFetch(t *testing.T) {
+	svc, _, _ := newService(t)
+	fetcher := &stubMetadataFetcher{}
+	svc.SetMetadataFetcher(fetcher)
+	_, err := svc.RegisterFromHost("alpha.example")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alpha.example"}, fetcher.hosts)
+}
+
+func TestService_RegisterFromHost_MetadataFetcherErrorIgnored(t *testing.T) {
+	svc, _, _ := newService(t)
+	fetcher := &stubMetadataFetcher{err: errors.New("net down")}
+	svc.SetMetadataFetcher(fetcher)
+	_, err := svc.RegisterFromHost("alpha.example")
+	// fetcher エラーは握りつぶされる
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alpha.example"}, fetcher.hosts)
+}
+
+func TestService_RegisterFromHost_NoFetchOnExisting(t *testing.T) {
+	svc, repo, _ := newService(t)
+	repo.Instances["alpha.example"] = &model.Instance{ID: "i1", Host: "alpha.example"}
+	fetcher := &stubMetadataFetcher{}
+	svc.SetMetadataFetcher(fetcher)
+	_, err := svc.RegisterFromHost("alpha.example")
+	require.NoError(t, err)
+	// 既存行に対しては fetch しない
+	assert.Empty(t, fetcher.hosts)
+}
+
+// FetchMetadataService が MetadataFetcher interface を実装していることを確認。
+// 配線時に router.go でこの代入が成立する必要がある。
+func TestFetchMetadataService_ImplementsMetadataFetcher(t *testing.T) {
+	var _ instance.MetadataFetcher = (*instance.FetchMetadataService)(nil)
+}
+
 func TestService_SetClock(t *testing.T) {
 	svc, repo, _ := newService(t)
 	fixed := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)

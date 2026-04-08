@@ -155,3 +155,100 @@ func TestDeliverProcessor_BadKey_SkipsRetry(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, asynq.SkipRetry)
 }
+
+// stubResponseHook captures host events for assertions.
+type stubResponseHook struct {
+	successes []string
+	errors    []string
+}
+
+func (s *stubResponseHook) RecordResponseSuccess(host string) error {
+	s.successes = append(s.successes, host)
+	return nil
+}
+
+func (s *stubResponseHook) RecordResponseError(host string) error {
+	s.errors = append(s.errors, host)
+	return nil
+}
+
+func TestDeliverProcessor_ResponseHook_Success(t *testing.T) {
+	signer := &stubSigner{resp: okResponse(http.StatusOK)}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubResponseHook{}
+	p.SetResponseHook(hook)
+	require.NoError(t, p.Handle(context.Background(), makeTask(t, makePayload(t))))
+	assert.Equal(t, []string{"remote.example"}, hook.successes)
+	assert.Empty(t, hook.errors)
+}
+
+func TestDeliverProcessor_ResponseHook_Gone_RecordsSuccess(t *testing.T) {
+	signer := &stubSigner{resp: okResponse(http.StatusGone)}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubResponseHook{}
+	p.SetResponseHook(hook)
+	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
+	require.Error(t, err)
+	assert.Equal(t, []string{"remote.example"}, hook.successes)
+}
+
+func TestDeliverProcessor_ResponseHook_ClientError_RecordsSuccess(t *testing.T) {
+	signer := &stubSigner{resp: okResponse(http.StatusForbidden)}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubResponseHook{}
+	p.SetResponseHook(hook)
+	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
+	require.Error(t, err)
+	assert.Equal(t, []string{"remote.example"}, hook.successes)
+}
+
+func TestDeliverProcessor_ResponseHook_ServerError_RecordsError(t *testing.T) {
+	signer := &stubSigner{resp: okResponse(http.StatusInternalServerError)}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubResponseHook{}
+	p.SetResponseHook(hook)
+	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
+	require.Error(t, err)
+	assert.Equal(t, []string{"remote.example"}, hook.errors)
+}
+
+func TestDeliverProcessor_ResponseHook_NetworkError_RecordsError(t *testing.T) {
+	signer := &stubSigner{err: errors.New("net down")}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubResponseHook{}
+	p.SetResponseHook(hook)
+	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
+	require.Error(t, err)
+	assert.Equal(t, []string{"remote.example"}, hook.errors)
+}
+
+func TestDeliverProcessor_ResponseHook_UnparseableInboxSuccess(t *testing.T) {
+	signer := &stubSigner{resp: okResponse(http.StatusOK)}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubResponseHook{}
+	p.SetResponseHook(hook)
+	payload := queue.DeliverPayload{
+		Inbox:  "://bad-url",
+		Body:   []byte(`{}`),
+		KeyID:  "https://example.com/users/u1#main-key",
+		KeyPEM: generateTestKey(t),
+	}
+	require.NoError(t, p.Handle(context.Background(), makeTask(t, payload)))
+	assert.Empty(t, hook.successes)
+}
+
+func TestDeliverProcessor_ResponseHook_UnparseableInboxError(t *testing.T) {
+	signer := &stubSigner{err: errors.New("net down")}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubResponseHook{}
+	p.SetResponseHook(hook)
+	payload := queue.DeliverPayload{
+		Inbox:  "://bad-url",
+		Body:   []byte(`{}`),
+		KeyID:  "https://example.com/users/u1#main-key",
+		KeyPEM: generateTestKey(t),
+	}
+	err := p.Handle(context.Background(), makeTask(t, payload))
+	require.Error(t, err)
+	assert.Empty(t, hook.errors)
+}

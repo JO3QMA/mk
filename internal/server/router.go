@@ -113,6 +113,8 @@ func (s *Server) setupRoutes() {
 	// Instance management (Phase 3 Step H)
 	instanceService := coreinstance.NewService(instanceRepo, metaRepo, idGen)
 	federationResolver.SetInstanceTracker(instanceService)
+	// 新規 instance row 発見時に nodeinfo を取得して metadata を更新する
+	instanceService.SetMetadataFetcher(coreinstance.NewFetchMetadataService(instanceRepo, apFetcher))
 
 	// AP delivery: DeliverService + フック登録 + asynq processor 登録
 	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
@@ -122,6 +124,8 @@ func (s *Server) setupRoutes() {
 	reactionService.SetFederationHook(corefederation.NewReactionDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo))
 	noteDeleteService.SetFederationHook(corefederation.NewNoteDeleteDeliveryHook(deliverService, apRenderer, apURLs))
 	deliverProcessor := processors.NewDeliverProcessor(apClient)
+	// 配信結果に応じて instance.isNotResponding を更新する
+	deliverProcessor.SetResponseHook(instanceService)
 	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 
 	// Health check
@@ -234,6 +238,7 @@ func (s *Server) setupRoutes() {
 	// Inbox endpoints
 	inboxHandler := inbox.NewHandler(federationResolver, federationProcessor)
 	inboxHandler.SetHostBlockChecker(instanceService)
+	inboxHandler.SetInstanceTracker(instanceService)
 	s.echo.POST("/inbox", inboxHandler.Inbox)
 	s.echo.POST("/users/:id/inbox", inboxHandler.Inbox)
 

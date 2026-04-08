@@ -18,14 +18,22 @@ var (
 	ErrInstanceNotFound = errors.New("instance not found")
 )
 
+// MetadataFetcher fetches and persists nodeinfo for a newly discovered host.
+// 循環依存を避けるため interface で受け取る (実装は同じ package の
+// FetchMetadataService または stub)。
+type MetadataFetcher interface {
+	Fetch(host string) error
+}
+
 // Service manages the local view of remote instances. It is the entry point
 // for any code that needs to know whether a host is blocked / silenced /
 // suspended, and for refreshing the cached metadata after a fetch.
 type Service struct {
-	repo     repository.InstanceRepository
-	metaRepo repository.MetaRepository
-	idGen    id.Generator
-	clock    func() time.Time
+	repo            repository.InstanceRepository
+	metaRepo        repository.MetaRepository
+	idGen           id.Generator
+	clock           func() time.Time
+	metadataFetcher MetadataFetcher
 }
 
 // NewService constructs an instance Service.
@@ -45,9 +53,16 @@ func (s *Service) SetClock(now func() time.Time) {
 	}
 }
 
+// SetMetadataFetcher attaches a MetadataFetcher invoked best-effort after a
+// new instance row is created via RegisterFromHost.
+func (s *Service) SetMetadataFetcher(f MetadataFetcher) {
+	s.metadataFetcher = f
+}
+
 // RegisterFromHost ensures an instance row exists for the given host. If a row
 // already exists it is returned as-is; otherwise a fresh row is created with
-// firstRetrievedAt set to now and usersCount = 1.
+// firstRetrievedAt set to now and usersCount = 1. 新規作成成功時には
+// metadataFetcher (設定されていれば) を best-effort で呼び nodeinfo を取り込む。
 //
 // 呼び出し元: Resolver でリモートユーザーを新規取り込みした直後。
 func (s *Service) RegisterFromHost(host string) (*model.Instance, error) {
@@ -67,6 +82,10 @@ func (s *Service) RegisterFromHost(host string) (*model.Instance, error) {
 	}
 	if err := s.repo.Create(inst); err != nil {
 		return nil, err
+	}
+	if s.metadataFetcher != nil {
+		// nodeinfo 取得の失敗は致命的ではない (次回再試行可能なので無視)。
+		_ = s.metadataFetcher.Fetch(host)
 	}
 	return inst, nil
 }

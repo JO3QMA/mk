@@ -278,6 +278,62 @@ func TestInbox_BlockedHost(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
+// stubInstanceTracker captures MarkRequestReceived calls.
+type stubInstanceTracker struct {
+	hosts []string
+}
+
+func (s *stubInstanceTracker) MarkRequestReceived(host string) error {
+	s.hosts = append(s.hosts, host)
+	return nil
+}
+
+func TestInbox_TouchesInstance(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	h, repo, _ := newHandler(t, pub)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+	tracker := &stubInstanceTracker{}
+	h.SetInstanceTracker(tracker)
+
+	body := []byte(`{"type":"Follow","actor":"https://remote.example/users/alice","object":"https://example.com/users/bob"}`)
+	c, rec := newPost(t, body)
+	req := c.Request()
+	digest := activitypub.SHA256Digest(body)
+	require.NoError(t, activitypub.SignRequest(req, key, digest, []string{"(request-target)", "date", "host", "digest"}))
+	req.Host = "example.com"
+
+	require.NoError(t, h.Inbox(c))
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	require.Len(t, tracker.hosts, 1)
+	assert.Equal(t, "remote.example", tracker.hosts[0])
+}
+
+func TestInbox_TouchesInstanceTrackerNoOpWithoutTracker(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	h, repo, _ := newHandler(t, pub)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{"type":"Follow","actor":"https://remote.example/users/alice","object":"https://example.com/users/bob"}`)
+	c, rec := newPost(t, body)
+	req := c.Request()
+	digest := activitypub.SHA256Digest(body)
+	require.NoError(t, activitypub.SignRequest(req, key, digest, []string{"(request-target)", "date", "host", "digest"}))
+	req.Host = "example.com"
+
+	require.NoError(t, h.Inbox(c))
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+}
+
 func TestInbox_BlockedHostDoesNotApplyWithoutChecker(t *testing.T) {
 	priv, pub, err := activitypub.GenerateRSAKeypair()
 	require.NoError(t, err)

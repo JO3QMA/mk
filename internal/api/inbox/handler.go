@@ -19,12 +19,20 @@ type HostBlockChecker interface {
 	IsBlocked(host string) bool
 }
 
+// InstanceTracker is invoked after a successfully verified inbound request so
+// that the instance row's latestRequestReceivedAt can be updated. パッケージ
+// 間の循環依存を避けるため interface で受け取る。
+type InstanceTracker interface {
+	MarkRequestReceived(host string) error
+}
+
 // Handler accepts incoming activities and dispatches them to the federation
 // processor after verifying their HTTP signature.
 type Handler struct {
-	resolver    *federation.Resolver
-	processor   *federation.Processor
-	hostBlocker HostBlockChecker
+	resolver        *federation.Resolver
+	processor       *federation.Processor
+	hostBlocker     HostBlockChecker
+	instanceTracker InstanceTracker
 }
 
 // NewHandler constructs a Handler.
@@ -37,6 +45,12 @@ func NewHandler(resolver *federation.Resolver, processor *federation.Processor) 
 // 返して以降の処理をスキップする。
 func (h *Handler) SetHostBlockChecker(c HostBlockChecker) {
 	h.hostBlocker = c
+}
+
+// SetInstanceTracker attaches an InstanceTracker. 設定されると、署名検証に
+// 成功するたびに対応 instance row の latestRequestReceivedAt が更新される。
+func (h *Handler) SetInstanceTracker(t InstanceTracker) {
+	h.instanceTracker = t
 }
 
 // Inbox handles POST /inbox and POST /users/:id/inbox.
@@ -63,6 +77,8 @@ func (h *Handler) Inbox(c echo.Context) error {
 	if h.isHostBlocked(actor) {
 		return c.NoContent(http.StatusForbidden)
 	}
+
+	h.touchInstance(actor)
 
 	if err := h.processor.Process(body); err != nil {
 		if errors.Is(err, federation.ErrUnsupportedActivity) {
@@ -105,4 +121,13 @@ func (h *Handler) isHostBlocked(actor *model.User) bool {
 		return false
 	}
 	return h.hostBlocker.IsBlocked(*actor.Host)
+}
+
+// touchInstance is a best-effort hook into the InstanceTracker. tracker が
+// 未設定 / actor がローカル / Host nil の場合は no-op。エラーは握りつぶす。
+func (h *Handler) touchInstance(actor *model.User) {
+	if h.instanceTracker == nil || actor == nil || actor.Host == nil {
+		return
+	}
+	_ = h.instanceTracker.MarkRequestReceived(*actor.Host)
 }
