@@ -23,6 +23,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
+	"github.com/shiroha-a/mk/internal/core/event"
 	corefederation "github.com/shiroha-a/mk/internal/core/federation"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
@@ -38,6 +39,8 @@ import (
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/stream"
+	"github.com/shiroha-a/mk/internal/stream/channels"
 )
 
 func (s *Server) setupRoutes() {
@@ -75,7 +78,8 @@ func (s *Server) setupRoutes() {
 	// Timeline services (Redis-backed fanout)
 	fanoutTimelineService := coretimeline.NewFanoutTimelineService(s.redis.Timelines, idGen)
 	timelineService := coretimeline.NewService(fanoutTimelineService, noteRepo, followingRepo)
-	noteCreateService.SetFanoutHook(coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo))
+	timelineFanoutHook := coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo)
+	noteCreateService.SetFanoutHook(timelineFanoutHook)
 
 	// Reactions
 	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
@@ -248,11 +252,35 @@ func (s *Server) setupRoutes() {
 	api.POST("/federation/instances", federationHandler.Instances)
 	api.POST("/federation/show-instance", federationHandler.ShowInstance)
 
-	// Streaming endpoint (Phase 4.1 Step K-1〜K-4 — 基盤のみ)
-	// 各 channel 実装は K-5 以降で追加され、その時点で acceptor に Manager
-	// を実体として渡す。現状は scaffold のみ wire しておく。auth は server.go
-	// で global middleware として既に適用済み。
-	streamingHandler := streaming.NewHandler(nil)
+	// Streaming (Phase 4.1 Step K)
+	// 1. Redis pubsub bus (核となる publish/subscribe チャンネル)
+	streamPubSub := event.NewPubSubService(s.redis.Pubsub, "stream:")
+	streamBus := stream.NewEventPubSubBus(streamPubSub)
+
+	// 2. Channel registry: Misskey 互換のチャンネル名で各 factory を登録する
+	streamRegistry := stream.NewRegistry()
+	streamRegistry.Register("homeTimeline", channels.NewHomeTimeline)
+	streamRegistry.Register("localTimeline", channels.NewLocalTimeline)
+	streamRegistry.Register("globalTimeline", channels.NewGlobalTimeline)
+	streamRegistry.Register("hybridTimeline", channels.NewHybridTimeline)
+	streamRegistry.Register("notifications", channels.NewNotifications)
+	streamRegistry.Register("main", channels.NewMain)
+	streamRegistry.Register("drive", channels.NewDrive)
+
+	// 3. Connection manager + 各 publisher の生成
+	streamManager := stream.NewManager(streamRegistry, streamBus)
+	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
+	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
+	drivePublisher := stream.NewDrivePublisher(streamPubSub)
+
+	// 4. 既存サービスへ publisher を注入する。これらはいずれも nil 安全な
+	//    setter で、未設定なら何もしない (テスト互換)。
+	timelineFanoutHook.SetStreamingPublisher(notePublisher)
+	notificationService.SetStreamingPublisher(notificationPublisher)
+	driveService.SetStreamingPublisher(drivePublisher)
+
+	// 5. /streaming エンドポイント配線
+	streamingHandler := streaming.NewHandler(streamManager)
 	s.echo.GET("/streaming", streamingHandler.Stream)
 
 	// Following endpoints
