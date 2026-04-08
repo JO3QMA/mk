@@ -431,6 +431,9 @@ func (f *failingNoteRepo) FindByID(_ string) (*model.Note, error) { return nil, 
 func (f *failingNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
+func (f *failingNoteRepo) FindByURI(_ string) (*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
 func (f *failingNoteRepo) Delete(_ *model.Note) error                        { return nil }
 func (f *failingNoteRepo) Update(_ *model.Note, _ string, _ any) error       { return nil }
 func (f *failingNoteRepo) IncrementCount(_ string, _ string, _ int) error    { return nil }

@@ -59,6 +59,31 @@ func TestNoteRepository_FindByIDWithUser(t *testing.T) {
 	assert.Equal(t, "noteuser2", found.User.Username)
 }
 
+func TestNoteRepository_FindByURI(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_nuri_1", "noteuser_uri")
+	defer cleanupUser(t, user.ID)
+
+	uri := "https://remote.example/notes/n_nuri_1"
+	note := &model.Note{
+		ID:         "n_nuri_1",
+		UserID:     user.ID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		URI:        &uri,
+	}
+	require.NoError(t, repo.Create(note))
+	defer cleanupNote(t, note.ID)
+
+	found, err := repo.FindByURI(uri)
+	require.NoError(t, err)
+	assert.Equal(t, note.ID, found.ID)
+
+	// 存在しない URI なら error
+	_, err = repo.FindByURI("https://remote.example/notes/missing")
+	assert.Error(t, err)
+}
+
 func TestNoteRepository_Delete(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	user := insertTestUser(t, "u_nd_1", "noteuser3")

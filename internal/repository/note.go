@@ -10,6 +10,7 @@ type NoteRepository interface {
 	Create(note *model.Note) error
 	FindByID(id string) (*model.Note, error)
 	FindByIDWithUser(id string) (*model.Note, error)
+	FindByURI(uri string) (*model.Note, error)
 	Delete(note *model.Note) error
 	Update(note *model.Note, column string, value any) error
 	IncrementCount(noteID, column string, delta int) error
@@ -46,6 +47,16 @@ func (r *noteRepository) FindByID(id string) (*model.Note, error) {
 func (r *noteRepository) FindByIDWithUser(id string) (*model.Note, error) {
 	var note model.Note
 	if err := r.db.Preload("User").First(&note, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &note, nil
+}
+
+// FindByURI looks up a note by its ActivityPub URI. リモート由来の note は
+// uri 列に作成元のIRIが入っているため、配信や inbox 処理での重複検出に使う。
+func (r *noteRepository) FindByURI(uri string) (*model.Note, error) {
+	var note model.Note
+	if err := r.db.Where("uri = ?", uri).First(&note).Error; err != nil {
 		return nil, err
 	}
 	return &note, nil

@@ -22,7 +22,7 @@ type stubFetcher struct {
 	body []byte
 }
 
-func (s *stubFetcher) FetchActor(_ string) ([]byte, error) {
+func (s *stubFetcher) FetchObject(_ string) ([]byte, error) {
 	return s.body, nil
 }
 
@@ -56,11 +56,13 @@ func escapeJSON(s string) string {
 func newHandler(t *testing.T, pubKeyPEM string) (*Handler, *testutil.MockUserRepository, *testutil.MockFollowingRepository) {
 	t.Helper()
 	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
 	followingRepo := testutil.NewMockFollowingRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	resolver := federation.NewResolver(repo, &stubFetcher{body: []byte(actorBody(pubKeyPEM))}, idGen)
+	urls := activitypub.NewURLBuilder("https://example.com")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(actorBody(pubKeyPEM))}, idGen)
 	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
-	processor := federation.NewProcessor(resolver, followingSvc, repo)
+	processor := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
 	return NewHandler(resolver, processor), repo, followingRepo
 }
 
@@ -189,17 +191,19 @@ func newSentinelErr(s string) error  { return &sentinelErr{msg: s} }
 // errorFetcher always errors so the resolver fails.
 type errorFetcher struct{}
 
-func (errorFetcher) FetchActor(_ string) ([]byte, error) {
+func (errorFetcher) FetchObject(_ string) ([]byte, error) {
 	return nil, assertErrSentinel
 }
 
 func TestInbox_ResolverError(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
 	followingRepo := testutil.NewMockFollowingRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	resolver := federation.NewResolver(repo, errorFetcher{}, idGen)
+	urls := activitypub.NewURLBuilder("https://example.com")
+	resolver := federation.NewResolver(repo, noteRepo, urls, errorFetcher{}, idGen)
 	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
-	processor := federation.NewProcessor(resolver, followingSvc, repo)
+	processor := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
 	h := NewHandler(resolver, processor)
 
 	priv, _, _ := activitypub.GenerateRSAKeypair()
@@ -223,11 +227,13 @@ func TestInbox_PublicKeyMissing(t *testing.T) {
 	uri := "https://remote.example/users/alice"
 	repo.Users["alice"] = &model.User{ID: "alice", Username: "alice", URI: &uri}
 
+	noteRepo := testutil.NewMockNoteRepository()
 	followingRepo := testutil.NewMockFollowingRepository()
 	idGen, _ := id.NewGenerator("aidx")
-	resolver := federation.NewResolver(repo, errorFetcher{}, idGen)
+	urls := activitypub.NewURLBuilder("https://example.com")
+	resolver := federation.NewResolver(repo, noteRepo, urls, errorFetcher{}, idGen)
 	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
-	processor := federation.NewProcessor(resolver, followingSvc, repo)
+	processor := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
 	h := NewHandler(resolver, processor)
 
 	priv, _, _ := activitypub.GenerateRSAKeypair()

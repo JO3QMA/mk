@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAPFetcher_FetchActor(t *testing.T) {
+func TestAPFetcher_FetchObject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/activity+json")
 		_, _ = w.Write([]byte(`{"id":"x"}`))
@@ -19,7 +19,7 @@ func TestAPFetcher_FetchActor(t *testing.T) {
 
 	c := activitypub.NewClient(nil, "test")
 	f := NewAPFetcher(c)
-	body, err := f.FetchActor(srv.URL + "/users/alice")
+	body, err := f.FetchObject(srv.URL + "/users/alice")
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "x")
 }

@@ -14,7 +14,8 @@ func NewAPFetcher(client *activitypub.Client) *APFetcher {
 	return &APFetcher{client: client}
 }
 
-// FetchActor performs an unsigned GET against uri.
-func (f *APFetcher) FetchActor(uri string) ([]byte, error) {
+// FetchObject performs an unsigned GET against uri. Resolver でアクター取得や
+// リモート Note 取得に共通で使う。
+func (f *APFetcher) FetchObject(uri string) ([]byte, error) {
 	return f.client.FetchUnsigned(uri)
 }

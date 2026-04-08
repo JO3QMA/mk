@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -12,13 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stubFetcher returns canned bytes/error for FetchActor.
+// stubFetcher returns canned bytes/error for FetchObject.
 type stubFetcher struct {
 	body []byte
 	err  error
 }
 
-func (s *stubFetcher) FetchActor(_ string) ([]byte, error) {
+func (s *stubFetcher) FetchObject(_ string) ([]byte, error) {
 	return s.body, s.err
 }
 
@@ -39,8 +40,10 @@ const sampleActor = `{
 func newResolver(t *testing.T, body string, err error) (*federation.Resolver, *testutil.MockUserRepository) {
 	t.Helper()
 	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
 	idGen, _ := id.NewGenerator("aidx")
-	return federation.NewResolver(repo, &stubFetcher{body: []byte(body), err: err}, idGen), repo
+	return federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(body), err: err}, idGen), repo
 }
 
 func TestResolveActor_NewUser(t *testing.T) {
@@ -126,8 +129,10 @@ func (f *failingUserRepo) Create(_ *model.User) error {
 func TestResolveActor_RepoCreateError(t *testing.T) {
 	mock := testutil.NewMockUserRepository()
 	repo := &failingUserRepo{MockUserRepository: mock}
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
 	idGen, _ := id.NewGenerator("aidx")
-	r := federation.NewResolver(repo, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
 	_, err := r.ResolveActor("https://remote.example/users/alice")
 	assert.Error(t, err)
 }
@@ -145,12 +150,255 @@ func TestPublicKeyForActor_Missing(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// --- ResolveNote / IngestNote --------------------------------------------------
+
+const sampleRemoteNote = `{
+	"id": "https://remote.example/notes/n1",
+	"type": "Note",
+	"attributedTo": "https://remote.example/users/alice",
+	"content": "hello",
+	"to": ["https://www.w3.org/ns/activitystreams#Public"],
+	"cc": ["https://remote.example/users/alice/followers"],
+	"summary": "cw",
+	"sensitive": true
+}`
+
+// scriptedFetcher returns different bodies based on a counter so a single
+// resolver call can resolve both an actor and a note.
+type scriptedFetcher struct {
+	bodies [][]byte
+	idx    int
+}
+
+func (s *scriptedFetcher) FetchObject(_ string) ([]byte, error) {
+	if s.idx >= len(s.bodies) {
+		return nil, errors.New("no more bodies")
+	}
+	b := s.bodies[s.idx]
+	s.idx++
+	return b, nil
+}
+
+func TestResolveNote_LocalAlreadyStored(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	noteRepo.Notes["nlocal"] = &model.Note{ID: "nlocal", UserID: "u1"}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+	got, err := r.ResolveNote("https://example.com/notes/nlocal")
+	require.NoError(t, err)
+	assert.Equal(t, "nlocal", got.ID)
+}
+
+func TestResolveNote_LocalUnknown(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+	_, err := r.ResolveNote("https://example.com/notes/missing")
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestResolveNote_RemoteCached(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", URI: &uri}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+	got, err := r.ResolveNote(uri)
+	require.NoError(t, err)
+	assert.Equal(t, "n1", got.ID)
+}
+
+func TestResolveNote_RemoteFetchAndIngest(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	// 最初の呼び出しで Note JSON、続いて attributedTo を解決するための actor JSON を返す
+	fetcher := &scriptedFetcher{bodies: [][]byte{[]byte(sampleRemoteNote), []byte(sampleActor)}}
+	r := federation.NewResolver(repo, noteRepo, urls, fetcher, idGen)
+
+	got, err := r.ResolveNote("https://remote.example/notes/n1")
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+	require.NotNil(t, got.URI)
+	assert.Equal(t, "https://remote.example/notes/n1", *got.URI)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "hello", *got.Text)
+	require.NotNil(t, got.CW)
+	assert.Equal(t, "cw", *got.CW)
+	assert.Equal(t, model.NoteVisibilityPublic, got.Visibility)
+}
+
+func TestResolveNote_FetchError(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{err: errors.New("net down")}, idGen)
+	_, err := r.ResolveNote("https://remote.example/notes/x")
+	assert.Error(t, err)
+}
+
+func TestResolveNote_NoNoteRepo(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, nil, urls, &stubFetcher{}, idGen)
+	_, err := r.ResolveNote("https://remote.example/notes/x")
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestIngestNote_BadJSON(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	_, err := r.IngestNote([]byte(`{not json`))
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestIngestNote_MissingFields(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	_, err := r.IngestNote([]byte(`{"id":"x"}`))
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestIngestNote_NoNoteRepo(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, nil, urls, &stubFetcher{}, idGen)
+	_, err := r.IngestNote([]byte(sampleRemoteNote))
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestIngestNote_DedupOnExisting(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	noteRepo.Notes["existing"] = &model.Note{ID: "existing", URI: &uri}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	got, err := r.IngestNote([]byte(sampleRemoteNote))
+	require.NoError(t, err)
+	assert.Equal(t, "existing", got.ID)
+}
+
+func TestIngestNote_ResolveActorError(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{err: errors.New("actor down")}, idGen)
+	_, err := r.IngestNote([]byte(sampleRemoteNote))
+	assert.Error(t, err)
+}
+
+// failingNoteCreateRepo causes Create on noteRepo to fail.
+type failingNoteCreateRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (f *failingNoteCreateRepo) Create(_ *model.Note) error {
+	return errors.New("create failed")
+}
+
+func TestIngestNote_NoteCreateError(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := &failingNoteCreateRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	_, err := r.IngestNote([]byte(sampleRemoteNote))
+	assert.Error(t, err)
+}
+
+func TestIngestNote_ReplyToLocal(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	noteRepo.Notes["parent"] = &model.Note{ID: "parent", UserID: "uparent"}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	body := []byte(`{
+		"id": "https://remote.example/notes/n2",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "reply",
+		"inReplyTo": "https://example.com/notes/parent",
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.ReplyID)
+	assert.Equal(t, "parent", *got.ReplyID)
+}
+
+func TestIngestNote_ReplyToRemote(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	parentURI := "https://remote.example/notes/parent"
+	noteRepo.Notes["parent"] = &model.Note{ID: "parent", UserID: "uparent", URI: &parentURI}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	body := []byte(`{
+		"id": "https://remote.example/notes/n3",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "reply",
+		"inReplyTo": "https://remote.example/notes/parent",
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.ReplyID)
+	assert.Equal(t, "parent", *got.ReplyID)
+}
+
+func TestIngestNote_SensitiveWithoutSummary(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	body := []byte(`{
+		"id": "https://remote.example/notes/n4",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "nsfw",
+		"sensitive": true,
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.CW)
+	assert.Equal(t, "", *got.CW)
+}
+
 func TestRefreshPublicKey_OnExistingUser_FetchError(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
 	uri := "https://remote.example/users/alice"
 	repo.Users["existing"] = &model.User{ID: "existing", Username: "alice", URI: &uri}
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
 	idGen, _ := id.NewGenerator("aidx")
-	r := federation.NewResolver(repo, &stubFetcher{err: errors.New("oops")}, idGen)
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{err: errors.New("oops")}, idGen)
 	user, err := r.ResolveActor(uri)
 	require.NoError(t, err)
 	assert.Equal(t, "existing", user.ID)

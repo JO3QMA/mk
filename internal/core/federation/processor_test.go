@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -22,19 +23,21 @@ const aliceActor = `{
 	"publicKey": {"publicKeyPem": "PEM"}
 }`
 
-func newProcessor(t *testing.T, fetcherBody string) (*federation.Processor, *testutil.MockUserRepository, *testutil.MockFollowingRepository) {
+func newProcessor(t *testing.T, fetcherBody string) (*federation.Processor, *testutil.MockUserRepository, *testutil.MockFollowingRepository, *testutil.MockNoteRepository) {
 	t.Helper()
 	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
 	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
 	idGen, _ := id.NewGenerator("aidx")
-	resolver := federation.NewResolver(repo, &stubFetcher{body: []byte(fetcherBody)}, idGen)
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(fetcherBody)}, idGen)
 	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
-	processor := federation.NewProcessor(resolver, followingSvc, repo)
-	return processor, repo, followingRepo
+	processor := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
+	return processor, repo, followingRepo, noteRepo
 }
 
 func TestProcess_FollowHappyPath(t *testing.T) {
-	p, repo, followingRepo := newProcessor(t, aliceActor)
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
 	// 受信側の自分 (local) を登録
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
@@ -49,7 +52,7 @@ func TestProcess_FollowHappyPath(t *testing.T) {
 }
 
 func TestProcess_FollowAlreadyFollowing(t *testing.T) {
-	p, repo, followingRepo := newProcessor(t, aliceActor)
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
 	// alice → bob を resolver で予め解決させる
@@ -66,7 +69,7 @@ func TestProcess_FollowAlreadyFollowing(t *testing.T) {
 }
 
 func TestProcess_FollowUnknownFollowee(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	body := []byte(`{
 		"type": "Follow",
 		"actor": "https://remote.example/users/alice",
@@ -77,7 +80,7 @@ func TestProcess_FollowUnknownFollowee(t *testing.T) {
 }
 
 func TestProcess_FollowResolveError(t *testing.T) {
-	p, _, _ := newProcessor(t, "{not json")
+	p, _, _, _ := newProcessor(t, "{not json")
 	body := []byte(`{
 		"type": "Follow",
 		"actor": "https://remote.example/users/alice",
@@ -88,14 +91,14 @@ func TestProcess_FollowResolveError(t *testing.T) {
 }
 
 func TestProcess_FollowMissingObject(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	body := []byte(`{"type":"Follow","actor":"https://remote.example/users/alice"}`)
 	err := p.Process(body)
 	assert.Error(t, err)
 }
 
 func TestProcess_UndoFollow(t *testing.T) {
-	p, repo, followingRepo := newProcessor(t, aliceActor)
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
 
@@ -123,7 +126,7 @@ func TestProcess_UndoFollow(t *testing.T) {
 }
 
 func TestProcess_UndoUnknownType(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	undo := []byte(`{
 		"type": "Undo",
 		"actor": "https://remote.example/users/alice",
@@ -134,7 +137,7 @@ func TestProcess_UndoUnknownType(t *testing.T) {
 }
 
 func TestProcess_UndoBadInner(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	undo := []byte(`{
 		"type": "Undo",
 		"actor": "https://remote.example/users/alice",
@@ -145,7 +148,7 @@ func TestProcess_UndoBadInner(t *testing.T) {
 }
 
 func TestProcess_UndoNotFollowing(t *testing.T) {
-	p, repo, _ := newProcessor(t, aliceActor)
+	p, repo, _, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
 
@@ -163,7 +166,7 @@ func TestProcess_UndoNotFollowing(t *testing.T) {
 }
 
 func TestProcess_UndoResolveError(t *testing.T) {
-	p, _, _ := newProcessor(t, "{not json")
+	p, _, _, _ := newProcessor(t, "{not json")
 	undo := []byte(`{
 		"type": "Undo",
 		"actor": "https://remote.example/users/alice",
@@ -174,7 +177,7 @@ func TestProcess_UndoResolveError(t *testing.T) {
 }
 
 func TestProcess_UndoUnknownFollowee(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	undo := []byte(`{
 		"type": "Undo",
 		"actor": "https://remote.example/users/alice",
@@ -185,7 +188,7 @@ func TestProcess_UndoUnknownFollowee(t *testing.T) {
 }
 
 func TestProcess_UndoMissingObject(t *testing.T) {
-	p, repo, _ := newProcessor(t, aliceActor)
+	p, repo, _, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
 
@@ -199,31 +202,31 @@ func TestProcess_UndoMissingObject(t *testing.T) {
 }
 
 func TestProcess_Accept(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	body := []byte(`{"type":"Accept","actor":"https://remote.example/users/alice","object":{}}`)
 	require.NoError(t, p.Process(body))
 }
 
 func TestProcess_UnsupportedType(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	body := []byte(`{"type":"Like","actor":"https://remote.example/users/alice"}`)
 	assert.ErrorIs(t, p.Process(body), federation.ErrUnsupportedActivity)
 }
 
 func TestProcess_UnknownType(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	body := []byte(`{"type":"Move","actor":"https://remote.example/users/alice"}`)
 	assert.ErrorIs(t, p.Process(body), federation.ErrUnsupportedActivity)
 }
 
 func TestProcess_BadJSON(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	err := p.Process([]byte(`{not json`))
 	assert.Error(t, err)
 }
 
 func TestProcess_MissingActor(t *testing.T) {
-	p, _, _ := newProcessor(t, aliceActor)
+	p, _, _, _ := newProcessor(t, aliceActor)
 	err := p.Process([]byte(`{"type":"Follow"}`))
 	assert.Error(t, err)
 }
@@ -233,7 +236,7 @@ func TestProcess_MissingActor(t *testing.T) {
 // who doesn't exist yet (resolver create works but follow service errors out
 // because follower==followee). Use SelfFollow.
 func TestProcess_UndoFollowWithNestedObject(t *testing.T) {
-	p, repo, followingRepo := newProcessor(t, aliceActor)
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
 
@@ -260,7 +263,7 @@ func TestProcess_UndoFollowWithNestedObject(t *testing.T) {
 }
 
 func TestProcess_UndoNestedObjectInvalid(t *testing.T) {
-	p, repo, _ := newProcessor(t, aliceActor)
+	p, repo, _, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
 
@@ -278,7 +281,7 @@ func TestProcess_UndoNestedObjectInvalid(t *testing.T) {
 }
 
 func TestProcess_UndoNestedObjectBadJSON(t *testing.T) {
-	p, repo, _ := newProcessor(t, aliceActor)
+	p, repo, _, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
 
@@ -306,15 +309,17 @@ func (f *failingFollowingRepo) Delete(_ *model.Following) error {
 
 func TestProcess_UndoFollowDeleteError(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
 	mockFR := testutil.NewMockFollowingRepository()
 	// pre-existing follow record so Unfollow finds it
 	mockFR.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "alice", FolloweeID: "bob"}
 	followingRepo := &failingFollowingRepo{MockFollowingRepository: mockFR}
 
 	idGen, _ := id.NewGenerator("aidx")
-	resolver := federation.NewResolver(repo, &stubFetcher{body: []byte(aliceActor)}, idGen)
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(aliceActor)}, idGen)
 	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
-	p := federation.NewProcessor(resolver, followingSvc, repo)
+	p := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
 
 	// Setup followee bob
 	bobURI := "https://example.com/users/bob"
@@ -336,7 +341,7 @@ func TestProcess_UndoFollowDeleteError(t *testing.T) {
 }
 
 func TestProcess_FollowSelfFollow(t *testing.T) {
-	p, repo, _ := newProcessor(t, aliceActor)
+	p, repo, _, _ := newProcessor(t, aliceActor)
 	// alice/bob 同IDのケース: alice as both actor and target via URI alias
 	uri := "https://remote.example/users/alice"
 	// alice already in repo (resolver populates) ... we register the same user

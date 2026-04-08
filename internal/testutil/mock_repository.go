@@ -226,6 +226,15 @@ func (m *MockNoteRepository) FindByIDWithUser(id string) (*model.Note, error) {
 	return m.FindByID(id)
 }
 
+func (m *MockNoteRepository) FindByURI(uri string) (*model.Note, error) {
+	for _, n := range m.Notes {
+		if n.URI != nil && *n.URI == uri {
+			return n, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (m *MockNoteRepository) Delete(note *model.Note) error {
 	delete(m.Notes, note.ID)
 	return nil

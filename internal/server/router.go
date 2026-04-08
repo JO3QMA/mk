@@ -104,8 +104,8 @@ func (s *Server) setupRoutes() {
 	apRenderer := activitypub.NewRenderer(apURLs)
 	apClient := activitypub.NewClient(nil, "misskey-go/"+s.config.Version)
 	apFetcher := corefederation.NewAPFetcher(apClient)
-	federationResolver := corefederation.NewResolver(userRepo, apFetcher, idGen)
-	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, userRepo)
+	federationResolver := corefederation.NewResolver(userRepo, noteRepo, apURLs, apFetcher, idGen)
+	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 
 	// AP delivery: DeliverService + フック登録 + asynq processor 登録
 	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
