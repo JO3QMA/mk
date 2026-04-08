@@ -257,6 +257,35 @@ func (m *MockNoteRepository) Update(note *model.Note, column string, value any) 
 	return nil
 }
 
+// UpdateFields applies field updates to the in-memory note. テストで参照される
+// 列だけを反映する; 拡張時はここに追記する。
+func (m *MockNoteRepository) UpdateFields(noteID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	n, ok := m.Notes[noteID]
+	if !ok {
+		return ErrNotFound
+	}
+	for k, v := range fields {
+		switch k {
+		case "text":
+			if s, ok := v.(*string); ok {
+				n.Text = s
+			}
+		case "cw":
+			if s, ok := v.(*string); ok {
+				n.CW = s
+			}
+		case "mentions":
+			if a, ok := v.([]string); ok {
+				n.Mentions = a
+			}
+		}
+	}
+	return nil
+}
+
 // IncrementCount mutates the in-memory note's counter column for tests.
 func (m *MockNoteRepository) IncrementCount(noteID, column string, delta int) error {
 	n, ok := m.Notes[noteID]

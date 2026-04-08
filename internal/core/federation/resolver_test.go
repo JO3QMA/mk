@@ -392,6 +392,174 @@ func TestIngestNote_SensitiveWithoutSummary(t *testing.T) {
 	assert.Equal(t, "", *got.CW)
 }
 
+// --- UpdateRemoteNote (Step J) -----------------------------------------------
+
+const remoteNoteUpdateBody = `{
+	"id": "https://remote.example/notes/n1",
+	"type": "Note",
+	"attributedTo": "https://remote.example/users/alice",
+	"content": "edited content",
+	"summary": "edited cw"
+}`
+
+func TestUpdateRemoteNote_HappyPath(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	host := "remote.example"
+	original := "original"
+	noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", URI: &uri, UserID: "alice-id", UserHost: &host, Text: &original,
+	}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+	got, err := r.UpdateRemoteNote([]byte(remoteNoteUpdateBody))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "edited content", *got.Text)
+	require.NotNil(t, got.CW)
+	assert.Equal(t, "edited cw", *got.CW)
+}
+
+func TestUpdateRemoteNote_NoNoteRepo(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, nil, urls, &stubFetcher{}, idGen)
+	_, err := r.UpdateRemoteNote([]byte(remoteNoteUpdateBody))
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestUpdateRemoteNote_BadJSON(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	_, err := r.UpdateRemoteNote([]byte(`{not json`))
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestUpdateRemoteNote_MissingID(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	_, err := r.UpdateRemoteNote([]byte(`{"type":"Note"}`))
+	assert.ErrorIs(t, err, federation.ErrInvalidNote)
+}
+
+func TestUpdateRemoteNote_NotFound(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	got, err := r.UpdateRemoteNote([]byte(remoteNoteUpdateBody))
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestUpdateRemoteNote_LocalNoteSkipped(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	original := "original"
+	// UserHost == nil → ローカルノート扱い
+	noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", URI: &uri, UserID: "alice-id", Text: &original,
+	}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+	got, err := r.UpdateRemoteNote([]byte(remoteNoteUpdateBody))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	// Text は変わらない
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "original", *got.Text)
+}
+
+func TestUpdateRemoteNote_EmptyContentNoOp(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	host := "remote.example"
+	original := "original"
+	noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", URI: &uri, UserID: "alice-id", UserHost: &host, Text: &original,
+	}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/n1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice"
+	}`)
+	got, err := r.UpdateRemoteNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "original", *got.Text)
+}
+
+func TestUpdateRemoteNote_SensitiveWithoutSummary(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	host := "remote.example"
+	noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", URI: &uri, UserID: "alice-id", UserHost: &host,
+	}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/n1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "nsfw",
+		"sensitive": true
+	}`)
+	got, err := r.UpdateRemoteNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.CW)
+	assert.Equal(t, "", *got.CW)
+}
+
+// failingNoteUpdateRepo causes UpdateFields to fail.
+type failingNoteUpdateRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (f *failingNoteUpdateRepo) UpdateFields(_ string, _ map[string]any) error {
+	return errors.New("update failed")
+}
+
+func TestUpdateRemoteNote_UpdateFieldsError(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	mock := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	host := "remote.example"
+	mock.Notes["n1"] = &model.Note{
+		ID: "n1", URI: &uri, UserID: "alice-id", UserHost: &host,
+	}
+	noteRepo := &failingNoteUpdateRepo{MockNoteRepository: mock}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	_, err := r.UpdateRemoteNote([]byte(remoteNoteUpdateBody))
+	assert.Error(t, err)
+}
+
 // --- TTL cache (Step G) -------------------------------------------------------
 
 func TestResolveActor_TTLRefresh(t *testing.T) {

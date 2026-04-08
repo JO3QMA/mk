@@ -507,6 +507,105 @@ func TestProcess_UndoAnnounceBadObject(t *testing.T) {
 
 // --- Update ------------------------------------------------------------------
 
+// --- Note update (Step J) -----------------------------------------------------
+
+func TestProcess_UpdateNoteHappyPath(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	uri := "https://remote.example/notes/n1"
+	host := "remote.example"
+	original := "original"
+	env.noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", URI: &uri, UserID: "alice-id", UserHost: &host, Text: &original,
+	}
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://remote.example/notes/n1",
+			"type": "Note",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "edited"
+		}
+	}`)
+	require.NoError(t, env.processor.Process(body))
+	got := env.noteRepo.Notes["n1"]
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "edited", *got.Text)
+}
+
+func TestProcess_UpdateNote_NotFound(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://remote.example/notes/missing",
+			"type": "Note",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "edited"
+		}
+	}`)
+	// 未取得ノートは silently ignore
+	require.NoError(t, env.processor.Process(body))
+}
+
+func TestProcess_UpdateNote_InvalidNoteIsAccepted(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	// type は Note だが id が無いので ErrInvalidNote → 200 扱い
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Note"
+		}
+	}`)
+	require.NoError(t, env.processor.Process(body))
+}
+
+// updateFailNoteRepo causes UpdateFields to fail, exercising the
+// non-ErrInvalidNote error path of handleUpdate.
+type updateFailNoteRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (r *updateFailNoteRepo) UpdateFields(_ string, _ map[string]any) error {
+	return errors.New("update boom")
+}
+
+func TestProcess_UpdateNote_RepoErrorPropagates(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	mock := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/n1"
+	host := "remote.example"
+	mock.Notes["n1"] = &model.Note{
+		ID: "n1", URI: &uri, UserID: "alice-id", UserHost: &host,
+	}
+	noteRepo := &updateFailNoteRepo{MockNoteRepository: mock}
+	emojiRepo := testutil.NewMockEmojiRepository()
+	reactionRepo := testutil.NewMockNoteReactionRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(userRepo, noteRepo, urls, &stubFetcher{body: []byte(aliceActor)}, idGen)
+	followingSvc := corefollowing.NewService(userRepo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
+	reactionSvc := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	p := federation.NewProcessor(resolver, followingSvc, reactionSvc, deleteSvc, userRepo, noteRepo)
+
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://remote.example/notes/n1",
+			"type": "Note",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "edited"
+		}
+	}`)
+	err := p.Process(body)
+	assert.Error(t, err)
+}
+
 func TestProcess_UpdatePerson(t *testing.T) {
 	env := newFullProcessor(t, aliceActor)
 	uri := "https://remote.example/users/alice"
@@ -539,12 +638,25 @@ func TestProcess_UpdateNonPerson(t *testing.T) {
 	env := newFullProcessor(t, aliceActor)
 	uri := "https://remote.example/users/alice"
 	env.userRepo.Users["alice-id"] = &model.User{ID: "alice-id", Username: "alice", URI: &uri}
+	// Note ではない非対応 type (Article 等) は no-op
 	body := []byte(`{
 		"type": "Update",
 		"actor": "https://remote.example/users/alice",
-		"object": {"id":"https://remote.example/users/alice","type":"Note","name":"X"}
+		"object": {"id":"https://remote.example/users/alice","type":"Article","name":"X"}
 	}`)
 	require.NoError(t, env.processor.Process(body))
+}
+
+func TestProcess_UpdateMissingObject(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice"
+	}`)
+	// object フィールド無し → peekObjectType は "" を返し Person 経路に入る
+	// → readObjectString が "missing object" を返してエラー
+	err := env.processor.Process(body)
+	assert.Error(t, err)
 }
 
 func TestProcess_UpdateNoChanges(t *testing.T) {

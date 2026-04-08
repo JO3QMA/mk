@@ -13,6 +13,7 @@ type NoteRepository interface {
 	FindByURI(uri string) (*model.Note, error)
 	Delete(note *model.Note) error
 	Update(note *model.Note, column string, value any) error
+	UpdateFields(noteID string, fields map[string]any) error
 	IncrementCount(noteID, column string, delta int) error
 	IncrementReaction(noteID, reaction string, delta int) error
 	ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error)
@@ -68,6 +69,15 @@ func (r *noteRepository) Delete(note *model.Note) error {
 
 func (r *noteRepository) Update(note *model.Note, column string, value any) error {
 	return r.db.Model(note).Update(column, value).Error
+}
+
+// UpdateFields applies a map of column → value updates to the note row keyed
+// by id. Update (single column) は既存呼び出し互換のため残す。
+func (r *noteRepository) UpdateFields(noteID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Note{}).Where("id = ?", noteID).Updates(fields).Error
 }
 
 // IncrementCount adjusts a counter column on the note row by delta.

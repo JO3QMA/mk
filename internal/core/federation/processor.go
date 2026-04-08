@@ -359,10 +359,24 @@ func (p *Processor) handleDelete(act genericActivity) error {
 	return p.noteRepo.Delete(note)
 }
 
-// handleUpdate refreshes a remote actor's stored profile fields.
+// handleUpdate refreshes a remote actor's stored profile fields, or applies
+// an inbound Update Note activity from a federated peer.
 //
-// 現状の最小実装では Person の Update のみ扱い、Note の Update は no-op。
+// Misskey 本家にはノート編集 API が無いが、Mastodon 系の Update Note は受信
+// するだけ受信して反映する (`Resolver.UpdateRemoteNote` 経由)。それ以外の
+// type (Question / Article 等) は no-op。
 func (p *Processor) handleUpdate(act genericActivity) error {
+	// 先に object の type を覗いて Note / Person の判定を行う。
+	objectType := peekObjectType(act.Object)
+	if strings.EqualFold(objectType, "note") {
+		_, err := p.resolver.UpdateRemoteNote(act.Object)
+		// ErrInvalidNote は受信側の不備として skip 扱い (200 を返す)。
+		if errors.Is(err, ErrInvalidNote) {
+			return nil
+		}
+		return err
+	}
+
 	// object が単なる URI なら fetch、object 内に Person があればそれを使う
 	var person activitypub.Person
 	if err := json.Unmarshal(act.Object, &person); err != nil || person.ID == "" {
@@ -374,7 +388,7 @@ func (p *Processor) handleUpdate(act genericActivity) error {
 		person.ID = uri
 	}
 	if person.Type != "" && !strings.EqualFold(person.Type, "person") {
-		// Note 更新等は未対応
+		// Question / Article 等は未対応
 		return nil
 	}
 	user, err := p.userRepo.FindByURI(person.ID)
@@ -391,6 +405,21 @@ func (p *Processor) handleUpdate(act genericActivity) error {
 		return nil
 	}
 	return p.userRepo.UpdateUser(user.ID, fields)
+}
+
+// peekObjectType reads only the "type" field from a JSON object body. パース
+// 不能・object でない・type フィールド無しの場合は空文字を返す。
+func peekObjectType(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	return obj.Type
 }
 
 // handleReject undoes a Follow that was rejected by the followee.

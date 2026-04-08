@@ -59,6 +59,42 @@ func TestNoteRepository_FindByIDWithUser(t *testing.T) {
 	assert.Equal(t, "noteuser2", found.User.Username)
 }
 
+func TestNoteRepository_UpdateFields(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_nuf_1", "noteuser_uf")
+	defer cleanupUser(t, user.ID)
+
+	text := "original"
+	note := &model.Note{
+		ID:         "n_nuf_1",
+		UserID:     user.ID,
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(note))
+	defer cleanupNote(t, note.ID)
+
+	updated := "edited"
+	cw := "spoiler"
+	require.NoError(t, repo.UpdateFields(note.ID, map[string]any{
+		"text": &updated,
+		"cw":   &cw,
+	}))
+
+	got, err := repo.FindByID(note.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "edited", *got.Text)
+	require.NotNil(t, got.CW)
+	assert.Equal(t, "spoiler", *got.CW)
+}
+
+func TestNoteRepository_UpdateFields_NoOp(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	require.NoError(t, repo.UpdateFields("any", nil))
+}
+
 func TestNoteRepository_FindByURI(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	user := insertTestUser(t, "u_nuri_1", "noteuser_uri")

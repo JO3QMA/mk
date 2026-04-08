@@ -436,6 +436,7 @@ func (f *failingNoteRepo) FindByURI(_ string) (*model.Note, error) {
 }
 func (f *failingNoteRepo) Delete(_ *model.Note) error                        { return nil }
 func (f *failingNoteRepo) Update(_ *model.Note, _ string, _ any) error       { return nil }
+func (f *failingNoteRepo) UpdateFields(_ string, _ map[string]any) error     { return nil }
 func (f *failingNoteRepo) IncrementCount(_ string, _ string, _ int) error    { return nil }
 func (f *failingNoteRepo) IncrementReaction(_ string, _ string, _ int) error { return nil }
 func (f *failingNoteRepo) ListByUserID(_ string, _, _ string, _ int) ([]*model.Note, error) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -356,10 +357,73 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 			note.ReplyUserHost = reply.UserHost
 		}
 	}
+	if apNote.Content != "" {
+		note.Mentions = corenote.ExtractMentions(apNote.Content)
+	}
 	if err := r.noteRepo.Create(note); err != nil {
 		return nil, err
 	}
 	return note, nil
+}
+
+// UpdateRemoteNote applies an inbound Update Note activity body to an existing
+// remote-authored note row. Misskey 本家にはノート編集機能が無いためローカル
+// note は不変だが、Mastodon 等から push されてくる Update activity は受信
+// するだけ受信して反映する。
+//
+// 動作:
+//   - URI でノートを引いて見つからなければ何もせず nil
+//   - 見つかったが著者がローカルなら何もしない (ローカルノートは変更不可)
+//   - 著者がリモートなら text/cw/sensitive/mentions を更新
+func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
+	if r.noteRepo == nil {
+		return nil, ErrInvalidNote
+	}
+	var apNote activitypub.Note
+	if err := json.Unmarshal(body, &apNote); err != nil {
+		return nil, ErrInvalidNote
+	}
+	if apNote.ID == "" {
+		return nil, ErrInvalidNote
+	}
+	existing, err := r.noteRepo.FindByURI(apNote.ID)
+	if err != nil {
+		// 未取得のリモート Note は無視 (こちらに該当データが無いものを編集する
+		// 通知が来ても反映先が無いため)。
+		return nil, nil
+	}
+	if existing.UserHost == nil {
+		// ローカルノートに対する Update は無視 (Misskey は編集機能を持たない)。
+		return existing, nil
+	}
+	fields := map[string]any{}
+	if apNote.Content != "" {
+		text := apNote.Content
+		fields["text"] = &text
+		existing.Text = &text
+		fields["mentions"] = corenote.ExtractMentions(apNote.Content)
+		existing.Mentions = corenote.ExtractMentions(apNote.Content)
+	} else {
+		// content が空文字に変わるケース (text 削除) はサポート対象外
+		// (空配信はメモリ攻撃の温床になりやすいので意図的に何もしない)。
+	}
+	if apNote.Summary != "" {
+		summary := apNote.Summary
+		fields["cw"] = &summary
+		existing.CW = &summary
+	} else if apNote.Sensitive {
+		// Summary が空でも sensitive なら空 CW を保つ (IngestNote と対称)。
+		empty := ""
+		fields["cw"] = &empty
+		existing.CW = &empty
+	}
+	if len(fields) == 0 {
+		return existing, nil
+	}
+	if err := r.noteRepo.UpdateFields(existing.ID, fields); err != nil {
+		return nil, err
+	}
+	return existing, nil
 }
 
 // extractLocalNoteID returns the trailing note ID for a URI rooted at the
