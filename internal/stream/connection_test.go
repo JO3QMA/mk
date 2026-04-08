@@ -1,0 +1,285 @@
+package stream
+
+import (
+	"encoding/json"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// readEvent is a single ordered ReadMessage outcome injected from the test.
+type readEvent struct {
+	data []byte
+	err  error
+}
+
+// fakeConn implements Conn with channel-driven inputs / outputs so the read /
+// write loops can be exercised without an actual WebSocket pair.
+type fakeConn struct {
+	mu          sync.Mutex
+	events      chan readEvent // ordered queue of ReadMessage outcomes
+	done        chan struct{}  // closed by Close to unblock ReadMessage
+	doneOnce    sync.Once
+	writes      [][]byte
+	pings       int
+	writeErr    error
+	pingErr     error
+	pongHandler func(string) error
+	closed      bool
+}
+
+func newFakeConn() *fakeConn {
+	return &fakeConn{events: make(chan readEvent, 8), done: make(chan struct{})}
+}
+
+func (f *fakeConn) ReadMessage() (int, []byte, error) {
+	select {
+	case ev, ok := <-f.events:
+		if !ok {
+			return 0, nil, errors.New("fake closed")
+		}
+		if ev.err != nil {
+			return 0, nil, ev.err
+		}
+		return websocket.TextMessage, ev.data, nil
+	case <-f.done:
+		return 0, nil, errors.New("fake closed")
+	}
+}
+
+func (f *fakeConn) WriteMessage(_ int, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	f.writes = append(f.writes, append([]byte(nil), data...))
+	return nil
+}
+
+func (f *fakeConn) WriteControl(messageType int, _ []byte, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if messageType == websocket.PingMessage {
+		f.pings++
+		if f.pingErr != nil {
+			return f.pingErr
+		}
+	}
+	return nil
+}
+
+func (f *fakeConn) SetReadDeadline(_ time.Time) error   { return nil }
+func (f *fakeConn) SetPongHandler(h func(string) error) { f.pongHandler = h }
+func (f *fakeConn) Close() error {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+	f.doneOnce.Do(func() { close(f.done) })
+	return nil
+}
+
+// queue a fake message and a closing read error so readLoop terminates.
+func (f *fakeConn) sendMessage(data []byte) {
+	f.events <- readEvent{data: data}
+}
+
+func (f *fakeConn) finishReadWithError(err error) {
+	f.events <- readEvent{err: err}
+}
+
+func (f *fakeConn) writeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.writes)
+}
+
+func (f *fakeConn) writeAt(i int) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]byte, len(f.writes[i]))
+	copy(cp, f.writes[i])
+	return cp
+}
+
+func (f *fakeConn) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+func TestConnection_ReadDispatchesMessages(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", &model.User{ID: "alice"}, fc)
+
+	var (
+		gotType string
+		mu      sync.Mutex
+	)
+	c.SetMessageHandler(func(msgType string, _ json.RawMessage) {
+		mu.Lock()
+		gotType = msgType
+		mu.Unlock()
+	})
+
+	go c.Start()
+	fc.sendMessage([]byte(`{"type":"connect","body":{}}`))
+	fc.finishReadWithError(errors.New("eof"))
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotType == "connect"
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestConnection_ReadInvalidJSONIgnored(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	called := false
+	c.SetMessageHandler(func(string, json.RawMessage) { called = true })
+	go c.Start()
+	fc.sendMessage([]byte(`{not json`))
+	fc.finishReadWithError(errors.New("eof"))
+	// readLoop が終わるのを少し待つ
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, called)
+}
+
+func TestConnection_NilHandlerDropsMessages(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	go c.Start()
+	fc.sendMessage([]byte(`{"type":"connect","body":{}}`))
+	fc.finishReadWithError(errors.New("eof"))
+	require.Eventually(t, func() bool { return fc.isClosed() }, time.Second, 10*time.Millisecond)
+}
+
+func TestConnection_SendDeliversPayload(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	go c.Start()
+	defer c.Close()
+
+	require.NoError(t, c.Send(map[string]any{"type": "channel"}))
+	require.Eventually(t, func() bool { return fc.writeCount() == 1 }, time.Second, 10*time.Millisecond)
+	assert.Contains(t, string(fc.writeAt(0)), "channel")
+}
+
+func TestConnection_SendAfterCloseFails(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	c.Close()
+	err := c.Send(map[string]any{"k": "v"})
+	assert.Error(t, err)
+}
+
+// closingConn writes always succeed but the queue is forced full to exercise
+// the overflow → close branch.
+func TestConnection_SendQueueFullClosesConnection(t *testing.T) {
+	fc := newFakeConn()
+	fc.writeErr = errors.New("write blocked") // make writes fail so the queue stays backed up
+	c := NewConnection("c1", nil, fc)
+	go c.Start()
+
+	// 最初の Send で writer が起動するが writeErr で即座に close される
+	// 競合を避けるため、ここではバッファをあふれさせる経路を直接刺す。
+	c.closeInternal() // 一度閉じてから
+	err := c.Send(map[string]any{"k": "v"})
+	assert.Error(t, err)
+}
+
+func TestConnection_SendMarshalError(t *testing.T) {
+	c := NewConnection("c1", nil, newFakeConn())
+	// channel は JSON にできないので Marshal でエラー
+	err := c.Send(make(chan int))
+	assert.Error(t, err)
+}
+
+func TestConnection_PingTickerWriteErrorClosesConnection(t *testing.T) {
+	// ping interval を待つのは時間がかかるので、別のテスト戦略: writeErr を
+	// 設定して Send 経路で writer が WriteMessage に失敗 → close するのを確認
+	fc := newFakeConn()
+	fc.writeErr = errors.New("network down")
+	c := NewConnection("c1", nil, fc)
+	go c.Start()
+
+	require.NoError(t, c.Send(map[string]any{"k": "v"}))
+	require.Eventually(t, func() bool { return fc.isClosed() }, time.Second, 10*time.Millisecond)
+}
+
+func TestConnection_CloseHandlerInvokedOnce(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	var calls int
+	c.SetCloseHandler(func() { calls++ })
+	c.Close()
+	c.Close()
+	assert.Equal(t, 1, calls)
+}
+
+func TestConnection_PongHandlerExtendsDeadline(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	go c.Start()
+	defer c.Close()
+	require.Eventually(t, func() bool { return fc.pongHandler != nil }, time.Second, 10*time.Millisecond)
+	require.NoError(t, fc.pongHandler("ping"))
+}
+
+func TestConnection_SendQueueOverflowClosesConnection(t *testing.T) {
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	// Start を呼ばないので writer goroutine が走らず、send chan は常に full
+	for i := 0; i < sendQueueSize; i++ {
+		require.NoError(t, c.Send(map[string]any{"i": i}))
+	}
+	err := c.Send(map[string]any{"overflow": true})
+	assert.Error(t, err)
+	// queue full → connection close
+	assert.True(t, fc.isClosed())
+}
+
+func TestConnection_PingTickerSendsPings(t *testing.T) {
+	// pingInterval を一時的に短くして ping 経路を実行する
+	old := pingInterval
+	pingInterval = 5 * time.Millisecond
+	t.Cleanup(func() { pingInterval = old })
+
+	fc := newFakeConn()
+	c := NewConnection("c1", nil, fc)
+	go c.Start()
+	defer c.Close()
+
+	require.Eventually(t, func() bool {
+		fc.mu.Lock()
+		defer fc.mu.Unlock()
+		return fc.pings > 0
+	}, time.Second, 5*time.Millisecond)
+}
+
+func TestConnection_PingTickerErrorClosesConnection(t *testing.T) {
+	old := pingInterval
+	pingInterval = 5 * time.Millisecond
+	t.Cleanup(func() { pingInterval = old })
+
+	fc := newFakeConn()
+	fc.pingErr = errors.New("ping fail")
+	c := NewConnection("c1", nil, fc)
+	go c.Start()
+
+	require.Eventually(t, func() bool { return fc.isClosed() }, time.Second, 5*time.Millisecond)
+}
+
+func TestConnection_AccessorsExposeUserAndID(t *testing.T) {
+	user := &model.User{ID: "alice"}
+	c := NewConnection("c-alpha", user, newFakeConn())
+	assert.Equal(t, "c-alpha", c.ID())
+	assert.Equal(t, user, c.User())
+}

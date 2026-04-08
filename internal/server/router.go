@@ -18,6 +18,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/notes"
 	"github.com/shiroha-a/mk/internal/api/notifications"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
+	"github.com/shiroha-a/mk/internal/api/streaming"
 	"github.com/shiroha-a/mk/internal/api/users"
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
@@ -246,6 +247,13 @@ func (s *Server) setupRoutes() {
 	federationHandler := apifederation.NewHandler(instanceService)
 	api.POST("/federation/instances", federationHandler.Instances)
 	api.POST("/federation/show-instance", federationHandler.ShowInstance)
+
+	// Streaming endpoint (Phase 4.1 Step K-1〜K-4 — 基盤のみ)
+	// 各 channel 実装は K-5 以降で追加され、その時点で acceptor に Manager
+	// を実体として渡す。現状は scaffold のみ wire しておく。auth は server.go
+	// で global middleware として既に適用済み。
+	streamingHandler := streaming.NewHandler(nil)
+	s.echo.GET("/streaming", streamingHandler.Stream)
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)

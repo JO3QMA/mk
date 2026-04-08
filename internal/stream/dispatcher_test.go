@@ -1,0 +1,371 @@
+package stream
+
+import (
+	"encoding/json"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// stubBus implements PubSubBus and records subscribe/unsubscribe calls.
+type stubBus struct {
+	mu         sync.Mutex
+	subs       map[string]func([]byte)
+	unsubs     []string
+	subscribed []string
+}
+
+func newStubBus() *stubBus {
+	return &stubBus{subs: map[string]func([]byte){}}
+}
+
+func (b *stubBus) Subscribe(topic string, handler func([]byte)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.subs[topic] = handler
+	b.subscribed = append(b.subscribed, topic)
+}
+
+func (b *stubBus) Unsubscribe(topic string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.subs, topic)
+	b.unsubs = append(b.unsubs, topic)
+}
+
+func (b *stubBus) deliver(topic string, payload []byte) {
+	b.mu.Lock()
+	h := b.subs[topic]
+	b.mu.Unlock()
+	if h != nil {
+		h(payload)
+	}
+}
+
+// fakeChannel is a Channel that records every callback for assertion.
+type fakeChannel struct {
+	ctx          ChannelContext
+	initParams   json.RawMessage
+	disposeCount int
+	redisEvents  [][]byte
+	clientMsgs   []string
+	subscribed   []string
+}
+
+func (f *fakeChannel) Init(params json.RawMessage) {
+	f.initParams = params
+	f.subscribed = append(f.subscribed, "topic-a")
+	f.ctx.Subscribe("topic-a")
+}
+func (f *fakeChannel) Dispose() { f.disposeCount++ }
+func (f *fakeChannel) OnRedisEvent(payload []byte) {
+	f.redisEvents = append(f.redisEvents, append([]byte(nil), payload...))
+}
+func (f *fakeChannel) OnClientMessage(msgType string, _ json.RawMessage) {
+	f.clientMsgs = append(f.clientMsgs, msgType)
+}
+
+// fakeChannelHolder lets tests grab a reference to the channel created by the
+// factory. The factory closure stores into Holder.Value when invoked.
+type fakeChannelHolder struct {
+	Value *fakeChannel
+}
+
+func newDispatcherWithFake(t *testing.T) (*Dispatcher, *Connection, *Registry, *stubBus, *fakeChannelHolder) {
+	t.Helper()
+	bus := newStubBus()
+	registry := NewRegistry()
+	holder := &fakeChannelHolder{}
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		ch := &fakeChannel{ctx: ctx}
+		holder.Value = ch
+		return ch
+	})
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+	return d, conn, registry, bus, holder
+}
+
+func TestRegistry_RegisterAndLookup(t *testing.T) {
+	r := NewRegistry()
+	r.Register("foo", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+	assert.NotNil(t, r.Lookup("foo"))
+	assert.Nil(t, r.Lookup("missing"))
+}
+
+func TestDispatcher_HandleConnect(t *testing.T) {
+	d, _, _, bus, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test","params":{}}`))
+
+	// fake channel が Init で subscribe するので bus に topic-a が登録される
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	assert.Contains(t, bus.subscribed, "topic-a")
+}
+
+func TestDispatcher_HandleConnectInvalidJSON(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{not json`))
+}
+
+func TestDispatcher_HandleConnectMissingFields(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{}`))
+}
+
+func TestDispatcher_HandleConnectUnknownChannel(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"x","channel":"missing"}`))
+}
+
+func TestDispatcher_HandleConnectNoRegistry(t *testing.T) {
+	conn := NewConnection("c1", nil, newFakeConn())
+	d := NewDispatcher(conn, nil, newStubBus())
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"x","channel":"test"}`))
+}
+
+func TestDispatcher_HandleConnectDuplicateID(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+}
+
+func TestDispatcher_HandleDisconnect(t *testing.T) {
+	d, _, _, bus, holder := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, holder.Value)
+	d.HandleClientMessage("disconnect", json.RawMessage(`{"id":"abc"}`))
+	assert.Equal(t, 1, holder.Value.disposeCount)
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	assert.Contains(t, bus.unsubs, "topic-a")
+}
+
+func TestDispatcher_HandleDisconnectInvalidJSON(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("disconnect", json.RawMessage(`{bad`))
+}
+
+func TestDispatcher_HandleDisconnectUnknown(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("disconnect", json.RawMessage(`{"id":"missing"}`))
+}
+
+func TestDispatcher_HandleChannelMessage(t *testing.T) {
+	d, _, _, _, holder := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, holder.Value)
+	d.HandleClientMessage("ch", json.RawMessage(`{"id":"abc","type":"ping","body":{}}`))
+	assert.Equal(t, []string{"ping"}, holder.Value.clientMsgs)
+}
+
+func TestDispatcher_HandleChannelMessageBadJSON(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("ch", json.RawMessage(`{bad`))
+}
+
+func TestDispatcher_HandleChannelMessageUnknown(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("ch", json.RawMessage(`{"id":"missing","type":"ping"}`))
+}
+
+func TestDispatcher_HandleUnknownEnvelope(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("noise", json.RawMessage(`{}`))
+}
+
+func TestDispatcher_FanoutDeliversRedisEvents(t *testing.T) {
+	d, _, _, bus, holder := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, holder.Value)
+	bus.deliver("topic-a", []byte(`{"event":"hi"}`))
+	require.Len(t, holder.Value.redisEvents, 1)
+	assert.Contains(t, string(holder.Value.redisEvents[0]), "hi")
+}
+
+func TestDispatcher_CloseAllDisposesEverything(t *testing.T) {
+	d, _, _, bus, holder := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, holder.Value)
+	d.CloseAll()
+	assert.Equal(t, 1, holder.Value.disposeCount)
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	assert.Contains(t, bus.unsubs, "topic-a")
+}
+
+func TestDispatcher_DuplicateSubscribeIsNoOp(t *testing.T) {
+	d, _, _, bus, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	// Init で 1 回 subscribe 済み。同じ topic を再度 subscribe しても増えない。
+	d.subscribe("abc", "topic-a")
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	count := 0
+	for _, t := range bus.subscribed {
+		if t == "topic-a" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count)
+}
+
+func TestDispatcher_SubscribeUnknownChannelIsNoOp(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.subscribe("missing", "topic-a")
+}
+
+func TestDispatcher_UnsubscribeMissingTopicIsNoOp(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	d.unsubscribe("abc", "topic-zz")
+}
+
+func TestDispatcher_UnsubscribeUnknownChannelIsNoOp(t *testing.T) {
+	d, _, _, _, _ := newDispatcherWithFake(t)
+	d.unsubscribe("missing", "topic-a")
+}
+
+func TestDispatcher_SharedTopicReferenceCount(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		return &fakeChannel{ctx: ctx}
+	})
+	conn := NewConnection("c1", nil, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	// 2 つの channel が同じ topic を共有
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"test"}`))
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"test"}`))
+
+	bus.mu.Lock()
+	subscribedCount := 0
+	for _, t := range bus.subscribed {
+		if t == "topic-a" {
+			subscribedCount++
+		}
+	}
+	bus.mu.Unlock()
+	// 1 度しか subscribe されない (reference count 共有)
+	assert.Equal(t, 1, subscribedCount)
+
+	// 1 つ disconnect しても unsubscribe されない
+	d.HandleClientMessage("disconnect", json.RawMessage(`{"id":"a"}`))
+	bus.mu.Lock()
+	assert.Empty(t, bus.unsubs)
+	bus.mu.Unlock()
+
+	// 残り 1 つを disconnect すると unsubscribe される
+	d.HandleClientMessage("disconnect", json.RawMessage(`{"id":"b"}`))
+	bus.mu.Lock()
+	assert.Contains(t, bus.unsubs, "topic-a")
+	bus.mu.Unlock()
+}
+
+func TestDispatcher_NilBusOnSubscribe(t *testing.T) {
+	conn := NewConnection("c1", nil, newFakeConn())
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		return &fakeChannel{ctx: ctx}
+	})
+	d := NewDispatcher(conn, registry, nil)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	d.HandleClientMessage("disconnect", json.RawMessage(`{"id":"abc"}`))
+}
+
+// channelContextSendingTest exercises the channelContext Send / User helpers.
+type sendingChannel struct {
+	ctx     ChannelContext
+	got     string
+	gotUser any
+}
+
+func (s *sendingChannel) Init(json.RawMessage) {
+	s.gotUser = s.ctx.User()
+	_ = s.ctx.Send("note", map[string]any{"text": "hi"})
+	s.got = "ok"
+}
+func (s *sendingChannel) Dispose()                                {}
+func (s *sendingChannel) OnRedisEvent([]byte)                     {}
+func (s *sendingChannel) OnClientMessage(string, json.RawMessage) {}
+
+func TestChannelContext_NilConnUserAndSend(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+	d := NewDispatcher(nil, registry, bus)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	// channelContext.User() is nil, Send returns nil error.
+	d.mu.RLock()
+	entry := d.channels["abc"]
+	d.mu.RUnlock()
+	require.NotNil(t, entry)
+	ctx := &channelContext{dispatcher: d, id: "abc"}
+	assert.Nil(t, ctx.User())
+	assert.NoError(t, ctx.Send("note", nil))
+	assert.Equal(t, "abc", ctx.ID())
+}
+
+func TestChannelContext_UnsubscribeViaContext(t *testing.T) {
+	d, _, _, bus, holder := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, holder.Value)
+	holder.Value.ctx.Unsubscribe("topic-a")
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	assert.Contains(t, bus.unsubs, "topic-a")
+}
+
+func TestDispatcher_UnsubscribeRemovesEntryAndStopsBus(t *testing.T) {
+	d, _, _, bus, holder := newDispatcherWithFake(t)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, holder.Value)
+	d.unsubscribe("abc", "topic-a")
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	assert.Contains(t, bus.unsubs, "topic-a")
+}
+
+func TestDispatcher_UnsubscribeNilBusIsNoOp(t *testing.T) {
+	registry := NewRegistry()
+	holder := &fakeChannelHolder{}
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		ch := &fakeChannel{ctx: ctx}
+		holder.Value = ch
+		return ch
+	})
+	conn := NewConnection("c1", nil, newFakeConn())
+	d := NewDispatcher(conn, registry, nil)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, holder.Value)
+	d.unsubscribe("abc", "topic-a")
+}
+
+func TestChannelContext_SendQueuesEnvelope(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	var sc *sendingChannel
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		sc = &sendingChannel{ctx: ctx}
+		return sc
+	})
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+	go conn.Start()
+	defer conn.Close()
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	require.NotNil(t, sc)
+	require.NotNil(t, sc.gotUser)
+	user, ok := sc.gotUser.(*model.User)
+	require.True(t, ok)
+	assert.Equal(t, "alice", user.ID)
+
+	require.Eventually(t, func() bool { return fc.writeCount() >= 1 }, time.Second, 10*time.Millisecond)
+}
