@@ -1,0 +1,501 @@
+package pages
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	corepage "github.com/shiroha-a/mk/internal/core/page"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func newHandler(t *testing.T) (*Handler, *testutil.MockPageRepository, *testutil.MockPageLikeRepository) {
+	t.Helper()
+	repo := testutil.NewMockPageRepository()
+	likeRepo := testutil.NewMockPageLikeRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, likeRepo, idGen)
+	return NewHandler(svc), repo, likeRepo
+}
+
+func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	return e.NewContext(req, rec), rec
+}
+
+func setUser(c echo.Context, userID string) {
+	c.Set(string(middleware.UserContextKey), &model.User{ID: userID})
+}
+
+// --- Create ----------------------------------------------------------------
+
+func TestCreate_Success(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"title":"t","name":"alpha"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestCreate_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_TitleRequired(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"name":"alpha"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_NameRequired(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"title":"t"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_NameConflict(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["existing"] = &model.Page{ID: "existing", UserID: "alice", Name: "alpha"}
+	c, rec := newReq(t, `{"title":"t","name":"alpha"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NAME_ALREADY_EXISTS")
+}
+
+// failingPageRepo causes Create to fail.
+type failingPageRepo struct {
+	*testutil.MockPageRepository
+}
+
+func (r *failingPageRepo) Create(_ *model.Page) error { return errors.New("boom") }
+
+func TestCreate_RepoError(t *testing.T) {
+	mock := testutil.NewMockPageRepository()
+	repo := &failingPageRepo{MockPageRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"title":"t","name":"alpha"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Show ------------------------------------------------------------------
+
+func TestShow_ByID(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShow_ByName(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Name: "alpha", Visibility: model.PageVisibilityPublic}
+	c, rec := newReq(t, `{"userId":"alice","name":"alpha"}`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShow_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestShow_MissingParams(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{}`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestShow_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"pageId":"missing"}`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShow_AccessDenied(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner", Visibility: model.PageVisibilityFollowers}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// --- Update ----------------------------------------------------------------
+
+func TestUpdate_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Name: "alpha", Title: "t"}
+	c, rec := newReq(t, `{"pageId":"p1","title":"t2","summary":"s","content":[{"x":1}],"variables":[1],"eyeCatchingImageId":"img"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"pageId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUpdate_AccessDenied(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner"}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestUpdate_TitleEmpty(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice"}
+	c, rec := newReq(t, `{"pageId":"p1","title":""}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_NameConflict(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Name: "alpha"}
+	repo.Pages["p2"] = &model.Page{ID: "p2", UserID: "alice", Name: "beta"}
+	c, rec := newReq(t, `{"pageId":"p1","name":"beta"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NAME_ALREADY_EXISTS")
+}
+
+// failingUpdateRepo causes UpdateFields to fail.
+type failingUpdateRepo struct {
+	*testutil.MockPageRepository
+}
+
+func (r *failingUpdateRepo) UpdateFields(_ string, _ map[string]any) error {
+	return errors.New("boom")
+}
+
+func TestUpdate_RepoError(t *testing.T) {
+	mock := testutil.NewMockPageRepository()
+	mock.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice"}
+	repo := &failingUpdateRepo{MockPageRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"pageId":"p1","title":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Delete ----------------------------------------------------------------
+
+func TestDelete_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice"}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestDelete_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"pageId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestDelete_AccessDenied(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner"}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// failingDeleteRepo causes Delete to fail.
+type failingDeleteRepo struct {
+	*testutil.MockPageRepository
+}
+
+func (r *failingDeleteRepo) Delete(_ *model.Page) error { return errors.New("boom") }
+
+func TestDelete_RepoError(t *testing.T) {
+	mock := testutil.NewMockPageRepository()
+	mock.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice"}
+	repo := &failingDeleteRepo{MockPageRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- My ---------------------------------------------------------------------
+
+func TestMy_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Name: "alpha"}
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.My(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "alpha")
+}
+
+func TestMy_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.My(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// listFailRepo causes ListByUser to fail.
+type listFailRepo struct {
+	*testutil.MockPageRepository
+}
+
+func (r *listFailRepo) ListByUser(_ string, _, _ int) ([]*model.Page, error) {
+	return nil, errors.New("boom")
+}
+
+func TestMy_RepoError(t *testing.T) {
+	repo := &listFailRepo{MockPageRepository: testutil.NewMockPageRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.My(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Featured --------------------------------------------------------------
+
+func TestFeatured_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Name: "alpha", Visibility: model.PageVisibilityPublic, LikedCount: 1}
+	c, rec := newReq(t, `{}`)
+	require.NoError(t, h.Featured(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFeatured_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	require.NoError(t, h.Featured(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// featuredFailRepo causes ListFeatured to fail.
+type featuredFailRepo struct {
+	*testutil.MockPageRepository
+}
+
+func (r *featuredFailRepo) ListFeatured(_, _ int) ([]*model.Page, error) {
+	return nil, errors.New("boom")
+}
+
+func TestFeatured_RepoError(t *testing.T) {
+	repo := &featuredFailRepo{MockPageRepository: testutil.NewMockPageRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{}`)
+	require.NoError(t, h.Featured(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Like ------------------------------------------------------------------
+
+func TestLike_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestLike_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestLike_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"pageId":"missing"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestLike_AccessDenied(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityFollowers}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestLike_AlreadyLiked(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	c2, rec2 := newReq(t, `{"pageId":"p1"}`)
+	setUser(c2, "bob")
+	require.NoError(t, h.Like(c2))
+	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "ALREADY_LIKED")
+	_ = rec
+}
+
+// failingCreateLikeRepo causes Create to fail.
+type failingCreateLikeRepo struct {
+	*testutil.MockPageLikeRepository
+}
+
+func (r *failingCreateLikeRepo) Create(_ *model.PageLike) error { return errors.New("boom") }
+
+func TestLike_RepoError(t *testing.T) {
+	repo := testutil.NewMockPageRepository()
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
+	likeRepo := &failingCreateLikeRepo{MockPageLikeRepository: testutil.NewMockPageLikeRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, likeRepo, idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Unlike ----------------------------------------------------------------
+
+func TestUnlike_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	c2, rec2 := newReq(t, `{"pageId":"p1"}`)
+	setUser(c2, "bob")
+	require.NoError(t, h.Unlike(c2))
+	assert.Equal(t, http.StatusNoContent, rec2.Code)
+	_ = rec
+}
+
+func TestUnlike_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUnlike_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"pageId":"missing"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUnlike_NotLiked(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NOT_LIKED")
+}
+
+// failingDeleteLikeRepo causes Delete to fail.
+type failingDeleteLikeRepo struct {
+	*testutil.MockPageLikeRepository
+}
+
+func (r *failingDeleteLikeRepo) Delete(_ *model.PageLike) error { return errors.New("boom") }
+
+func TestUnlike_RepoError(t *testing.T) {
+	repo := testutil.NewMockPageRepository()
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
+	mock := testutil.NewMockPageLikeRepository()
+	mock.Likes["pl1"] = &model.PageLike{ID: "pl1", UserID: "bob", PageID: "p1"}
+	likeRepo := &failingDeleteLikeRepo{MockPageLikeRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corepage.NewService(repo, likeRepo, idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"pageId":"p1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- helpers ---------------------------------------------------------------
+
+func TestRawJSON(t *testing.T) {
+	assert.Nil(t, rawJSON(nil))
+	assert.NotNil(t, rawJSON([]byte(`[1]`)))
+}

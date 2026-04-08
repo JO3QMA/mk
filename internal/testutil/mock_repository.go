@@ -1024,6 +1024,421 @@ func (m *MockClipNoteRepository) ListByClip(clipID string, untilID, sinceID stri
 	return rows, nil
 }
 
+// MockPageRepository is a test double for repository.PageRepository.
+type MockPageRepository struct {
+	Pages     map[string]*model.Page
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockPageRepository creates an empty MockPageRepository.
+func NewMockPageRepository() *MockPageRepository {
+	return &MockPageRepository{Pages: make(map[string]*model.Page)}
+}
+
+func (m *MockPageRepository) Create(p *model.Page) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Pages[p.ID] = p
+	return nil
+}
+
+func (m *MockPageRepository) FindByID(id string) (*model.Page, error) {
+	p, ok := m.Pages[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return p, nil
+}
+
+func (m *MockPageRepository) FindByUserAndName(userID, name string) (*model.Page, error) {
+	for _, p := range m.Pages {
+		if p.UserID == userID && p.Name == name {
+			return p, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockPageRepository) UpdateFields(pageID string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	p, ok := m.Pages[pageID]
+	if !ok {
+		return ErrNotFound
+	}
+	applyPageFields(p, fields)
+	return nil
+}
+
+func (m *MockPageRepository) Delete(p *model.Page) error {
+	delete(m.Pages, p.ID)
+	return nil
+}
+
+func (m *MockPageRepository) ListByUser(userID string, limit, offset int) ([]*model.Page, error) {
+	var rows []*model.Page
+	for _, p := range m.Pages {
+		if p.UserID == userID {
+			rows = append(rows, p)
+		}
+	}
+	// updatedAt 降順だが、テストの安定性のため updatedAt が同じ場合は ID 降順で解決する。
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].UpdatedAt.Before(rows[j].UpdatedAt) ||
+				(rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) && rows[i].ID < rows[j].ID) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return paginatePages(rows, limit, offset), nil
+}
+
+func (m *MockPageRepository) ListFeatured(limit, offset int) ([]*model.Page, error) {
+	var rows []*model.Page
+	for _, p := range m.Pages {
+		if p.Visibility == model.PageVisibilityPublic {
+			rows = append(rows, p)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].LikedCount < rows[j].LikedCount ||
+				(rows[i].LikedCount == rows[j].LikedCount && rows[i].ID < rows[j].ID) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return paginatePages(rows, limit, offset), nil
+}
+
+func (m *MockPageRepository) IncrementCount(pageID, column string, delta int) error {
+	p, ok := m.Pages[pageID]
+	if !ok {
+		return ErrNotFound
+	}
+	if column == "likedCount" {
+		p.LikedCount += delta
+	}
+	return nil
+}
+
+func paginatePages(rows []*model.Page, limit, offset int) []*model.Page {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset >= len(rows) {
+		return nil
+	}
+	end := min(offset+limit, len(rows))
+	return rows[offset:end]
+}
+
+func applyPageFields(p *model.Page, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "title":
+			if s, ok := v.(string); ok {
+				p.Title = s
+			}
+		case "name":
+			if s, ok := v.(string); ok {
+				p.Name = s
+			}
+		case "summary":
+			if s, ok := v.(*string); ok {
+				p.Summary = s
+			}
+		case "alignCenter":
+			if b, ok := v.(bool); ok {
+				p.AlignCenter = b
+			}
+		case "hideTitleWhenPinned":
+			if b, ok := v.(bool); ok {
+				p.HideTitleWhenPinned = b
+			}
+		case "font":
+			if s, ok := v.(string); ok {
+				p.Font = s
+			}
+		case "eyeCatchingImageId":
+			if s, ok := v.(*string); ok {
+				p.EyeCatchingImageID = s
+			}
+		case "content":
+			if b, ok := v.([]byte); ok {
+				p.Content = b
+			}
+		case "variables":
+			if b, ok := v.([]byte); ok {
+				p.Variables = b
+			}
+		case "script":
+			if s, ok := v.(string); ok {
+				p.Script = s
+			}
+		case "visibility":
+			if vis, ok := v.(model.PageVisibility); ok {
+				p.Visibility = vis
+			}
+		case "updatedAt":
+			if t, ok := v.(time.Time); ok {
+				p.UpdatedAt = t
+			}
+		}
+	}
+}
+
+// MockFlashRepository is a test double for repository.FlashRepository.
+type MockFlashRepository struct {
+	Flashes   map[string]*model.Flash
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockFlashRepository creates an empty MockFlashRepository.
+func NewMockFlashRepository() *MockFlashRepository {
+	return &MockFlashRepository{Flashes: make(map[string]*model.Flash)}
+}
+
+func (m *MockFlashRepository) Create(f *model.Flash) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Flashes[f.ID] = f
+	return nil
+}
+
+func (m *MockFlashRepository) FindByID(id string) (*model.Flash, error) {
+	f, ok := m.Flashes[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return f, nil
+}
+
+func (m *MockFlashRepository) UpdateFields(flashID string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	f, ok := m.Flashes[flashID]
+	if !ok {
+		return ErrNotFound
+	}
+	applyFlashFields(f, fields)
+	return nil
+}
+
+func (m *MockFlashRepository) Delete(f *model.Flash) error {
+	delete(m.Flashes, f.ID)
+	return nil
+}
+
+func (m *MockFlashRepository) ListByUser(userID string, limit, offset int) ([]*model.Flash, error) {
+	var rows []*model.Flash
+	for _, f := range m.Flashes {
+		if f.UserID == userID {
+			rows = append(rows, f)
+		}
+	}
+	sortFlashesByUpdatedDesc(rows)
+	return paginateFlashes(rows, limit, offset), nil
+}
+
+func (m *MockFlashRepository) ListFeatured(limit, offset int) ([]*model.Flash, error) {
+	var rows []*model.Flash
+	for _, f := range m.Flashes {
+		rows = append(rows, f)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].LikedCount < rows[j].LikedCount ||
+				(rows[i].LikedCount == rows[j].LikedCount && rows[i].ID < rows[j].ID) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return paginateFlashes(rows, limit, offset), nil
+}
+
+func (m *MockFlashRepository) Search(query string, limit, offset int) ([]*model.Flash, error) {
+	var rows []*model.Flash
+	q := strings.ToLower(query)
+	for _, f := range m.Flashes {
+		if strings.Contains(strings.ToLower(f.Title), q) ||
+			strings.Contains(strings.ToLower(f.Summary), q) {
+			rows = append(rows, f)
+		}
+	}
+	sortFlashesByUpdatedDesc(rows)
+	return paginateFlashes(rows, limit, offset), nil
+}
+
+func (m *MockFlashRepository) IncrementCount(flashID, column string, delta int) error {
+	f, ok := m.Flashes[flashID]
+	if !ok {
+		return ErrNotFound
+	}
+	if column == "likedCount" {
+		f.LikedCount += delta
+	}
+	return nil
+}
+
+func sortFlashesByUpdatedDesc(rows []*model.Flash) {
+	for i := range rows {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].UpdatedAt.Before(rows[j].UpdatedAt) ||
+				(rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) && rows[i].ID < rows[j].ID) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+}
+
+func paginateFlashes(rows []*model.Flash, limit, offset int) []*model.Flash {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset >= len(rows) {
+		return nil
+	}
+	end := min(offset+limit, len(rows))
+	return rows[offset:end]
+}
+
+func applyFlashFields(f *model.Flash, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "title":
+			if s, ok := v.(string); ok {
+				f.Title = s
+			}
+		case "summary":
+			if s, ok := v.(string); ok {
+				f.Summary = s
+			}
+		case "script":
+			if s, ok := v.(string); ok {
+				f.Script = s
+			}
+		case "permissions":
+			if arr, ok := v.([]string); ok {
+				f.Permissions = arr
+			}
+		case "visibility":
+			if s, ok := v.(string); ok {
+				f.Visibility = s
+			}
+		case "updatedAt":
+			if t, ok := v.(time.Time); ok {
+				f.UpdatedAt = t
+			}
+		}
+	}
+}
+
+// MockFlashLikeRepository is a test double for repository.FlashLikeRepository.
+type MockFlashLikeRepository struct {
+	Likes map[string]*model.FlashLike
+}
+
+// NewMockFlashLikeRepository creates an empty MockFlashLikeRepository.
+func NewMockFlashLikeRepository() *MockFlashLikeRepository {
+	return &MockFlashLikeRepository{Likes: make(map[string]*model.FlashLike)}
+}
+
+func (m *MockFlashLikeRepository) Create(l *model.FlashLike) error {
+	m.Likes[l.ID] = l
+	return nil
+}
+
+func (m *MockFlashLikeRepository) Delete(l *model.FlashLike) error {
+	delete(m.Likes, l.ID)
+	return nil
+}
+
+func (m *MockFlashLikeRepository) FindByPair(userID, flashID string) (*model.FlashLike, error) {
+	for _, l := range m.Likes {
+		if l.UserID == userID && l.FlashID == flashID {
+			return l, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockFlashLikeRepository) Exists(userID, flashID string) (bool, error) {
+	_, err := m.FindByPair(userID, flashID)
+	return err == nil, nil
+}
+
+func (m *MockFlashLikeRepository) ListByUser(userID string, limit, offset int) ([]*model.FlashLike, error) {
+	var rows []*model.FlashLike
+	for _, l := range m.Likes {
+		if l.UserID == userID {
+			rows = append(rows, l)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset >= len(rows) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(rows))
+	return rows[offset:end], nil
+}
+
+// MockPageLikeRepository is a test double for repository.PageLikeRepository.
+type MockPageLikeRepository struct {
+	Likes map[string]*model.PageLike
+}
+
+// NewMockPageLikeRepository creates an empty MockPageLikeRepository.
+func NewMockPageLikeRepository() *MockPageLikeRepository {
+	return &MockPageLikeRepository{Likes: make(map[string]*model.PageLike)}
+}
+
+func (m *MockPageLikeRepository) Create(l *model.PageLike) error {
+	m.Likes[l.ID] = l
+	return nil
+}
+
+func (m *MockPageLikeRepository) Delete(l *model.PageLike) error {
+	delete(m.Likes, l.ID)
+	return nil
+}
+
+func (m *MockPageLikeRepository) FindByPair(userID, pageID string) (*model.PageLike, error) {
+	for _, l := range m.Likes {
+		if l.UserID == userID && l.PageID == pageID {
+			return l, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockPageLikeRepository) Exists(userID, pageID string) (bool, error) {
+	_, err := m.FindByPair(userID, pageID)
+	return err == nil, nil
+}
+
 // MockAntennaRepository is a test double for repository.AntennaRepository.
 type MockAntennaRepository struct {
 	Antennas  map[string]*model.Antenna

@@ -1,0 +1,537 @@
+package flash
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	coreflash "github.com/shiroha-a/mk/internal/core/flash"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func newHandler(t *testing.T) (*Handler, *testutil.MockFlashRepository, *testutil.MockFlashLikeRepository) {
+	t.Helper()
+	repo := testutil.NewMockFlashRepository()
+	likeRepo := testutil.NewMockFlashLikeRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, likeRepo, idGen)
+	return NewHandler(svc), repo, likeRepo
+}
+
+func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	return e.NewContext(req, rec), rec
+}
+
+func setUser(c echo.Context, userID string) {
+	c.Set(string(middleware.UserContextKey), &model.User{ID: userID})
+}
+
+// --- Create ----------------------------------------------------------------
+
+func TestCreate_Success(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"title":"t","script":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestCreate_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_TitleRequired(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"script":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_ScriptRequired(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"title":"t"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingFlashRepo causes Create to fail.
+type failingFlashRepo struct {
+	*testutil.MockFlashRepository
+}
+
+func (r *failingFlashRepo) Create(_ *model.Flash) error { return errors.New("boom") }
+
+func TestCreate_RepoError(t *testing.T) {
+	mock := testutil.NewMockFlashRepository()
+	repo := &failingFlashRepo{MockFlashRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, testutil.NewMockFlashLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"title":"t","script":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Show ------------------------------------------------------------------
+
+func TestShow_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice", Title: "t"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShow_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestShow_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"flashId":"missing"}`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShow_WithUser(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice", Title: "t"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Update ----------------------------------------------------------------
+
+func TestUpdate_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice", Title: "t"}
+	c, rec := newReq(t, `{"flashId":"f1","title":"t2","summary":"s","script":"y","permissions":["a"],"visibility":"private"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"flashId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUpdate_AccessDenied(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "owner"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestUpdate_TitleEmpty(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	c, rec := newReq(t, `{"flashId":"f1","title":""}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingUpdateRepo causes UpdateFields to fail.
+type failingUpdateRepo struct {
+	*testutil.MockFlashRepository
+}
+
+func (r *failingUpdateRepo) UpdateFields(_ string, _ map[string]any) error {
+	return errors.New("boom")
+}
+
+func TestUpdate_RepoError(t *testing.T) {
+	mock := testutil.NewMockFlashRepository()
+	mock.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	repo := &failingUpdateRepo{MockFlashRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, testutil.NewMockFlashLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"flashId":"f1","title":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Delete ----------------------------------------------------------------
+
+func TestDelete_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestDelete_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"flashId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestDelete_AccessDenied(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "owner"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// failingDeleteRepo causes Delete to fail.
+type failingDeleteRepo struct {
+	*testutil.MockFlashRepository
+}
+
+func (r *failingDeleteRepo) Delete(_ *model.Flash) error { return errors.New("boom") }
+
+func TestDelete_RepoError(t *testing.T) {
+	mock := testutil.NewMockFlashRepository()
+	mock.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	repo := &failingDeleteRepo{MockFlashRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, testutil.NewMockFlashLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- My ---------------------------------------------------------------------
+
+func TestMy_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice", Title: "alpha"}
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.My(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "alpha")
+}
+
+func TestMy_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.My(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// listFailRepo causes ListByUser to fail.
+type listFailRepo struct {
+	*testutil.MockFlashRepository
+}
+
+func (r *listFailRepo) ListByUser(_ string, _, _ int) ([]*model.Flash, error) {
+	return nil, errors.New("boom")
+}
+
+func TestMy_RepoError(t *testing.T) {
+	repo := &listFailRepo{MockFlashRepository: testutil.NewMockFlashRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, testutil.NewMockFlashLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.My(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Featured --------------------------------------------------------------
+
+func TestFeatured_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice", Title: "alpha"}
+	c, rec := newReq(t, `{}`)
+	require.NoError(t, h.Featured(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFeatured_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	require.NoError(t, h.Featured(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// featuredFailRepo causes ListFeatured to fail.
+type featuredFailRepo struct {
+	*testutil.MockFlashRepository
+}
+
+func (r *featuredFailRepo) ListFeatured(_, _ int) ([]*model.Flash, error) {
+	return nil, errors.New("boom")
+}
+
+func TestFeatured_RepoError(t *testing.T) {
+	repo := &featuredFailRepo{MockFlashRepository: testutil.NewMockFlashRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, testutil.NewMockFlashLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{}`)
+	require.NoError(t, h.Featured(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Search ----------------------------------------------------------------
+
+func TestSearch_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice", Title: "alpha calc"}
+	c, rec := newReq(t, `{"query":"calc"}`)
+	require.NoError(t, h.Search(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestSearch_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	require.NoError(t, h.Search(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSearch_QueryRequired(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{}`)
+	require.NoError(t, h.Search(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// searchFailRepo causes Search to fail.
+type searchFailRepo struct {
+	*testutil.MockFlashRepository
+}
+
+func (r *searchFailRepo) Search(_ string, _, _ int) ([]*model.Flash, error) {
+	return nil, errors.New("boom")
+}
+
+func TestSearch_RepoError(t *testing.T) {
+	repo := &searchFailRepo{MockFlashRepository: testutil.NewMockFlashRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, testutil.NewMockFlashLikeRepository(), idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"query":"x"}`)
+	require.NoError(t, h.Search(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Like ------------------------------------------------------------------
+
+func TestLike_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestLike_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestLike_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"flashId":"missing"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestLike_AlreadyLiked(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	c2, rec2 := newReq(t, `{"flashId":"f1"}`)
+	setUser(c2, "bob")
+	require.NoError(t, h.Like(c2))
+	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "ALREADY_LIKED")
+	_ = rec
+}
+
+// failingCreateLikeRepo causes Create to fail.
+type failingCreateLikeRepo struct {
+	*testutil.MockFlashLikeRepository
+}
+
+func (r *failingCreateLikeRepo) Create(_ *model.FlashLike) error { return errors.New("boom") }
+
+func TestLike_RepoError(t *testing.T) {
+	repo := testutil.NewMockFlashRepository()
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	likeRepo := &failingCreateLikeRepo{MockFlashLikeRepository: testutil.NewMockFlashLikeRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, likeRepo, idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Unlike ----------------------------------------------------------------
+
+func TestUnlike_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	c2, rec2 := newReq(t, `{"flashId":"f1"}`)
+	setUser(c2, "bob")
+	require.NoError(t, h.Unlike(c2))
+	assert.Equal(t, http.StatusNoContent, rec2.Code)
+	_ = rec
+}
+
+func TestUnlike_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUnlike_NotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"flashId":"missing"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUnlike_NotLiked(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NOT_LIKED")
+}
+
+// failingDeleteLikeRepo causes Delete to fail.
+type failingDeleteLikeRepo struct {
+	*testutil.MockFlashLikeRepository
+}
+
+func (r *failingDeleteLikeRepo) Delete(_ *model.FlashLike) error { return errors.New("boom") }
+
+func TestUnlike_RepoError(t *testing.T) {
+	repo := testutil.NewMockFlashRepository()
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice"}
+	mock := testutil.NewMockFlashLikeRepository()
+	mock.Likes["fl1"] = &model.FlashLike{ID: "fl1", UserID: "bob", FlashID: "f1"}
+	likeRepo := &failingDeleteLikeRepo{MockFlashLikeRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, likeRepo, idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Unlike(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- MyLikes ---------------------------------------------------------------
+
+func TestMyLikes_Success(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "alice", Title: "alpha"}
+	c, rec := newReq(t, `{"flashId":"f1"}`)
+	setUser(c, "bob")
+	require.NoError(t, h.Like(c))
+	c2, rec2 := newReq(t, `{}`)
+	setUser(c2, "bob")
+	require.NoError(t, h.MyLikes(c2))
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "alpha")
+	_ = rec
+}
+
+func TestMyLikes_BadJSON(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "bob")
+	require.NoError(t, h.MyLikes(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// myLikesFailRepo causes ListByUser on the like repo to fail.
+type myLikesFailRepo struct {
+	*testutil.MockFlashLikeRepository
+}
+
+func (r *myLikesFailRepo) ListByUser(_ string, _, _ int) ([]*model.FlashLike, error) {
+	return nil, errors.New("boom")
+}
+
+func TestMyLikes_RepoError(t *testing.T) {
+	repo := testutil.NewMockFlashRepository()
+	likeRepo := &myLikesFailRepo{MockFlashLikeRepository: testutil.NewMockFlashLikeRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreflash.NewService(repo, likeRepo, idGen)
+	h := NewHandler(svc)
+	c, rec := newReq(t, `{}`)
+	setUser(c, "bob")
+	require.NoError(t, h.MyLikes(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}

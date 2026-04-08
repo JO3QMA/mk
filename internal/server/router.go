@@ -12,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/clips"
 	"github.com/shiroha-a/mk/internal/api/drive"
 	apifederation "github.com/shiroha-a/mk/internal/api/federation"
+	apiflash "github.com/shiroha-a/mk/internal/api/flash"
 	"github.com/shiroha-a/mk/internal/api/following"
 	"github.com/shiroha-a/mk/internal/api/i"
 	"github.com/shiroha-a/mk/internal/api/inbox"
@@ -20,6 +21,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/nodeinfo"
 	"github.com/shiroha-a/mk/internal/api/notes"
 	"github.com/shiroha-a/mk/internal/api/notifications"
+	"github.com/shiroha-a/mk/internal/api/pages"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
 	"github.com/shiroha-a/mk/internal/api/streaming"
 	"github.com/shiroha-a/mk/internal/api/users"
@@ -31,11 +33,13 @@ import (
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/core/event"
 	corefederation "github.com/shiroha-a/mk/internal/core/federation"
+	coreflash "github.com/shiroha-a/mk/internal/core/flash"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
+	corepage "github.com/shiroha-a/mk/internal/core/page"
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
@@ -78,6 +82,10 @@ func (s *Server) setupRoutes() {
 	antennaRepo := repository.NewAntennaRepository(s.db)
 	clipRepo := repository.NewClipRepository(s.db)
 	clipNoteRepo := repository.NewClipNoteRepository(s.db)
+	pageRepo := repository.NewPageRepository(s.db)
+	pageLikeRepo := repository.NewPageLikeRepository(s.db)
+	flashRepo := repository.NewFlashRepository(s.db)
+	flashLikeRepo := repository.NewFlashLikeRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -102,6 +110,10 @@ func (s *Server) setupRoutes() {
 
 	// Clips (Phase 4.4)
 	clipService := coreclip.NewService(clipRepo, clipNoteRepo, noteRepo, idGen)
+
+	// Pages / Flash (Phase 4.5)
+	pageService := corepage.NewService(pageRepo, pageLikeRepo, idGen)
+	flashService := coreflash.NewService(flashRepo, flashLikeRepo, idGen)
 
 	// Reactions
 	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
@@ -306,6 +318,30 @@ func (s *Server) setupRoutes() {
 	api.POST("/clips/add-note", clipsHandler.AddNote, middleware.RequireAuth())
 	api.POST("/clips/remove-note", clipsHandler.RemoveNote, middleware.RequireAuth())
 	api.POST("/clips/notes", clipsHandler.Notes)
+
+	// Pages endpoints (Phase 4.5)
+	pagesHandler := pages.NewHandler(pageService)
+	api.POST("/pages/create", pagesHandler.Create, middleware.RequireAuth())
+	api.POST("/pages/show", pagesHandler.Show)
+	api.POST("/pages/update", pagesHandler.Update, middleware.RequireAuth())
+	api.POST("/pages/delete", pagesHandler.Delete, middleware.RequireAuth())
+	api.POST("/pages/featured", pagesHandler.Featured)
+	api.POST("/pages/like", pagesHandler.Like, middleware.RequireAuth())
+	api.POST("/pages/unlike", pagesHandler.Unlike, middleware.RequireAuth())
+	api.POST("/i/pages", pagesHandler.My, middleware.RequireAuth())
+
+	// Flash endpoints (Phase 4.5)
+	flashHandler := apiflash.NewHandler(flashService)
+	api.POST("/flash/create", flashHandler.Create, middleware.RequireAuth())
+	api.POST("/flash/show", flashHandler.Show)
+	api.POST("/flash/update", flashHandler.Update, middleware.RequireAuth())
+	api.POST("/flash/delete", flashHandler.Delete, middleware.RequireAuth())
+	api.POST("/flash/featured", flashHandler.Featured)
+	api.POST("/flash/search", flashHandler.Search)
+	api.POST("/flash/like", flashHandler.Like, middleware.RequireAuth())
+	api.POST("/flash/unlike", flashHandler.Unlike, middleware.RequireAuth())
+	api.POST("/i/flashs", flashHandler.My, middleware.RequireAuth())
+	api.POST("/i/flashs/likes", flashHandler.MyLikes, middleware.RequireAuth())
 
 	// Streaming (Phase 4.1 Step K)
 	// 1. Redis pubsub bus (核となる publish/subscribe チャンネル)
