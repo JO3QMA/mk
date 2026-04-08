@@ -1,0 +1,676 @@
+package chart
+
+import (
+	"context"
+	"errors"
+	"log"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+// testDB / testRedis are container handles set up once for all
+// integration tests in this package.
+var (
+	testDB    *gorm.DB
+	testRedis *testutil.TestRedis
+)
+
+// pgHandle / redisHandle keep references for Teardown.
+var (
+	pgHandle    *testutil.TestDB
+	redisHandle *testutil.TestRedis
+)
+
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+	if tdb, err := testutil.SetupPostgres(ctx); err == nil {
+		pgHandle = tdb
+		testDB = tdb.DB
+	} else {
+		log.Printf("chart: postgres setup failed, integration tests will skip: %v", err)
+	}
+	if tr, err := testutil.SetupRedis(ctx); err == nil {
+		redisHandle = tr
+		testRedis = tr
+	} else {
+		log.Printf("chart: redis setup failed, integration tests will skip: %v", err)
+	}
+
+	code := m.Run()
+
+	if redisHandle != nil {
+		redisHandle.Teardown(ctx)
+	}
+	if pgHandle != nil {
+		pgHandle.Teardown(ctx)
+	}
+	os.Exit(code)
+}
+
+// requirePostgres skips the test if no test database is available.
+func requirePostgres(t *testing.T) {
+	t.Helper()
+	if testDB == nil {
+		t.Skip("postgres test container not available")
+	}
+}
+
+// requireRedis skips the test if no test Redis is available.
+func requireRedis(t *testing.T) {
+	t.Helper()
+	if testRedis == nil {
+		t.Skip("redis test container not available")
+	}
+}
+
+// notesIntegrationSchema は実際の `__chart__notes` テーブルとぴったり一致
+// する必要がある。migration の DDL と同じ列順 / 型を使う。
+var notesIntegrationSchema = Schema{
+	Name: "notes",
+	Columns: []ColumnDef{
+		{Name: "local.total", Accumulate: true},
+		{Name: "local.inc"},
+		{Name: "local.dec"},
+		{Name: "local.diffs.normal"},
+		{Name: "local.diffs.reply"},
+		{Name: "local.diffs.renote"},
+		{Name: "local.diffs.withFile"},
+		{Name: "remote.total", Accumulate: true},
+		{Name: "remote.inc"},
+		{Name: "remote.dec"},
+		{Name: "remote.diffs.normal"},
+		{Name: "remote.diffs.reply"},
+		{Name: "remote.diffs.renote"},
+		{Name: "remote.diffs.withFile"},
+	},
+}
+
+var perUserIntegrationSchema = Schema{
+	Name:    "perUserNotes",
+	Grouped: true,
+	Columns: []ColumnDef{
+		{Name: "total", Accumulate: true},
+		{Name: "inc", Range: RangeSmall},
+		{Name: "dec", Range: RangeSmall},
+		{Name: "diffs.normal", Range: RangeSmall},
+		{Name: "diffs.reply", Range: RangeSmall},
+		{Name: "diffs.renote", Range: RangeSmall},
+		{Name: "diffs.withFile", Range: RangeSmall},
+	},
+}
+
+var activeUsersIntegrationSchema = Schema{
+	Name: "activeUsers",
+	Columns: []ColumnDef{
+		{Name: "readWrite", IntersectionOf: []string{"read", "write"}},
+		{Name: "read", UniqueIncrement: true},
+		{Name: "write", UniqueIncrement: true},
+		{Name: "registeredWithinWeek", UniqueIncrement: true},
+		{Name: "registeredWithinMonth", UniqueIncrement: true},
+		{Name: "registeredWithinYear", UniqueIncrement: true},
+		{Name: "registeredOutsideWeek", UniqueIncrement: true},
+		{Name: "registeredOutsideMonth", UniqueIncrement: true},
+		{Name: "registeredOutsideYear", UniqueIncrement: true},
+	},
+}
+
+// truncateChartTable wipes the hour and day tables for the given chart
+// so each test starts from a clean slate. The helper also enforces
+// that postgres is available — every caller is an integration test.
+func truncateChartTable(t *testing.T, chartName string) {
+	t.Helper()
+	requirePostgres(t)
+	testDB.Exec(`TRUNCATE TABLE "` + HourTableName(chartName) + `"`)
+	testDB.Exec(`TRUNCATE TABLE "` + DayTableName(chartName) + `"`)
+}
+
+func TestIntegration_GormRepository_InsertAndFindCurrent(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+
+	row, err := repo.Insert(ctx, SpanHour, "", 1700000000, map[string]any{
+		"local.total":        int64(5),
+		"local.inc":          int64(1),
+		"local.diffs.normal": int64(1),
+	})
+	require.NoError(t, err)
+	require.NotZero(t, row.ID)
+
+	got, err := repo.FindCurrent(ctx, SpanHour, "", 1700000000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), toInt64(got.Cols["local.total"]))
+	assert.Equal(t, int64(1), toInt64(got.Cols["local.inc"]))
+}
+
+func TestIntegration_GormRepository_FindCurrentNotFound(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	_, err := repo.FindCurrent(context.Background(), SpanHour, "", 1)
+	if !errors.Is(err, ErrRowNotFound) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestIntegration_GormRepository_FindLatestAndBefore(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+
+	for i, ts := range []int64{1000, 2000, 3000} {
+		_, err := repo.Insert(ctx, SpanHour, "", ts, map[string]any{
+			"local.total": int64(i + 1),
+		})
+		require.NoError(t, err)
+	}
+
+	latest, err := repo.FindLatest(ctx, SpanHour, "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3000), latest.Date)
+
+	before, err := repo.FindBefore(ctx, SpanHour, "", 2500)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2000), before.Date)
+
+	_, err = repo.FindBefore(ctx, SpanHour, "", 500)
+	if !errors.Is(err, ErrRowNotFound) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestIntegration_GormRepository_FindRange(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+
+	for _, ts := range []int64{1000, 2000, 3000, 4000} {
+		_, err := repo.Insert(ctx, SpanHour, "", ts, map[string]any{
+			"local.inc": int64(ts / 1000),
+		})
+		require.NoError(t, err)
+	}
+
+	rows, err := repo.FindRange(ctx, SpanHour, "", 1500, 3500)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	// 結果は date DESC
+	assert.Equal(t, int64(3000), rows[0].Date)
+	assert.Equal(t, int64(2000), rows[1].Date)
+}
+
+func TestIntegration_GormRepository_ApplyDeltas(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+
+	row, err := repo.Insert(ctx, SpanHour, "", 1000, map[string]any{
+		"local.inc": int64(1),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.ApplyDeltas(ctx, SpanHour, row.ID,
+		map[string]int64{"local.inc": 4, "local.dec": 2}, nil, nil))
+
+	got, err := repo.FindCurrent(ctx, SpanHour, "", 1000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), toInt64(got.Cols["local.inc"]))
+	assert.Equal(t, int64(2), toInt64(got.Cols["local.dec"]))
+}
+
+func TestIntegration_GormRepository_ApplyDeltasNoOpWhenEmpty(t *testing.T) {
+	requirePostgres(t)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	require.NoError(t, repo.ApplyDeltas(context.Background(), SpanHour, 1, nil, nil, nil))
+}
+
+func TestIntegration_GormRepository_SetColumns(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+	row, err := repo.Insert(ctx, SpanHour, "", 1000, map[string]any{
+		"local.total": int64(5),
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.SetColumns(ctx, SpanHour, row.ID, map[string]int64{
+		"local.total": 99,
+	}))
+	got, err := repo.FindCurrent(ctx, SpanHour, "", 1000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(99), toInt64(got.Cols["local.total"]))
+}
+
+func TestIntegration_GormRepository_SetColumnsEmpty(t *testing.T) {
+	requirePostgres(t)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	require.NoError(t, repo.SetColumns(context.Background(), SpanHour, 0, nil))
+}
+
+func TestIntegration_GormRepository_GroupedTable(t *testing.T) {
+	truncateChartTable(t, perUserIntegrationSchema.Name)
+	repo := NewRepository(testDB, perUserIntegrationSchema)
+	ctx := context.Background()
+
+	_, err := repo.Insert(ctx, SpanHour, "user1", 1000, map[string]any{
+		"total": int64(3),
+		"inc":   int64(1),
+	})
+	require.NoError(t, err)
+	_, err = repo.Insert(ctx, SpanHour, "user2", 1000, map[string]any{
+		"total": int64(7),
+		"inc":   int64(2),
+	})
+	require.NoError(t, err)
+
+	r1, err := repo.FindCurrent(ctx, SpanHour, "user1", 1000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), toInt64(r1.Cols["total"]))
+	assert.Equal(t, "user1", r1.Group.String)
+
+	r2, err := repo.FindLatest(ctx, SpanHour, "user2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), toInt64(r2.Cols["total"]))
+}
+
+func TestIntegration_GormRepository_UniqueIncrementApplyDeltas(t *testing.T) {
+	truncateChartTable(t, activeUsersIntegrationSchema.Name)
+	repo := NewRepository(testDB, activeUsersIntegrationSchema)
+	ctx := context.Background()
+
+	row, err := repo.Insert(ctx, SpanHour, "", 1000, map[string]any{
+		"read": int64(0),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.ApplyDeltas(ctx, SpanHour, row.ID, nil,
+		map[string][]string{"read": {"u1", "u2"}},
+		map[string]int64{"read": 2},
+	))
+
+	got, err := repo.FindCurrent(ctx, SpanHour, "", 1000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), toInt64(got.Cols["read"]))
+	// unique-temp 配列も更新されている
+	if v, ok := got.Cols["read:unique"]; ok {
+		assert.Contains(t, v, "u1")
+		assert.Contains(t, v, "u2")
+	}
+}
+
+func TestIntegration_GormRepository_ResetUniqueTempColumns(t *testing.T) {
+	truncateChartTable(t, activeUsersIntegrationSchema.Name)
+	repo := NewRepository(testDB, activeUsersIntegrationSchema)
+	ctx := context.Background()
+
+	row, err := repo.Insert(ctx, SpanHour, "", 2000, map[string]any{
+		"read": int64(0),
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.ApplyDeltas(ctx, SpanHour, row.ID, nil,
+		map[string][]string{"read": {"u1"}}, nil))
+	require.NoError(t, repo.ResetUniqueTempColumns(ctx, SpanHour, 1000, 3000, []string{"read"}))
+
+	got, err := repo.FindCurrent(ctx, SpanHour, "", 2000)
+	require.NoError(t, err)
+	if v, ok := got.Cols["read:unique"]; ok {
+		// 空配列にリセットされている
+		switch x := v.(type) {
+		case []string:
+			assert.Empty(t, x)
+		}
+	}
+}
+
+func TestIntegration_GormRepository_ResetUniqueTempEmptyNoOp(t *testing.T) {
+	requirePostgres(t)
+	repo := NewRepository(testDB, activeUsersIntegrationSchema)
+	require.NoError(t, repo.ResetUniqueTempColumns(context.Background(), SpanHour, 0, 0, nil))
+}
+
+func TestIntegration_ChartEngine_EndToEnd(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	clk := newFakeClock(time.Date(2026, 4, 9, 12, 30, 0, 0, time.UTC))
+	c, err := New(Config{
+		Schema: notesIntegrationSchema,
+		Repo:   repo,
+		Lock:   NewMemoryLocker(),
+		Clock:  clk,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, c.Commit(Diff{"local.inc": 1, "local.total": 1}, ""))
+	require.NoError(t, c.Commit(Diff{"local.inc": 2, "local.total": 2}, ""))
+	require.NoError(t, c.Save(context.Background()))
+
+	out, err := c.GetChart(context.Background(), SpanHour, 1, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, []int64{3}, out["local.inc"])
+	assert.Equal(t, []int64{3}, out["local.total"])
+}
+
+func TestIntegration_RedisLocker_AcquireRelease(t *testing.T) {
+	requireRedis(t)
+	testRedis.FlushAll(context.Background())
+	locker := NewRedisLocker(testRedis.Client, "")
+	ctx := context.Background()
+
+	release1, err := locker.Acquire(ctx, "key1", time.Second)
+	require.NoError(t, err)
+
+	// 別 key は競合しない
+	release2, err := locker.Acquire(ctx, "key2", time.Second)
+	require.NoError(t, err)
+	release2()
+
+	// 同 key は ctx タイムアウトで弾かれる
+	deadline, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer cancel()
+	if _, err := locker.Acquire(deadline, "key1", time.Second); err == nil {
+		t.Fatal("expected deadline error on contended lock")
+	}
+
+	// 解放後は再取得できる
+	release1()
+	release3, err := locker.Acquire(ctx, "key1", time.Second)
+	require.NoError(t, err)
+	release3()
+}
+
+func TestIntegration_RedisLocker_ReleaseScriptDoesNotErase(t *testing.T) {
+	requireRedis(t)
+	testRedis.FlushAll(context.Background())
+	locker := NewRedisLocker(testRedis.Client, "")
+
+	// 自分の token じゃないキーを置いておく
+	require.NoError(t, testRedis.Client.Set(context.Background(), "chartInsertLock:k", "other", time.Minute).Err())
+
+	// 別のキーを取得 → release しても元の "k" は触らない
+	release, err := locker.Acquire(context.Background(), "different", time.Second)
+	require.NoError(t, err)
+	release()
+
+	val, err := testRedis.Client.Get(context.Background(), "chartInsertLock:k").Result()
+	require.NoError(t, err)
+	assert.Equal(t, "other", val)
+}
+
+func TestIntegration_RedisLocker_NilClient(t *testing.T) {
+	var l *RedisLocker
+	if _, err := l.Acquire(context.Background(), "k", time.Second); err == nil {
+		t.Fatal("expected error from nil locker")
+	}
+}
+
+func TestIntegration_RedisLocker_DefaultPrefix(t *testing.T) {
+	requireRedis(t)
+	l := NewRedisLocker(testRedis.Client, "")
+	assert.Equal(t, "chartInsertLock:", l.prefix)
+}
+
+func TestIntegration_RedisLocker_DefaultTTL(t *testing.T) {
+	requireRedis(t)
+	testRedis.FlushAll(context.Background())
+	l := NewRedisLocker(testRedis.Client, "")
+	// 0 ttl → 30s default。Test 完了で release が走るので副作用なし。
+	release, err := l.Acquire(context.Background(), "ttl-default", 0)
+	require.NoError(t, err)
+	release()
+}
+
+func TestIntegration_RedisLocker_RedisError(t *testing.T) {
+	bad := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	defer bad.Close()
+	l := NewRedisLocker(bad, "")
+	if _, err := l.Acquire(context.Background(), "k", time.Second); err == nil {
+		t.Fatal("expected error from unreachable redis")
+	}
+}
+
+func TestIntegration_GormRepository_FindBeforeUngrouped(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+
+	// FindBefore on the ungrouped notes table — covers the non-grouped branch.
+	_, err := repo.Insert(ctx, SpanHour, "", 5000, map[string]any{
+		"local.inc": int64(1),
+	})
+	require.NoError(t, err)
+	got, err := repo.FindBefore(ctx, SpanHour, "", 6000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5000), got.Date)
+}
+
+func TestIntegration_GormRepository_FindRangeUngrouped(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+
+	for _, ts := range []int64{1000, 2000, 3000} {
+		_, err := repo.Insert(ctx, SpanHour, "", ts, map[string]any{"local.inc": int64(ts)})
+		require.NoError(t, err)
+	}
+	rows, err := repo.FindRange(ctx, SpanHour, "", 0, 4000)
+	require.NoError(t, err)
+	assert.Len(t, rows, 3)
+}
+
+func TestIntegration_GormRepository_DayTableInsertAndFind(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+
+	_, err := repo.Insert(ctx, SpanDay, "", 9000, map[string]any{
+		"local.inc": int64(11),
+	})
+	require.NoError(t, err)
+	got, err := repo.FindCurrent(ctx, SpanDay, "", 9000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(11), toInt64(got.Cols["local.inc"]))
+}
+
+func TestIntegration_GormRepository_InsertSkipsUnknownColumns(t *testing.T) {
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+	row, err := repo.Insert(ctx, SpanHour, "", 1234, map[string]any{
+		"local.inc":     int64(1),
+		"unknown.field": int64(99),
+	})
+	require.NoError(t, err)
+	require.NotZero(t, row.ID)
+}
+
+func TestIntegration_GormRepository_FindBeforeGrouped(t *testing.T) {
+	truncateChartTable(t, perUserIntegrationSchema.Name)
+	repo := NewRepository(testDB, perUserIntegrationSchema)
+	ctx := context.Background()
+
+	for _, ts := range []int64{1000, 2000, 3000} {
+		_, err := repo.Insert(ctx, SpanHour, "u1", ts, map[string]any{"total": int64(1)})
+		require.NoError(t, err)
+	}
+	got, err := repo.FindBefore(ctx, SpanHour, "u1", 2500)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2000), got.Date)
+}
+
+func TestIntegration_GormRepository_FindRangeGrouped(t *testing.T) {
+	truncateChartTable(t, perUserIntegrationSchema.Name)
+	repo := NewRepository(testDB, perUserIntegrationSchema)
+	ctx := context.Background()
+
+	for _, ts := range []int64{1000, 2000, 3000} {
+		_, err := repo.Insert(ctx, SpanHour, "u1", ts, map[string]any{"total": int64(1)})
+		require.NoError(t, err)
+		_, err = repo.Insert(ctx, SpanHour, "u2", ts, map[string]any{"total": int64(1)})
+		require.NoError(t, err)
+	}
+	got, err := repo.FindRange(ctx, SpanHour, "u1", 1500, 4000)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+}
+
+func TestIntegration_GormRepository_InsertGroupedSchemaSkipsUnknown(t *testing.T) {
+	// 既存テーブルへ unknown 列を渡しても黙って無視される (列順安定の
+	// ループ内 default 分岐) のを踏む。
+	truncateChartTable(t, perUserIntegrationSchema.Name)
+	repo := NewRepository(testDB, perUserIntegrationSchema)
+	row, err := repo.Insert(context.Background(), SpanHour, "u1", 4242, map[string]any{
+		"total":   int64(1),
+		"missing": int64(99),
+	})
+	require.NoError(t, err)
+	require.NotZero(t, row.ID)
+}
+
+func TestScanRow_HandlesUniqueTempAndNullGroup(t *testing.T) {
+	repo := &gormRepository{schema: notesIntegrationSchema}
+	row := repo.scanRow(map[string]any{
+		"id":                  int64(7),
+		"date":                int64(1234),
+		"group":               nil,
+		"___local_inc":        int64(2),
+		"unique_temp___local": []any{"a"},
+	})
+	if row.ID != 7 || row.Date != 1234 {
+		t.Fatalf("got %+v", row)
+	}
+	if row.Group.Valid {
+		t.Fatal("expected null group")
+	}
+	if _, ok := row.Cols["local.inc"]; !ok {
+		t.Fatal("missing local.inc")
+	}
+	if _, ok := row.Cols["local:unique"]; !ok {
+		t.Fatal("missing local:unique")
+	}
+}
+
+func TestScanRow_NonNullGroup(t *testing.T) {
+	repo := &gormRepository{schema: perUserIntegrationSchema}
+	row := repo.scanRow(map[string]any{
+		"id":    int64(1),
+		"date":  int64(0),
+		"group": "u1",
+	})
+	if !row.Group.Valid || row.Group.String != "u1" {
+		t.Fatalf("got %+v", row.Group)
+	}
+}
+
+// TestIntegration_GormRepository_InsertEmptyReturning forces the
+// `len(rows) == 0` defensive branch by attaching a BEFORE INSERT
+// trigger that returns NULL — PostgreSQL then skips the insert and
+// the RETURNING clause yields zero rows.
+func TestIntegration_GormRepository_InsertEmptyReturning(t *testing.T) {
+	requirePostgres(t)
+	// Use a dedicated chart name so the trigger does not interfere with
+	// other tests. We piggy-back on the existing migration table for
+	// federation since it has the right shape; instead create a tiny
+	// throwaway table that matches the schema we declare.
+	const tbl = "__chart__skip_insert"
+	const tblDay = "__chart_day__skip_insert"
+	const fnName = "chart_skip_insert_fn"
+	const trgName = "chart_skip_insert_trg"
+
+	// Drop and recreate the support objects so reruns are clean.
+	testDB.Exec(`DROP TRIGGER IF EXISTS ` + trgName + ` ON "` + tbl + `"`)
+	testDB.Exec(`DROP FUNCTION IF EXISTS ` + fnName + `()`)
+	testDB.Exec(`DROP TABLE IF EXISTS "` + tbl + `"`)
+	testDB.Exec(`DROP TABLE IF EXISTS "` + tblDay + `"`)
+
+	testDB.Exec(`CREATE TABLE "` + tbl + `" (
+		"id" SERIAL PRIMARY KEY,
+		"date" integer NOT NULL,
+		"___v" integer NOT NULL DEFAULT 0
+	)`)
+	testDB.Exec(`CREATE TABLE "` + tblDay + `" (
+		"id" SERIAL PRIMARY KEY,
+		"date" integer NOT NULL,
+		"___v" integer NOT NULL DEFAULT 0
+	)`)
+	testDB.Exec(`CREATE OR REPLACE FUNCTION ` + fnName + `() RETURNS trigger AS $$ BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql`)
+	testDB.Exec(`CREATE TRIGGER ` + trgName + ` BEFORE INSERT ON "` + tbl + `" FOR EACH ROW EXECUTE FUNCTION ` + fnName + `()`)
+
+	defer func() {
+		testDB.Exec(`DROP TRIGGER IF EXISTS ` + trgName + ` ON "` + tbl + `"`)
+		testDB.Exec(`DROP FUNCTION IF EXISTS ` + fnName + `()`)
+		testDB.Exec(`DROP TABLE IF EXISTS "` + tbl + `"`)
+		testDB.Exec(`DROP TABLE IF EXISTS "` + tblDay + `"`)
+	}()
+
+	repo := NewRepository(testDB, Schema{
+		Name:    "skipInsert",
+		Columns: []ColumnDef{{Name: "v"}},
+	})
+	_, err := repo.Insert(context.Background(), SpanHour, "", 1, map[string]any{"v": int64(1)})
+	if err == nil {
+		t.Fatal("expected error from empty RETURNING")
+	}
+}
+
+func TestIntegration_GormRepository_ErrorOnClosedDB(t *testing.T) {
+	requirePostgres(t)
+	// Use the testDB but issue a query against a non-existent column to
+	// force a SQL error from the underlying driver.
+	repo := NewRepository(testDB, Schema{
+		Name:    "doesnotexist", // tableName -> __chart__doesnotexist
+		Columns: []ColumnDef{{Name: "x"}},
+	})
+	ctx := context.Background()
+	if _, err := repo.FindCurrent(ctx, SpanHour, "", 0); err == nil {
+		t.Fatal("expected error querying nonexistent table")
+	}
+	if _, err := repo.FindLatest(ctx, SpanHour, ""); err == nil {
+		t.Fatal("expected error querying nonexistent table")
+	}
+	if _, err := repo.FindBefore(ctx, SpanHour, "", 0); err == nil {
+		t.Fatal("expected error querying nonexistent table")
+	}
+	if _, err := repo.FindRange(ctx, SpanHour, "", 0, 100); err == nil {
+		t.Fatal("expected error querying nonexistent table")
+	}
+	if _, err := repo.Insert(ctx, SpanHour, "", 0, map[string]any{"x": int64(1)}); err == nil {
+		t.Fatal("expected error inserting into nonexistent table")
+	}
+	if err := repo.ApplyDeltas(ctx, SpanHour, 1, map[string]int64{"x": 1}, nil, nil); err == nil {
+		t.Fatal("expected error from ApplyDeltas")
+	}
+	if err := repo.SetColumns(ctx, SpanHour, 1, map[string]int64{"x": 1}); err == nil {
+		t.Fatal("expected error from SetColumns")
+	}
+	if err := repo.ResetUniqueTempColumns(ctx, SpanHour, 0, 100, []string{"x"}); err == nil {
+		t.Fatal("expected error from ResetUniqueTempColumns")
+	}
+}
+
+func TestIntegration_ChartEngine_GetChart_FindBeforeError(t *testing.T) {
+	// Tests the error propagation path in GetChart by issuing a query
+	// against a table that has rows in range — exercising the
+	// "non-empty rows but earliest row != start" branch which calls
+	// FindBefore.
+	truncateChartTable(t, notesIntegrationSchema.Name)
+	repo := NewRepository(testDB, notesIntegrationSchema)
+	ctx := context.Background()
+	clk := newFakeClock(time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC))
+	c, err := New(Config{Schema: notesIntegrationSchema, Repo: repo, Lock: NewMemoryLocker(), Clock: clk})
+	require.NoError(t, err)
+
+	// Insert one row at the end of the requested window so that the
+	// "earliest row != start" branch fires.
+	bucket := truncateToHour(clk.Now())
+	_, err = repo.Insert(ctx, SpanHour, "", bucket.Unix(), map[string]any{"local.inc": int64(1)})
+	require.NoError(t, err)
+
+	out, err := c.GetChart(ctx, SpanHour, 5, nil, "")
+	require.NoError(t, err)
+	assert.Len(t, out["local.inc"], 5)
+}

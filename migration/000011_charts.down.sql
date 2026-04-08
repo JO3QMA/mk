@@ -1,0 +1,25 @@
+-- Phase 4 Step Q (4.7) — Charts (rollback)
+DROP TABLE IF EXISTS "__chart__federation";
+DROP TABLE IF EXISTS "__chart_day__federation";
+DROP TABLE IF EXISTS "__chart__notes";
+DROP TABLE IF EXISTS "__chart_day__notes";
+DROP TABLE IF EXISTS "__chart__users";
+DROP TABLE IF EXISTS "__chart_day__users";
+DROP TABLE IF EXISTS "__chart__drive";
+DROP TABLE IF EXISTS "__chart_day__drive";
+DROP TABLE IF EXISTS "__chart__instance";
+DROP TABLE IF EXISTS "__chart_day__instance";
+DROP TABLE IF EXISTS "__chart__ap_request";
+DROP TABLE IF EXISTS "__chart_day__ap_request";
+DROP TABLE IF EXISTS "__chart__active_users";
+DROP TABLE IF EXISTS "__chart_day__active_users";
+DROP TABLE IF EXISTS "__chart__per_user_notes";
+DROP TABLE IF EXISTS "__chart_day__per_user_notes";
+DROP TABLE IF EXISTS "__chart__per_user_drive";
+DROP TABLE IF EXISTS "__chart_day__per_user_drive";
+DROP TABLE IF EXISTS "__chart__per_user_following";
+DROP TABLE IF EXISTS "__chart_day__per_user_following";
+DROP TABLE IF EXISTS "__chart__per_user_pv";
+DROP TABLE IF EXISTS "__chart_day__per_user_pv";
+DROP TABLE IF EXISTS "__chart__per_user_reaction";
+DROP TABLE IF EXISTS "__chart_day__per_user_reaction";
