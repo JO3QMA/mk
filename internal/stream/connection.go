@@ -25,9 +25,8 @@ type Conn interface {
 	Close() error
 }
 
-// pingInterval は ping/pong による keepalive 間隔。テストで差し替えるため
-// var にしている。
-var pingInterval = 30 * time.Second
+// defaultPingInterval は ping/pong による keepalive のデフォルト間隔。
+const defaultPingInterval = 30 * time.Second
 
 // readDeadline は Pong 待ちの猶予 (= pingInterval + 余白)。
 const readDeadline = 60 * time.Second
@@ -50,11 +49,12 @@ type CloseHandler func()
 // semantics with a bounded outbound queue. すべての送信は writer goroutine 経由
 // で行われるため、複数 goroutine から Send を呼び出してもデッドロックしない。
 type Connection struct {
-	id     string
-	user   *model.User
-	conn   Conn
-	send   chan []byte
-	closeC chan struct{}
+	id           string
+	user         *model.User
+	conn         Conn
+	send         chan []byte
+	closeC       chan struct{}
+	pingInterval time.Duration
 
 	closeOnce sync.Once
 	closed    bool
@@ -68,11 +68,20 @@ type Connection struct {
 // に割り当てる。MessageHandler が nil の場合、受信メッセージは破棄される。
 func NewConnection(id string, user *model.User, conn Conn) *Connection {
 	return &Connection{
-		id:     id,
-		user:   user,
-		conn:   conn,
-		send:   make(chan []byte, sendQueueSize),
-		closeC: make(chan struct{}),
+		id:           id,
+		user:         user,
+		conn:         conn,
+		send:         make(chan []byte, sendQueueSize),
+		closeC:       make(chan struct{}),
+		pingInterval: defaultPingInterval,
+	}
+}
+
+// SetPingInterval overrides the keepalive ping cadence. 主にテストで時計を
+// 縮めるための setter。0 以下は無視される。Start を呼ぶ前に設定すること。
+func (c *Connection) SetPingInterval(d time.Duration) {
+	if d > 0 {
+		c.pingInterval = d
 	}
 }
 
@@ -176,7 +185,7 @@ func (c *Connection) readLoop() {
 
 // writeLoop drains the send queue and emits ping frames at pingInterval.
 func (c *Connection) writeLoop() {
-	ping := time.NewTicker(pingInterval)
+	ping := time.NewTicker(c.pingInterval)
 	defer ping.Stop()
 	for {
 		select {

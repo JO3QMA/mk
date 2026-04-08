@@ -75,8 +75,20 @@ func (f *fakeConn) WriteControl(messageType int, _ []byte, _ time.Time) error {
 	return nil
 }
 
-func (f *fakeConn) SetReadDeadline(_ time.Time) error   { return nil }
-func (f *fakeConn) SetPongHandler(h func(string) error) { f.pongHandler = h }
+func (f *fakeConn) SetReadDeadline(_ time.Time) error { return nil }
+func (f *fakeConn) SetPongHandler(h func(string) error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pongHandler = h
+}
+
+// getPongHandler returns the registered handler under the lock so tests can
+// invoke it without racing the readLoop.
+func (f *fakeConn) getPongHandler() func(string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pongHandler
+}
 func (f *fakeConn) Close() error {
 	f.mu.Lock()
 	f.closed = true
@@ -229,8 +241,8 @@ func TestConnection_PongHandlerExtendsDeadline(t *testing.T) {
 	c := NewConnection("c1", nil, fc)
 	go c.Start()
 	defer c.Close()
-	require.Eventually(t, func() bool { return fc.pongHandler != nil }, time.Second, 10*time.Millisecond)
-	require.NoError(t, fc.pongHandler("ping"))
+	require.Eventually(t, func() bool { return fc.getPongHandler() != nil }, time.Second, 10*time.Millisecond)
+	require.NoError(t, fc.getPongHandler()("ping"))
 }
 
 func TestConnection_SendQueueOverflowClosesConnection(t *testing.T) {
@@ -247,13 +259,11 @@ func TestConnection_SendQueueOverflowClosesConnection(t *testing.T) {
 }
 
 func TestConnection_PingTickerSendsPings(t *testing.T) {
-	// pingInterval を一時的に短くして ping 経路を実行する
-	old := pingInterval
-	pingInterval = 5 * time.Millisecond
-	t.Cleanup(func() { pingInterval = old })
-
 	fc := newFakeConn()
 	c := NewConnection("c1", nil, fc)
+	c.SetPingInterval(5 * time.Millisecond)
+	c.SetPingInterval(0) // 0 は無視されデフォルト維持の経路もテスト
+	c.SetPingInterval(5 * time.Millisecond)
 	go c.Start()
 	defer c.Close()
 
@@ -265,13 +275,10 @@ func TestConnection_PingTickerSendsPings(t *testing.T) {
 }
 
 func TestConnection_PingTickerErrorClosesConnection(t *testing.T) {
-	old := pingInterval
-	pingInterval = 5 * time.Millisecond
-	t.Cleanup(func() { pingInterval = old })
-
 	fc := newFakeConn()
 	fc.pingErr = errors.New("ping fail")
 	c := NewConnection("c1", nil, fc)
+	c.SetPingInterval(5 * time.Millisecond)
 	go c.Start()
 
 	require.Eventually(t, func() bool { return fc.isClosed() }, time.Second, 5*time.Millisecond)
