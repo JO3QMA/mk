@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
 	apichannels "github.com/shiroha-a/mk/internal/api/channels"
+	"github.com/shiroha-a/mk/internal/api/clips"
 	"github.com/shiroha-a/mk/internal/api/drive"
 	apifederation "github.com/shiroha-a/mk/internal/api/federation"
 	"github.com/shiroha-a/mk/internal/api/following"
@@ -26,6 +27,7 @@ import (
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
+	coreclip "github.com/shiroha-a/mk/internal/core/clip"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/core/event"
 	corefederation "github.com/shiroha-a/mk/internal/core/federation"
@@ -74,6 +76,8 @@ func (s *Server) setupRoutes() {
 	channelRepo := repository.NewChannelRepository(s.db)
 	channelFollowingRepo := repository.NewChannelFollowingRepository(s.db)
 	antennaRepo := repository.NewAntennaRepository(s.db)
+	clipRepo := repository.NewClipRepository(s.db)
+	clipNoteRepo := repository.NewClipNoteRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -95,6 +99,9 @@ func (s *Server) setupRoutes() {
 	// Antennas (Phase 4.3)
 	antennaService := coreantenna.NewService(antennaRepo, userRepo, s.redis.Default, idGen)
 	noteCreateService.SetAntennaHook(coreantenna.NewNoteCreateHook(antennaService))
+
+	// Clips (Phase 4.4)
+	clipService := coreclip.NewService(clipRepo, clipNoteRepo, noteRepo, idGen)
 
 	// Reactions
 	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
@@ -288,6 +295,17 @@ func (s *Server) setupRoutes() {
 	api.POST("/antennas/delete", antennasHandler.Delete, middleware.RequireAuth())
 	api.POST("/antennas/list", antennasHandler.List, middleware.RequireAuth())
 	api.POST("/antennas/notes", antennasHandler.Notes, middleware.RequireAuth())
+
+	// Clips endpoints (Phase 4.4)
+	clipsHandler := clips.NewHandler(clipService, idGen)
+	api.POST("/clips/create", clipsHandler.Create, middleware.RequireAuth())
+	api.POST("/clips/show", clipsHandler.Show)
+	api.POST("/clips/update", clipsHandler.Update, middleware.RequireAuth())
+	api.POST("/clips/delete", clipsHandler.Delete, middleware.RequireAuth())
+	api.POST("/clips/list", clipsHandler.List, middleware.RequireAuth())
+	api.POST("/clips/add-note", clipsHandler.AddNote, middleware.RequireAuth())
+	api.POST("/clips/remove-note", clipsHandler.RemoveNote, middleware.RequireAuth())
+	api.POST("/clips/notes", clipsHandler.Notes)
 
 	// Streaming (Phase 4.1 Step K)
 	// 1. Redis pubsub bus (核となる publish/subscribe チャンネル)

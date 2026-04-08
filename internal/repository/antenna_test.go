@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -126,4 +127,15 @@ func TestAntennaRepository_ListAllActive(t *testing.T) {
 		assert.True(t, a.IsActive)
 	}
 	assert.True(t, found)
+}
+
+func TestAntennaRepository_QueryErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	db := testDB.WithContext(ctx)
+	repo := NewAntennaRepository(db)
+	_, err := repo.ListByUser("any")
+	assert.Error(t, err)
+	_, err = repo.ListAllActive()
+	assert.Error(t, err)
 }

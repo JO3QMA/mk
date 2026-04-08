@@ -1,0 +1,529 @@
+package clips
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	coreclip "github.com/shiroha-a/mk/internal/core/clip"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func newHandler(t *testing.T) (
+	*Handler,
+	*testutil.MockClipRepository,
+	*testutil.MockClipNoteRepository,
+	*testutil.MockNoteRepository,
+) {
+	t.Helper()
+	repo := testutil.NewMockClipRepository()
+	noteRepo := testutil.NewMockClipNoteRepository()
+	notes := testutil.NewMockNoteRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, noteRepo, notes, idGen)
+	return NewHandler(svc, idGen), repo, noteRepo, notes
+}
+
+func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	return e.NewContext(req, rec), rec
+}
+
+func setUser(c echo.Context, userID string) {
+	c.Set(string(middleware.UserContextKey), &model.User{ID: userID})
+}
+
+// --- Create ----------------------------------------------------------------
+
+func TestCreate_Success(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"name":"alpha"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestCreate_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_NameRequired(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingClipRepo causes Create to fail.
+type failingClipRepo struct {
+	*testutil.MockClipRepository
+}
+
+func (r *failingClipRepo) Create(_ *model.Clip) error { return errors.New("boom") }
+
+func TestCreate_RepoError(t *testing.T) {
+	mock := testutil.NewMockClipRepository()
+	repo := &failingClipRepo{MockClipRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, testutil.NewMockClipNoteRepository(), testutil.NewMockNoteRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	c, rec := newReq(t, `{"name":"alpha"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Show ------------------------------------------------------------------
+
+func TestShow_Success(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", Name: "alpha"}
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShow_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestShow_NotFound(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"clipId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShow_AccessDenied(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "owner"}
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestShow_AnonymousOnPublic(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", IsPublic: true}
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Update ----------------------------------------------------------------
+
+func TestUpdate_Success(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", Name: "alpha"}
+	c, rec := newReq(t, `{"clipId":"c1","name":"alpha-v2","description":"desc","isPublic":true}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_NotFound(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"clipId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUpdate_AccessDenied(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "owner"}
+	c, rec := newReq(t, `{"clipId":"c1","name":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestUpdate_NameEmpty(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	c, rec := newReq(t, `{"clipId":"c1","name":""}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingUpdateRepo causes UpdateFields to fail.
+type failingUpdateRepo struct {
+	*testutil.MockClipRepository
+}
+
+func (r *failingUpdateRepo) UpdateFields(_ string, _ map[string]any) error {
+	return errors.New("boom")
+}
+
+func TestUpdate_RepoError(t *testing.T) {
+	mock := testutil.NewMockClipRepository()
+	mock.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	repo := &failingUpdateRepo{MockClipRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, testutil.NewMockClipNoteRepository(), testutil.NewMockNoteRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	c, rec := newReq(t, `{"clipId":"c1","name":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Update(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Delete ----------------------------------------------------------------
+
+func TestDelete_Success(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestDelete_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"clipId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestDelete_AccessDenied(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "owner"}
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// failingDeleteRepo causes Delete to fail.
+type failingDeleteRepo struct {
+	*testutil.MockClipRepository
+}
+
+func (r *failingDeleteRepo) Delete(_ *model.Clip) error { return errors.New("boom") }
+
+func TestDelete_RepoError(t *testing.T) {
+	mock := testutil.NewMockClipRepository()
+	mock.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	repo := &failingDeleteRepo{MockClipRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, testutil.NewMockClipNoteRepository(), testutil.NewMockNoteRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Delete(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- List ------------------------------------------------------------------
+
+func TestList_Success(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", Name: "alpha"}
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.List(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "alpha")
+}
+
+func TestList_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.List(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// listFailRepo causes ListByUser to fail.
+type listFailRepo struct {
+	*testutil.MockClipRepository
+}
+
+func (r *listFailRepo) ListByUser(_ string, _, _ int) ([]*model.Clip, error) {
+	return nil, errors.New("boom")
+}
+
+func TestList_RepoError(t *testing.T) {
+	repo := &listFailRepo{MockClipRepository: testutil.NewMockClipRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, testutil.NewMockClipNoteRepository(), testutil.NewMockNoteRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.List(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- AddNote ---------------------------------------------------------------
+
+func TestAddNote_Success(t *testing.T) {
+	h, repo, _, notes := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	notes.Notes["n1"] = &model.Note{ID: "n1"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestAddNote_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAddNote_ClipNotFound(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"clipId":"missing","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAddNote_AccessDenied(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "owner"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestAddNote_NoteNotFound(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAddNote_AlreadyClipped(t *testing.T) {
+	h, repo, _, notes := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	notes.Notes["n1"] = &model.Note{ID: "n1"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	c2, rec2 := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c2, "alice")
+	require.NoError(t, h.AddNote(c2))
+	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+	_ = rec
+}
+
+// failingClipNoteCreateRepo causes Create to fail (other than already clipped).
+type failingClipNoteCreateRepo struct {
+	*testutil.MockClipNoteRepository
+}
+
+func (r *failingClipNoteCreateRepo) Create(_ *model.ClipNote) error { return errors.New("boom") }
+
+func TestAddNote_RepoError(t *testing.T) {
+	repo := testutil.NewMockClipRepository()
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	notes := testutil.NewMockNoteRepository()
+	notes.Notes["n1"] = &model.Note{ID: "n1"}
+	noteRepo := &failingClipNoteCreateRepo{MockClipNoteRepository: testutil.NewMockClipNoteRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, noteRepo, notes, idGen)
+	h := NewHandler(svc, idGen)
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- RemoveNote ------------------------------------------------------------
+
+func TestRemoveNote_Success(t *testing.T) {
+	h, repo, _, notes := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	notes.Notes["n1"] = &model.Note{ID: "n1"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	c2, rec2 := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c2, "alice")
+	require.NoError(t, h.RemoveNote(c2))
+	assert.Equal(t, http.StatusNoContent, rec2.Code)
+	_ = rec
+}
+
+func TestRemoveNote_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.RemoveNote(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRemoveNote_ClipNotFound(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"clipId":"missing","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.RemoveNote(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestRemoveNote_AccessDenied(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "owner"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.RemoveNote(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestRemoveNote_NotClipped(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.RemoveNote(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingClipNoteDeleteRepo causes Delete to fail (other than not clipped).
+type failingClipNoteDeleteRepo struct {
+	*testutil.MockClipNoteRepository
+}
+
+func (r *failingClipNoteDeleteRepo) Delete(_ *model.ClipNote) error { return errors.New("boom") }
+
+func TestRemoveNote_RepoError(t *testing.T) {
+	repo := testutil.NewMockClipRepository()
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	mock := testutil.NewMockClipNoteRepository()
+	mock.Entries["cn1"] = &model.ClipNote{ID: "cn1", ClipID: "c1", NoteID: "n1"}
+	noteRepo := &failingClipNoteDeleteRepo{MockClipNoteRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, noteRepo, testutil.NewMockNoteRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.RemoveNote(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Notes -----------------------------------------------------------------
+
+func TestNotes_Success(t *testing.T) {
+	h, repo, _, notes := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	notes.Notes["n1"] = &model.Note{ID: "n1", UserID: "alice"}
+	c, rec := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.AddNote(c))
+	c2, rec2 := newReq(t, `{"clipId":"c1"}`)
+	setUser(c2, "alice")
+	require.NoError(t, h.Notes(c2))
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	_ = rec
+}
+
+func TestNotes_BadJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{not`)
+	setUser(c, "alice")
+	require.NoError(t, h.Notes(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestNotes_NotFound(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"clipId":"missing"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Notes(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestNotes_AccessDenied(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "owner"}
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Notes(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNotes_AnonymousOnPublic(t *testing.T) {
+	h, repo, _, notes := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", IsPublic: true}
+	notes.Notes["n1"] = &model.Note{ID: "n1"}
+	addCtx, _ := newReq(t, `{"clipId":"c1","noteId":"n1"}`)
+	setUser(addCtx, "alice")
+	require.NoError(t, h.AddNote(addCtx))
+
+	// 認証なしで public clip の notes を取得できる
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	require.NoError(t, h.Notes(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// listFailNoteRepo causes ListByClip to fail.
+type listFailNoteRepo struct {
+	*testutil.MockClipNoteRepository
+}
+
+func (r *listFailNoteRepo) ListByClip(_ string, _, _ string, _ int) ([]*model.ClipNote, error) {
+	return nil, errors.New("boom")
+}
+
+func TestNotes_RepoError(t *testing.T) {
+	repo := testutil.NewMockClipRepository()
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice"}
+	noteRepo := &listFailNoteRepo{MockClipNoteRepository: testutil.NewMockClipNoteRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreclip.NewService(repo, noteRepo, testutil.NewMockNoteRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Notes(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}

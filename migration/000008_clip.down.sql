@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS "clip_note";
+DROP TABLE IF EXISTS "clip";

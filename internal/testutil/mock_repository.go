@@ -856,6 +856,174 @@ func applyInstanceFields(i *model.Instance, fields map[string]any) {
 	}
 }
 
+// MockClipRepository is a test double for repository.ClipRepository.
+type MockClipRepository struct {
+	Clips     map[string]*model.Clip
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockClipRepository creates an empty MockClipRepository.
+func NewMockClipRepository() *MockClipRepository {
+	return &MockClipRepository{Clips: make(map[string]*model.Clip)}
+}
+
+func (m *MockClipRepository) Create(c *model.Clip) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Clips[c.ID] = c
+	return nil
+}
+
+func (m *MockClipRepository) FindByID(id string) (*model.Clip, error) {
+	c, ok := m.Clips[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return c, nil
+}
+
+func (m *MockClipRepository) UpdateFields(clipID string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	c, ok := m.Clips[clipID]
+	if !ok {
+		return ErrNotFound
+	}
+	applyClipFields(c, fields)
+	return nil
+}
+
+func (m *MockClipRepository) Delete(c *model.Clip) error {
+	delete(m.Clips, c.ID)
+	return nil
+}
+
+func (m *MockClipRepository) ListByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+	var rows []*model.Clip
+	for _, c := range m.Clips {
+		if c.UserID == userID {
+			rows = append(rows, c)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset >= len(rows) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
+}
+
+func (m *MockClipRepository) IncrementCount(clipID, column string, delta int) error {
+	c, ok := m.Clips[clipID]
+	if !ok {
+		return ErrNotFound
+	}
+	if column == "notesCount" {
+		c.NotesCount += delta
+	}
+	return nil
+}
+
+func applyClipFields(c *model.Clip, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				c.Name = s
+			}
+		case "description":
+			if s, ok := v.(*string); ok {
+				c.Description = s
+			}
+		case "isPublic":
+			if b, ok := v.(bool); ok {
+				c.IsPublic = b
+			}
+		case "lastClippedAt":
+			if t, ok := v.(*time.Time); ok {
+				c.LastClippedAt = t
+			}
+		}
+	}
+}
+
+// MockClipNoteRepository is a test double for repository.ClipNoteRepository.
+type MockClipNoteRepository struct {
+	Entries map[string]*model.ClipNote
+}
+
+// NewMockClipNoteRepository creates an empty MockClipNoteRepository.
+func NewMockClipNoteRepository() *MockClipNoteRepository {
+	return &MockClipNoteRepository{Entries: make(map[string]*model.ClipNote)}
+}
+
+func (m *MockClipNoteRepository) Create(cn *model.ClipNote) error {
+	m.Entries[cn.ID] = cn
+	return nil
+}
+
+func (m *MockClipNoteRepository) Delete(cn *model.ClipNote) error {
+	delete(m.Entries, cn.ID)
+	return nil
+}
+
+func (m *MockClipNoteRepository) FindByPair(clipID, noteID string) (*model.ClipNote, error) {
+	for _, cn := range m.Entries {
+		if cn.ClipID == clipID && cn.NoteID == noteID {
+			return cn, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockClipNoteRepository) ListByClip(clipID string, untilID, sinceID string, limit int) ([]*model.ClipNote, error) {
+	var rows []*model.ClipNote
+	for _, cn := range m.Entries {
+		if cn.ClipID != clipID {
+			continue
+		}
+		if untilID != "" && cn.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && cn.ID <= sinceID {
+			continue
+		}
+		rows = append(rows, cn)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
 // MockAntennaRepository is a test double for repository.AntennaRepository.
 type MockAntennaRepository struct {
 	Antennas  map[string]*model.Antenna
