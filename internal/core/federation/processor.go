@@ -68,11 +68,22 @@ type genericActivity struct {
 // the activity is accepted (whether or not it produced side effects). Returns
 // ErrUnsupportedActivity for types that are accepted but currently not
 // processed (callers should still acknowledge the request to the sender).
+//
+// 入力 JSON は最初に activitypub.Normalize を通してキー名を canonical な短形式
+// に揃えてから dispatch する。これにより `as:type` / `https://www.w3.org/ns/
+// activitystreams#type` / `@type` のいずれでも同じ struct フィールドにマップ
+// される。
 func (p *Processor) Process(body []byte) error {
-	var act genericActivity
-	if err := json.Unmarshal(body, &act); err != nil {
+	normalized, err := activitypub.Normalize(body)
+	if err != nil {
 		return fmt.Errorf("invalid activity json: %w", err)
 	}
+	body = normalized
+
+	// Normalize は内部で json.Marshal して再エンコードするため、ここでの
+	// Unmarshal は構文エラーで失敗しないことが保証される。
+	var act genericActivity
+	_ = json.Unmarshal(body, &act)
 	if act.Actor == "" {
 		return errors.New("activity missing actor")
 	}

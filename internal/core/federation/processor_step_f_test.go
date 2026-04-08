@@ -994,6 +994,68 @@ func TestProcess_RejectCancelError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// --- JSON-LD normalization (Step I) ------------------------------------------
+
+// Process accepts activities whose keys use the "as:" prefix or full IRI form.
+// activitypub.Normalize はそれらを canonical な短形式に変換する。
+func TestProcess_NormalizesPrefixedFollow(t *testing.T) {
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"@context": "https://www.w3.org/ns/activitystreams",
+		"as:type": "Follow",
+		"as:actor": "https://remote.example/users/alice",
+		"as:object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Len(t, followingRepo.Followings, 1)
+}
+
+func TestProcess_NormalizesIRIFollow(t *testing.T) {
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"https://www.w3.org/ns/activitystreams#type": "Follow",
+		"https://www.w3.org/ns/activitystreams#actor": "https://remote.example/users/alice",
+		"https://www.w3.org/ns/activitystreams#object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Len(t, followingRepo.Followings, 1)
+}
+
+func TestProcess_NormalizesTypeArray(t *testing.T) {
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"type": ["Follow", "https://example.com/SomethingElse"],
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Len(t, followingRepo.Followings, 1)
+}
+
+func TestProcess_NormalizesObjectIDShortcut(t *testing.T) {
+	// {"object": {"@id": "..."}} 形式は string に縮約される
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"type": "Follow",
+		"actor": "https://remote.example/users/alice",
+		"object": {"@id": "https://example.com/users/bob"}
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Len(t, followingRepo.Followings, 1)
+}
+
 func TestProcess_AnnounceCreateError(t *testing.T) {
 	userRepo := testutil.NewMockUserRepository()
 	noteRepo := &noteCreateFailRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
