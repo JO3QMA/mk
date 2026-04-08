@@ -7,6 +7,7 @@ import (
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
+	apichannels "github.com/shiroha-a/mk/internal/api/channels"
 	"github.com/shiroha-a/mk/internal/api/drive"
 	apifederation "github.com/shiroha-a/mk/internal/api/federation"
 	"github.com/shiroha-a/mk/internal/api/following"
@@ -22,6 +23,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/users"
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
+	corechannel "github.com/shiroha-a/mk/internal/core/channel"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/core/event"
 	corefederation "github.com/shiroha-a/mk/internal/core/federation"
@@ -67,6 +69,8 @@ func (s *Server) setupRoutes() {
 	driveFolderRepo := repository.NewDriveFolderRepository(s.db)
 	keypairRepo := repository.NewUserKeypairRepository(s.db)
 	instanceRepo := repository.NewInstanceRepository(s.db)
+	channelRepo := repository.NewChannelRepository(s.db)
+	channelFollowingRepo := repository.NewChannelFollowingRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -80,6 +84,10 @@ func (s *Server) setupRoutes() {
 	timelineService := coretimeline.NewService(fanoutTimelineService, noteRepo, followingRepo)
 	timelineFanoutHook := coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo)
 	noteCreateService.SetFanoutHook(timelineFanoutHook)
+
+	// Channels (Phase 4.2)
+	channelService := corechannel.NewService(channelRepo, channelFollowingRepo, noteRepo, idGen)
+	noteCreateService.SetChannelHook(corechannel.NewNoteCreateHook(channelService))
 
 	// Reactions
 	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
@@ -251,6 +259,19 @@ func (s *Server) setupRoutes() {
 	federationHandler := apifederation.NewHandler(instanceService)
 	api.POST("/federation/instances", federationHandler.Instances)
 	api.POST("/federation/show-instance", federationHandler.ShowInstance)
+
+	// Channels endpoints (Phase 4.2)
+	channelsHandler := apichannels.NewHandler(channelService, idGen)
+	api.POST("/channels/create", channelsHandler.Create, middleware.RequireAuth())
+	api.POST("/channels/show", channelsHandler.Show)
+	api.POST("/channels/update", channelsHandler.Update, middleware.RequireAuth())
+	api.POST("/channels/follow", channelsHandler.Follow, middleware.RequireAuth())
+	api.POST("/channels/unfollow", channelsHandler.Unfollow, middleware.RequireAuth())
+	api.POST("/channels/followed", channelsHandler.Followed, middleware.RequireAuth())
+	api.POST("/channels/owned", channelsHandler.Owned, middleware.RequireAuth())
+	api.POST("/channels/featured", channelsHandler.Featured)
+	api.POST("/channels/search", channelsHandler.Search)
+	api.POST("/channels/timeline", channelsHandler.Timeline)
 
 	// Streaming (Phase 4.1 Step K)
 	// 1. Redis pubsub bus (核となる publish/subscribe チャンネル)

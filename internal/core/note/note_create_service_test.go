@@ -476,6 +476,63 @@ func TestCreateService_FederationHookInvoked(t *testing.T) {
 	assert.Equal(t, created.ID, hook.note.ID)
 }
 
+// recordingChannelHook captures channel hook calls for tests.
+type recordingChannelHook struct {
+	ensureCalled bool
+	ensureID     string
+	ensureErr    error
+	postedCalled bool
+	postedID     string
+}
+
+func (h *recordingChannelHook) EnsureChannelExists(channelID string) error {
+	h.ensureCalled = true
+	h.ensureID = channelID
+	return h.ensureErr
+}
+
+func (h *recordingChannelHook) OnNotePosted(channelID string) {
+	h.postedCalled = true
+	h.postedID = channelID
+}
+
+func TestCreateService_ChannelHookEnsureAndOnPosted(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	hook := &recordingChannelHook{}
+	svc.SetChannelHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	channelID := "ch1"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text, ChannelID: &channelID})
+	require.NoError(t, err)
+	assert.True(t, hook.ensureCalled)
+	assert.Equal(t, "ch1", hook.ensureID)
+	assert.True(t, hook.postedCalled)
+	assert.Equal(t, "ch1", hook.postedID)
+}
+
+func TestCreateService_ChannelNotFound(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	hook := &recordingChannelHook{ensureErr: errors.New("missing")}
+	svc.SetChannelHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	channelID := "ch1"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text, ChannelID: &channelID})
+	assert.ErrorIs(t, err, note.ErrChannelNotFound)
+}
+
+func TestCreateService_NoChannelHookSkipsCheck(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	channelID := "ch1"
+	_, err := svc.Create(note.CreateInput{User: user, Text: &text, ChannelID: &channelID})
+	require.NoError(t, err)
+}
+
 func TestIsPureRenote_ModelNote(t *testing.T) {
 	renoteID := "r1"
 	text := "x"

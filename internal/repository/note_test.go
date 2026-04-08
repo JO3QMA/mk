@@ -95,6 +95,47 @@ func TestNoteRepository_UpdateFields_NoOp(t *testing.T) {
 	require.NoError(t, repo.UpdateFields("any", nil))
 }
 
+func TestNoteRepository_ListByChannelID(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_nlc_1", "noteuser_lc")
+	defer cleanupUser(t, user.ID)
+
+	chRepo := NewChannelRepository(testDB)
+	uid := user.ID
+	ch := newTestChannel("ch_lc_1", "list-by-channel", &uid)
+	require.NoError(t, chRepo.Create(ch))
+	defer cleanupChannel(t, ch.ID)
+
+	cid := ch.ID
+	for _, id := range []string{"n_lc_1", "n_lc_2", "n_lc_3"} {
+		note := &model.Note{
+			ID:         id,
+			UserID:     user.ID,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+			ChannelID:  &cid,
+		}
+		require.NoError(t, repo.Create(note))
+		defer cleanupNote(t, note.ID)
+	}
+
+	rows, err := repo.ListByChannelID(ch.ID, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, rows, 3)
+
+	rows, err = repo.ListByChannelID(ch.ID, "n_lc_3", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+
+	rows, err = repo.ListByChannelID(ch.ID, "", "n_lc_1", 10)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+
+	rows, err = repo.ListByChannelID(ch.ID, "", "", 0) // 0 → default 30
+	require.NoError(t, err)
+	assert.Len(t, rows, 3)
+}
+
 func TestNoteRepository_FindByURI(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	user := insertTestUser(t, "u_nuri_1", "noteuser_uri")
@@ -243,6 +284,9 @@ func TestNoteRepository_QueryErrors(t *testing.T) {
 	repo := NewNoteRepository(db)
 
 	_, err := repo.ListByUserID("a", "", "", 10)
+	assert.Error(t, err)
+
+	_, err = repo.ListByChannelID("a", "", "", 10)
 	assert.Error(t, err)
 
 	_, err = repo.FindManyByIDsWithUser([]string{"a"})

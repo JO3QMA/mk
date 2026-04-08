@@ -394,6 +394,13 @@ func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID
 	return out
 }
 
+// ListByChannelID returns notes posted to the given channel sorted by id desc.
+func (m *MockNoteRepository) ListByChannelID(channelID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return n.ChannelID != nil && *n.ChannelID == channelID
+	}, untilID, sinceID, limit), nil
+}
+
 func (m *MockNoteRepository) ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
 	for _, n := range m.Notes {
@@ -847,6 +854,195 @@ func applyInstanceFields(i *model.Instance, fields map[string]any) {
 			}
 		}
 	}
+}
+
+// MockChannelRepository is a test double for repository.ChannelRepository.
+type MockChannelRepository struct {
+	Channels  map[string]*model.Channel
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockChannelRepository creates an empty MockChannelRepository.
+func NewMockChannelRepository() *MockChannelRepository {
+	return &MockChannelRepository{Channels: make(map[string]*model.Channel)}
+}
+
+func (m *MockChannelRepository) Create(c *model.Channel) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Channels[c.ID] = c
+	return nil
+}
+
+func (m *MockChannelRepository) FindByID(id string) (*model.Channel, error) {
+	c, ok := m.Channels[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return c, nil
+}
+
+func (m *MockChannelRepository) UpdateFields(channelID string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	c, ok := m.Channels[channelID]
+	if !ok {
+		return ErrNotFound
+	}
+	applyChannelFields(c, fields)
+	return nil
+}
+
+func (m *MockChannelRepository) IncrementCount(channelID, column string, delta int) error {
+	c, ok := m.Channels[channelID]
+	if !ok {
+		return ErrNotFound
+	}
+	switch column {
+	case "notesCount":
+		c.NotesCount += delta
+	case "usersCount":
+		c.UsersCount += delta
+	}
+	return nil
+}
+
+// List returns channels matching the most common filter predicates. テストの
+// 安定性のため id 昇順で返す。
+func (m *MockChannelRepository) List(filter model.ChannelListFilter) ([]*model.Channel, error) {
+	var rows []*model.Channel
+	for _, c := range m.Channels {
+		if filter.OwnerID != "" {
+			if c.UserID == nil || *c.UserID != filter.OwnerID {
+				continue
+			}
+		}
+		if filter.Query != "" && !strings.Contains(c.Name, filter.Query) {
+			continue
+		}
+		if filter.IsArchived != nil && c.IsArchived != *filter.IsArchived {
+			continue
+		}
+		rows = append(rows, c)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID > rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if filter.Offset >= len(rows) {
+		return nil, nil
+	}
+	end := filter.Offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[filter.Offset:end], nil
+}
+
+func applyChannelFields(c *model.Channel, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				c.Name = s
+			}
+		case "description":
+			if s, ok := v.(*string); ok {
+				c.Description = s
+			}
+		case "color":
+			if s, ok := v.(string); ok {
+				c.Color = s
+			}
+		case "isArchived":
+			if b, ok := v.(bool); ok {
+				c.IsArchived = b
+			}
+		case "isSensitive":
+			if b, ok := v.(bool); ok {
+				c.IsSensitive = b
+			}
+		case "lastNotedAt":
+			if t, ok := v.(*time.Time); ok {
+				c.LastNotedAt = t
+			}
+		}
+	}
+}
+
+// MockChannelFollowingRepository is a test double for the channel_following
+// repository.
+type MockChannelFollowingRepository struct {
+	Followings map[string]*model.ChannelFollowing
+}
+
+// NewMockChannelFollowingRepository creates an empty MockChannelFollowingRepository.
+func NewMockChannelFollowingRepository() *MockChannelFollowingRepository {
+	return &MockChannelFollowingRepository{Followings: make(map[string]*model.ChannelFollowing)}
+}
+
+func (m *MockChannelFollowingRepository) Create(f *model.ChannelFollowing) error {
+	m.Followings[f.ID] = f
+	return nil
+}
+
+func (m *MockChannelFollowingRepository) Delete(f *model.ChannelFollowing) error {
+	delete(m.Followings, f.ID)
+	return nil
+}
+
+func (m *MockChannelFollowingRepository) FindByPair(followerID, channelID string) (*model.ChannelFollowing, error) {
+	for _, f := range m.Followings {
+		if f.FollowerID == followerID && f.FolloweeID == channelID {
+			return f, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockChannelFollowingRepository) Exists(followerID, channelID string) (bool, error) {
+	_, err := m.FindByPair(followerID, channelID)
+	return err == nil, nil
+}
+
+func (m *MockChannelFollowingRepository) ListFollowed(userID string, limit, offset int) ([]*model.ChannelFollowing, error) {
+	var rows []*model.ChannelFollowing
+	for _, f := range m.Followings {
+		if f.FollowerID == userID {
+			rows = append(rows, f)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset >= len(rows) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
 }
 
 // MockUserKeypairRepository is a test double for repository.UserKeypairRepository.

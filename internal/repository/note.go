@@ -17,6 +17,7 @@ type NoteRepository interface {
 	IncrementCount(noteID, column string, delta int) error
 	IncrementReaction(noteID, reaction string, delta int) error
 	ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error)
+	ListByChannelID(channelID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	FindManyByIDsWithUser(ids []string) ([]*model.Note, error)
 	ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
@@ -115,6 +116,25 @@ func (r *noteRepository) ListByUserID(userID string, untilID, sinceID string, li
 	}
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// ListByChannelID returns notes posted to the channel ordered by id DESC.
+func (r *noteRepository) ListByChannelID(channelID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	var notes []*model.Note
+	q := r.db.Preload("User").Where("\"channelId\" = ?", channelID)
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if limit <= 0 {
+		limit = 30
 	}
 	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err

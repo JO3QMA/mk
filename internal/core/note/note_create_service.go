@@ -23,6 +23,8 @@ var (
 	ErrCannotReplyToInvisibleNote = errors.New("cannot reply to this note")
 	// ErrCannotRenoteInvisibleNote is returned when the renoter cannot see the renote target.
 	ErrCannotRenoteInvisibleNote = errors.New("cannot renote this note")
+	// ErrChannelNotFound is returned when the channelId references a missing channel.
+	ErrChannelNotFound = errors.New("channel not found")
 )
 
 // CreateInput is the input parameter for CreateService.Create.
@@ -69,6 +71,18 @@ type FederationHook interface {
 	OnNoteCreated(note *model.Note, author *model.User)
 }
 
+// ChannelHook is invoked when a note is posted to a channel so the channel
+// service can validate existence ahead of insertion and bump counters / the
+// last-noted timestamp afterwards. パッケージ間の循環依存を避けるため
+// interface で受け取る (実装は core/channel)。
+type ChannelHook interface {
+	// EnsureChannelExists is called before insertion. Returning a non-nil
+	// error aborts the note creation.
+	EnsureChannelExists(channelID string) error
+	// OnNotePosted is called after the note row has been persisted.
+	OnNotePosted(channelID string)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
 	noteRepo         repository.NoteRepository
@@ -78,6 +92,7 @@ type CreateService struct {
 	fanoutHook       TimelineFanoutHook
 	notificationHook NotificationHook
 	federationHook   FederationHook
+	channelHook      ChannelHook
 }
 
 // NewCreateService creates a new CreateService.
@@ -115,6 +130,12 @@ func (s *CreateService) SetFederationHook(h FederationHook) {
 	s.federationHook = h
 }
 
+// SetChannelHook attaches a ChannelHook invoked when a note is posted to a
+// channel. nil 渡しは無効化と同義。
+func (s *CreateService) SetChannelHook(h ChannelHook) {
+	s.channelHook = h
+}
+
 // Create creates a new note. It returns the persisted note (with the User
 // relation preloaded when possible).
 func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
@@ -130,6 +151,14 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	visibility := in.Visibility
 	if visibility == "" {
 		visibility = model.NoteVisibilityPublic
+	}
+
+	// channelId が指定されていれば存在チェック。channelHook 未設定なら
+	// channel 機能が無効なものとして扱い、エラーは返さない。
+	if in.ChannelID != nil && *in.ChannelID != "" && s.channelHook != nil {
+		if err := s.channelHook.EnsureChannelExists(*in.ChannelID); err != nil {
+			return nil, ErrChannelNotFound
+		}
 	}
 
 	// reply/renote先のノートを取得し、閲覧権限を確認する。
@@ -252,6 +281,10 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// AP配信もベストエフォート。
 	if s.federationHook != nil {
 		s.federationHook.OnNoteCreated(finalNote, in.User)
+	}
+	// チャンネル投稿の lastNotedAt / notesCount 更新もベストエフォート。
+	if s.channelHook != nil && in.ChannelID != nil && *in.ChannelID != "" {
+		s.channelHook.OnNotePosted(*in.ChannelID)
 	}
 
 	return finalNote, nil

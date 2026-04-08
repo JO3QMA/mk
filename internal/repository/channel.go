@@ -1,0 +1,99 @@
+package repository
+
+import (
+	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/gorm"
+)
+
+// ChannelRepository provides data access for the `channel` table.
+type ChannelRepository interface {
+	Create(c *model.Channel) error
+	FindByID(id string) (*model.Channel, error)
+	UpdateFields(channelID string, fields map[string]any) error
+	IncrementCount(channelID, column string, delta int) error
+	List(filter model.ChannelListFilter) ([]*model.Channel, error)
+}
+
+type channelRepository struct {
+	db *gorm.DB
+}
+
+// NewChannelRepository creates a new ChannelRepository.
+func NewChannelRepository(db *gorm.DB) ChannelRepository {
+	return &channelRepository{db: db}
+}
+
+func (r *channelRepository) Create(c *model.Channel) error {
+	return r.db.Create(c).Error
+}
+
+func (r *channelRepository) FindByID(id string) (*model.Channel, error) {
+	var c model.Channel
+	if err := r.db.First(&c, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// UpdateFields applies a map of column → value updates to the channel row.
+func (r *channelRepository) UpdateFields(channelID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Channel{}).Where("id = ?", channelID).Updates(fields).Error
+}
+
+// IncrementCount adjusts a counter column on the channel row by delta.
+// notesCount / usersCount などの集計列向け。
+func (r *channelRepository) IncrementCount(channelID, column string, delta int) error {
+	return r.db.Model(&model.Channel{}).
+		Where("id = ?", channelID).
+		UpdateColumn(column, gorm.Expr("\""+column+"\" + ?", delta)).Error
+}
+
+// List returns channels matching the filter, ordered by the requested sort.
+func (r *channelRepository) List(filter model.ChannelListFilter) ([]*model.Channel, error) {
+	q := r.db.Model(&model.Channel{})
+	if filter.OwnerID != "" {
+		q = q.Where("\"userId\" = ?", filter.OwnerID)
+	}
+	if filter.Query != "" {
+		q = q.Where("name ILIKE ?", "%"+filter.Query+"%")
+	}
+	if filter.IsArchived != nil {
+		q = q.Where("\"isArchived\" = ?", *filter.IsArchived)
+	}
+	switch filter.SortBy {
+	case "+lastNotedAt":
+		q = q.Order("\"lastNotedAt\" ASC NULLS LAST")
+	case "-lastNotedAt":
+		q = q.Order("\"lastNotedAt\" DESC NULLS LAST")
+	case "+name":
+		q = q.Order("name ASC")
+	case "-name":
+		q = q.Order("name DESC")
+	case "+notesCount":
+		q = q.Order("\"notesCount\" ASC")
+	case "-notesCount":
+		q = q.Order("\"notesCount\" DESC")
+	case "+usersCount":
+		q = q.Order("\"usersCount\" ASC")
+	case "-usersCount":
+		q = q.Order("\"usersCount\" DESC")
+	default:
+		q = q.Order("\"lastNotedAt\" DESC NULLS LAST")
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit).Offset(filter.Offset)
+	var rows []*model.Channel
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
