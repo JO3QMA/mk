@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
+	"github.com/shiroha-a/mk/internal/api/antennas"
 	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
 	apichannels "github.com/shiroha-a/mk/internal/api/channels"
@@ -22,6 +23,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/streaming"
 	"github.com/shiroha-a/mk/internal/api/users"
 	"github.com/shiroha-a/mk/internal/api/wellknown"
+	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
@@ -71,6 +73,7 @@ func (s *Server) setupRoutes() {
 	instanceRepo := repository.NewInstanceRepository(s.db)
 	channelRepo := repository.NewChannelRepository(s.db)
 	channelFollowingRepo := repository.NewChannelFollowingRepository(s.db)
+	antennaRepo := repository.NewAntennaRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -88,6 +91,10 @@ func (s *Server) setupRoutes() {
 	// Channels (Phase 4.2)
 	channelService := corechannel.NewService(channelRepo, channelFollowingRepo, noteRepo, idGen)
 	noteCreateService.SetChannelHook(corechannel.NewNoteCreateHook(channelService))
+
+	// Antennas (Phase 4.3)
+	antennaService := coreantenna.NewService(antennaRepo, userRepo, s.redis.Default, idGen)
+	noteCreateService.SetAntennaHook(coreantenna.NewNoteCreateHook(antennaService))
 
 	// Reactions
 	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
@@ -272,6 +279,15 @@ func (s *Server) setupRoutes() {
 	api.POST("/channels/featured", channelsHandler.Featured)
 	api.POST("/channels/search", channelsHandler.Search)
 	api.POST("/channels/timeline", channelsHandler.Timeline)
+
+	// Antennas endpoints (Phase 4.3)
+	antennasHandler := antennas.NewHandler(antennaService, noteRepo, idGen)
+	api.POST("/antennas/create", antennasHandler.Create, middleware.RequireAuth())
+	api.POST("/antennas/show", antennasHandler.Show, middleware.RequireAuth())
+	api.POST("/antennas/update", antennasHandler.Update, middleware.RequireAuth())
+	api.POST("/antennas/delete", antennasHandler.Delete, middleware.RequireAuth())
+	api.POST("/antennas/list", antennasHandler.List, middleware.RequireAuth())
+	api.POST("/antennas/notes", antennasHandler.Notes, middleware.RequireAuth())
 
 	// Streaming (Phase 4.1 Step K)
 	// 1. Redis pubsub bus (核となる publish/subscribe チャンネル)

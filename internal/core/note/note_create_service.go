@@ -83,6 +83,13 @@ type ChannelHook interface {
 	OnNotePosted(channelID string)
 }
 
+// AntennaHook is invoked after a note has been persisted so antenna service
+// can fan it out into matching antenna timelines. パッケージ間の循環依存を
+// 避けるため interface で受け取る (実装は core/antenna)。
+type AntennaHook interface {
+	OnNoteCreated(note *model.Note, author *model.User)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
 	noteRepo         repository.NoteRepository
@@ -93,6 +100,7 @@ type CreateService struct {
 	notificationHook NotificationHook
 	federationHook   FederationHook
 	channelHook      ChannelHook
+	antennaHook      AntennaHook
 }
 
 // NewCreateService creates a new CreateService.
@@ -134,6 +142,12 @@ func (s *CreateService) SetFederationHook(h FederationHook) {
 // channel. nil 渡しは無効化と同義。
 func (s *CreateService) SetChannelHook(h ChannelHook) {
 	s.channelHook = h
+}
+
+// SetAntennaHook attaches an AntennaHook invoked after note creation so the
+// antenna service can fan the note out into matching antenna timelines.
+func (s *CreateService) SetAntennaHook(h AntennaHook) {
+	s.antennaHook = h
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -285,6 +299,10 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// チャンネル投稿の lastNotedAt / notesCount 更新もベストエフォート。
 	if s.channelHook != nil && in.ChannelID != nil && *in.ChannelID != "" {
 		s.channelHook.OnNotePosted(*in.ChannelID)
+	}
+	// アンテナの fan-out もベストエフォート (失敗してもノート作成自体は成功)。
+	if s.antennaHook != nil {
+		s.antennaHook.OnNoteCreated(finalNote, in.User)
 	}
 
 	return finalNote, nil

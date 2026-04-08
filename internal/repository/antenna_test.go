@@ -1,0 +1,129 @@
+package repository
+
+import (
+	"testing"
+	"time"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+)
+
+func cleanupAntenna(t *testing.T, id string) {
+	t.Helper()
+	testDB.Exec(`DELETE FROM "antenna" WHERE id = ?`, id)
+}
+
+func newTestAntenna(id, ownerID, name string) *model.Antenna {
+	return &model.Antenna{
+		ID:              id,
+		LastUsedAt:      time.Now(),
+		UserID:          ownerID,
+		Name:            name,
+		Src:             model.AntennaSourceAll,
+		Keywords:        datatypes.JSON([]byte(`[]`)),
+		ExcludeKeywords: datatypes.JSON([]byte(`[]`)),
+		IsActive:        true,
+	}
+}
+
+func TestAntennaRepository_CreateAndFindByID(t *testing.T) {
+	repo := NewAntennaRepository(testDB)
+	user := insertTestUser(t, "u_ar_1", "antuser1")
+	defer cleanupUser(t, user.ID)
+
+	a := newTestAntenna("ant_cr_1", user.ID, "alpha antenna")
+	require.NoError(t, repo.Create(a))
+	defer cleanupAntenna(t, a.ID)
+
+	got, err := repo.FindByID(a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "alpha antenna", got.Name)
+	assert.Equal(t, model.AntennaSourceAll, got.Src)
+}
+
+func TestAntennaRepository_FindByID_NotFound(t *testing.T) {
+	repo := NewAntennaRepository(testDB)
+	_, err := repo.FindByID("missing")
+	assert.Error(t, err)
+}
+
+func TestAntennaRepository_UpdateFields(t *testing.T) {
+	repo := NewAntennaRepository(testDB)
+	user := insertTestUser(t, "u_ar_2", "antuser2")
+	defer cleanupUser(t, user.ID)
+
+	a := newTestAntenna("ant_cr_2", user.ID, "beta")
+	require.NoError(t, repo.Create(a))
+	defer cleanupAntenna(t, a.ID)
+
+	require.NoError(t, repo.UpdateFields(a.ID, map[string]any{
+		"name":          "beta updated",
+		"caseSensitive": true,
+	}))
+
+	got, err := repo.FindByID(a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "beta updated", got.Name)
+	assert.True(t, got.CaseSensitive)
+}
+
+func TestAntennaRepository_UpdateFields_NoOp(t *testing.T) {
+	repo := NewAntennaRepository(testDB)
+	require.NoError(t, repo.UpdateFields("any", nil))
+}
+
+func TestAntennaRepository_Delete(t *testing.T) {
+	repo := NewAntennaRepository(testDB)
+	user := insertTestUser(t, "u_ar_3", "antuser3")
+	defer cleanupUser(t, user.ID)
+
+	a := newTestAntenna("ant_cr_3", user.ID, "gamma")
+	require.NoError(t, repo.Create(a))
+	require.NoError(t, repo.Delete(a))
+	_, err := repo.FindByID(a.ID)
+	assert.Error(t, err)
+}
+
+func TestAntennaRepository_ListByUser(t *testing.T) {
+	repo := NewAntennaRepository(testDB)
+	user := insertTestUser(t, "u_ar_4", "antuser4")
+	defer cleanupUser(t, user.ID)
+
+	for _, id := range []string{"ant_lst_1", "ant_lst_2", "ant_lst_3"} {
+		a := newTestAntenna(id, user.ID, id)
+		require.NoError(t, repo.Create(a))
+		defer cleanupAntenna(t, a.ID)
+	}
+
+	rows, err := repo.ListByUser(user.ID)
+	require.NoError(t, err)
+	assert.Len(t, rows, 3)
+}
+
+func TestAntennaRepository_ListAllActive(t *testing.T) {
+	repo := NewAntennaRepository(testDB)
+	user := insertTestUser(t, "u_ar_5", "antuser5")
+	defer cleanupUser(t, user.ID)
+
+	active := newTestAntenna("ant_act_1", user.ID, "active")
+	inactive := newTestAntenna("ant_act_2", user.ID, "inactive")
+	inactive.IsActive = false
+	for _, a := range []*model.Antenna{active, inactive} {
+		require.NoError(t, repo.Create(a))
+		defer cleanupAntenna(t, a.ID)
+	}
+
+	rows, err := repo.ListAllActive()
+	require.NoError(t, err)
+	// 他テストの残骸が混ざる可能性があるので "ant_act_1" が含まれるかだけ検証
+	var found bool
+	for _, a := range rows {
+		if a.ID == "ant_act_1" {
+			found = true
+		}
+		assert.True(t, a.IsActive)
+	}
+	assert.True(t, found)
+}

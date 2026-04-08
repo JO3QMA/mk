@@ -533,6 +533,30 @@ func TestCreateService_NoChannelHookSkipsCheck(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// recordingAntennaHook captures antenna hook calls for tests.
+type recordingAntennaHook struct {
+	called bool
+	note   *model.Note
+}
+
+func (h *recordingAntennaHook) OnNoteCreated(n *model.Note, _ *model.User) {
+	h.called = true
+	h.note = n
+}
+
+func TestCreateService_AntennaHookInvoked(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	hook := &recordingAntennaHook{}
+	svc.SetAntennaHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{User: user, Text: &text})
+	require.NoError(t, err)
+	assert.True(t, hook.called)
+	assert.Equal(t, created.ID, hook.note.ID)
+}
+
 func TestIsPureRenote_ModelNote(t *testing.T) {
 	renoteID := "r1"
 	text := "x"

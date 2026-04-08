@@ -1,0 +1,433 @@
+// Package antenna provides the user-facing antenna CRUD service plus a
+// per-antenna Redis-stream timeline of matching notes. Misskey 互換の
+// ローカル限定機能で、ActivityPub 連携は持たない。
+package antenna
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
+)
+
+// Errors returned by Service.
+var (
+	// ErrAntennaNotFound is returned when the requested antenna does not exist.
+	ErrAntennaNotFound = errors.New("antenna not found")
+	// ErrAntennaNameRequired is returned when name is empty on Create / Update.
+	ErrAntennaNameRequired = errors.New("antenna name is required")
+	// ErrAccessDenied is returned when a user attempts to update / delete an
+	// antenna they do not own.
+	ErrAccessDenied = errors.New("not the owner of this antenna")
+	// ErrInvalidSource is returned when src is not a known antenna source.
+	ErrInvalidSource = errors.New("invalid antenna source")
+)
+
+// MaxNotesPerAntenna caps how many notes are kept per antenna in the Redis
+// stream. 古いものから XADD MAXLEN ~ で削除される。
+const MaxNotesPerAntenna = 200
+
+// streamKey returns the Redis Stream key for an antenna's note timeline.
+func streamKey(antennaID string) string {
+	return "antennaTimeline:" + antennaID
+}
+
+// Service provides antenna CRUD plus matchNote / OnNoteCreated push.
+type Service struct {
+	repo     repository.AntennaRepository
+	userRepo repository.UserRepository
+	client   *redis.Client
+	idGen    id.Generator
+	clock    func() time.Time
+}
+
+// NewService constructs an antenna Service. userRepo は home source の判定で
+// follower 情報が必要になる将来拡張のために受けるが、Phase 4.3 では使わない。
+// nil 渡し可能。
+func NewService(
+	repo repository.AntennaRepository,
+	userRepo repository.UserRepository,
+	client *redis.Client,
+	idGen id.Generator,
+) *Service {
+	return &Service{
+		repo:     repo,
+		userRepo: userRepo,
+		client:   client,
+		idGen:    idGen,
+		clock:    time.Now,
+	}
+}
+
+// SetClock overrides the time source. Intended for tests.
+func (s *Service) SetClock(now func() time.Time) {
+	if now != nil {
+		s.clock = now
+	}
+}
+
+// CreateInput is the parameter set for Service.Create.
+type CreateInput struct {
+	OwnerID         string
+	Name            string
+	Src             model.AntennaSource
+	Users           []string
+	Keywords        [][]string
+	ExcludeKeywords [][]string
+	CaseSensitive   bool
+	ExcludeBots     bool
+	WithReplies     bool
+	WithFile        bool
+	LocalOnly       bool
+}
+
+// Create persists a new antenna and returns it.
+func (s *Service) Create(in CreateInput) (*model.Antenna, error) {
+	if in.Name == "" {
+		return nil, ErrAntennaNameRequired
+	}
+	if in.OwnerID == "" {
+		return nil, errors.New("ownerId is required")
+	}
+	if !validSource(in.Src) {
+		return nil, ErrInvalidSource
+	}
+	// Marshal of [][]string never fails, so we ignore the error.
+	keywords, _ := json.Marshal(normalizeKeywords(in.Keywords))
+	exclude, _ := json.Marshal(normalizeKeywords(in.ExcludeKeywords))
+	now := s.clock()
+	a := &model.Antenna{
+		ID:              s.idGen.Generate(now),
+		LastUsedAt:      now,
+		UserID:          in.OwnerID,
+		Name:            in.Name,
+		Src:             in.Src,
+		Users:           in.Users,
+		Keywords:        keywords,
+		ExcludeKeywords: exclude,
+		CaseSensitive:   in.CaseSensitive,
+		ExcludeBots:     in.ExcludeBots,
+		WithReplies:     in.WithReplies,
+		WithFile:        in.WithFile,
+		LocalOnly:       in.LocalOnly,
+		IsActive:        true,
+	}
+	if err := s.repo.Create(a); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// Show returns the antenna by id, with an ownership check.
+func (s *Service) Show(ownerID, antennaID string) (*model.Antenna, error) {
+	a, err := s.repo.FindByID(antennaID)
+	if err != nil {
+		return nil, ErrAntennaNotFound
+	}
+	if a.UserID != ownerID {
+		return nil, ErrAccessDenied
+	}
+	return a, nil
+}
+
+// UpdateInput holds the editable fields of an antenna. nil の field は更新
+// されない。
+type UpdateInput struct {
+	Name            *string
+	Src             *model.AntennaSource
+	Users           *[]string
+	Keywords        *[][]string
+	ExcludeKeywords *[][]string
+	CaseSensitive   *bool
+	ExcludeBots     *bool
+	WithReplies     *bool
+	WithFile        *bool
+	LocalOnly       *bool
+	IsActive        *bool
+}
+
+// Update applies the non-nil fields to an antenna owned by ownerID.
+func (s *Service) Update(ownerID, antennaID string, in UpdateInput) (*model.Antenna, error) {
+	a, err := s.repo.FindByID(antennaID)
+	if err != nil {
+		return nil, ErrAntennaNotFound
+	}
+	if a.UserID != ownerID {
+		return nil, ErrAccessDenied
+	}
+	fields := map[string]any{}
+	if in.Name != nil {
+		if *in.Name == "" {
+			return nil, ErrAntennaNameRequired
+		}
+		fields["name"] = *in.Name
+	}
+	if in.Src != nil {
+		if !validSource(*in.Src) {
+			return nil, ErrInvalidSource
+		}
+		fields["src"] = *in.Src
+	}
+	if in.Users != nil {
+		fields["users"] = *in.Users
+	}
+	if in.Keywords != nil {
+		// Marshal of [][]string never fails.
+		raw, _ := json.Marshal(normalizeKeywords(*in.Keywords))
+		fields["keywords"] = []byte(raw)
+	}
+	if in.ExcludeKeywords != nil {
+		raw, _ := json.Marshal(normalizeKeywords(*in.ExcludeKeywords))
+		fields["excludeKeywords"] = []byte(raw)
+	}
+	if in.CaseSensitive != nil {
+		fields["caseSensitive"] = *in.CaseSensitive
+	}
+	if in.ExcludeBots != nil {
+		fields["excludeBots"] = *in.ExcludeBots
+	}
+	if in.WithReplies != nil {
+		fields["withReplies"] = *in.WithReplies
+	}
+	if in.WithFile != nil {
+		fields["withFile"] = *in.WithFile
+	}
+	if in.LocalOnly != nil {
+		fields["localOnly"] = *in.LocalOnly
+	}
+	if in.IsActive != nil {
+		fields["isActive"] = *in.IsActive
+	}
+	if err := s.repo.UpdateFields(antennaID, fields); err != nil {
+		return nil, err
+	}
+	return s.repo.FindByID(antennaID)
+}
+
+// Delete removes an antenna owned by ownerID. Redis stream も併せて削除する。
+func (s *Service) Delete(ownerID, antennaID string) error {
+	a, err := s.repo.FindByID(antennaID)
+	if err != nil {
+		return ErrAntennaNotFound
+	}
+	if a.UserID != ownerID {
+		return ErrAccessDenied
+	}
+	if err := s.repo.Delete(a); err != nil {
+		return err
+	}
+	_ = s.client.Del(context.Background(), streamKey(antennaID)).Err()
+	return nil
+}
+
+// ListByUser returns the antennas owned by userID.
+func (s *Service) ListByUser(userID string) ([]*model.Antenna, error) {
+	return s.repo.ListByUser(userID)
+}
+
+// Notes returns the most recent note ids matched by the antenna, newest first.
+// limit <= 0 ならデフォルト 10、上限 100。
+func (s *Service) Notes(ctx context.Context, ownerID, antennaID string, limit int) ([]string, error) {
+	if _, err := s.Show(ownerID, antennaID); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	res, err := s.client.XRevRangeN(ctx, streamKey(antennaID), "+", "-", int64(limit)).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(res))
+	for _, msg := range res {
+		raw, ok := msg.Values["noteId"].(string)
+		if !ok {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out, nil
+}
+
+// OnNoteCreated walks every active antenna, evaluates matchNote, and pushes
+// matching notes to the per-antenna Redis stream. Best-effort: list / push の
+// 失敗はログだけで上には伝搬しない (呼び出し元はノート作成成功の prerequisite を
+// 既に満たしているため)。
+func (s *Service) OnNoteCreated(n *model.Note, author *model.User) {
+	if n == nil || author == nil {
+		return
+	}
+	rows, err := s.repo.ListAllActive()
+	if err != nil {
+		return
+	}
+	now := s.clock()
+	for _, a := range rows {
+		if !s.matchNote(a, n, author) {
+			continue
+		}
+		_ = s.pushNote(context.Background(), a.ID, n.ID, now)
+	}
+}
+
+// pushNote appends a note id to the antenna's Redis stream with MAXLEN trim.
+func (s *Service) pushNote(ctx context.Context, antennaID, noteID string, now time.Time) error {
+	streamID := fmt.Sprintf("%d-0", now.UnixMilli())
+	return s.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: streamKey(antennaID),
+		MaxLen: MaxNotesPerAntenna,
+		Approx: true,
+		ID:     streamID,
+		Values: map[string]any{"noteId": noteID},
+	}).Err()
+}
+
+// matchNote evaluates whether the note satisfies the antenna's filter set.
+// 評価順 (短絡):
+//  1. localOnly でリモート著者なら false
+//  2. excludeBots で bot 著者なら false
+//  3. withFile が真でファイル添付がなければ false
+//  4. withReplies が偽で reply なら false
+//  5. source 別に user フィルタを適用
+//  6. keywords (DNF) のいずれかにマッチしなければ false
+//  7. excludeKeywords (DNF) のいずれかにマッチすれば false
+func (s *Service) matchNote(a *model.Antenna, n *model.Note, author *model.User) bool {
+	if a.LocalOnly && author.Host != nil && *author.Host != "" {
+		return false
+	}
+	if a.ExcludeBots && author.IsBot {
+		return false
+	}
+	if a.WithFile && len(n.FileIDs) == 0 {
+		return false
+	}
+	if !a.WithReplies && n.ReplyID != nil {
+		return false
+	}
+	if !s.matchSource(a, author) {
+		return false
+	}
+	text := noteText(n)
+	if !s.matchKeywords(text, a.Keywords, a.CaseSensitive, true) {
+		return false
+	}
+	if s.matchKeywords(text, a.ExcludeKeywords, a.CaseSensitive, false) {
+		return false
+	}
+	return true
+}
+
+// matchSource applies the antenna's source filter (users / users_blacklist /
+// home / all). home は本来「フォローしている人」だが Phase 4.3 では未実装で
+// `all` と同等扱い (WithReplies / Keywords 等のフィルタで補う)。
+func (s *Service) matchSource(a *model.Antenna, author *model.User) bool {
+	switch a.Src {
+	case model.AntennaSourceUsers:
+		return slices.Contains(a.Users, author.Username)
+	case model.AntennaSourceUsersBlacklist:
+		return !slices.Contains(a.Users, author.Username)
+	default:
+		// home / all / list は all と同等扱い
+		return true
+	}
+}
+
+// matchKeywords evaluates a DNF (Disjunctive Normal Form) keyword set:
+// outer is OR, inner is AND. emptyMatches=true なら空セットを「常にマッチ」、
+// false なら「常に非マッチ」として扱う (keywords は emptyMatches=true、
+// excludeKeywords は emptyMatches=false)。
+func (s *Service) matchKeywords(text string, raw []byte, caseSensitive bool, emptyMatches bool) bool {
+	groups, err := decodeKeywords(raw)
+	if err != nil || len(groups) == 0 {
+		return emptyMatches
+	}
+	target := text
+	if !caseSensitive {
+		target = strings.ToLower(text)
+	}
+	for _, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		matched := true
+		for _, kw := range group {
+			needle := kw
+			if !caseSensitive {
+				needle = strings.ToLower(kw)
+			}
+			if !strings.Contains(target, needle) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// noteText returns the note's text + cw concatenated for keyword search.
+func noteText(n *model.Note) string {
+	var sb strings.Builder
+	if n.CW != nil {
+		sb.WriteString(*n.CW)
+		sb.WriteString(" ")
+	}
+	if n.Text != nil {
+		sb.WriteString(*n.Text)
+	}
+	return sb.String()
+}
+
+// decodeKeywords parses the JSON-encoded DNF keyword groups.
+func decodeKeywords(raw []byte) ([][]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var groups [][]string
+	if err := json.Unmarshal(raw, &groups); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+// normalizeKeywords drops empty rows / empty entries from a DNF set so the
+// stored representation does not waste rows that always match.
+func normalizeKeywords(in [][]string) [][]string {
+	out := make([][]string, 0, len(in))
+	for _, row := range in {
+		clean := make([]string, 0, len(row))
+		for _, kw := range row {
+			if strings.TrimSpace(kw) != "" {
+				clean = append(clean, kw)
+			}
+		}
+		if len(clean) > 0 {
+			out = append(out, clean)
+		}
+	}
+	return out
+}
+
+// validSource reports whether s is one of the allowed antenna source values.
+// list はモデルにあるが Phase 4.3 では UserList が未実装のため reject する。
+func validSource(s model.AntennaSource) bool {
+	switch s {
+	case model.AntennaSourceAll, model.AntennaSourceHome,
+		model.AntennaSourceUsers, model.AntennaSourceUsersBlacklist:
+		return true
+	}
+	return false
+}

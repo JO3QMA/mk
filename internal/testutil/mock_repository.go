@@ -856,6 +856,136 @@ func applyInstanceFields(i *model.Instance, fields map[string]any) {
 	}
 }
 
+// MockAntennaRepository is a test double for repository.AntennaRepository.
+type MockAntennaRepository struct {
+	Antennas  map[string]*model.Antenna
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockAntennaRepository creates an empty MockAntennaRepository.
+func NewMockAntennaRepository() *MockAntennaRepository {
+	return &MockAntennaRepository{Antennas: make(map[string]*model.Antenna)}
+}
+
+func (m *MockAntennaRepository) Create(a *model.Antenna) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Antennas[a.ID] = a
+	return nil
+}
+
+func (m *MockAntennaRepository) FindByID(id string) (*model.Antenna, error) {
+	a, ok := m.Antennas[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
+func (m *MockAntennaRepository) UpdateFields(antennaID string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	a, ok := m.Antennas[antennaID]
+	if !ok {
+		return ErrNotFound
+	}
+	applyAntennaFields(a, fields)
+	return nil
+}
+
+func (m *MockAntennaRepository) Delete(a *model.Antenna) error {
+	delete(m.Antennas, a.ID)
+	return nil
+}
+
+func (m *MockAntennaRepository) ListByUser(userID string) ([]*model.Antenna, error) {
+	var rows []*model.Antenna
+	for _, a := range m.Antennas {
+		if a.UserID == userID {
+			rows = append(rows, a)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockAntennaRepository) ListAllActive() ([]*model.Antenna, error) {
+	var rows []*model.Antenna
+	for _, a := range m.Antennas {
+		if a.IsActive {
+			rows = append(rows, a)
+		}
+	}
+	return rows, nil
+}
+
+func applyAntennaFields(a *model.Antenna, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				a.Name = s
+			}
+		case "src":
+			if s, ok := v.(model.AntennaSource); ok {
+				a.Src = s
+			}
+		case "users":
+			if arr, ok := v.([]string); ok {
+				a.Users = arr
+			}
+		case "keywords":
+			if b, ok := v.([]byte); ok {
+				a.Keywords = b
+			}
+		case "excludeKeywords":
+			if b, ok := v.([]byte); ok {
+				a.ExcludeKeywords = b
+			}
+		case "caseSensitive":
+			if b, ok := v.(bool); ok {
+				a.CaseSensitive = b
+			}
+		case "excludeBots":
+			if b, ok := v.(bool); ok {
+				a.ExcludeBots = b
+			}
+		case "withReplies":
+			if b, ok := v.(bool); ok {
+				a.WithReplies = b
+			}
+		case "withFile":
+			if b, ok := v.(bool); ok {
+				a.WithFile = b
+			}
+		case "isActive":
+			if b, ok := v.(bool); ok {
+				a.IsActive = b
+			}
+		case "localOnly":
+			if b, ok := v.(bool); ok {
+				a.LocalOnly = b
+			}
+		case "lastUsedAt":
+			if t, ok := v.(time.Time); ok {
+				a.LastUsedAt = t
+			}
+		}
+	}
+}
+
 // MockChannelRepository is a test double for repository.ChannelRepository.
 type MockChannelRepository struct {
 	Channels  map[string]*model.Channel
