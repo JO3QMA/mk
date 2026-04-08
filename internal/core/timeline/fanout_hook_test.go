@@ -184,3 +184,104 @@ func TestFanoutHook_NilFollowingRepo(t *testing.T) {
 	noteID := idGen.Generate(time.Now())
 	h.OnNoteCreated(&model.Note{ID: noteID, UserID: "u", Visibility: model.NoteVisibilityPublic}, &model.User{ID: "u"})
 }
+
+// stubStreamingPublisher records every PublishNote call.
+type stubStreamingPublisher struct {
+	topics []string
+}
+
+func (s *stubStreamingPublisher) PublishNote(topic string, _ *model.Note, _ *model.User) {
+	s.topics = append(s.topics, topic)
+}
+
+func TestFanoutHook_PublishesStreamingTopics(t *testing.T) {
+	h, _, following := newTestHook(t)
+	following.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "follower1", FolloweeID: "author"}
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	assert.Contains(t, pub.topics, "homeTimeline:author")
+	assert.Contains(t, pub.topics, "homeTimeline:follower1")
+	assert.Contains(t, pub.topics, "localTimeline")
+	assert.Contains(t, pub.topics, "globalTimeline")
+}
+
+func TestFanoutHook_StreamingHomeOnlyForFollowersVisibility(t *testing.T) {
+	h, _, _ := newTestHook(t)
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityFollowers}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// followers visibility は localTimeline / globalTimeline 配信なし
+	assert.NotContains(t, pub.topics, "localTimeline")
+	assert.NotContains(t, pub.topics, "globalTimeline")
+	assert.Contains(t, pub.topics, "homeTimeline:author")
+}
+
+func TestFanoutHook_StreamingPublisherUnsetIsNoOp(t *testing.T) {
+	h, _, _ := newTestHook(t)
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+}
+
+func TestFanoutHook_StreamingFanoutErrorPath(t *testing.T) {
+	// failingFollowingRepo は ListFollowers でエラーを返す → fanoutStreamingToFollowers
+	// は早期 return する
+	testRedis.FlushAll(context.Background())
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout.randFn = func() float64 { return 1.0 }
+	following := &failingFollowingRepo{MockFollowingRepository: testutil.NewMockFollowingRepository()}
+	h := NewFanoutHook(fanout, following)
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+	// follower 配信は届かないが、自分宛と local/global は publish される
+	assert.Contains(t, pub.topics, "homeTimeline:author")
+}
+
+func TestFanoutHook_StreamingFanoutAcrossPages(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout.randFn = func() float64 { return 1.0 }
+	following := testutil.NewMockFollowingRepository()
+	for i := range 201 {
+		fid := "f-" + idGen.Generate(time.Now().Add(time.Duration(i)*time.Microsecond))
+		following.Followings[fid] = &model.Following{
+			ID:         fid,
+			FollowerID: "follower-" + fid,
+			FolloweeID: "author",
+		}
+	}
+	h := NewFanoutHook(fanout, following)
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+	// 201 人 + 自分 + local + global = 204 トピック以上
+	assert.GreaterOrEqual(t, len(pub.topics), 201+1+1+1)
+}
+
+func TestFanoutHook_StreamingPublisherNilFollowingRepo(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout.randFn = func() float64 { return 1.0 }
+	h := NewFanoutHook(fanout, nil)
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+	// followingRepo nil でも publish 自体は走る (followers パートだけスキップ)
+	noteID := idGen.Generate(time.Now())
+	h.OnNoteCreated(&model.Note{ID: noteID, UserID: "u", Visibility: model.NoteVisibilityPublic}, &model.User{ID: "u"})
+}

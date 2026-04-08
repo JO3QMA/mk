@@ -66,15 +66,29 @@ type CreateInput struct {
 	Extra      map[string]any
 }
 
+// StreamingPublisher receives a freshly created notification so that
+// WebSocket subscribers can be pushed immediately. パッケージ間の循環依存を
+// 避けるため interface で受け取る (実装は internal/stream)。
+type StreamingPublisher interface {
+	PublishNotification(notifieeID string, n *Notification)
+}
+
 // Service manages notifications.
 type Service struct {
-	client *redis.Client
-	idGen  id.Generator
+	client    *redis.Client
+	idGen     id.Generator
+	publisher StreamingPublisher
 }
 
 // NewService constructs a new NotificationService.
 func NewService(client *redis.Client, idGen id.Generator) *Service {
 	return &Service{client: client, idGen: idGen}
+}
+
+// SetStreamingPublisher attaches a StreamingPublisher invoked best-effort
+// after Create persists a notification.
+func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
+	s.publisher = p
 }
 
 // Errors returned by Service.
@@ -119,6 +133,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 		Values: map[string]any{"data": string(payload)},
 	}).Err(); err != nil {
 		return nil, fmt.Errorf("notification xadd: %w", err)
+	}
+	if s.publisher != nil {
+		s.publisher.PublishNotification(in.NotifieeID, n)
 	}
 	return n, nil
 }

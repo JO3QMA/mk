@@ -26,12 +26,21 @@ var (
 	ErrFolderNotEmpty = errors.New("folder is not empty")
 )
 
+// StreamingPublisher receives drive file life-cycle events so that
+// WebSocket subscribers (the "drive" channel) can be pushed in real time.
+// パッケージ間の循環依存を避けるため interface で受け取る (実装は internal/
+// stream)。eventType は "fileCreated" / "fileUpdated" / "fileDeleted"。
+type StreamingPublisher interface {
+	PublishDriveEvent(userID, eventType string, file *model.DriveFile)
+}
+
 // Service manages drive files and folders.
 type Service struct {
 	fileRepo   repository.DriveFileRepository
 	folderRepo repository.DriveFolderRepository
 	storage    Storage
 	idGen      id.Generator
+	publisher  StreamingPublisher
 }
 
 // NewService constructs a DriveService.
@@ -47,6 +56,20 @@ func NewService(
 		storage:    storage,
 		idGen:      idGen,
 	}
+}
+
+// SetStreamingPublisher attaches a StreamingPublisher invoked best-effort
+// after Upload / Update / Delete succeed.
+func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
+	s.publisher = p
+}
+
+// publishEvent is a tiny best-effort wrapper around publisher.PublishDriveEvent.
+func (s *Service) publishEvent(userID, eventType string, f *model.DriveFile) {
+	if s.publisher == nil || userID == "" {
+		return
+	}
+	s.publisher.PublishDriveEvent(userID, eventType, f)
 }
 
 // UploadInput is the parameter set for Service.Upload.
@@ -120,6 +143,7 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		_ = s.storage.Delete(accessKey)
 		return nil, err
 	}
+	s.publishEvent(in.User.ID, "fileCreated", f)
 	return f, nil
 }
 
@@ -190,7 +214,12 @@ func (s *Service) Update(user *model.User, id string, in UpdateInput) (*model.Dr
 	if err := s.fileRepo.Update(f.ID, fields); err != nil {
 		return nil, err
 	}
-	return s.fileRepo.FindByID(f.ID)
+	updated, err := s.fileRepo.FindByID(f.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.publishEvent(user.ID, "fileUpdated", updated)
+	return updated, nil
 }
 
 // Delete removes a file from storage and the database.
@@ -204,7 +233,11 @@ func (s *Service) Delete(user *model.User, id string) error {
 			return err
 		}
 	}
-	return s.fileRepo.Delete(f)
+	if err := s.fileRepo.Delete(f); err != nil {
+		return err
+	}
+	s.publishEvent(user.ID, "fileDeleted", f)
+	return nil
 }
 
 // CreateFolder creates a new drive folder owned by user.

@@ -78,6 +78,26 @@ func TestService_CreateAndList(t *testing.T) {
 	assert.Equal(t, TypeReaction, out[0].Type)
 }
 
+// stubStreamingPublisher records every PublishNotification call.
+type stubStreamingPublisher struct {
+	hits []string // notifieeID
+}
+
+func (s *stubStreamingPublisher) PublishNotification(notifieeID string, _ *Notification) {
+	s.hits = append(s.hits, notifieeID)
+}
+
+func TestService_PublishesStreamingEvent(t *testing.T) {
+	svc := newTestSvc(t)
+	pub := &stubStreamingPublisher{}
+	svc.SetStreamingPublisher(pub)
+	_, err := svc.Create(context.Background(), CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: TypeFollow,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alice"}, pub.hits)
+}
+
 func TestService_ListLimitClampingDefaults(t *testing.T) {
 	svc := newTestSvc(t)
 	ctx := context.Background()

@@ -463,3 +463,96 @@ func TestDeleteFolder_HasChildrenError(t *testing.T) {
 	err := svc.DeleteFolder(&model.User{ID: "u1"}, "p")
 	assert.ErrorIs(t, err, stubError)
 }
+
+// --- Streaming publisher hooks (Step K-7) ----------------------------------
+
+// stubDriveStreamPublisher records every PublishDriveEvent call.
+type stubDriveStreamPublisher struct {
+	events []string // "<userID>:<eventType>"
+}
+
+func (s *stubDriveStreamPublisher) PublishDriveEvent(userID, eventType string, _ *model.DriveFile) {
+	s.events = append(s.events, userID+":"+eventType)
+}
+
+func TestUpload_PublishesStreamingEvent(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	pub := &stubDriveStreamPublisher{}
+	svc.SetStreamingPublisher(pub)
+	user := &model.User{ID: "u1"}
+	_, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("hi"), Name: "x.txt"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"u1:fileCreated"}, pub.events)
+}
+
+func TestUpdate_PublishesStreamingEvent(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	user := &model.User{ID: "u1"}
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("hi"), Name: "x.txt"})
+	require.NoError(t, err)
+
+	pub := &stubDriveStreamPublisher{}
+	svc.SetStreamingPublisher(pub)
+	name := "renamed.txt"
+	_, err = svc.Update(user, f.ID, drive.UpdateInput{Name: &name})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"u1:fileUpdated"}, pub.events)
+}
+
+func TestDelete_PublishesStreamingEvent(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	user := &model.User{ID: "u1"}
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("hi"), Name: "x.txt"})
+	require.NoError(t, err)
+
+	pub := &stubDriveStreamPublisher{}
+	svc.SetStreamingPublisher(pub)
+	require.NoError(t, svc.Delete(user, f.ID))
+	assert.Equal(t, []string{"u1:fileDeleted"}, pub.events)
+}
+
+// failingFindByIDRepo wraps the mock to make FindByID fail when called the
+// second time (after the initial create succeeds in Update). 1 回目の Show ()
+// は成功させ、2 回目 (Update 後の reload) で失敗させる。
+type failingFindByIDRepo struct {
+	*testutil.MockDriveFileRepository
+	calls int
+}
+
+func (r *failingFindByIDRepo) FindByID(id string) (*model.DriveFile, error) {
+	r.calls++
+	if r.calls > 1 {
+		return nil, stubError
+	}
+	return r.MockDriveFileRepository.FindByID(id)
+}
+
+func TestUpdate_FindByIDReloadError(t *testing.T) {
+	mock := testutil.NewMockDriveFileRepository()
+	uid := "u1"
+	mock.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid, Name: "x"}
+	repo := &failingFindByIDRepo{MockDriveFileRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := drive.NewService(repo, testutil.NewMockDriveFolderRepository(), drive.NewLocalStorage(t.TempDir(), ""), idGen)
+	name := "renamed"
+	_, err := svc.Update(&model.User{ID: "u1"}, "f1", drive.UpdateInput{Name: &name})
+	assert.ErrorIs(t, err, stubError)
+}
+
+// failingDeleteFileRepo causes fileRepo.Delete to fail.
+type failingDeleteFileRepo struct {
+	*testutil.MockDriveFileRepository
+}
+
+func (r *failingDeleteFileRepo) Delete(_ *model.DriveFile) error { return stubError }
+
+func TestDelete_FileRepoDeleteError(t *testing.T) {
+	mock := testutil.NewMockDriveFileRepository()
+	uid := "u1"
+	mock.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid, Name: "x"}
+	repo := &failingDeleteFileRepo{MockDriveFileRepository: mock}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := drive.NewService(repo, testutil.NewMockDriveFolderRepository(), drive.NewLocalStorage(t.TempDir(), ""), idGen)
+	err := svc.Delete(&model.User{ID: "u1"}, "f1")
+	assert.ErrorIs(t, err, stubError)
+}

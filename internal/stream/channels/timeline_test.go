@@ -1,0 +1,145 @@
+package channels
+
+import (
+	"encoding/json"
+	"sync"
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/stream"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// stubContext implements stream.ChannelContext for tests.
+type stubContext struct {
+	mu        sync.Mutex
+	id        string
+	user      any
+	subs      []string
+	unsubs    []string
+	sentType  []string
+	sentBody  []any
+	sendError error
+}
+
+func (s *stubContext) ID() string { return s.id }
+func (s *stubContext) User() any  { return s.user }
+func (s *stubContext) Send(msgType string, body any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sentType = append(s.sentType, msgType)
+	s.sentBody = append(s.sentBody, body)
+	return s.sendError
+}
+func (s *stubContext) Subscribe(topic string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subs = append(s.subs, topic)
+}
+func (s *stubContext) Unsubscribe(topic string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unsubs = append(s.unsubs, topic)
+}
+
+func newCtx(user any) *stubContext {
+	return &stubContext{id: "ch1", user: user}
+}
+
+// channels conformance: each constructor returns a stream.Channel.
+var (
+	_ stream.Channel = (*LocalTimelineChannel)(nil)
+	_ stream.Channel = (*GlobalTimelineChannel)(nil)
+	_ stream.Channel = (*HomeTimelineChannel)(nil)
+	_ stream.Channel = (*HybridTimelineChannel)(nil)
+	_ stream.Channel = (*NotificationsChannel)(nil)
+	_ stream.Channel = (*MainChannel)(nil)
+)
+
+func TestLocalTimeline_Lifecycle(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewLocalTimeline(ctx)
+	ch.Init(nil)
+	assert.Equal(t, []string{"localTimeline"}, ctx.subs)
+
+	ch.OnRedisEvent([]byte(`{"id":"n1"}`))
+	require.Len(t, ctx.sentType, 1)
+	assert.Equal(t, "note", ctx.sentType[0])
+	body, ok := ctx.sentBody[0].(json.RawMessage)
+	require.True(t, ok)
+	assert.Contains(t, string(body), "n1")
+
+	ch.OnClientMessage("ignored", json.RawMessage(`{}`))
+	ch.Dispose()
+	assert.Equal(t, []string{"localTimeline"}, ctx.unsubs)
+}
+
+func TestGlobalTimeline_Lifecycle(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewGlobalTimeline(ctx)
+	ch.Init(nil)
+	assert.Equal(t, []string{"globalTimeline"}, ctx.subs)
+
+	ch.OnRedisEvent([]byte(`{"id":"g1"}`))
+	require.Len(t, ctx.sentType, 1)
+
+	ch.OnClientMessage("ignored", json.RawMessage(`{}`))
+	ch.Dispose()
+	assert.Equal(t, []string{"globalTimeline"}, ctx.unsubs)
+}
+
+func TestHomeTimeline_AuthenticatedSubscribesPerUser(t *testing.T) {
+	ctx := newCtx(&model.User{ID: "alice"})
+	ch := NewHomeTimeline(ctx)
+	ch.Init(nil)
+	assert.Equal(t, []string{"homeTimeline:alice"}, ctx.subs)
+
+	ch.OnRedisEvent([]byte(`{"id":"h1"}`))
+	require.Len(t, ctx.sentType, 1)
+
+	ch.OnClientMessage("ignored", json.RawMessage(`{}`))
+	ch.Dispose()
+	assert.Equal(t, []string{"homeTimeline:alice"}, ctx.unsubs)
+}
+
+func TestHomeTimeline_AnonymousIsNoOp(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewHomeTimeline(ctx)
+	ch.Init(nil)
+	assert.Empty(t, ctx.subs)
+
+	ch.Dispose()
+	assert.Empty(t, ctx.unsubs)
+}
+
+func TestHomeTimeline_NilUserPointer(t *testing.T) {
+	ctx := newCtx((*model.User)(nil))
+	ch := NewHomeTimeline(ctx)
+	ch.Init(nil)
+	assert.Empty(t, ctx.subs)
+}
+
+func TestHybridTimeline_AuthenticatedSubscribesBoth(t *testing.T) {
+	ctx := newCtx(&model.User{ID: "alice"})
+	ch := NewHybridTimeline(ctx)
+	ch.Init(nil)
+	assert.ElementsMatch(t, []string{"localTimeline", "homeTimeline:alice"}, ctx.subs)
+
+	ch.OnRedisEvent([]byte(`{"id":"h1"}`))
+	require.Len(t, ctx.sentType, 1)
+
+	ch.OnClientMessage("ignored", json.RawMessage(`{}`))
+	ch.Dispose()
+	assert.ElementsMatch(t, []string{"localTimeline", "homeTimeline:alice"}, ctx.unsubs)
+}
+
+func TestHybridTimeline_AnonymousSubscribesLocalOnly(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewHybridTimeline(ctx)
+	ch.Init(nil)
+	assert.Equal(t, []string{"localTimeline"}, ctx.subs)
+
+	ch.Dispose()
+	assert.Equal(t, []string{"localTimeline"}, ctx.unsubs)
+}
