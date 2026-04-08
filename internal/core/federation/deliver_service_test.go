@@ -53,6 +53,36 @@ func installLocalSigner(t *testing.T, userRepo *testutil.MockUserRepository, key
 	}
 }
 
+// stubBlocker is a HostBlockChecker that returns true for the listed hosts.
+type stubBlocker struct {
+	blocked map[string]bool
+}
+
+func (s *stubBlocker) IsBlocked(host string) bool { return s.blocked[host] }
+
+func TestDeliverActivity_SkipsBlockedHosts(t *testing.T) {
+	svc, enq, userRepo, _, keypairRepo := newDeliverService(t)
+	installLocalSigner(t, userRepo, keypairRepo)
+	svc.SetHostBlockChecker(&stubBlocker{blocked: map[string]bool{"bad.example": true}})
+
+	require.NoError(t, svc.DeliverActivity("alice", []byte(`{}`), []string{
+		"https://bad.example/inbox",
+		"https://good.example/inbox",
+	}))
+	require.Len(t, enq.calls, 1)
+	assert.Equal(t, "https://good.example/inbox", enq.calls[0].Inbox)
+}
+
+func TestDeliverActivity_BlockedInboxBadURL(t *testing.T) {
+	svc, enq, userRepo, _, keypairRepo := newDeliverService(t)
+	installLocalSigner(t, userRepo, keypairRepo)
+	svc.SetHostBlockChecker(&stubBlocker{blocked: map[string]bool{}})
+
+	// 不正な URL は parse 失敗で blocked 判定対象外 → そのまま enqueue される
+	require.NoError(t, svc.DeliverActivity("alice", []byte(`{}`), []string{"://bad-url"}))
+	require.Len(t, enq.calls, 1)
+}
+
 func TestDeliverActivity_EnqueuesUniqueInboxes(t *testing.T) {
 	svc, enq, userRepo, _, keypairRepo := newDeliverService(t)
 	installLocalSigner(t, userRepo, keypairRepo)

@@ -3,6 +3,7 @@ package federation
 import (
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/model"
@@ -19,6 +20,13 @@ var (
 	ErrNoLocalSigner = errors.New("cannot sign on behalf of a remote user")
 )
 
+// HostBlockChecker reports whether a host is on the blocked list. The
+// federation package only depends on this minimal interface to avoid coupling
+// to core/instance directly.
+type HostBlockChecker interface {
+	IsBlocked(host string) bool
+}
+
 // DeliverService computes recipient inboxes and enqueues HTTP-signed delivery
 // jobs onto the asynq queue.
 //
@@ -30,6 +38,7 @@ type DeliverService struct {
 	followingRepo repository.FollowingRepository
 	keypairRepo   repository.UserKeypairRepository
 	urls          *activitypub.URLBuilder
+	hostBlocker   HostBlockChecker
 }
 
 // NewDeliverService constructs a DeliverService.
@@ -49,8 +58,15 @@ func NewDeliverService(
 	}
 }
 
+// SetHostBlockChecker attaches a HostBlockChecker. 配信時にこの checker が
+// 呼ばれ、ブロック対象ホストの inbox にはエンキューしない。
+func (s *DeliverService) SetHostBlockChecker(c HostBlockChecker) {
+	s.hostBlocker = c
+}
+
 // DeliverActivity enqueues a deliver job for each unique inbox in inboxes.
-// signerUserID は署名に使うローカルユーザー。
+// signerUserID は署名に使うローカルユーザー。ブロック対象ホストの inbox は
+// スキップする。
 func (s *DeliverService) DeliverActivity(signerUserID string, body []byte, inboxes []string) error {
 	if len(inboxes) == 0 {
 		return nil
@@ -67,6 +83,9 @@ func (s *DeliverService) DeliverActivity(signerUserID string, body []byte, inbox
 		if _, dup := seen[inbox]; dup {
 			continue
 		}
+		if s.isBlockedInbox(inbox) {
+			continue
+		}
 		seen[inbox] = struct{}{}
 		payload := queue.DeliverPayload{
 			Inbox:  inbox,
@@ -79,6 +98,19 @@ func (s *DeliverService) DeliverActivity(signerUserID string, body []byte, inbox
 		}
 	}
 	return nil
+}
+
+// isBlockedInbox returns true when the inbox URL points at a host the local
+// instance has blocked. blocker が未設定なら常に false。
+func (s *DeliverService) isBlockedInbox(inbox string) bool {
+	if s.hostBlocker == nil {
+		return false
+	}
+	u, err := url.Parse(inbox)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return s.hostBlocker.IsBlocked(u.Host)
 }
 
 // DeliverToFollowers enqueues delivery to all remote followers of signerUserID.

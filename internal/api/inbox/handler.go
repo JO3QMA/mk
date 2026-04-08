@@ -10,18 +10,33 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
+	"github.com/shiroha-a/mk/internal/model"
 )
+
+// HostBlockChecker reports whether a host is on the blocked list. Used by the
+// inbox handler to reject activities from blocked instances.
+type HostBlockChecker interface {
+	IsBlocked(host string) bool
+}
 
 // Handler accepts incoming activities and dispatches them to the federation
 // processor after verifying their HTTP signature.
 type Handler struct {
-	resolver  *federation.Resolver
-	processor *federation.Processor
+	resolver    *federation.Resolver
+	processor   *federation.Processor
+	hostBlocker HostBlockChecker
 }
 
 // NewHandler constructs a Handler.
 func NewHandler(resolver *federation.Resolver, processor *federation.Processor) *Handler {
 	return &Handler{resolver: resolver, processor: processor}
+}
+
+// SetHostBlockChecker attaches a HostBlockChecker. 設定されると、シグネチャ
+// 検証成功後の actor が属するホストが blocked リストに含まれる場合は 403 を
+// 返して以降の処理をスキップする。
+func (h *Handler) SetHostBlockChecker(c HostBlockChecker) {
+	h.hostBlocker = c
 }
 
 // Inbox handles POST /inbox and POST /users/:id/inbox.
@@ -39,9 +54,14 @@ func (h *Handler) Inbox(c echo.Context) error {
 		c.Request().Header.Set("Host", c.Request().Host)
 	}
 
-	if err := h.verifySignature(c.Request()); err != nil {
+	actor, err := h.verifySignature(c.Request())
+	if err != nil {
 		slog.Warn("inbox signature verification failed", "err", err)
 		return c.NoContent(http.StatusUnauthorized)
+	}
+
+	if h.isHostBlocked(actor) {
+		return c.NoContent(http.StatusForbidden)
 	}
 
 	if err := h.processor.Process(body); err != nil {
@@ -57,19 +77,32 @@ func (h *Handler) Inbox(c echo.Context) error {
 
 // verifySignature parses the Signature header, resolves the actor, and
 // validates the request signature against the actor's stored public key.
-func (h *Handler) verifySignature(req *http.Request) error {
+// 戻り値の actor は後続の host block チェックに再利用される。
+func (h *Handler) verifySignature(req *http.Request) (*model.User, error) {
 	parsed, err := activitypub.ParseSignatureHeader(req.Header.Get("Signature"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	actorURI := activitypub.ResolveKeyURL(parsed.KeyID)
 	actor, err := h.resolver.ResolveActor(actorURI)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	pem, err := h.resolver.PublicKeyForActor(actor.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return activitypub.VerifyRequest(req, pem)
+	if err := activitypub.VerifyRequest(req, pem); err != nil {
+		return nil, err
+	}
+	return actor, nil
+}
+
+// isHostBlocked reports whether the actor's host is on the blocked list.
+// hostBlocker が未設定 / actor がローカル / Host nil なら false。
+func (h *Handler) isHostBlocked(actor *model.User) bool {
+	if h.hostBlocker == nil || actor == nil || actor.Host == nil {
+		return false
+	}
+	return h.hostBlocker.IsBlocked(*actor.Host)
 }

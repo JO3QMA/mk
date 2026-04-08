@@ -646,6 +646,180 @@ func (m *MockPollVoteRepository) ListByNoteID(noteID string) ([]*model.PollVote,
 	return rows, nil
 }
 
+// MockInstanceRepository is a test double for repository.InstanceRepository.
+type MockInstanceRepository struct {
+	Instances map[string]*model.Instance // keyed by host
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockInstanceRepository creates an empty MockInstanceRepository.
+func NewMockInstanceRepository() *MockInstanceRepository {
+	return &MockInstanceRepository{Instances: make(map[string]*model.Instance)}
+}
+
+func (m *MockInstanceRepository) Create(i *model.Instance) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Instances[i.Host] = i
+	return nil
+}
+
+func (m *MockInstanceRepository) FindByHost(host string) (*model.Instance, error) {
+	i, ok := m.Instances[host]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return i, nil
+}
+
+func (m *MockInstanceRepository) UpdateFields(host string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	inst, ok := m.Instances[host]
+	if !ok {
+		return ErrNotFound
+	}
+	applyInstanceFields(inst, fields)
+	return nil
+}
+
+func (m *MockInstanceRepository) IncrementCount(host, column string, delta int) error {
+	inst, ok := m.Instances[host]
+	if !ok {
+		return ErrNotFound
+	}
+	switch column {
+	case "usersCount":
+		inst.UsersCount += delta
+	case "notesCount":
+		inst.NotesCount += delta
+	case "followingCount":
+		inst.FollowingCount += delta
+	case "followersCount":
+		inst.FollowersCount += delta
+	}
+	return nil
+}
+
+// List returns all stored instances filtered by the most common predicates.
+// 並び順は host 昇順 (テストの安定性のため)。
+func (m *MockInstanceRepository) List(filter model.InstanceListFilter) ([]*model.Instance, error) {
+	var rows []*model.Instance
+	for _, inst := range m.Instances {
+		if filter.Host != "" && !strings.Contains(inst.Host, filter.Host) {
+			continue
+		}
+		if filter.Suspended != nil {
+			suspended := inst.SuspensionState != model.SuspensionStateNone
+			if suspended != *filter.Suspended {
+				continue
+			}
+		}
+		if filter.NotResponding != nil && inst.IsNotResponding != *filter.NotResponding {
+			continue
+		}
+		if filter.Federating != nil && *filter.Federating &&
+			inst.FollowingCount == 0 && inst.FollowersCount == 0 {
+			continue
+		}
+		if filter.Subscribing != nil && *filter.Subscribing && inst.FollowersCount == 0 {
+			continue
+		}
+		if filter.Publishing != nil && *filter.Publishing && inst.FollowingCount == 0 {
+			continue
+		}
+		rows = append(rows, inst)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].Host > rows[j].Host {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if filter.Offset >= len(rows) {
+		return nil, nil
+	}
+	end := filter.Offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[filter.Offset:end], nil
+}
+
+func applyInstanceFields(i *model.Instance, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(*string); ok {
+				i.Name = s
+			}
+		case "description":
+			if s, ok := v.(*string); ok {
+				i.Description = s
+			}
+		case "softwareName":
+			if s, ok := v.(*string); ok {
+				i.SoftwareName = s
+			}
+		case "softwareVersion":
+			if s, ok := v.(*string); ok {
+				i.SoftwareVersion = s
+			}
+		case "iconUrl":
+			if s, ok := v.(*string); ok {
+				i.IconURL = s
+			}
+		case "faviconUrl":
+			if s, ok := v.(*string); ok {
+				i.FaviconURL = s
+			}
+		case "themeColor":
+			if s, ok := v.(*string); ok {
+				i.ThemeColor = s
+			}
+		case "openRegistrations":
+			if b, ok := v.(*bool); ok {
+				i.OpenRegistrations = b
+			}
+		case "infoUpdatedAt":
+			if t, ok := v.(*time.Time); ok {
+				i.InfoUpdatedAt = t
+			}
+		case "latestRequestReceivedAt":
+			if t, ok := v.(*time.Time); ok {
+				i.LatestRequestReceivedAt = t
+			}
+		case "isNotResponding":
+			if b, ok := v.(bool); ok {
+				i.IsNotResponding = b
+			}
+		case "notRespondingSince":
+			if t, ok := v.(*time.Time); ok {
+				i.NotRespondingSince = t
+			}
+		case "suspensionState":
+			if s, ok := v.(model.SuspensionState); ok {
+				i.SuspensionState = s
+			}
+		case "moderationNote":
+			if s, ok := v.(string); ok {
+				i.ModerationNote = s
+			}
+		}
+	}
+}
+
 // MockUserKeypairRepository is a test double for repository.UserKeypairRepository.
 type MockUserKeypairRepository struct {
 	Keypairs map[string]*model.UserKeypair // keyed by userID

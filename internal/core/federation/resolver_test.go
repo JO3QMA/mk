@@ -518,6 +518,67 @@ func TestResolver_SetClockNil(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// stubInstanceTracker collects host registrations for assertions.
+type stubInstanceTracker struct {
+	hosts []string
+}
+
+func (s *stubInstanceTracker) RegisterFromHost(host string) (*model.Instance, error) {
+	s.hosts = append(s.hosts, host)
+	return nil, nil
+}
+
+func TestResolveActor_NotifiesInstanceTrackerOnCreate(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	tracker := &stubInstanceTracker{}
+	r.SetInstanceTracker(tracker)
+
+	_, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+	require.Len(t, tracker.hosts, 1)
+	assert.Equal(t, "remote.example", tracker.hosts[0])
+}
+
+func TestResolveActor_NotifiesInstanceTrackerOnRefresh(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	host := "remote.example"
+	old := time.Now().Add(-48 * time.Hour)
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		Host:          &host,
+		LastFetchedAt: &old,
+	}
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	tracker := &stubInstanceTracker{}
+	r.SetInstanceTracker(tracker)
+
+	_, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	require.Len(t, tracker.hosts, 1)
+	assert.Equal(t, "remote.example", tracker.hosts[0])
+}
+
+func TestResolveActor_NoTrackerNoOp(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	r.SetInstanceTracker(nil)
+	_, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+}
+
 func TestResolveActor_FreshButCacheMissFetchError(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
 	noteRepo := testutil.NewMockNoteRepository()

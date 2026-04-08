@@ -24,6 +24,13 @@ type HTTPFetcher interface {
 	FetchObject(uri string) ([]byte, error)
 }
 
+// InstanceTracker is an interface used by Resolver to register hosts as soon
+// as a remote user is fetched. パッケージ間の循環依存を避けるため interface で
+// 受け取る (実装は core/instance.Service)。
+type InstanceTracker interface {
+	RegisterFromHost(host string) (*model.Instance, error)
+}
+
 // Errors returned by Resolver.
 var (
 	// ErrInvalidActor is returned when the fetched JSON cannot be parsed.
@@ -51,14 +58,15 @@ type publicKeyEntry struct {
 // にリフレッシュされる。永続化は後続フェーズで user_publickey 相当のテーブル
 // に移す予定。
 type Resolver struct {
-	userRepo repository.UserRepository
-	noteRepo repository.NoteRepository
-	urls     *activitypub.URLBuilder
-	fetcher  HTTPFetcher
-	idGen    id.Generator
-	keys     map[string]publicKeyEntry // userID → publicKey + fetchedAt
-	clock    func() time.Time          // テストで差し替える時計
-	actorTTL time.Duration             // アクター情報の最大寿命
+	userRepo        repository.UserRepository
+	noteRepo        repository.NoteRepository
+	urls            *activitypub.URLBuilder
+	fetcher         HTTPFetcher
+	idGen           id.Generator
+	keys            map[string]publicKeyEntry // userID → publicKey + fetchedAt
+	clock           func() time.Time          // テストで差し替える時計
+	actorTTL        time.Duration             // アクター情報の最大寿命
+	instanceTracker InstanceTracker           // optional: ホスト発見を通知
 }
 
 // NewResolver constructs a Resolver.
@@ -96,6 +104,13 @@ func (r *Resolver) SetActorTTL(d time.Duration) {
 	if d > 0 {
 		r.actorTTL = d
 	}
+}
+
+// SetInstanceTracker attaches an InstanceTracker that will be notified each
+// time a remote actor is fetched (created or refreshed). nil 渡しは無効化と
+// 同義。
+func (r *Resolver) SetInstanceTracker(t InstanceTracker) {
+	r.instanceTracker = t
 }
 
 // PublicKeyForActor returns the cached public key PEM for an actor ID. TTL を
@@ -160,7 +175,17 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		return nil, err
 	}
 	r.cachePublicKey(user.ID, actor.PublicKey.PublicKeyPEM)
+	r.notifyInstance(host)
 	return user, nil
+}
+
+// notifyInstance is a best-effort hook into the instance tracker. ベスト
+// エフォートのため、失敗してもエラーは伝搬しない。
+func (r *Resolver) notifyInstance(host string) {
+	if r.instanceTracker == nil || host == "" {
+		return
+	}
+	_, _ = r.instanceTracker.RegisterFromHost(host)
 }
 
 // shouldRefreshActor reports whether a cached user row is past its TTL and
@@ -203,6 +228,9 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)
 	_ = r.userRepo.UpdateUser(existing.ID, fields)
 	r.cachePublicKey(existing.ID, actor.PublicKey.PublicKeyPEM)
+	if existing.Host != nil {
+		r.notifyInstance(*existing.Host)
+	}
 }
 
 // fetchActor fetches and decodes a remote actor document.

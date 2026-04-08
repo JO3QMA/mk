@@ -40,3 +40,18 @@ type Instance struct {
 }
 
 func (Instance) TableName() string { return "instance" }
+
+// InstanceListFilter narrows down the list of instances returned by repository
+// queries. Zero values mean "no filtering on this field". Repository と service
+// の双方から参照されるため model パッケージに置く (循環依存の回避)。
+type InstanceListFilter struct {
+	Host          string // 部分一致 (case-insensitive ILIKE)
+	Suspended     *bool
+	NotResponding *bool
+	Federating    *bool // followingCount > 0 OR followersCount > 0
+	Subscribing   *bool // followersCount > 0 (向こうがフォローしてくる)
+	Publishing    *bool // followingCount > 0 (こちらからフォローしている)
+	SortBy        string
+	Limit         int
+	Offset        int
+}

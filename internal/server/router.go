@@ -8,6 +8,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
 	"github.com/shiroha-a/mk/internal/api/drive"
+	apifederation "github.com/shiroha-a/mk/internal/api/federation"
 	"github.com/shiroha-a/mk/internal/api/following"
 	"github.com/shiroha-a/mk/internal/api/i"
 	"github.com/shiroha-a/mk/internal/api/inbox"
@@ -23,6 +24,7 @@ import (
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	corefederation "github.com/shiroha-a/mk/internal/core/federation"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
+	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
@@ -60,6 +62,7 @@ func (s *Server) setupRoutes() {
 	driveFileRepo := repository.NewDriveFileRepository(s.db)
 	driveFolderRepo := repository.NewDriveFolderRepository(s.db)
 	keypairRepo := repository.NewUserKeypairRepository(s.db)
+	instanceRepo := repository.NewInstanceRepository(s.db)
 
 	// Core services
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
@@ -107,8 +110,13 @@ func (s *Server) setupRoutes() {
 	federationResolver := corefederation.NewResolver(userRepo, noteRepo, apURLs, apFetcher, idGen)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 
+	// Instance management (Phase 3 Step H)
+	instanceService := coreinstance.NewService(instanceRepo, metaRepo, idGen)
+	federationResolver.SetInstanceTracker(instanceService)
+
 	// AP delivery: DeliverService + フック登録 + asynq processor 登録
 	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
+	deliverService.SetHostBlockChecker(instanceService)
 	noteCreateService.SetFederationHook(corefederation.NewNoteDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo, noteRepo))
 	followingService.SetFederationHook(corefederation.NewFollowingDeliveryHook(deliverService, apRenderer, apURLs))
 	reactionService.SetFederationHook(corefederation.NewReactionDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo))
@@ -225,8 +233,14 @@ func (s *Server) setupRoutes() {
 
 	// Inbox endpoints
 	inboxHandler := inbox.NewHandler(federationResolver, federationProcessor)
+	inboxHandler.SetHostBlockChecker(instanceService)
 	s.echo.POST("/inbox", inboxHandler.Inbox)
 	s.echo.POST("/users/:id/inbox", inboxHandler.Inbox)
+
+	// Federation endpoints
+	federationHandler := apifederation.NewHandler(instanceService)
+	api.POST("/federation/instances", federationHandler.Instances)
+	api.POST("/federation/show-instance", federationHandler.ShowInstance)
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)
