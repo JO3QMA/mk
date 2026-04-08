@@ -90,6 +90,15 @@ type AntennaHook interface {
 	OnNoteCreated(note *model.Note, author *model.User)
 }
 
+// IndexHook is invoked after a note has been persisted (or deleted) so the
+// search subsystem can update its full-text index. 失敗してもメイン処理に
+// 影響させたくないため、戻り値は捨てる前提のベストエフォート呼び出し。
+// パッケージ間の循環依存を避けるため interface で受け取る (実装は core/search)。
+type IndexHook interface {
+	OnNoteCreated(note *model.Note)
+	OnNoteDeleted(note *model.Note)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
 	noteRepo         repository.NoteRepository
@@ -101,6 +110,7 @@ type CreateService struct {
 	federationHook   FederationHook
 	channelHook      ChannelHook
 	antennaHook      AntennaHook
+	indexHook        IndexHook
 }
 
 // NewCreateService creates a new CreateService.
@@ -148,6 +158,12 @@ func (s *CreateService) SetChannelHook(h ChannelHook) {
 // antenna service can fan the note out into matching antenna timelines.
 func (s *CreateService) SetAntennaHook(h AntennaHook) {
 	s.antennaHook = h
+}
+
+// SetIndexHook attaches an IndexHook invoked after note creation so the
+// search backend can index the new note.
+func (s *CreateService) SetIndexHook(h IndexHook) {
+	s.indexHook = h
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -303,6 +319,10 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// アンテナの fan-out もベストエフォート (失敗してもノート作成自体は成功)。
 	if s.antennaHook != nil {
 		s.antennaHook.OnNoteCreated(finalNote, in.User)
+	}
+	// 検索インデックスへの反映もベストエフォート。
+	if s.indexHook != nil {
+		s.indexHook.OnNoteCreated(finalNote)
 	}
 
 	return finalNote, nil

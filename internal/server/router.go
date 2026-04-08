@@ -42,6 +42,7 @@ import (
 	corepage "github.com/shiroha-a/mk/internal/core/page"
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
+	coresearch "github.com/shiroha-a/mk/internal/core/search"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -141,6 +142,13 @@ func (s *Server) setupRoutes() {
 	driveStorage := coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
 	driveService := coredrive.NewService(driveFileRepo, driveFolderRepo, driveStorage, idGen)
 
+	// Search (Phase 4.6)
+	// 設定に従って provider を選択する。Meilisearch が設定されていれば
+	// それを使い、そうでなければ SQL ILIKE フォールバック。
+	searchService := coresearch.NewService(buildSearchProvider(s.config, noteRepo, followingRepo, idGen))
+	noteCreateService.SetIndexHook(coresearch.NewNoteIndexHook(searchService))
+	noteDeleteService.SetIndexHook(coresearch.NewNoteIndexHook(searchService))
+
 	// ActivityPub
 	apURLs := activitypub.NewURLBuilder(s.config.URL)
 	apRenderer := activitypub.NewRenderer(apURLs)
@@ -180,7 +188,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/ping", metaHandler.Ping)
 
 	// Notes endpoints
-	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, idGen)
+	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())

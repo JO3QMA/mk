@@ -187,22 +187,6 @@ func TestQueryService_Conversation_ParentMissingTerminates(t *testing.T) {
 	assert.Empty(t, out)
 }
 
-func TestQueryService_Search_Empty(t *testing.T) {
-	svc, _, _ := newQueryService(t)
-	_, err := svc.Search(nil, "", "", "", 10)
-	require.ErrorIs(t, err, note.ErrEmptySearchQuery)
-}
-
-func TestQueryService_Search_Match(t *testing.T) {
-	svc, noteRepo, _ := newQueryService(t)
-	hello := "Hello World"
-	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "a", Visibility: model.NoteVisibilityPublic, Text: &hello}
-
-	out, err := svc.Search(nil, "Hello", "", "", 10)
-	require.NoError(t, err)
-	assert.Len(t, out, 1)
-}
-
 func TestQueryService_State_OK(t *testing.T) {
 	svc, noteRepo, _ := newQueryService(t)
 	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "a", Visibility: model.NoteVisibilityPublic}
@@ -248,13 +232,6 @@ func (f *failingRepoForList) ListChildrenOf(_, _, _ string, _ int) ([]*model.Not
 	return f.MockNoteRepository.ListChildrenOf("", "", "", 0)
 }
 
-func (f *failingRepoForList) Search(_, _, _ string, _ int) ([]*model.Note, error) {
-	if f.mode == "search" {
-		return nil, errors.New("boom")
-	}
-	return f.MockNoteRepository.Search("", "", "", 0)
-}
-
 func TestQueryService_ListRenotes_RepoError(t *testing.T) {
 	mock := testutil.NewMockNoteRepository()
 	mock.Notes["p"] = &model.Note{ID: "p", UserID: "a", Visibility: model.NoteVisibilityPublic}
@@ -279,13 +256,5 @@ func TestQueryService_ListChildren_RepoError(t *testing.T) {
 	repo := &failingRepoForList{MockNoteRepository: mock, mode: "children"}
 	svc := note.NewQueryService(repo, nil)
 	_, err := svc.ListChildren(nil, "p", "", "", 10)
-	require.Error(t, err)
-}
-
-func TestQueryService_Search_RepoError(t *testing.T) {
-	mock := testutil.NewMockNoteRepository()
-	repo := &failingRepoForList{MockNoteRepository: mock, mode: "search"}
-	svc := note.NewQueryService(repo, nil)
-	_, err := svc.Search(nil, "x", "", "", 10)
 	require.Error(t, err)
 }

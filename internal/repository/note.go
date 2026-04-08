@@ -22,7 +22,7 @@ type NoteRepository interface {
 	ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
-	Search(query string, untilID, sinceID string, limit int) ([]*model.Note, error)
+	SearchByFilter(filter model.NoteSearchFilter) ([]*model.Note, error)
 }
 
 type noteRepository struct {
@@ -194,21 +194,40 @@ func (r *noteRepository) ListChildrenOf(noteID string, untilID, sinceID string, 
 	return notes, nil
 }
 
-// Search returns notes whose text matches the given query (case-insensitive substring search).
-// Phase 4でMeilisearchへ置き換える前提のシンプルなDB検索。
-func (r *noteRepository) Search(query string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+// SearchByFilter returns notes matching the filter criteria.
+// 検索バックエンド (core/search.SQLLikeProvider) から呼ばれる。
+// テキストは ILIKE 部分一致、可視性は public/home に限定する。
+func (r *noteRepository) SearchByFilter(f model.NoteSearchFilter) ([]*model.Note, error) {
 	var notes []*model.Note
 	q := r.db.Preload("User").
-		Where("text ILIKE ?", "%"+query+"%").
+		Where("text ILIKE ?", "%"+f.Query+"%").
 		Where("visibility IN ?", []string{
 			string(model.NoteVisibilityPublic),
 			string(model.NoteVisibilityHome),
 		})
-	if untilID != "" {
-		q = q.Where("id < ?", untilID)
+	if f.UserID != "" {
+		q = q.Where("\"userId\" = ?", f.UserID)
 	}
-	if sinceID != "" {
-		q = q.Where("id > ?", sinceID)
+	if f.ChannelID != "" {
+		q = q.Where("\"channelId\" = ?", f.ChannelID)
+	}
+	if f.Host != "" {
+		// "." はローカル限定 (userHost が NULL のもの)
+		if f.Host == "." {
+			q = q.Where("\"userHost\" IS NULL")
+		} else {
+			q = q.Where("\"userHost\" = ?", f.Host)
+		}
+	}
+	if f.UntilID != "" {
+		q = q.Where("id < ?", f.UntilID)
+	}
+	if f.SinceID != "" {
+		q = q.Where("id > ?", f.SinceID)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 10
 	}
 	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err

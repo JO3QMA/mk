@@ -90,3 +90,24 @@ func TestDeleteService_FederationHookInvoked(t *testing.T) {
 	assert.True(t, hook.called)
 	assert.Equal(t, "n1", hook.note.ID)
 }
+
+// recordingDeleteIndexHook captures index hook calls so we can check the
+// search-index hookup wired into DeleteService.
+type recordingDeleteIndexHook struct {
+	deleted *model.Note
+}
+
+func (h *recordingDeleteIndexHook) OnNoteCreated(_ *model.Note) {}
+func (h *recordingDeleteIndexHook) OnNoteDeleted(n *model.Note) { h.deleted = n }
+
+func TestDeleteService_IndexHookInvoked(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "user1"}
+	svc := note.NewDeleteService(noteRepo)
+	hook := &recordingDeleteIndexHook{}
+	svc.SetIndexHook(hook)
+
+	require.NoError(t, svc.Delete(&model.User{ID: "user1"}, "n1"))
+	require.NotNil(t, hook.deleted)
+	assert.Equal(t, "n1", hook.deleted.ID)
+}

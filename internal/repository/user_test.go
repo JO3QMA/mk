@@ -24,6 +24,21 @@ func insertTestUser(t *testing.T, id, username string) *model.User {
 	return user
 }
 
+// insertRemoteTestUser inserts a user record marked as belonging to the
+// given remote host. SearchByFilter / federation 系のテスト用ヘルパ。
+func insertRemoteTestUser(t *testing.T, id, username, host string) *model.User {
+	t.Helper()
+	user := &model.User{
+		ID:                id,
+		Username:          username,
+		UsernameLower:     username,
+		Host:              &host,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, testDB.Create(user).Error)
+	return user
+}
+
 func TestUserRepository_CreateAndFindByURI(t *testing.T) {
 	repo := NewUserRepository(testDB)
 	uri := "https://remote.example/users/remote1"

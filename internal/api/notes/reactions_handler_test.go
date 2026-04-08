@@ -28,7 +28,7 @@ func newReactionHandler(t *testing.T) (*Handler, *testutil.MockNoteRepository, *
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
 	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, nil, idGen)
 	return h, noteRepo, reactRepo
 }
 
@@ -123,7 +123,7 @@ func TestReactionsCreate_Blocked(t *testing.T) {
 	querySvc := corenote.NewQueryService(noteRepo, nil)
 	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
 	reactSvc.SetBlockingChecker(&stubBlockingCheckerReact{})
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, nil, idGen)
 
 	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1"}`)
 	setAuthUser(c, &model.User{ID: "viewer"})
@@ -166,7 +166,7 @@ func TestReactionsCreate_RepoError(t *testing.T) {
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
 	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, nil, idGen)
 
 	c, rec := newJSONRequest(t, "/api/notes/reactions/create", `{"noteId":"n1"}`)
 	setAuthUser(c, &model.User{ID: "viewer"})
@@ -238,7 +238,7 @@ func TestReactionsDelete_RepoError(t *testing.T) {
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
 	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, nil, idGen)
 
 	c, rec := newJSONRequest(t, "/api/notes/reactions/delete", `{"noteId":"n1"}`)
 	setAuthUser(c, &model.User{ID: "viewer"})
@@ -312,7 +312,7 @@ func TestReactions_List_RepoError(t *testing.T) {
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
 	reactSvc := corereaction.NewService(noteRepo, reactRepo, emojiRepo, nil, idGen)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, reactSvc, nil, nil, idGen)
 
 	c, rec := newJSONRequest(t, "/api/notes/reactions", `{"noteId":"n1"}`)
 	require.NoError(t, h.Reactions(c))

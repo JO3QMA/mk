@@ -26,6 +26,7 @@ type DeleteFederationHook interface {
 type DeleteService struct {
 	noteRepo       repository.NoteRepository
 	federationHook DeleteFederationHook
+	indexHook      IndexHook
 }
 
 // NewDeleteService creates a new DeleteService.
@@ -36,6 +37,12 @@ func NewDeleteService(noteRepo repository.NoteRepository) *DeleteService {
 // SetFederationHook attaches a DeleteFederationHook invoked after Delete.
 func (s *DeleteService) SetFederationHook(h DeleteFederationHook) {
 	s.federationHook = h
+}
+
+// SetIndexHook attaches an IndexHook invoked after Delete so the search
+// backend can drop the note from its index.
+func (s *DeleteService) SetIndexHook(h IndexHook) {
+	s.indexHook = h
 }
 
 // Delete removes a note authored by the given user. It returns
@@ -60,6 +67,10 @@ func (s *DeleteService) Delete(user *model.User, noteID string) error {
 	}
 	if s.federationHook != nil {
 		s.federationHook.OnNoteDeleted(user, note)
+	}
+	// 検索インデックスの撤去もベストエフォート。失敗してもメインのDelete操作は成功扱い。
+	if s.indexHook != nil {
+		s.indexHook.OnNoteDeleted(note)
 	}
 	return nil
 }

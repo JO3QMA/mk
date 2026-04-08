@@ -1,8 +1,6 @@
 package note
 
 import (
-	"errors"
-
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
@@ -109,18 +107,6 @@ func (s *QueryService) Conversation(viewer *model.User, noteID string, limit int
 	return ancestors, nil
 }
 
-// Search performs a substring search over public/home notes.
-func (s *QueryService) Search(viewer *model.User, query, untilID, sinceID string, limit int) ([]*model.Note, error) {
-	if query == "" {
-		return nil, ErrEmptySearchQuery
-	}
-	rows, err := s.noteRepo.Search(query, untilID, sinceID, limit)
-	if err != nil {
-		return nil, err
-	}
-	return s.filterVisible(viewer, rows), nil
-}
-
 // State returns the note's user-specific state flags.
 // 現状はreaction/clip/notification系のスキーマが未実装のため、すべてfalseを返す。
 // noteの存在および閲覧可能性のみを検証する。
@@ -137,9 +123,6 @@ type NoteState struct {
 	IsMutedThread bool `json:"isMutedThread"`
 	IsWatching    bool `json:"isWatching"`
 }
-
-// ErrEmptySearchQuery is returned by Search when the query is blank.
-var ErrEmptySearchQuery = errors.New("search query is empty")
 
 // filterVisible drops notes the viewer cannot see.
 func (s *QueryService) filterVisible(viewer *model.User, rows []*model.Note) []*model.Note {

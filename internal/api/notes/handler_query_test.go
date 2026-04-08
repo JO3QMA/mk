@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
+	"github.com/shiroha-a/mk/internal/core/search"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -25,7 +26,8 @@ func newQueryHandler(t *testing.T) (*Handler, *testutil.MockNoteRepository) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	querySvc := corenote.NewQueryService(noteRepo, nil)
-	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, nil, idGen)
+	searchSvc := search.NewService(search.NewSQLLikeProvider(noteRepo, nil))
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, nil, searchSvc, idGen)
 	return h, noteRepo
 }
 
@@ -179,6 +181,50 @@ func TestSearch_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestSearch_NoSearchService verifies the early-out branch when search is
+// not configured at all (e.g. test handlers built without injecting one).
+func TestSearch_NoSearchService(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, nil, nil, idGen)
+
+	c, rec := newJSONRequest(t, "/api/notes/search", `{"query":"hello"}`)
+	require.NoError(t, h.Search(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// TestSearch_DateCursorsConvertToIDs exercises the sinceDate / untilDate
+// fallback path that runs the id generator.
+func TestSearch_DateCursorsConvertToIDs(t *testing.T) {
+	h, repo := newQueryHandler(t)
+	hello := "Hello world"
+	n := seedPublicNote(repo, "n1")
+	n.Text = &hello
+
+	body := `{"query":"hello","sinceDate":1700000000000,"untilDate":1900000000000}`
+	c, rec := newJSONRequest(t, "/api/notes/search", body)
+	require.NoError(t, h.Search(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestSearch_RichFilters covers the userId / channelId / host fields by
+// confirming a search with extra opts still completes successfully.
+func TestSearch_RichFilters(t *testing.T) {
+	h, repo := newQueryHandler(t)
+	hello := "Hello"
+	n := seedPublicNote(repo, "n1")
+	n.Text = &hello
+	n.UserID = "u1"
+	body := `{"query":"hello","userId":"u1","channelId":"","host":"."}`
+	c, rec := newJSONRequest(t, "/api/notes/search", body)
+	require.NoError(t, h.Search(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestState_OK(t *testing.T) {
 	h, repo := newQueryHandler(t)
 	seedPublicNote(repo, "n1")
@@ -257,7 +303,7 @@ func (f *failingQueryRepo) ListRepliesOf(_, _, _ string, _ int) ([]*model.Note, 
 func (f *failingQueryRepo) ListChildrenOf(_, _, _ string, _ int) ([]*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
-func (f *failingQueryRepo) Search(_, _, _ string, _ int) ([]*model.Note, error) {
+func (f *failingQueryRepo) SearchByFilter(_ model.NoteSearchFilter) ([]*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
 
@@ -271,7 +317,8 @@ func newFailingQueryHandler(t *testing.T) *Handler {
 	createSvc := corenote.NewCreateService(repo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(repo)
 	querySvc := corenote.NewQueryService(repo, nil)
-	return NewHandler(repo, createSvc, deleteSvc, querySvc, nil, nil, nil, idGen)
+	searchSvc := search.NewService(search.NewSQLLikeProvider(repo, nil))
+	return NewHandler(repo, createSvc, deleteSvc, querySvc, nil, nil, nil, searchSvc, idGen)
 }
 
 func TestRenotes_RepoError(t *testing.T) {
@@ -349,7 +396,7 @@ func TestShow_FallbackNoQueryService(t *testing.T) {
 	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	// queryServiceなしで初期化することでフォールバック経路を取る
-	h := NewHandler(noteRepo, createSvc, deleteSvc, nil, nil, nil, nil, idGen)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, nil, nil, nil, nil, nil, idGen)
 
 	seedPublicNote(noteRepo, "n1")
 	c, rec := newJSONRequest(t, "/api/notes/show", `{"noteId":"n1"}`)

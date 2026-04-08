@@ -301,7 +301,7 @@ func TestNoteRepository_QueryErrors(t *testing.T) {
 	_, err = repo.ListChildrenOf("a", "", "", 10)
 	assert.Error(t, err)
 
-	_, err = repo.Search("a", "", "", 10)
+	_, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "a", Limit: 10})
 	assert.Error(t, err)
 
 	err = repo.IncrementCount("a", "renoteCount", 1)
@@ -483,37 +483,82 @@ func TestNoteRepository_ListChildrenOf(t *testing.T) {
 	assert.Equal(t, "n_lc_c2", out[0].ID)
 }
 
-func TestNoteRepository_Search(t *testing.T) {
+func TestNoteRepository_SearchByFilter(t *testing.T) {
 	repo := NewNoteRepository(testDB)
-	user := insertTestUser(t, "u_se_1", "seuser")
-	defer cleanupUser(t, user.ID)
+	localUser := insertTestUser(t, "u_se_1", "seuser")
+	defer cleanupUser(t, localUser.ID)
+	otherLocal := insertTestUser(t, "u_se_2", "seuser2")
+	defer cleanupUser(t, otherLocal.ID)
+	remoteHost := "remote.example"
+	remoteUser := insertRemoteTestUser(t, "u_se_r", "seremote", remoteHost)
+	defer cleanupUser(t, remoteUser.ID)
 
+	channelID := "ch_se_1"
 	hello := "Hello world this is searchable"
 	other := "completely different"
 	private := "Hello but private"
+	helloChannel := "Hello in channel"
+	helloRemote := "Hello from a remote instance"
 
 	notes := []*model.Note{
-		{ID: "n_se_1", UserID: user.ID, Text: &hello, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
-		{ID: "n_se_2", UserID: user.ID, Text: &other, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
-		{ID: "n_se_3", UserID: user.ID, Text: &private, Visibility: model.NoteVisibilityFollowers, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_1", UserID: localUser.ID, Text: &hello, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_2", UserID: localUser.ID, Text: &other, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_3", UserID: localUser.ID, Text: &private, Visibility: model.NoteVisibilityFollowers, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_4", UserID: otherLocal.ID, Text: &hello, Visibility: model.NoteVisibilityHome, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_5", UserID: localUser.ID, Text: &helloChannel, Visibility: model.NoteVisibilityPublic, ChannelID: &channelID, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_se_6", UserID: remoteUser.ID, Text: &helloRemote, Visibility: model.NoteVisibilityPublic, UserHost: &remoteHost, Reactions: datatypes.JSON([]byte("{}"))},
 	}
 	for _, n := range notes {
 		require.NoError(t, repo.Create(n))
 		defer cleanupNote(t, n.ID)
 	}
 
-	out, err := repo.Search("hello", "", "", 10)
+	// 基本: 部分一致 + visibility フィルタ。followers (n_se_3) は除外。
+	out, err := repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", Limit: 10})
 	require.NoError(t, err)
-	// public/homeのみマッチ。followers可視性のn_se_3は含まれない
-	assert.Len(t, out, 1)
-	assert.Equal(t, "n_se_1", out[0].ID)
+	got := idsOf(out)
+	assert.ElementsMatch(t, []string{"n_se_1", "n_se_4", "n_se_5", "n_se_6"}, got)
 
-	// untilID/sinceIDの分岐を踏む
-	out, err = repo.Search("hello", "n_se_2", "", 10)
+	// userId フィルタ
+	out, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", UserID: localUser.ID, Limit: 10})
 	require.NoError(t, err)
-	assert.Len(t, out, 1)
+	assert.ElementsMatch(t, []string{"n_se_1", "n_se_5"}, idsOf(out))
 
-	out, err = repo.Search("hello", "", "a", 10)
+	// channelId フィルタ
+	out, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", ChannelID: channelID, Limit: 10})
 	require.NoError(t, err)
-	assert.Len(t, out, 1)
+	assert.ElementsMatch(t, []string{"n_se_5"}, idsOf(out))
+
+	// host フィルタ "." → ローカル限定
+	out, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", Host: ".", Limit: 10})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"n_se_1", "n_se_4", "n_se_5"}, idsOf(out))
+
+	// host フィルタ — 特定ホスト
+	out, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", Host: remoteHost, Limit: 10})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"n_se_6"}, idsOf(out))
+
+	// untilID / sinceID の分岐
+	out, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", UntilID: "n_se_4", Limit: 10})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"n_se_1"}, idsOf(out))
+
+	out, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", SinceID: "n_se_4", Limit: 10})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"n_se_5", "n_se_6"}, idsOf(out))
+
+	// Limit デフォルト (0 → 10) を踏むケース
+	out, err = repo.SearchByFilter(model.NoteSearchFilter{Query: "hello"})
+	require.NoError(t, err)
+	assert.Len(t, out, 4)
+}
+
+// idsOf is a tiny helper to extract note IDs for assertion comparisons.
+func idsOf(notes []*model.Note) []string {
+	out := make([]string, 0, len(notes))
+	for _, n := range notes {
+		out = append(out, n.ID)
+	}
+	return out
 }

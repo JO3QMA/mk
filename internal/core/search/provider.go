@@ -1,0 +1,59 @@
+// Package search provides a backend-agnostic search service for notes.
+//
+// The package wraps a Provider interface so that callers (HTTP handlers and
+// note hooks) do not have to know whether the underlying backend is SQL ILIKE,
+// Meilisearch, or a no-op stub.  Provider selection is performed once during
+// router setup based on configuration; callers always interact with the
+// generic Service facade.
+package search
+
+import (
+	"errors"
+
+	"github.com/shiroha-a/mk/internal/model"
+)
+
+// ErrEmptyQuery is returned by Service / Provider when the caller passes a
+// blank search query. ハンドラ層で 400 BadRequest に変換する想定。
+var ErrEmptyQuery = errors.New("search query is empty")
+
+// NoteDocument is the projection of a model.Note that gets stored in an
+// external full-text search index (typically Meilisearch). SQL backends do not
+// use this type — they query the live `note` table directly.
+type NoteDocument struct {
+	ID        string   `json:"id"`
+	CreatedAt int64    `json:"createdAt"` // unix milliseconds
+	UserID    string   `json:"userId"`
+	UserHost  *string  `json:"userHost,omitempty"`
+	ChannelID *string  `json:"channelId,omitempty"`
+	CW        *string  `json:"cw,omitempty"`
+	Text      *string  `json:"text,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+}
+
+// SearchOpts mirrors the optional filters supported by Misskey の searchNote.
+// 各文字列フィールドは zero value (空文字) でフィルタ無効を意味する。
+// Host == "." はローカル限定 (userHost IS NULL) を表す。
+type SearchOpts struct {
+	UserID    string
+	ChannelID string
+	Host      string
+}
+
+// Pagination wraps the keyset pagination parameters used by SearchNote.
+type Pagination struct {
+	UntilID string
+	SinceID string
+	Limit   int
+}
+
+// Provider is the contract every search backend must satisfy.
+//
+// IndexNote / UnindexNote are best-effort: callers (note hooks) should not
+// surface errors to end users — they exist mainly so that backends can log
+// failures and so that tests can verify the call paths.
+type Provider interface {
+	IndexNote(note *model.Note) error
+	UnindexNote(note *model.Note) error
+	SearchNote(viewer *model.User, query string, opts SearchOpts, page Pagination) ([]*model.Note, error)
+}

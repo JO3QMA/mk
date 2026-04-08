@@ -1,0 +1,236 @@
+package search
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/shiroha-a/mk/internal/core/note"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
+)
+
+// IndexScope determines which notes are sent to the Meilisearch index. The
+// shape mirrors Misskey 本家 の `meilisearch.scope` 設定。
+type IndexScope string
+
+const (
+	// IndexScopeLocal indexes only notes authored by local users (userHost
+	// is NULL).  This is the Misskey default.
+	IndexScopeLocal IndexScope = "local"
+	// IndexScopeGlobal indexes notes from any host, local or remote.
+	IndexScopeGlobal IndexScope = "global"
+)
+
+// MeilisearchProvider is the production search backend.  It pushes notes
+// into a Meilisearch index on creation, removes them on deletion, and
+// translates SearchNote calls into a Meilisearch search request followed by
+// a database round-trip to fetch the full note rows.
+type MeilisearchProvider struct {
+	index         MeilisearchIndex
+	noteRepo      repository.NoteRepository
+	followingRepo repository.FollowingRepository
+	idGen         id.Generator
+	scope         IndexScope
+}
+
+// NewMeilisearchProvider builds a Meilisearch-backed Provider.
+//
+// idGen は note ID から作成日時 (unix milli) を導出するために使う。
+// scope が空文字の場合は IndexScopeLocal にフォールバックする。
+func NewMeilisearchProvider(
+	index MeilisearchIndex,
+	noteRepo repository.NoteRepository,
+	followingRepo repository.FollowingRepository,
+	idGen id.Generator,
+	scope IndexScope,
+) *MeilisearchProvider {
+	if scope == "" {
+		scope = IndexScopeLocal
+	}
+	return &MeilisearchProvider{
+		index:         index,
+		noteRepo:      noteRepo,
+		followingRepo: followingRepo,
+		idGen:         idGen,
+		scope:         scope,
+	}
+}
+
+// ApplyDefaultSettings pushes our preferred index settings to Meilisearch.
+// router 起動時に best-effort で呼ぶ想定 (失敗しても起動は続行)。
+func (p *MeilisearchProvider) ApplyDefaultSettings() error {
+	return p.index.UpdateSettings(IndexSettings{
+		SearchableAttributes: []string{"text", "cw"},
+		SortableAttributes:   []string{"createdAt"},
+		FilterableAttributes: []string{"createdAt", "userId", "userHost", "channelId", "tags"},
+		TypoToleranceEnabled: false,
+		PaginationMaxHits:    10000,
+	})
+}
+
+// IndexNote pushes the note into the Meilisearch index when it satisfies the
+// configured visibility / scope rules.
+func (p *MeilisearchProvider) IndexNote(n *model.Note) error {
+	if n == nil {
+		return nil
+	}
+	if !p.shouldIndex(n) {
+		return nil
+	}
+	doc := NoteDocument{
+		ID:        n.ID,
+		CreatedAt: p.timestampOf(n),
+		UserID:    n.UserID,
+		UserHost:  n.UserHost,
+		ChannelID: n.ChannelID,
+		CW:        n.CW,
+		Text:      n.Text,
+		Tags:      []string(n.Tags),
+	}
+	return p.index.AddDocuments([]NoteDocument{doc})
+}
+
+// UnindexNote removes the note from the Meilisearch index.  We only attempt
+// removal for notes whose visibility could plausibly have been indexed
+// (public/home) — otherwise the call is a no-op.
+func (p *MeilisearchProvider) UnindexNote(n *model.Note) error {
+	if n == nil {
+		return nil
+	}
+	if n.Visibility != model.NoteVisibilityPublic && n.Visibility != model.NoteVisibilityHome {
+		return nil
+	}
+	return p.index.DeleteDocument(n.ID)
+}
+
+// SearchNote queries the index, then loads the matching notes from the
+// database and post-filters by viewer visibility.
+func (p *MeilisearchProvider) SearchNote(viewer *model.User, query string, opts SearchOpts, page Pagination) ([]*model.Note, error) {
+	if query == "" {
+		return nil, ErrEmptyQuery
+	}
+	limit := page.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	filter := p.buildFilter(opts, page)
+	res, err := p.index.Search(query, IndexSearchRequest{
+		Filter:               filter,
+		Sort:                 []string{"createdAt:desc"},
+		Limit:                int64(limit),
+		AttributesToRetrieve: []string{"id", "createdAt"},
+		MatchingStrategy:     "all",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil || len(res.Hits) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]string, 0, len(res.Hits))
+	for _, h := range res.Hits {
+		ids = append(ids, h.ID)
+	}
+	rows, err := p.noteRepo.FindManyByIDsWithUser(ids)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*model.Note, 0, len(rows))
+	for _, n := range rows {
+		if note.CanSeeNote(viewer, n, p.followingRepo) {
+			out = append(out, n)
+		}
+	}
+	// FindManyByIDsWithUser preserves the input order (= score order),
+	// but visibility filtering may leave gaps; sort id desc to match the
+	// SQL backend's ordering for consistency.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	return out, nil
+}
+
+// shouldIndex applies the visibility / scope / content rules.
+func (p *MeilisearchProvider) shouldIndex(n *model.Note) bool {
+	if n.Text == nil && n.CW == nil {
+		return false
+	}
+	if n.Visibility != model.NoteVisibilityPublic && n.Visibility != model.NoteVisibilityHome {
+		return false
+	}
+	switch p.scope {
+	case IndexScopeGlobal:
+		return true
+	case IndexScopeLocal:
+		return n.UserHost == nil
+	default:
+		// 未知のスコープ値はローカル限定にフォールバックする (安全側)。
+		return n.UserHost == nil
+	}
+}
+
+// timestampOf returns the unix-millisecond timestamp encoded in the note's
+// id, or 0 when the id generator does not support reverse parsing.
+func (p *MeilisearchProvider) timestampOf(n *model.Note) int64 {
+	if p.idGen == nil {
+		return 0
+	}
+	t, err := p.idGen.ParseTime(n.ID)
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+// buildFilter renders a Meilisearch filter expression from the search opts
+// and pagination cursors.  Returns an empty string when no filters apply.
+func (p *MeilisearchProvider) buildFilter(opts SearchOpts, page Pagination) string {
+	var clauses []string
+	if t := p.timestampOfID(page.UntilID); t != 0 {
+		clauses = append(clauses, fmt.Sprintf("(createdAt < %d)", t))
+	}
+	if t := p.timestampOfID(page.SinceID); t != 0 {
+		clauses = append(clauses, fmt.Sprintf("(createdAt > %d)", t))
+	}
+	if opts.UserID != "" {
+		clauses = append(clauses, fmt.Sprintf("(userId = %s)", quoteValue(opts.UserID)))
+	}
+	if opts.ChannelID != "" {
+		clauses = append(clauses, fmt.Sprintf("(channelId = %s)", quoteValue(opts.ChannelID)))
+	}
+	if opts.Host != "" {
+		if opts.Host == "." {
+			clauses = append(clauses, "(userHost IS NULL)")
+		} else {
+			clauses = append(clauses, fmt.Sprintf("(userHost = %s)", quoteValue(opts.Host)))
+		}
+	}
+	if len(clauses) == 0 {
+		return ""
+	}
+	return strings.Join(clauses, " AND ")
+}
+
+// timestampOfID parses an id back into its unix-millisecond timestamp.
+// Returns 0 when the id is empty or cannot be parsed.
+func (p *MeilisearchProvider) timestampOfID(id string) int64 {
+	if id == "" || p.idGen == nil {
+		return 0
+	}
+	t, err := p.idGen.ParseTime(id)
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+// quoteValue escapes a string value for use inside a Meilisearch filter
+// expression. We rely on user / channel / host ids being limited to a safe
+// alphabet but still single-quote them and double up any embedded quotes
+// defensively.
+func quoteValue(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+}

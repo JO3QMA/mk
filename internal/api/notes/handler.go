@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/core/poll"
 	"github.com/shiroha-a/mk/internal/core/reaction"
+	"github.com/shiroha-a/mk/internal/core/search"
 	"github.com/shiroha-a/mk/internal/core/timeline"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -26,12 +27,14 @@ type Handler struct {
 	timelineService *timeline.Service
 	reactionService *reaction.Service
 	pollService     *poll.Service
+	searchService   *search.Service
 	idGen           id.Generator
 }
 
 // NewHandler creates a new notes Handler.
-// queryService/timelineService/reactionService/pollServiceがnilの場合は
-// 対応するエンドポイントは利用不可となる (テストで一部だけ初期化する用途を許容する)。
+// queryService/timelineService/reactionService/pollService/searchService が
+// nil の場合、それぞれの依存に対応するエンドポイントは利用不可となる
+// (テストで一部だけ初期化する用途を許容する)。
 func NewHandler(
 	noteRepo repository.NoteRepository,
 	createService *note.CreateService,
@@ -40,6 +43,7 @@ func NewHandler(
 	timelineService *timeline.Service,
 	reactionService *reaction.Service,
 	pollService *poll.Service,
+	searchService *search.Service,
 	idGen id.Generator,
 ) *Handler {
 	return &Handler{
@@ -50,6 +54,7 @@ func NewHandler(
 		timelineService: timelineService,
 		reactionService: reactionService,
 		pollService:     pollService,
+		searchService:   searchService,
 		idGen:           idGen,
 	}
 }
@@ -275,11 +280,20 @@ func (h *Handler) serveList(c echo.Context, fn func(*model.User, listRequest) ([
 }
 
 // SearchRequest is the request body for notes/search.
+//
+// Misskey 本家と互換のフィールド構成。`sinceDate` / `untilDate` (unix milli)
+// が指定されたときは ID generator で対応する note ID に変換し、`sinceId` /
+// `untilId` のフォールバックとして使う。`host == "."` はローカル限定検索。
 type SearchRequest struct {
-	Query   string `json:"query"`
-	Limit   int    `json:"limit"`
-	SinceID string `json:"sinceId"`
-	UntilID string `json:"untilId"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit"`
+	SinceID   string `json:"sinceId"`
+	UntilID   string `json:"untilId"`
+	SinceDate *int64 `json:"sinceDate"`
+	UntilDate *int64 `json:"untilDate"`
+	UserID    string `json:"userId"`
+	ChannelID string `json:"channelId"`
+	Host      string `json:"host"`
 }
 
 // Search handles POST /api/notes/search.
@@ -288,6 +302,9 @@ func (h *Handler) Search(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return invalidParam(c)
 	}
+	if h.searchService == nil {
+		return internalError(c)
+	}
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
@@ -295,12 +312,34 @@ func (h *Handler) Search(c echo.Context) error {
 		req.Limit = 100
 	}
 
+	untilID := req.UntilID
+	if untilID == "" && req.UntilDate != nil && h.idGen != nil {
+		untilID = h.idGen.Generate(time.UnixMilli(*req.UntilDate))
+	}
+	sinceID := req.SinceID
+	if sinceID == "" && req.SinceDate != nil && h.idGen != nil {
+		sinceID = h.idGen.Generate(time.UnixMilli(*req.SinceDate))
+	}
+
 	viewer := middleware.GetUser(c)
-	notes, err := h.queryService.Search(viewer, req.Query, req.UntilID, req.SinceID, req.Limit)
+	notes, err := h.searchService.SearchNote(
+		viewer,
+		req.Query,
+		search.SearchOpts{
+			UserID:    req.UserID,
+			ChannelID: req.ChannelID,
+			Host:      req.Host,
+		},
+		search.Pagination{
+			UntilID: untilID,
+			SinceID: sinceID,
+			Limit:   req.Limit,
+		},
+	)
 	if err != nil {
 		// 空クエリは invalidParam として返す。
 		// それ以外のエラー (DB障害など) はinternalErrorで返す。
-		if errors.Is(err, note.ErrEmptySearchQuery) {
+		if errors.Is(err, search.ErrEmptyQuery) {
 			return invalidParam(c)
 		}
 		return internalError(c)

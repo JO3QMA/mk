@@ -351,9 +351,14 @@ func (m *MockNoteRepository) ListChildrenOf(noteID string, untilID, sinceID stri
 	}, untilID, sinceID, limit), nil
 }
 
-// Search returns public/home notes whose text contains query (case-insensitive).
-func (m *MockNoteRepository) Search(query string, untilID, sinceID string, limit int) ([]*model.Note, error) {
-	q := strings.ToLower(query)
+// SearchByFilter returns public/home notes matching the filter (text ILIKE +
+// optional userId / channelId / host)。`Host == "."` はローカル限定。
+func (m *MockNoteRepository) SearchByFilter(f model.NoteSearchFilter) ([]*model.Note, error) {
+	q := strings.ToLower(f.Query)
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 10
+	}
 	return m.listFiltered(func(n *model.Note) bool {
 		if n.Visibility != model.NoteVisibilityPublic && n.Visibility != model.NoteVisibilityHome {
 			return false
@@ -361,8 +366,30 @@ func (m *MockNoteRepository) Search(query string, untilID, sinceID string, limit
 		if n.Text == nil {
 			return false
 		}
-		return strings.Contains(strings.ToLower(*n.Text), q)
-	}, untilID, sinceID, limit), nil
+		if !strings.Contains(strings.ToLower(*n.Text), q) {
+			return false
+		}
+		if f.UserID != "" && n.UserID != f.UserID {
+			return false
+		}
+		if f.ChannelID != "" {
+			if n.ChannelID == nil || *n.ChannelID != f.ChannelID {
+				return false
+			}
+		}
+		if f.Host != "" {
+			if f.Host == "." {
+				if n.UserHost != nil {
+					return false
+				}
+			} else {
+				if n.UserHost == nil || *n.UserHost != f.Host {
+					return false
+				}
+			}
+		}
+		return true
+	}, f.UntilID, f.SinceID, limit), nil
 }
 
 // listFiltered iterates the in-memory notes, applies filter, sorts by id desc,

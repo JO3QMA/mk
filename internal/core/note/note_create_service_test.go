@@ -557,6 +557,29 @@ func TestCreateService_AntennaHookInvoked(t *testing.T) {
 	assert.Equal(t, created.ID, hook.note.ID)
 }
 
+// recordingIndexHook records calls into note.IndexHook so the create / delete
+// services の連携経路を検証できる。
+type recordingIndexHook struct {
+	created *model.Note
+	deleted *model.Note
+}
+
+func (h *recordingIndexHook) OnNoteCreated(n *model.Note) { h.created = n }
+func (h *recordingIndexHook) OnNoteDeleted(n *model.Note) { h.deleted = n }
+
+func TestCreateService_IndexHookInvoked(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	hook := &recordingIndexHook{}
+	svc.SetIndexHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{User: user, Text: &text})
+	require.NoError(t, err)
+	require.NotNil(t, hook.created)
+	assert.Equal(t, created.ID, hook.created.ID)
+}
+
 func TestIsPureRenote_ModelNote(t *testing.T) {
 	renoteID := "r1"
 	text := "x"

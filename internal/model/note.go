@@ -60,3 +60,19 @@ type Note struct {
 }
 
 func (Note) TableName() string { return "note" }
+
+// NoteSearchFilter narrows down the result of NoteRepository.SearchByFilter.
+// repository / core/search / testutil の三方から参照されるため model パッケージ
+// に置く (循環依存の回避)。
+//
+// 各文字列フィールドは zero value (空文字) でフィルタ無効を意味する。
+// Host == "." はローカル限定 (userHost IS NULL) を表す。
+type NoteSearchFilter struct {
+	Query     string
+	UserID    string
+	ChannelID string
+	Host      string
+	UntilID   string
+	SinceID   string
+	Limit     int
+}
