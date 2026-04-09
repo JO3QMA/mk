@@ -275,7 +275,9 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	resp := map[string]any{
+		// Basic
 		"maintainerName": m.MaintainerName, "maintainerEmail": m.MaintainerEmail,
+		"version": "2026.3.2", "uri": "http://localhost:3000",
 		"name": m.Name, "shortName": m.ShortName, "description": m.Description,
 		"langs": m.Langs, "pinnedUsers": m.PinnedUsers,
 		"hiddenTags": m.HiddenTags, "blockedHosts": m.BlockedHosts,
@@ -283,16 +285,28 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 		"prohibitedWords": m.ProhibitedWords,
 		"themeColor":      m.ThemeColor, "bannerUrl": m.BannerURL,
 		"backgroundImageUrl": m.BackgroundImageURL, "logoImageUrl": m.LogoImageURL,
-		"iconUrl": m.IconURL, "serverRules": m.ServerRules,
-		"disableRegistration":       m.DisableRegistration,
-		"emailRequiredForSignup":    m.EmailRequiredForSignup,
+		"iconUrl":       m.IconURL,
+		"app192IconUrl": nil, "app512IconUrl": nil,
+		"defaultLightTheme": nil, "defaultDarkTheme": nil,
+		"disableRegistration":    m.DisableRegistration,
+		"emailRequiredForSignup": m.EmailRequiredForSignup,
+		// Cache
 		"cacheRemoteFiles":          m.CacheRemoteFiles,
 		"cacheRemoteSensitiveFiles": m.CacheRemoteSensitiveFiles,
-		"enableHcaptcha":            m.EnableHcaptcha, "hcaptchaSiteKey": m.HcaptchaSiteKey,
-		"enableRecaptcha": m.EnableRecaptcha, "recaptchaSiteKey": m.RecaptchaSiteKey,
-		"enableTurnstile": m.EnableTurnstile, "turnstileSiteKey": m.TurnstileSiteKey,
-		"enableEmail": m.EnableEmail, "smtpHost": m.SmtpHost, "smtpPort": m.SmtpPort,
-		"enableServiceWorker": m.EnableServiceWorker, "swPublicKey": m.SwPublicKey,
+		// Captcha
+		"enableHcaptcha": m.EnableHcaptcha, "hcaptchaSiteKey": m.HcaptchaSiteKey, "hcaptchaSecretKey": m.HcaptchaSecretKey,
+		"enableRecaptcha": m.EnableRecaptcha, "recaptchaSiteKey": m.RecaptchaSiteKey, "recaptchaSecretKey": m.RecaptchaSecretKey,
+		"enableTurnstile": m.EnableTurnstile, "turnstileSiteKey": m.TurnstileSiteKey, "turnstileSecretKey": m.TurnstileSecretKey,
+		"enableMcaptcha": false, "mcaptchaSiteKey": nil, "mcaptchaSecretKey": nil, "mcaptchaInstanceUrl": nil,
+		"enableTestcaptcha": false,
+		// Email
+		"enableEmail": m.EnableEmail, "email": m.Email,
+		"smtpHost": m.SmtpHost, "smtpPort": m.SmtpPort,
+		"smtpUser": m.SmtpUser, "smtpPass": m.SmtpPass, "smtpSecure": m.SmtpSecure,
+		// Service Worker
+		"enableServiceWorker": m.EnableServiceWorker,
+		"swPublickey":         m.SwPublicKey, "swPrivateKey": m.SwPrivateKey,
+		// Object Storage
 		"useObjectStorage":              m.UseObjectStorage,
 		"objectStorageBucket":           m.ObjectStorageBucket,
 		"objectStoragePrefix":           m.ObjectStoragePrefix,
@@ -304,15 +318,76 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 		"objectStorageUseProxy":         m.ObjectStorageUseProxy,
 		"objectStorageSetPublicRead":    m.ObjectStorageSetPublicRead,
 		"objectStorageS3ForcePathStyle": m.ObjectStorageS3ForcePathStyle,
-		"tosUrl":                        m.TermsOfServiceURL, "repositoryUrl": m.RepositoryURL,
+		"objectStorageAccessKey":        m.ObjectStorageAccessKey,
+		"objectStorageSecretKey":        m.ObjectStorageSecretKey,
+		// URLs
+		"tosUrl": m.TermsOfServiceURL, "repositoryUrl": m.RepositoryURL,
 		"feedbackUrl": m.FeedbackURL, "impressumUrl": m.ImpressumURL,
-		"privacyPolicyUrl":               m.PrivacyPolicyURL,
-		"federation":                     m.Federation,
+		"privacyPolicyUrl": m.PrivacyPolicyURL, "inquiryUrl": nil,
+		// Federation
+		"federation": m.Federation, "federationHosts": m.FederationHosts,
 		"enableFanoutTimeline":           m.EnableFanoutTimeline,
 		"enableFanoutTimelineDbFallback": m.EnableFanoutTimelineDbFallback,
 		"proxyRemoteFiles":               m.ProxyRemoteFiles,
 		"signToActivityPubGet":           m.SignToActivityPubGet,
-		"policies":                       m.Policies,
+		// Policies
+		"policies": m.Policies,
+		// Moderation
+		"sensitiveMediaDetection":                "none",
+		"sensitiveMediaDetectionSensitivity":     "medium",
+		"setSensitiveFlagAutomatically":          false,
+		"enableSensitiveMediaDetectionForVideos": false,
+		"enableIpLogging":                        false,
+		"enableActiveEmailValidation":            true,
+		// Feature flags
+		"enableChartsForRemoteUser":         true,
+		"enableChartsForFederatedInstances": true,
+		"enableStatsForFederatedInstances":  true,
+		"enableServerMachineStats":          false,
+		"enableIdenticonGeneration":         true,
+		"enableReactionsBuffering":          false,
+		"enableRemoteNotesCleaning":         false,
+		"enableVerifymailApi":               false,
+		"enableTruemailApi":                 false,
+		"showRoleBadgesOfRemoteUsers":       false,
+		"singleUserMode":                    false,
+		"allowExternalApRedirect":           true,
+		// Images
+		"serverErrorImageUrl": nil, "notFoundImageUrl": nil,
+		"infoImageUrl": nil, "mascotImageUrl": nil,
+		// Misc
+		"translatorAvailable": false,
+		"notesPerOneAd":       0,
+		"clientOptions":       map[string]any{},
+		"deeplAuthKey":        nil, "deeplIsPro": false,
+		"googleAnalyticsMeasurementId": nil,
+		"manifestJsonOverride":         "{}",
+		"bannedEmailDomains":           []string{},
+		"mediaSilencedHosts":           []string{},
+		"preservedUsernames":           m.PinnedUsers, // 暫定
+		"prohibitedWordsForNameOfUser": []string{},
+		"deliverSuspendedSoftware":     []string{},
+		"verifymailAuthKey":            nil, "truemailAuthKey": nil, "truemailInstance": nil,
+		"proxyAccountId": nil,
+		// URL Preview
+		"urlPreviewEnabled":              true,
+		"urlPreviewTimeout":              10000,
+		"urlPreviewMaximumContentLength": 10485760,
+		"urlPreviewRequireContentLength": false,
+		"urlPreviewUserAgent":            nil,
+		"urlPreviewSummaryProxyUrl":      nil,
+		"urlPreviewAllowRedirect":        true,
+		"summalyProxy":                   nil,
+		// Timeline cache
+		"perLocalUserUserTimelineCacheMax":  300,
+		"perRemoteUserUserTimelineCacheMax": 100,
+		"perUserHomeTimelineCacheMax":       300,
+		"perUserListTimelineCacheMax":       300,
+		// Remote notes cleaning
+		"remoteNotesCleaningExpiryDaysForEachNotes":         90,
+		"remoteNotesCleaningMaxProcessingDurationInMinutes": 60,
+		// Visitor
+		"ugcVisibilityForVisitor": "local",
 	}
 	return c.JSON(http.StatusOK, resp)
 }
