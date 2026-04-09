@@ -304,6 +304,13 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/notes", usersHandler.Notes)
 	api.POST("/users/followers", usersHandler.Followers)
 	api.POST("/users/following", usersHandler.Following)
+	api.POST("/users/relation", usersHandler.Relation, middleware.RequireAuth())
+	api.POST("/users/report-abuse", usersHandler.ReportAbuse, middleware.RequireAuth())
+	api.POST("/users/reactions", usersHandler.Reactions)
+	api.POST("/users/featured-notes", usersHandler.FeaturedNotes)
+	api.POST("/users/search-by-username-and-host", usersHandler.SearchByUsernameAndHost)
+	api.POST("/users/update-memo", usersHandler.UpdateMemo, middleware.RequireAuth())
+	usersHandler.SetAbuseRepo(repository.NewAbuseReportRepository(s.db))
 
 	// Account endpoints
 	registryRepo := repository.NewRegistryRepository(s.db)

@@ -27,6 +27,7 @@ type Handler struct {
 	noteRepo         repository.NoteRepository
 	idGen            id.Generator
 	chartHook        ChartHook
+	abuseRepo        repository.AbuseReportRepository
 }
 
 // NewHandler creates a new users Handler.
