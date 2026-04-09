@@ -115,6 +115,48 @@ func (m *MockUserRepository) UpdateUser(userID string, fields map[string]any) er
 	return nil
 }
 
+func (m *MockUserRepository) CreateProfile(profile *model.UserProfile) error {
+	m.Profiles[profile.UserID] = profile
+	return nil
+}
+
+func (m *MockUserRepository) ListUsers(filter model.UserListFilter) ([]*model.User, error) {
+	var result []*model.User
+	for _, u := range m.Users {
+		switch filter.Origin {
+		case "local":
+			if u.Host != nil {
+				continue
+			}
+		case "remote":
+			if u.Host == nil {
+				continue
+			}
+		}
+		switch filter.State {
+		case "suspended":
+			if !u.IsSuspended {
+				continue
+			}
+		case "alive":
+			if u.IsSuspended {
+				continue
+			}
+		}
+		result = append(result, u)
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	offset := filter.Offset
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
 func (m *MockUserRepository) UpdateProfile(userID string, fields map[string]any) error {
 	p, ok := m.Profiles[userID]
 	if !ok {
@@ -575,6 +617,18 @@ func (m *MockMetaRepository) Fetch() (*model.Meta, error) {
 		return nil, ErrNotFound
 	}
 	return m.Meta, nil
+}
+
+func (m *MockMetaRepository) Update(fields map[string]any) error {
+	if m.Meta == nil {
+		m.Meta = &model.Meta{ID: "x"}
+	}
+	if v, ok := fields["rootUserId"]; ok {
+		if s, ok := v.(string); ok {
+			m.Meta.RootUserID = &s
+		}
+	}
+	return nil
 }
 
 // MockAccessTokenRepository is a test double for repository.AccessTokenRepository.

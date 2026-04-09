@@ -18,6 +18,8 @@ type UserRepository interface {
 	SearchByUsername(query string, limit, offset int) ([]*model.User, error)
 	UpdateUser(userID string, fields map[string]any) error
 	UpdateProfile(userID string, fields map[string]any) error
+	CreateProfile(profile *model.UserProfile) error
+	ListUsers(filter model.UserListFilter) ([]*model.User, error)
 }
 
 type userRepository struct {
@@ -120,4 +122,63 @@ func (r *userRepository) UpdateProfile(userID string, fields map[string]any) err
 		return nil
 	}
 	return r.db.Model(&model.UserProfile{}).Where("\"userId\" = ?", userID).Updates(fields).Error
+}
+
+// CreateProfile inserts a new user_profile row.
+func (r *userRepository) CreateProfile(profile *model.UserProfile) error {
+	return r.db.Create(profile).Error
+}
+
+// ListUsers returns users matching the filter.
+func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, error) {
+	q := r.db.Model(&model.User{})
+
+	switch filter.Origin {
+	case "local":
+		q = q.Where("host IS NULL")
+	case "remote":
+		q = q.Where("host IS NOT NULL")
+	}
+
+	switch filter.State {
+	case "suspended":
+		q = q.Where("\"isSuspended\" = true")
+	case "alive":
+		q = q.Where("\"isSuspended\" = false")
+	}
+
+	switch filter.Sort {
+	case "+createdAt":
+		q = q.Order("id ASC")
+	case "-createdAt":
+		q = q.Order("id DESC")
+	case "+updatedAt":
+		q = q.Order("\"updatedAt\" ASC NULLS LAST")
+	case "-updatedAt":
+		q = q.Order("\"updatedAt\" DESC NULLS LAST")
+	case "+followersCount":
+		q = q.Order("\"followersCount\" ASC")
+	case "-followersCount":
+		q = q.Order("\"followersCount\" DESC")
+	default:
+		q = q.Order("id DESC")
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit)
+	if filter.Offset > 0 {
+		q = q.Offset(filter.Offset)
+	}
+
+	var users []*model.User
+	if err := q.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
 }

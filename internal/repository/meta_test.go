@@ -33,3 +33,18 @@ func TestMetaRepository_Fetch_NotFound(t *testing.T) {
 	_, err := repo.Fetch()
 	assert.Error(t, err)
 }
+
+func TestMetaRepository_Update(t *testing.T) {
+	repo := NewMetaRepository(testDB)
+
+	meta := &model.Meta{ID: "m_u_1"}
+	require.NoError(t, testDB.Create(meta).Error)
+	defer testDB.Exec(`DELETE FROM "meta" WHERE id = ?`, meta.ID)
+
+	newName := "Updated"
+	require.NoError(t, repo.Update(map[string]any{"name": newName}))
+
+	found, err := repo.Fetch()
+	require.NoError(t, err)
+	assert.Equal(t, &newName, found.Name)
+}

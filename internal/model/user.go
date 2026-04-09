@@ -64,3 +64,12 @@ func (User) TableName() string { return "user" }
 func (u *User) IsLocal() bool {
 	return u.Host == nil || *u.Host == ""
 }
+
+// UserListFilter holds filter/sort/pagination for admin/show-users.
+type UserListFilter struct {
+	State  string // "all", "admin", "moderator", "suspended", "alive"
+	Origin string // "local", "remote", "combined"
+	Sort   string // "+createdAt", "-createdAt", "+updatedAt", "-updatedAt", etc.
+	Limit  int
+	Offset int
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
+	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
 	"github.com/shiroha-a/mk/internal/api/antennas"
 	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
@@ -48,7 +49,9 @@ import (
 	corepage "github.com/shiroha-a/mk/internal/core/page"
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
+	corerole "github.com/shiroha-a/mk/internal/core/role"
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
+	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -94,8 +97,12 @@ func (s *Server) setupRoutes() {
 	pageLikeRepo := repository.NewPageLikeRepository(s.db)
 	flashRepo := repository.NewFlashRepository(s.db)
 	flashLikeRepo := repository.NewFlashLikeRepository(s.db)
+	roleRepo := repository.NewRoleRepository(s.db)
+	roleAssignmentRepo := repository.NewRoleAssignmentRepository(s.db)
 
 	// Core services
+	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
+	signupService := coresignup.NewService(userRepo, metaRepo, idGen)
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
 	noteDeleteService := corenote.NewDeleteService(noteRepo)
 	noteQueryService := corenote.NewQueryService(noteRepo, followingRepo)
@@ -283,6 +290,7 @@ func (s *Server) setupRoutes() {
 
 	// Account endpoints
 	iHandler := i.NewHandler(userService, idGen)
+	iHandler.SetRoleProvider(roleService)
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
 	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
 	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())
@@ -480,6 +488,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/accept", followingHandler.AcceptRequest, middleware.RequireAuth())
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
+
+	// Admin endpoints (Phase 5)
+	adminHandler := apiadmin.NewHandler(signupService, metaRepo, userRepo, idGen)
+	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
+	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
+	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))
+	api.POST("/admin/suspend-user", adminHandler.SuspendUser, middleware.RequireModerator(roleService))
+	api.POST("/admin/unsuspend-user", adminHandler.UnsuspendUser, middleware.RequireModerator(roleService))
+	api.POST("/admin/meta", adminHandler.AdminMeta, middleware.RequireAdmin(roleService))
+	api.POST("/admin/update-meta", adminHandler.UpdateMeta, middleware.RequireAdmin(roleService))
 
 	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
 	api.Any("/*", func(c echo.Context) error {

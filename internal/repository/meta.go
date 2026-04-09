@@ -8,6 +8,7 @@ import (
 // MetaRepository provides data access for server metadata.
 type MetaRepository interface {
 	Fetch() (*model.Meta, error)
+	Update(fields map[string]any) error
 }
 
 type metaRepository struct {
@@ -25,4 +26,8 @@ func (r *metaRepository) Fetch() (*model.Meta, error) {
 		return nil, err
 	}
 	return &meta, nil
+}
+
+func (r *metaRepository) Update(fields map[string]any) error {
+	return r.db.Model(&model.Meta{}).Where("TRUE").Updates(fields).Error
 }

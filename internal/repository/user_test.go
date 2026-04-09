@@ -236,3 +236,128 @@ func TestUserRepository_UpdateProfile(t *testing.T) {
 	// 空フィールドはnoop
 	require.NoError(t, repo.UpdateProfile(user.ID, map[string]any{}))
 }
+
+func TestUserRepository_CreateProfile(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	user := insertTestUser(t, "cp_u1", "cpuser")
+	defer cleanupUser(t, user.ID)
+
+	pass := "$2a$10$test"
+	profile := &model.UserProfile{
+		UserID:             user.ID,
+		Password:           &pass,
+		AutoAcceptFollowed: true,
+	}
+	require.NoError(t, repo.CreateProfile(profile))
+
+	found, err := repo.FindProfileByUserID(user.ID)
+	require.NoError(t, err)
+	assert.Equal(t, &pass, found.Password)
+}
+
+func TestUserRepository_ListUsers_Default(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u1 := insertTestUser(t, "lu_u1", "listuser1")
+	u2 := insertTestUser(t, "lu_u2", "listuser2")
+	defer cleanupUser(t, u1.ID)
+	defer cleanupUser(t, u2.ID)
+
+	users, err := repo.ListUsers(model.UserListFilter{Limit: 100})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(users), 2)
+}
+
+func TestUserRepository_ListUsers_LocalOnly(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u := insertTestUser(t, "lu_loc", "localonly")
+	defer cleanupUser(t, u.ID)
+
+	users, err := repo.ListUsers(model.UserListFilter{Origin: "local", Limit: 100})
+	require.NoError(t, err)
+	for _, user := range users {
+		assert.Nil(t, user.Host)
+	}
+}
+
+func TestUserRepository_ListUsers_Suspended(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u := insertTestUser(t, "lu_sus", "suspended")
+	defer cleanupUser(t, u.ID)
+	require.NoError(t, repo.UpdateUser(u.ID, map[string]any{"isSuspended": true}))
+
+	users, err := repo.ListUsers(model.UserListFilter{State: "suspended", Limit: 100})
+	require.NoError(t, err)
+	for _, user := range users {
+		assert.True(t, user.IsSuspended)
+	}
+}
+
+func TestUserRepository_ListUsers_SortAndPagination(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u1 := insertTestUser(t, "lu_s1", "sortuser1")
+	u2 := insertTestUser(t, "lu_s2", "sortuser2")
+	defer cleanupUser(t, u1.ID)
+	defer cleanupUser(t, u2.ID)
+
+	// Sort by createdAt ASC
+	users, err := repo.ListUsers(model.UserListFilter{Sort: "+createdAt", Limit: 1})
+	require.NoError(t, err)
+	assert.Len(t, users, 1)
+
+	// Sort by updatedAt
+	users, err = repo.ListUsers(model.UserListFilter{Sort: "+updatedAt", Limit: 100})
+	require.NoError(t, err)
+	assert.NotEmpty(t, users)
+
+	// Sort by -updatedAt
+	users, err = repo.ListUsers(model.UserListFilter{Sort: "-updatedAt", Limit: 100})
+	require.NoError(t, err)
+	assert.NotEmpty(t, users)
+
+	// Sort by followersCount
+	users, err = repo.ListUsers(model.UserListFilter{Sort: "+followersCount", Limit: 100})
+	require.NoError(t, err)
+	assert.NotEmpty(t, users)
+
+	users, err = repo.ListUsers(model.UserListFilter{Sort: "-followersCount", Limit: 100})
+	require.NoError(t, err)
+	assert.NotEmpty(t, users)
+
+	// Pagination offset
+	users, err = repo.ListUsers(model.UserListFilter{Limit: 100, Offset: 1})
+	require.NoError(t, err)
+	assert.NotEmpty(t, users)
+}
+
+func TestUserRepository_ListUsers_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	_, err := repo.ListUsers(model.UserListFilter{})
+	assert.Error(t, err)
+}
+
+func TestUserRepository_ListUsers_RemoteOrigin(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	users, err := repo.ListUsers(model.UserListFilter{Origin: "remote", Limit: 10})
+	require.NoError(t, err)
+	// リモートユーザーがいなくても空配列で返る
+	assert.NotNil(t, users)
+}
+
+func TestUserRepository_ListUsers_AliveState(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	users, err := repo.ListUsers(model.UserListFilter{State: "alive", Limit: 10})
+	require.NoError(t, err)
+	for _, u := range users {
+		assert.False(t, u.IsSuspended)
+	}
+}
+
+func TestUserRepository_ListUsers_LimitCap(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	// limit > 100 は 100 にキャップされる
+	users, err := repo.ListUsers(model.UserListFilter{Limit: 999})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(users), 100)
+}
