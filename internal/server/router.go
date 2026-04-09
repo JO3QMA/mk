@@ -20,6 +20,8 @@ import (
 	apifederation "github.com/shiroha-a/mk/internal/api/federation"
 	apiflash "github.com/shiroha-a/mk/internal/api/flash"
 	"github.com/shiroha-a/mk/internal/api/following"
+	apigallery "github.com/shiroha-a/mk/internal/api/gallery"
+	apihashtags "github.com/shiroha-a/mk/internal/api/hashtags"
 	"github.com/shiroha-a/mk/internal/api/i"
 	"github.com/shiroha-a/mk/internal/api/inbox"
 	"github.com/shiroha-a/mk/internal/api/meta"
@@ -337,6 +339,29 @@ func (s *Server) setupRoutes() {
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)
 	api.POST("/i/notifications", notificationsHandler.Show, middleware.RequireAuth())
 	api.POST("/notifications/mark-all-as-read", notificationsHandler.MarkAllAsRead, middleware.RequireAuth())
+	api.POST("/notifications/create", notificationsHandler.Create, middleware.RequireAuth())
+	api.POST("/notifications/flush", notificationsHandler.Flush, middleware.RequireAuth())
+	api.POST("/notifications/test-notification", notificationsHandler.TestNotification, middleware.RequireAuth())
+
+	// Hashtags endpoints (Phase 6)
+	hashtagsHandler := apihashtags.NewHandler(s.db)
+	api.POST("/hashtags/list", hashtagsHandler.List)
+	api.POST("/hashtags/search", hashtagsHandler.Search)
+	api.POST("/hashtags/show", hashtagsHandler.Show)
+	api.POST("/hashtags/trend", hashtagsHandler.Trend)
+	api.POST("/hashtags/users", hashtagsHandler.Users)
+
+	// Gallery endpoints (Phase 6)
+	galleryHandler := apigallery.NewHandler(s.db, idGen)
+	api.POST("/gallery/featured", galleryHandler.Featured)
+	api.POST("/gallery/popular", galleryHandler.Popular)
+	api.POST("/gallery/posts", galleryHandler.Posts)
+	api.POST("/gallery/posts/create", galleryHandler.PostsCreate, middleware.RequireAuth())
+	api.POST("/gallery/posts/show", galleryHandler.PostsShow)
+	api.POST("/gallery/posts/delete", galleryHandler.PostsDelete, middleware.RequireAuth())
+	api.POST("/gallery/posts/update", galleryHandler.PostsUpdate, middleware.RequireAuth())
+	api.POST("/gallery/posts/like", galleryHandler.PostsLike, middleware.RequireAuth())
+	api.POST("/gallery/posts/unlike", galleryHandler.PostsUnlike, middleware.RequireAuth())
 
 	// Blocking endpoints
 	blockingHandler := blocking.NewHandler(blockingService)

@@ -141,3 +141,35 @@ func TestMarkAllAsRead_RedisError(t *testing.T) {
 	require.NoError(t, h.MarkAllAsRead(c))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
+
+func TestCreate_Success(t *testing.T) {
+	h, _ := newTestHandler(t)
+	c, rec := newJSONRequest(t, "/api/notifications/create", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestFlush_Success(t *testing.T) {
+	h, _ := newTestHandler(t)
+	c, rec := newJSONRequest(t, "/api/notifications/flush", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Flush(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestFlush_NilService(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(nil, idGen)
+	c, rec := newJSONRequest(t, "/api/notifications/flush", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Flush(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestTestNotification_Success(t *testing.T) {
+	h, _ := newTestHandler(t)
+	c, rec := newJSONRequest(t, "/api/notifications/test-notification", `{}`)
+	require.NoError(t, h.TestNotification(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}

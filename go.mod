@@ -76,6 +76,7 @@ require (
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/mdelapenya/tlscert v0.2.0 // indirect
 	github.com/meilisearch/meilisearch-go v0.36.1 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
@@ -125,4 +126,5 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.5.6 // indirect
+	gorm.io/driver/sqlite v1.6.0 // indirect
 )
