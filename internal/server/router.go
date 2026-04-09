@@ -143,8 +143,13 @@ func (s *Server) setupRoutes() {
 	pollService := corepoll.NewService(noteRepo, pollRepo, pollVoteRepo, followingRepo, idGen)
 	pollService.SetNotificationHook(notificationHook)
 
-	// Drive (LocalStorage)
-	driveStorage := coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
+	// Drive storage (Phase 4.9: Meta に基づいて Local / S3 を切り替え)
+	var driveStorage coredrive.Storage
+	if serverMeta, err := metaRepo.Fetch(); err == nil {
+		driveStorage = coredrive.NewStorageFromMeta(serverMeta, "./drive-files", s.config.DriveURL)
+	} else {
+		driveStorage = coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
+	}
 	driveService := coredrive.NewService(driveFileRepo, driveFolderRepo, driveStorage, idGen)
 
 	// Image processing (Phase 4.8)
