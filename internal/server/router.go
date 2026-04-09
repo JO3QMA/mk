@@ -265,6 +265,7 @@ func (s *Server) setupRoutes() {
 	// Signin (Phase 6)
 	signinHandler := apisignin.NewHandler(userRepo)
 	api.POST("/signin", signinHandler.Signin)
+	api.POST("/signin-flow", signinHandler.SigninFlow)
 
 	// Emojis endpoint (public, Phase 4.5i)
 	emojisHandler := apiemojis.NewHandler(emojiRepo)

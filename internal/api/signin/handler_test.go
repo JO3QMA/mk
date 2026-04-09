@@ -134,3 +134,89 @@ func TestSignin_NilToken(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "", resp["i"]) // token is empty string
 }
+
+// --- SigninFlow ---
+
+func TestSigninFlow_Step1(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "admin", "pass123")
+
+	rec := doPost(h.SigninFlow, `{"username":"admin"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["finished"])
+	assert.Equal(t, "password", resp["next"])
+}
+
+func TestSigninFlow_Step2_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "admin", "pass123")
+
+	rec := doPost(h.SigninFlow, `{"username":"admin","password":"pass123"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["finished"])
+	assert.Equal(t, "u1", resp["id"])
+	assert.NotEmpty(t, resp["i"])
+}
+
+func TestSigninFlow_WrongPassword(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "admin", "pass123")
+
+	rec := doPost(h.SigninFlow, `{"username":"admin","password":"wrong"}`)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestSigninFlow_UserNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.SigninFlow, `{"username":"ghost"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestSigninFlow_EmptyUsername(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.SigninFlow, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSigninFlow_SuspendedUser(t *testing.T) {
+	h, repo := newTestHandler(t)
+	user := createTestUser(repo, "banned2", "pass")
+	user.IsSuspended = true
+
+	rec := doPost(h.SigninFlow, `{"username":"banned2"}`)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestSigninFlow_NoProfile(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Users["u2"] = &model.User{
+		ID: "u2", Username: "noprof2", UsernameLower: "noprof2",
+	}
+
+	rec := doPost(h.SigninFlow, `{"username":"noprof2","password":"x"}`)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestSigninFlow_NilToken(t *testing.T) {
+	h, repo := newTestHandler(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hashStr := string(hash)
+	repo.Users["u3"] = &model.User{
+		ID: "u3", Username: "notoken2", UsernameLower: "notoken2",
+		Token: nil,
+	}
+	repo.Profiles["u3"] = &model.UserProfile{UserID: "u3", Password: &hashStr}
+
+	rec := doPost(h.SigninFlow, `{"username":"notoken2","password":"pass"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "", resp["i"])
+}

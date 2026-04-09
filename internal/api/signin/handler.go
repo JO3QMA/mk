@@ -90,3 +90,78 @@ func (h *Handler) Signin(c echo.Context) error {
 		"i":        token,
 	})
 }
+
+// SigninFlow handles POST /api/signin-flow.
+// TS本家の新しいmulti-stepログインフロー。
+// Step 1: username のみ → { finished: false, next: "password" }
+// Step 2: username + password → captcha検証 → { finished: true, id, i }
+// 2FA/WebAuthn は未実装 (将来対応)。
+func (h *Handler) SigninFlow(c echo.Context) error {
+	var req struct {
+		Username string  `json:"username"`
+		Password *string `json:"password"`
+		Token    *string `json:"token"`
+	}
+	if err := c.Bind(&req); err != nil || req.Username == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{
+			"error": map[string]any{
+				"id": "6cc579cc-885d-43d8-95c2-b8c7fc963280",
+			},
+		})
+	}
+
+	// ユーザー検索 (小文字で検索)
+	user, err := h.userRepo.FindByUsernameLower(req.Username, nil)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]any{
+			"error": map[string]any{
+				"id": "6cc579cc-885d-43d8-95c2-b8c7fc963280",
+			},
+		})
+	}
+
+	if user.IsSuspended {
+		return c.JSON(http.StatusForbidden, map[string]any{
+			"error": map[string]any{
+				"id": "e03a5f46-d309-4865-9b69-56282d94e1eb",
+			},
+		})
+	}
+
+	// Step 1: パスワード未提供 → 次のステップを指示
+	if req.Password == nil {
+		return c.JSON(http.StatusOK, map[string]any{
+			"finished": false,
+			"next":     "password",
+		})
+	}
+
+	// Step 2: パスワード検証
+	profile, err := h.userRepo.FindProfileByUserID(user.ID)
+	if err != nil || profile.Password == nil {
+		return c.JSON(http.StatusForbidden, map[string]any{
+			"error": map[string]any{
+				"id": "932c904e-9460-45b7-9ce6-7ed33be7eb2c",
+			},
+		})
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(*req.Password)); err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{
+			"error": map[string]any{
+				"id": "932c904e-9460-45b7-9ce6-7ed33be7eb2c",
+			},
+		})
+	}
+
+	// 認証成功 — トークン返却
+	token := ""
+	if user.Token != nil {
+		token = *user.Token
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"finished": true,
+		"id":       user.ID,
+		"i":        token,
+	})
+}
