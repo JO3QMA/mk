@@ -255,6 +255,14 @@ func TestUserRepository_CreateProfile(t *testing.T) {
 	assert.Equal(t, &pass, found.Password)
 }
 
+func TestUserRepository_CreateProfile_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	_, err := repo.ListUsers(model.UserListFilter{Origin: "combined", State: "all", Sort: "invalid"})
+	assert.Error(t, err)
+}
+
 func TestUserRepository_ListUsers_Default(t *testing.T) {
 	repo := NewUserRepository(testDB)
 	u1 := insertTestUser(t, "lu_u1", "listuser1")
@@ -299,8 +307,12 @@ func TestUserRepository_ListUsers_SortAndPagination(t *testing.T) {
 	defer cleanupUser(t, u1.ID)
 	defer cleanupUser(t, u2.ID)
 
-	// Sort by createdAt ASC
+	// Sort by createdAt ASC / DESC
 	users, err := repo.ListUsers(model.UserListFilter{Sort: "+createdAt", Limit: 1})
+	require.NoError(t, err)
+	assert.Len(t, users, 1)
+
+	users, err = repo.ListUsers(model.UserListFilter{Sort: "-createdAt", Limit: 1})
 	require.NoError(t, err)
 	assert.Len(t, users, 1)
 

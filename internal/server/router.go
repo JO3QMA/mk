@@ -490,7 +490,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
 
 	// Admin endpoints (Phase 5)
-	adminHandler := apiadmin.NewHandler(signupService, metaRepo, userRepo, idGen)
+	adminHandler := apiadmin.NewHandler(signupService, roleService, metaRepo, userRepo, idGen)
 	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
 	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))
@@ -498,6 +498,15 @@ func (s *Server) setupRoutes() {
 	api.POST("/admin/unsuspend-user", adminHandler.UnsuspendUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/meta", adminHandler.AdminMeta, middleware.RequireAdmin(roleService))
 	api.POST("/admin/update-meta", adminHandler.UpdateMeta, middleware.RequireAdmin(roleService))
+	api.POST("/admin/roles/create", adminHandler.RolesCreate, middleware.RequireAdmin(roleService))
+	api.POST("/admin/roles/show", adminHandler.RolesShow, middleware.RequireAdmin(roleService))
+	api.POST("/admin/roles/list", adminHandler.RolesList, middleware.RequireAdmin(roleService))
+	api.POST("/admin/roles/update", adminHandler.RolesUpdate, middleware.RequireAdmin(roleService))
+	api.POST("/admin/roles/delete", adminHandler.RolesDelete, middleware.RequireAdmin(roleService))
+	api.POST("/admin/roles/assign", adminHandler.RolesAssign, middleware.RequireModerator(roleService))
+	api.POST("/admin/roles/unassign", adminHandler.RolesUnassign, middleware.RequireModerator(roleService))
+	api.POST("/admin/roles/users", adminHandler.RolesUsers, middleware.RequireModerator(roleService))
+	api.POST("/admin/roles/update-default-policies", adminHandler.RolesUpdateDefaultPolicies, middleware.RequireAdmin(roleService))
 
 	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
 	api.Any("/*", func(c echo.Context) error {
