@@ -1,12 +1,14 @@
 package entity
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 func TestPackDriveFile_Basic(t *testing.T) {
@@ -77,7 +79,45 @@ func TestPackDriveFolder_InvalidIDLeavesCreatedAtEmpty(t *testing.T) {
 	assert.Empty(t, out.CreatedAt)
 }
 
-// Smoke test ensuring require import is wired (silences "imported and not used")
-func TestPackDriveFile_RequireImport(t *testing.T) {
-	require.NotNil(t, &model.DriveFile{})
+func TestPackDriveFile_WithPropertiesAndWebpublic(t *testing.T) {
+	idGen := newTestIDGen(t)
+	fileID := idGen.Generate(time.Now())
+	uid := "u1"
+	wpURL := "https://example.com/wp.webp"
+	wpType := "image/webp"
+	props := datatypes.JSON(`{"width":800,"height":600}`)
+
+	f := &model.DriveFile{
+		ID:            fileID,
+		UserID:        &uid,
+		Name:          "photo.jpg",
+		Type:          "image/jpeg",
+		Properties:    props,
+		URL:           "https://example.com/files/x",
+		WebpublicURL:  &wpURL,
+		WebpublicType: &wpType,
+	}
+
+	out := PackDriveFile(f, idGen)
+	assert.Equal(t, &wpURL, out.WebpublicURL)
+	assert.NotNil(t, out.Properties)
+
+	var p map[string]int
+	require.NoError(t, json.Unmarshal(out.Properties, &p))
+	assert.Equal(t, 800, p["width"])
+	assert.Equal(t, 600, p["height"])
+}
+
+func TestPackDriveFile_EmptyProperties(t *testing.T) {
+	idGen := newTestIDGen(t)
+	fileID := idGen.Generate(time.Now())
+
+	f := &model.DriveFile{
+		ID:   fileID,
+		Name: "file.txt",
+		URL:  "https://example.com/files/x",
+	}
+	out := PackDriveFile(f, idGen)
+	assert.Equal(t, json.RawMessage("{}"), out.Properties)
+	assert.Nil(t, out.WebpublicURL)
 }

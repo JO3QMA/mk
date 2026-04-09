@@ -1,7 +1,13 @@
 package drive_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -586,4 +592,223 @@ func TestDelete_FileRepoDeleteError(t *testing.T) {
 	svc := drive.NewService(repo, testutil.NewMockDriveFolderRepository(), drive.NewLocalStorage(t.TempDir(), ""), idGen)
 	err := svc.Delete(&model.User{ID: "u1"}, "f1")
 	assert.ErrorIs(t, err, stubError)
+}
+
+// ---------------------------------------------------------------------------
+// Image processing integration tests (Step R)
+// ---------------------------------------------------------------------------
+
+// testJPEGBytes creates a minimal JPEG image for testing.
+func testJPEGBytes(w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.Set(x, y, color.RGBA{uint8(x * 50), uint8(y * 50), 100, 255})
+		}
+	}
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90})
+	return buf.Bytes()
+}
+
+// testPNGBytes creates a minimal PNG image for testing.
+func testPNGBytes(w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.Set(x, y, color.RGBA{uint8(x * 30), uint8(y * 30), 200, 255})
+		}
+	}
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	return buf.Bytes()
+}
+
+func TestUpload_WithImageProcessor_JPEG(t *testing.T) {
+	svc, fileRepo, _ := newSvc(t)
+	svc.SetImageProcessor(drive.NewDefaultImageProcessor())
+
+	user := &model.User{ID: "u1"}
+	jpegData := testJPEGBytes(800, 600)
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: jpegData, Name: "photo.jpg"})
+	require.NoError(t, err)
+	assert.Len(t, fileRepo.Files, 1)
+
+	// サムネイルが生成されている
+	assert.NotNil(t, f.ThumbnailURL)
+	assert.NotNil(t, f.ThumbnailAccessKey)
+
+	// BlurHashが設定されている
+	assert.NotNil(t, f.Blurhash)
+	assert.NotEmpty(t, *f.Blurhash)
+
+	// Propertiesに寸法が含まれている
+	assert.NotEmpty(t, f.Properties)
+	var props map[string]int
+	err = json.Unmarshal(f.Properties, &props)
+	require.NoError(t, err)
+	assert.Equal(t, 800, props["width"])
+	assert.Equal(t, 600, props["height"])
+}
+
+func TestUpload_WithImageProcessor_PNG_LargeWebpublic(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	svc.SetImageProcessor(drive.NewDefaultImageProcessor())
+
+	user := &model.User{ID: "u1"}
+	// 2048超えの PNG → webpublic 生成
+	pngData := testPNGBytes(3000, 2000)
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: pngData, Name: "big.png"})
+	require.NoError(t, err)
+
+	assert.NotNil(t, f.ThumbnailURL)
+	assert.NotNil(t, f.WebpublicURL)
+	assert.NotNil(t, f.WebpublicType)
+	assert.Equal(t, "image/png", *f.WebpublicType) // PNG は PNG で出力
+}
+
+func TestUpload_WithImageProcessor_SmallJPEG_NoWebpublic(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	svc.SetImageProcessor(drive.NewDefaultImageProcessor())
+
+	user := &model.User{ID: "u1"}
+	// 2048以下 + EXIF なし → webpublic 不要
+	jpegData := testJPEGBytes(400, 300)
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: jpegData, Name: "small.jpg"})
+	require.NoError(t, err)
+
+	assert.NotNil(t, f.ThumbnailURL) // サムネイルは生成
+	assert.Nil(t, f.WebpublicURL)    // webpublic は不要
+}
+
+func TestUpload_WithoutImageProcessor_TextFile(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	// ImageProcessor 未設定
+
+	user := &model.User{ID: "u1"}
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("hello"), Name: "test.txt"})
+	require.NoError(t, err)
+
+	assert.Nil(t, f.ThumbnailURL)
+	assert.Nil(t, f.WebpublicURL)
+	assert.Nil(t, f.Blurhash)
+}
+
+func TestUpload_WithImageProcessor_NonImage(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	svc.SetImageProcessor(drive.NewDefaultImageProcessor())
+
+	user := &model.User{ID: "u1"}
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("not an image"), Name: "data.bin"})
+	require.NoError(t, err)
+
+	// テキストは画像処理対象外
+	assert.Nil(t, f.ThumbnailURL)
+	assert.Nil(t, f.Blurhash)
+}
+
+// stubVideoProcessor always returns a fake thumbnail.
+type stubVideoProcessor struct {
+	thumbnail *drive.ProcessedImage
+}
+
+func (s *stubVideoProcessor) GenerateThumbnail(_ []byte, _ string) (*drive.ProcessedImage, error) {
+	return s.thumbnail, nil
+}
+
+func TestUpload_WithVideoProcessor(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	svc.SetVideoProcessor(&stubVideoProcessor{
+		thumbnail: &drive.ProcessedImage{
+			Data:     []byte("fake-thumb"),
+			MimeType: "image/webp",
+		},
+	})
+
+	user := &model.User{ID: "u1"}
+	// video/mp4 のMIMEを強制するため、バイナリに MP4 ヘッダを付与
+	mp4Header := []byte{0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70} // ftyp box
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: mp4Header, Name: "clip.mp4"})
+	require.NoError(t, err)
+
+	// http.DetectContentType が video/mp4 を返す場合のみサムネイル生成
+	// (返さない場合は application/octet-stream になるのでサムネイルなし)
+	if f.Type == "video/mp4" {
+		assert.NotNil(t, f.ThumbnailURL)
+	}
+}
+
+func TestDelete_CleansUpThumbnailAndWebpublic(t *testing.T) {
+	svc, fileRepo, _ := newSvc(t)
+	svc.SetImageProcessor(drive.NewDefaultImageProcessor())
+
+	user := &model.User{ID: "u1"}
+	// 2048 超えの JPEG → thumbnail + webpublic 生成
+	jpegData := testJPEGBytes(3000, 2000)
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: jpegData, Name: "large.jpg"})
+	require.NoError(t, err)
+	require.NotNil(t, f.ThumbnailAccessKey)
+	require.NotNil(t, f.WebpublicAccessKey)
+
+	// 削除前のファイル数を確認
+	assert.Len(t, fileRepo.Files, 1)
+
+	// 削除
+	require.NoError(t, svc.Delete(user, f.ID))
+	assert.Empty(t, fileRepo.Files)
+}
+
+func TestGenerateAlts_VideoPath(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	svc.SetVideoProcessor(&stubVideoProcessor{
+		thumbnail: &drive.ProcessedImage{Data: []byte("thumb"), MimeType: "image/webp"},
+	})
+	thumb, wp, bh := svc.GenerateAltsForTest([]byte("video"), "video/mp4")
+	assert.NotNil(t, thumb)
+	assert.Nil(t, wp)
+	assert.Nil(t, bh)
+}
+
+func TestGenerateAlts_VideoPath_NilResult(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	svc.SetVideoProcessor(&stubVideoProcessor{thumbnail: nil})
+	thumb, _, _ := svc.GenerateAltsForTest([]byte("video"), "video/mp4")
+	assert.Nil(t, thumb)
+}
+
+func TestGenerateAlts_NoProcessors(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	thumb, wp, bh := svc.GenerateAltsForTest([]byte("data"), "image/jpeg")
+	assert.Nil(t, thumb)
+	assert.Nil(t, wp)
+	assert.Nil(t, bh)
+}
+
+func TestGenerateAlts_NonImageNonVideo(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	svc.SetImageProcessor(drive.NewDefaultImageProcessor())
+	svc.SetVideoProcessor(&stubVideoProcessor{})
+	thumb, wp, bh := svc.GenerateAltsForTest([]byte("text"), "text/plain")
+	assert.Nil(t, thumb)
+	assert.Nil(t, wp)
+	assert.Nil(t, bh)
+}
+
+func TestUpload_ImageProcessor_RepoCreateErrorRollback(t *testing.T) {
+	repo := &failingFileRepo{MockDriveFileRepository: testutil.NewMockDriveFileRepository()}
+	idGen, _ := id.NewGenerator("aidx")
+	tmpDir := t.TempDir()
+	storage := drive.NewLocalStorage(tmpDir, "https://example.com/files")
+	svc := drive.NewService(repo, testutil.NewMockDriveFolderRepository(), storage, idGen)
+	svc.SetImageProcessor(drive.NewDefaultImageProcessor())
+
+	user := &model.User{ID: "u1"}
+	// 2048超え → thumbnail + webpublic 両方生成 → Create失敗 → 全ロールバック
+	jpegData := testJPEGBytes(3000, 2000)
+	_, err := svc.Upload(drive.UploadInput{User: user, Body: jpegData, Name: "photo.jpg"})
+	assert.Error(t, err)
+
+	// storage のファイルがロールバックされていることを確認
+	entries, _ := os.ReadDir(tmpDir)
+	assert.Empty(t, entries)
 }

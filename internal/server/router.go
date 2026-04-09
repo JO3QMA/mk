@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -144,6 +146,11 @@ func (s *Server) setupRoutes() {
 	// Drive (LocalStorage)
 	driveStorage := coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
 	driveService := coredrive.NewService(driveFileRepo, driveFolderRepo, driveStorage, idGen)
+
+	// Image processing (Phase 4.8)
+	imgProcessor := coredrive.NewDefaultImageProcessor()
+	driveService.SetImageProcessor(imgProcessor)
+	driveService.SetVideoProcessor(coredrive.NewFFmpegVideoProcessor(imgProcessor, nil))
 
 	// Search (Phase 4.6)
 	// 設定に従って provider を選択する。Meilisearch が設定されていれば
@@ -306,6 +313,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/drive/folders/delete", driveHandler.FoldersDelete, middleware.RequireAuth())
 
 	// Static file serving for LocalStorage
+	// MIME type はファイル内容の先頭から自動判定する。
 	s.echo.GET("/files/:accessKey", func(c echo.Context) error {
 		key := c.Param("accessKey")
 		body, err := driveStorage.Get(key)
@@ -313,7 +321,14 @@ func (s *Server) setupRoutes() {
 			return c.NoContent(http.StatusNotFound)
 		}
 		defer body.Close()
-		return c.Stream(http.StatusOK, "application/octet-stream", body)
+
+		// 先頭512バイトを読んでMIME typeを判定
+		buf := make([]byte, 512)
+		n, _ := body.Read(buf)
+		contentType := http.DetectContentType(buf[:n])
+		// 読んだ分 + 残りを連結して配信
+		mr := io.MultiReader(bytes.NewReader(buf[:n]), body)
+		return c.Stream(http.StatusOK, contentType, mr)
 	})
 
 	// ActivityPub resource endpoints

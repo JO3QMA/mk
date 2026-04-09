@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
+	"gorm.io/datatypes"
 )
 
 // Errors returned by Service.
@@ -45,12 +47,14 @@ type ChartHook interface {
 
 // Service manages drive files and folders.
 type Service struct {
-	fileRepo   repository.DriveFileRepository
-	folderRepo repository.DriveFolderRepository
-	storage    Storage
-	idGen      id.Generator
-	publisher  StreamingPublisher
-	chartHook  ChartHook
+	fileRepo       repository.DriveFileRepository
+	folderRepo     repository.DriveFolderRepository
+	storage        Storage
+	idGen          id.Generator
+	publisher      StreamingPublisher
+	chartHook      ChartHook
+	imageProcessor ImageProcessor
+	videoProcessor VideoProcessor
 }
 
 // NewService constructs a DriveService.
@@ -78,6 +82,18 @@ func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 // file has been uploaded or deleted.
 func (s *Service) SetChartHook(h ChartHook) {
 	s.chartHook = h
+}
+
+// SetImageProcessor attaches an ImageProcessor for thumbnail/webpublic
+// generation during upload.
+func (s *Service) SetImageProcessor(p ImageProcessor) {
+	s.imageProcessor = p
+}
+
+// SetVideoProcessor attaches a VideoProcessor for video thumbnail
+// extraction during upload.
+func (s *Service) SetVideoProcessor(p VideoProcessor) {
+	s.videoProcessor = p
 }
 
 // publishEvent is a tiny best-effort wrapper around publisher.PublishDriveEvent.
@@ -136,27 +152,80 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		return nil, err
 	}
 
+	// 画像/動画処理 (best-effort)
+	var thumbnail, webpublic *ProcessedImage
+	var blurhash *string
+	var properties datatypes.JSON
+
+	alts := s.generateAlts(in.Body, info.MimeType)
+	if alts != nil {
+		thumbnail = alts.thumbnail
+		webpublic = alts.webpublic
+		blurhash = alts.blurhash
+		properties = alts.properties
+	}
+
+	// サムネイル/webpublic を storage に保存
+	var thumbnailURL, webpublicURL *string
+	var thumbnailAccessKey, webpublicAccessKey *string
+	var webpublicType *string
+
+	if thumbnail != nil {
+		tKey, err := newAccessKey()
+		if err == nil {
+			tURL, err := s.storage.Put(tKey, bytes.NewReader(thumbnail.Data))
+			if err == nil {
+				thumbnailURL = &tURL
+				thumbnailAccessKey = &tKey
+			}
+		}
+	}
+	if webpublic != nil {
+		wKey, err := newAccessKey()
+		if err == nil {
+			wURL, err := s.storage.Put(wKey, bytes.NewReader(webpublic.Data))
+			if err == nil {
+				webpublicURL = &wURL
+				webpublicAccessKey = &wKey
+				webpublicType = &webpublic.MimeType
+			}
+		}
+	}
+
 	now := time.Now()
 	fileID := s.idGen.Generate(now)
 	userID := in.User.ID
 	f := &model.DriveFile{
-		ID:             fileID,
-		UserID:         &userID,
-		UserHost:       in.User.Host,
-		MD5:            info.MD5,
-		Name:           in.Name,
-		Type:           info.MimeType,
-		Size:           info.Size,
-		Comment:        in.Comment,
-		StoredInternal: true,
-		URL:            url,
-		AccessKey:      &accessKey,
-		FolderID:       in.FolderID,
-		IsSensitive:    in.IsSensitive,
+		ID:                 fileID,
+		UserID:             &userID,
+		UserHost:           in.User.Host,
+		MD5:                info.MD5,
+		Name:               in.Name,
+		Type:               info.MimeType,
+		Size:               info.Size,
+		Comment:            in.Comment,
+		Blurhash:           blurhash,
+		Properties:         properties,
+		StoredInternal:     true,
+		URL:                url,
+		ThumbnailURL:       thumbnailURL,
+		WebpublicURL:       webpublicURL,
+		WebpublicType:      webpublicType,
+		AccessKey:          &accessKey,
+		ThumbnailAccessKey: thumbnailAccessKey,
+		WebpublicAccessKey: webpublicAccessKey,
+		FolderID:           in.FolderID,
+		IsSensitive:        in.IsSensitive,
 	}
 	if err := s.fileRepo.Create(f); err != nil {
 		// ロールバックとして storage を削除する
 		_ = s.storage.Delete(accessKey)
+		if thumbnailAccessKey != nil {
+			_ = s.storage.Delete(*thumbnailAccessKey)
+		}
+		if webpublicAccessKey != nil {
+			_ = s.storage.Delete(*webpublicAccessKey)
+		}
 		return nil, err
 	}
 	s.publishEvent(in.User.ID, "fileCreated", f)
@@ -164,6 +233,56 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		s.chartHook.OnFileUploaded(f)
 	}
 	return f, nil
+}
+
+// generateAltsResult holds the results of image/video processing.
+type generateAltsResult struct {
+	thumbnail  *ProcessedImage
+	webpublic  *ProcessedImage
+	blurhash   *string
+	properties datatypes.JSON
+}
+
+// generateAlts runs image or video processing on the uploaded file.
+// processor が nil の場合や処理失敗時は nil を返す (best-effort)。
+func (s *Service) generateAlts(body []byte, mimeType string) *generateAltsResult {
+	if isMimeImage(mimeType) && s.imageProcessor != nil {
+		return s.processImage(body, mimeType)
+	}
+	if isMimeVideo(mimeType) && s.videoProcessor != nil {
+		thumb, _ := s.videoProcessor.GenerateThumbnail(body, mimeType)
+		if thumb != nil {
+			return &generateAltsResult{thumbnail: thumb}
+		}
+	}
+	return nil
+}
+
+// processImage runs all image processing steps (best-effort).
+func (s *Service) processImage(body []byte, mimeType string) *generateAltsResult {
+	result := &generateAltsResult{}
+
+	// 寸法取得
+	w, h, err := s.imageProcessor.GetDimensions(body, mimeType)
+	if err == nil && (w > 0 || h > 0) {
+		props := map[string]int{"width": w, "height": h}
+		if data, err := json.Marshal(props); err == nil {
+			result.properties = datatypes.JSON(data)
+		}
+	}
+
+	// BlurHash
+	if hash, err := s.imageProcessor.CalculateBlurhash(body, mimeType); err == nil && hash != "" {
+		result.blurhash = &hash
+	}
+
+	// サムネイル
+	result.thumbnail, _ = s.imageProcessor.GenerateThumbnail(body, mimeType)
+
+	// Webpublic
+	result.webpublic, _ = s.imageProcessor.GenerateWebpublic(body, mimeType)
+
+	return result
 }
 
 // Show returns the file with id, ensuring the requesting user owns it.
@@ -251,6 +370,13 @@ func (s *Service) Delete(user *model.User, id string) error {
 		if err := s.storage.Delete(*f.AccessKey); err != nil {
 			return err
 		}
+	}
+	// サムネイル/webpublic の storage も削除
+	if f.ThumbnailAccessKey != nil {
+		_ = s.storage.Delete(*f.ThumbnailAccessKey)
+	}
+	if f.WebpublicAccessKey != nil {
+		_ = s.storage.Delete(*f.WebpublicAccessKey)
 	}
 	if err := s.fileRepo.Delete(f); err != nil {
 		return err
