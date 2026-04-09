@@ -2074,6 +2074,92 @@ func paginateRequests(rows []*model.FollowRequest, limit, offset int) []*model.F
 }
 
 // ---------------------------------------------------------------------------
+// MockAnnouncementRepository
+// ---------------------------------------------------------------------------
+
+type MockAnnouncementRepository struct {
+	Items map[string]*model.Announcement
+	Reads map[string]bool // keyed by "userId:announcementId"
+}
+
+func NewMockAnnouncementRepository() *MockAnnouncementRepository {
+	return &MockAnnouncementRepository{
+		Items: make(map[string]*model.Announcement),
+		Reads: make(map[string]bool),
+	}
+}
+
+func (m *MockAnnouncementRepository) Create(a *model.Announcement) error {
+	m.Items[a.ID] = a
+	return nil
+}
+
+func (m *MockAnnouncementRepository) FindByID(id string) (*model.Announcement, error) {
+	a, ok := m.Items[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
+func (m *MockAnnouncementRepository) List(activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
+	var result []*model.Announcement
+	for _, a := range m.Items {
+		if activeOnly && !a.IsActive {
+			result = append(result, a) // activeOnly=false の場合も含める
+			continue
+		}
+		result = append(result, a)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
+func (m *MockAnnouncementRepository) UpdateFields(id string, fields map[string]any) error {
+	a, ok := m.Items[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if v, ok := fields["title"]; ok {
+		a.Title = v.(string)
+	}
+	if v, ok := fields["isActive"]; ok {
+		a.IsActive = v.(bool)
+	}
+	return nil
+}
+
+func (m *MockAnnouncementRepository) Delete(id string) error {
+	delete(m.Items, id)
+	return nil
+}
+
+func (m *MockAnnouncementRepository) MarkRead(read *model.AnnouncementRead) error {
+	m.Reads[read.UserID+":"+read.AnnouncementID] = true
+	return nil
+}
+
+func (m *MockAnnouncementRepository) IsRead(userID, announcementID string) (bool, error) {
+	return m.Reads[userID+":"+announcementID], nil
+}
+
+func (m *MockAnnouncementRepository) UnreadForUser(userID string) ([]*model.Announcement, error) {
+	var result []*model.Announcement
+	for _, a := range m.Items {
+		if a.IsActive && !m.Reads[userID+":"+a.ID] {
+			result = append(result, a)
+		}
+	}
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
 // MockRegistryRepository
 // ---------------------------------------------------------------------------
 

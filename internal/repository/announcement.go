@@ -1,0 +1,92 @@
+package repository
+
+import (
+	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/gorm"
+)
+
+// AnnouncementRepository provides data access for announcements.
+type AnnouncementRepository interface {
+	Create(a *model.Announcement) error
+	FindByID(id string) (*model.Announcement, error)
+	List(activeOnly bool, limit, offset int) ([]*model.Announcement, error)
+	UpdateFields(id string, fields map[string]any) error
+	Delete(id string) error
+	// Read management
+	MarkRead(read *model.AnnouncementRead) error
+	IsRead(userID, announcementID string) (bool, error)
+	UnreadForUser(userID string) ([]*model.Announcement, error)
+}
+
+type announcementRepository struct {
+	db *gorm.DB
+}
+
+func NewAnnouncementRepository(db *gorm.DB) AnnouncementRepository {
+	return &announcementRepository{db: db}
+}
+
+func (r *announcementRepository) Create(a *model.Announcement) error {
+	return r.db.Create(a).Error
+}
+
+func (r *announcementRepository) FindByID(id string) (*model.Announcement, error) {
+	var a model.Announcement
+	if err := r.db.Where("id = ?", id).First(&a).Error; err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (r *announcementRepository) List(activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
+	q := r.db.Order("id DESC")
+	if activeOnly {
+		q = q.Where("\"isActive\" = true")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit)
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	var announcements []*model.Announcement
+	if err := q.Find(&announcements).Error; err != nil {
+		return nil, err
+	}
+	return announcements, nil
+}
+
+func (r *announcementRepository) UpdateFields(id string, fields map[string]any) error {
+	return r.db.Model(&model.Announcement{}).Where("id = ?", id).Updates(fields).Error
+}
+
+func (r *announcementRepository) Delete(id string) error {
+	return r.db.Where("id = ?", id).Delete(&model.Announcement{}).Error
+}
+
+func (r *announcementRepository) MarkRead(read *model.AnnouncementRead) error {
+	return r.db.Create(read).Error
+}
+
+func (r *announcementRepository) IsRead(userID, announcementID string) (bool, error) {
+	var count int64
+	err := r.db.Model(&model.AnnouncementRead{}).
+		Where("\"userId\" = ? AND \"announcementId\" = ?", userID, announcementID).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func (r *announcementRepository) UnreadForUser(userID string) ([]*model.Announcement, error) {
+	var announcements []*model.Announcement
+	err := r.db.Where("\"isActive\" = true AND id NOT IN (?)",
+		r.db.Model(&model.AnnouncementRead{}).Select("\"announcementId\"").Where("\"userId\" = ?", userID),
+	).Order("id DESC").Find(&announcements).Error
+	if err != nil {
+		return nil, err
+	}
+	return announcements, nil
+}

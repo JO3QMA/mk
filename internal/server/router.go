@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
+	apiannouncements "github.com/shiroha-a/mk/internal/api/announcements"
 	"github.com/shiroha-a/mk/internal/api/antennas"
 	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
@@ -496,6 +497,12 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
 
+	// Announcements (Phase 6)
+	announcementRepo := repository.NewAnnouncementRepository(s.db)
+	announcementHandler := apiannouncements.NewHandler(announcementRepo, idGen)
+	api.POST("/announcements", announcementHandler.List)
+	api.POST("/i/read-announcement", announcementHandler.ReadAnnouncement, middleware.RequireAuth())
+
 	// Admin endpoints (Phase 5)
 	abuseReportRepo := repository.NewAbuseReportRepository(s.db)
 	modLogRepo := repository.NewModerationLogRepository(s.db)
@@ -526,6 +533,10 @@ func (s *Server) setupRoutes() {
 	api.POST("/admin/emoji/update", adminHandler.EmojiUpdate, middleware.RequireAdmin(roleService))
 	api.POST("/admin/emoji/delete", adminHandler.EmojiDelete, middleware.RequireAdmin(roleService))
 	api.POST("/admin/emoji/list", adminHandler.EmojiList, middleware.RequireAdmin(roleService))
+	api.POST("/admin/announcements/create", announcementHandler.AdminCreate, middleware.RequireAdmin(roleService))
+	api.POST("/admin/announcements/update", announcementHandler.AdminUpdate, middleware.RequireAdmin(roleService))
+	api.POST("/admin/announcements/delete", announcementHandler.AdminDelete, middleware.RequireAdmin(roleService))
+	api.POST("/admin/announcements/list", announcementHandler.AdminList, middleware.RequireAdmin(roleService))
 
 	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
 	api.Any("/*", func(c echo.Context) error {
