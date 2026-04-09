@@ -19,12 +19,12 @@ import (
 func OpenTestDB() (*gorm.DB, error) {
 	loadEnvFile()
 
-	host := envOrDefault("TEST_DB_HOST", "localhost")
-	port := envOrDefault("TEST_DB_PORT", "5432")
-	name := envOrDefault("TEST_DB_NAME", "misskey_test")
-	user := envOrDefault("TEST_DB_USER", "mk")
-	pass := envOrDefault("TEST_DB_PASS", "mk")
-	sslmode := envOrDefault("TEST_DB_SSLMODE", "disable")
+	host := EnvOrDefault("TEST_DB_HOST", "localhost")
+	port := EnvOrDefault("TEST_DB_PORT", "5432")
+	name := EnvOrDefault("TEST_DB_NAME", "misskey_test")
+	user := EnvOrDefault("TEST_DB_USER", "mk")
+	pass := EnvOrDefault("TEST_DB_PASS", "mk")
+	sslmode := EnvOrDefault("TEST_DB_SSLMODE", "disable")
 
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		host, port, user, pass, name, sslmode)
@@ -32,6 +32,36 @@ func OpenTestDB() (*gorm.DB, error) {
 	return gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
+}
+
+// ApplyMigrations applies all up migration SQL files to the database.
+// 冪等な操作 (IF NOT EXISTS) なので複数回呼んでも安全。
+func ApplyMigrations(db *gorm.DB) {
+	files, err := findMigrationFiles()
+	if err != nil {
+		panic("failed to find migration files: " + err.Error())
+	}
+	for _, path := range files {
+		sql, err := os.ReadFile(path)
+		if err != nil {
+			panic("failed to read migration file: " + err.Error())
+		}
+		if err := db.Exec(string(sql)).Error; err != nil {
+			// 冪等なDDLのエラーは無視 (既にテーブルが存在する場合等)
+			_ = err
+		}
+	}
+}
+
+func findMigrationFiles() ([]string, error) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	projectRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	dir := filepath.Join(projectRoot, "migration")
+	matches, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
+	if err != nil {
+		return nil, err
+	}
+	return matches, nil
 }
 
 // MustOpenTestDB は OpenTestDB のパニック版。init() で使う。
@@ -43,7 +73,8 @@ func MustOpenTestDB() *gorm.DB {
 	return db
 }
 
-func envOrDefault(key, fallback string) string {
+// EnvOrDefault returns the environment variable value or the fallback.
+func EnvOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}

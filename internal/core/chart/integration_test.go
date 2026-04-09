@@ -3,7 +3,6 @@ package chart
 import (
 	"context"
 	"errors"
-	"log"
 	"os"
 	"testing"
 	"time"
@@ -15,41 +14,32 @@ import (
 	"gorm.io/gorm"
 )
 
-// testDB / testRedis are container handles set up once for all
-// integration tests in this package.
+// testDB / testRedis are set up once for all integration tests.
 var (
 	testDB    *gorm.DB
 	testRedis *testutil.TestRedis
 )
 
-// pgHandle / redisHandle keep references for Teardown.
-var (
-	pgHandle    *testutil.TestDB
-	redisHandle *testutil.TestRedis
-)
-
 func TestMain(m *testing.M) {
-	ctx := context.Background()
-	if tdb, err := testutil.SetupPostgres(ctx); err == nil {
-		pgHandle = tdb
-		testDB = tdb.DB
-	} else {
-		log.Printf("chart: postgres setup failed, integration tests will skip: %v", err)
+	// PostgreSQL (テストDB)
+	if db, err := testutil.OpenTestDB(); err == nil {
+		testutil.ApplyMigrations(db)
+		testDB = db
 	}
-	if tr, err := testutil.SetupRedis(ctx); err == nil {
-		redisHandle = tr
-		testRedis = tr
-	} else {
-		log.Printf("chart: redis setup failed, integration tests will skip: %v", err)
+
+	// Redis (ローカル)
+	redisHost := testutil.EnvOrDefault("TEST_REDIS_HOST", "localhost")
+	redisPort := testutil.EnvOrDefault("TEST_REDIS_PORT", "6379")
+	addr := redisHost + ":" + redisPort
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	if err := client.Ping(context.Background()).Err(); err == nil {
+		testRedis = &testutil.TestRedis{Client: client, Addr: addr}
 	}
 
 	code := m.Run()
 
-	if redisHandle != nil {
-		redisHandle.Teardown(ctx)
-	}
-	if pgHandle != nil {
-		pgHandle.Teardown(ctx)
+	if testRedis != nil {
+		_ = testRedis.Client.Close()
 	}
 	os.Exit(code)
 }
@@ -58,7 +48,7 @@ func TestMain(m *testing.M) {
 func requirePostgres(t *testing.T) {
 	t.Helper()
 	if testDB == nil {
-		t.Skip("postgres test container not available")
+		t.Skip("test database not available")
 	}
 }
 
@@ -66,7 +56,7 @@ func requirePostgres(t *testing.T) {
 func requireRedis(t *testing.T) {
 	t.Helper()
 	if testRedis == nil {
-		t.Skip("redis test container not available")
+		t.Skip("test Redis not available")
 	}
 }
 

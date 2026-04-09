@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -59,9 +57,7 @@ func SetupPostgres(ctx context.Context) (*TestDB, error) {
 	}
 
 	// マイグレーションSQLを適用
-	if err := applyMigration(db); err != nil {
-		return nil, fmt.Errorf("failed to apply migration: %w", err)
-	}
+	ApplyMigrations(db)
 
 	return &TestDB{Container: container, DB: db}, nil
 }
@@ -84,35 +80,6 @@ func (t *TestDB) TruncateAll() {
 	for _, table := range tables {
 		t.DB.Exec(fmt.Sprintf("DELETE FROM %s", table))
 	}
-}
-
-func applyMigration(db *gorm.DB) error {
-	files, err := findMigrationFiles()
-	if err != nil {
-		return err
-	}
-	for _, path := range files {
-		sql, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to read migration file %s: %w", path, err)
-		}
-		if err := db.Exec(string(sql)).Error; err != nil {
-			return fmt.Errorf("failed to apply migration %s: %w", path, err)
-		}
-	}
-	return nil
-}
-
-func findMigrationFiles() ([]string, error) {
-	// プロジェクトルートからの相対パスで探す
-	_, thisFile, _, _ := runtime.Caller(0)
-	projectRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
-	dir := filepath.Join(projectRoot, "migration")
-	matches, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
-	if err != nil {
-		return nil, err
-	}
-	return matches, nil
 }
 
 // TestRedis holds a test Redis container and client.

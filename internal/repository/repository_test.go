@@ -1,8 +1,6 @@
 package repository
 
 import (
-	"context"
-	"log"
 	"os"
 	"testing"
 
@@ -13,15 +11,14 @@ import (
 var testDB *gorm.DB
 
 func TestMain(m *testing.M) {
-	ctx := context.Background()
-	tdb, err := testutil.SetupPostgres(ctx)
+	db, err := testutil.OpenTestDB()
 	if err != nil {
-		log.Fatalf("failed to setup postgres: %v", err)
+		panic("failed to open test DB: " + err.Error())
 	}
-	testDB = tdb.DB
+	testDB = db
 
-	code := m.Run()
+	// マイグレーション適用 (冪等)
+	testutil.ApplyMigrations(testDB)
 
-	tdb.Teardown(ctx)
-	os.Exit(code)
+	os.Exit(m.Run())
 }
