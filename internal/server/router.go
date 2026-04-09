@@ -264,17 +264,38 @@ func (s *Server) setupRoutes() {
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
 
-	// Stats endpoint (public)
+	// Stats endpoint (public) — チャートの集計済み値から取得
+	notesChart := chartCharts.Notes
+	usersChart := chartCharts.Users
 	api.POST("/stats", func(c echo.Context) error {
-		var notesCount, usersCount, instancesCount int64
-		s.db.Model(&model.Note{}).Where("\"userHost\" IS NULL").Count(&notesCount)
-		s.db.Model(&model.User{}).Where("host IS NULL").Count(&usersCount)
+		ctx := c.Request().Context()
+		var notesCount, originalNotesCount, usersCount, originalUsersCount int64
+
+		if res, err := notesChart.GetChart(ctx, chart.SpanHour, 1, nil, ""); err == nil {
+			if v, ok := res["local.total"]; ok && len(v) > 0 {
+				originalNotesCount = v[0]
+			}
+			if v, ok := res["remote.total"]; ok && len(v) > 0 {
+				notesCount = originalNotesCount + v[0]
+			}
+		}
+		if res, err := usersChart.GetChart(ctx, chart.SpanHour, 1, nil, ""); err == nil {
+			if v, ok := res["local.total"]; ok && len(v) > 0 {
+				originalUsersCount = v[0]
+			}
+			if v, ok := res["remote.total"]; ok && len(v) > 0 {
+				usersCount = originalUsersCount + v[0]
+			}
+		}
+
+		var instancesCount int64
 		s.db.Model(&model.Instance{}).Count(&instancesCount)
+
 		return c.JSON(http.StatusOK, map[string]any{
 			"notesCount":         notesCount,
-			"originalNotesCount": notesCount,
+			"originalNotesCount": originalNotesCount,
 			"usersCount":         usersCount,
-			"originalUsersCount": usersCount,
+			"originalUsersCount": originalUsersCount,
 			"instances":          instancesCount,
 			"driveUsageLocal":    0,
 			"driveUsageRemote":   0,
