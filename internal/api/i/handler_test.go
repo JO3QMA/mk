@@ -458,3 +458,146 @@ func TestUnpin_InternalError(t *testing.T) {
 	rec := post(h.Unpin, `{"noteId": "n1"}`, user)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
+
+// --- Registry endpoints ---
+
+func newHandlerWithRegistry(t *testing.T) (*Handler, *testutil.MockRegistryRepository) {
+	t.Helper()
+	h, _, _, _ := newTestHandler(t)
+	regRepo := testutil.NewMockRegistryRepository()
+	h.SetRegistryRepo(regRepo)
+	return h, regRepo
+}
+
+func TestRegistrySet_Success(t *testing.T) {
+	h, regRepo := newHandlerWithRegistry(t)
+	user := &model.User{ID: "u1"}
+	rec := post(h.RegistrySet, `{"key":"theme","value":"dark"}`, user)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, regRepo.Items, 1)
+}
+
+func TestRegistrySet_InvalidParam(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	rec := post(h.RegistrySet, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegistryGet_Success(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	user := &model.User{ID: "u1"}
+	post(h.RegistrySet, `{"key":"lang","value":"ja"}`, user)
+	rec := post(h.RegistryGet, `{"key":"lang"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRegistryGet_NotFound(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	rec := post(h.RegistryGet, `{"key":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestRegistryGet_InvalidParam(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	rec := post(h.RegistryGet, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegistryGetAll_Success(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	user := &model.User{ID: "u1"}
+	post(h.RegistrySet, `{"key":"k1","value":1}`, user)
+	post(h.RegistrySet, `{"key":"k2","value":2}`, user)
+	rec := post(h.RegistryGetAll, `{}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRegistryGetAll_InvalidJSON(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	rec := post(h.RegistryGetAll, `invalid`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegistryKeysWithType_Success(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	user := &model.User{ID: "u1"}
+	post(h.RegistrySet, `{"key":"theme","value":"dark"}`, user)
+	rec := post(h.RegistryKeysWithType, `{}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRegistryKeysWithType_InvalidJSON(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	rec := post(h.RegistryKeysWithType, `invalid`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegistryRemove_Success(t *testing.T) {
+	h, regRepo := newHandlerWithRegistry(t)
+	user := &model.User{ID: "u1"}
+	post(h.RegistrySet, `{"key":"temp","value":true}`, user)
+	assert.Len(t, regRepo.Items, 1)
+	rec := post(h.RegistryRemove, `{"key":"temp"}`, user)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, regRepo.Items)
+}
+
+type failingSetRegistryRepo struct {
+	*testutil.MockRegistryRepository
+}
+
+func (f *failingSetRegistryRepo) Set(_ *model.RegistryItem) error { return stubError }
+
+type failingGetAllRegistryRepo struct {
+	*testutil.MockRegistryRepository
+}
+
+func (f *failingGetAllRegistryRepo) GetAll(_ string, _ []string, _ *string) ([]*model.RegistryItem, error) {
+	return nil, stubError
+}
+
+func (f *failingGetAllRegistryRepo) KeysWithType(_ string, _ []string, _ *string) (map[string]string, error) {
+	return nil, stubError
+}
+
+type failingRemoveRegistryRepo struct {
+	*testutil.MockRegistryRepository
+}
+
+func (f *failingRemoveRegistryRepo) Remove(_ string, _ string, _ []string, _ *string) error {
+	return stubError
+}
+
+func TestRegistrySet_Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRegistryRepo(&failingSetRegistryRepo{testutil.NewMockRegistryRepository()})
+	rec := post(h.RegistrySet, `{"key":"k","value":1}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRegistryGetAll_Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRegistryRepo(&failingGetAllRegistryRepo{testutil.NewMockRegistryRepository()})
+	rec := post(h.RegistryGetAll, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRegistryKeysWithType_Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRegistryRepo(&failingGetAllRegistryRepo{testutil.NewMockRegistryRepository()})
+	rec := post(h.RegistryKeysWithType, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRegistryRemove_Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRegistryRepo(&failingRemoveRegistryRepo{testutil.NewMockRegistryRepository()})
+	rec := post(h.RegistryRemove, `{"key":"k"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRegistryRemove_InvalidParam(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	rec := post(h.RegistryRemove, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}

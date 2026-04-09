@@ -1,15 +1,18 @@
 package i
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
@@ -27,6 +30,7 @@ type Handler struct {
 	userService  *user.Service
 	idGen        id.Generator
 	roleProvider RoleProvider
+	registryRepo repository.RegistryRepository
 }
 
 // NewHandler creates a new account Handler.
@@ -37,6 +41,127 @@ func NewHandler(userService *user.Service, idGen id.Generator) *Handler {
 // SetRoleProvider attaches a RoleProvider for dynamic role/policy resolution.
 func (h *Handler) SetRoleProvider(rp RoleProvider) {
 	h.roleProvider = rp
+}
+
+// SetRegistryRepo attaches a RegistryRepository for i/registry/* endpoints.
+func (h *Handler) SetRegistryRepo(r repository.RegistryRepository) {
+	h.registryRepo = r
+}
+
+// RegistryGet handles POST /api/i/registry/get.
+func (h *Handler) RegistryGet(c echo.Context) error {
+	u := middleware.GetUser(c)
+	var req struct {
+		Key    string   `json:"key"`
+		Scope  []string `json:"scope"`
+		Domain *string  `json:"domain"`
+	}
+	if err := c.Bind(&req); err != nil || req.Key == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Scope == nil {
+		req.Scope = []string{}
+	}
+	item, err := h.registryRepo.Get(u.ID, req.Key, req.Scope, req.Domain)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_KEY", "No such key.", "ac3ed68a-62f0-422b-a7bc-d5e09e8f6a6a"))
+	}
+	// value をそのまま返す (JSONBの中身)
+	return c.JSONBlob(http.StatusOK, item.Value)
+}
+
+// RegistrySet handles POST /api/i/registry/set.
+func (h *Handler) RegistrySet(c echo.Context) error {
+	u := middleware.GetUser(c)
+	var req struct {
+		Key    string          `json:"key"`
+		Value  json.RawMessage `json:"value"`
+		Scope  []string        `json:"scope"`
+		Domain *string         `json:"domain"`
+	}
+	if err := c.Bind(&req); err != nil || req.Key == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Scope == nil {
+		req.Scope = []string{}
+	}
+	item := &model.RegistryItem{
+		ID:        h.idGen.Generate(time.Now()),
+		UpdatedAt: time.Now(),
+		UserID:    u.ID,
+		Key:       req.Key,
+		Value:     []byte(req.Value),
+		Scope:     req.Scope,
+		Domain:    req.Domain,
+	}
+	if err := h.registryRepo.Set(item); err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// RegistryGetAll handles POST /api/i/registry/get-all.
+func (h *Handler) RegistryGetAll(c echo.Context) error {
+	u := middleware.GetUser(c)
+	var req struct {
+		Scope  []string `json:"scope"`
+		Domain *string  `json:"domain"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Scope == nil {
+		req.Scope = []string{}
+	}
+	items, err := h.registryRepo.GetAll(u.ID, req.Scope, req.Domain)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	result := make(map[string]json.RawMessage, len(items))
+	for _, item := range items {
+		result[item.Key] = json.RawMessage(item.Value)
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+// RegistryKeysWithType handles POST /api/i/registry/keys-with-type.
+func (h *Handler) RegistryKeysWithType(c echo.Context) error {
+	u := middleware.GetUser(c)
+	var req struct {
+		Scope  []string `json:"scope"`
+		Domain *string  `json:"domain"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Scope == nil {
+		req.Scope = []string{}
+	}
+	keys, err := h.registryRepo.KeysWithType(u.ID, req.Scope, req.Domain)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, keys)
+}
+
+// RegistryRemove handles POST /api/i/registry/remove.
+func (h *Handler) RegistryRemove(c echo.Context) error {
+	u := middleware.GetUser(c)
+	var req struct {
+		Key    string   `json:"key"`
+		Scope  []string `json:"scope"`
+		Domain *string  `json:"domain"`
+	}
+	if err := c.Bind(&req); err != nil || req.Key == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Scope == nil {
+		req.Scope = []string{}
+	}
+	if err := h.registryRepo.Remove(u.ID, req.Key, req.Scope, req.Domain); err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // Me handles POST /api/i - returns the authenticated user's info.
@@ -362,5 +487,15 @@ func defaultMePolicies() map[string]any {
 		"noteDraftLimit":             10,
 		"scheduledNoteLimit":         1,
 		"watermarkAvailable":         true,
+	}
+}
+
+func apiError(code, message, id string) map[string]any {
+	return map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"code":    code,
+			"id":      id,
+		},
 	}
 }

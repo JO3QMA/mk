@@ -289,12 +289,19 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/following", usersHandler.Following)
 
 	// Account endpoints
+	registryRepo := repository.NewRegistryRepository(s.db)
 	iHandler := i.NewHandler(userService, idGen)
 	iHandler.SetRoleProvider(roleService)
+	iHandler.SetRegistryRepo(registryRepo)
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
 	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
 	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())
 	api.POST("/i/unpin", iHandler.Unpin, middleware.RequireAuth())
+	api.POST("/i/registry/get", iHandler.RegistryGet, middleware.RequireAuth())
+	api.POST("/i/registry/set", iHandler.RegistrySet, middleware.RequireAuth())
+	api.POST("/i/registry/get-all", iHandler.RegistryGetAll, middleware.RequireAuth())
+	api.POST("/i/registry/keys-with-type", iHandler.RegistryKeysWithType, middleware.RequireAuth())
+	api.POST("/i/registry/remove", iHandler.RegistryRemove, middleware.RequireAuth())
 
 	// Notifications endpoints
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)

@@ -2074,6 +2074,61 @@ func paginateRequests(rows []*model.FollowRequest, limit, offset int) []*model.F
 }
 
 // ---------------------------------------------------------------------------
+// MockRegistryRepository
+// ---------------------------------------------------------------------------
+
+// MockRegistryRepository is a test double for repository.RegistryRepository.
+type MockRegistryRepository struct {
+	Items map[string]*model.RegistryItem // keyed by "userId:key:scope"
+}
+
+func NewMockRegistryRepository() *MockRegistryRepository {
+	return &MockRegistryRepository{Items: make(map[string]*model.RegistryItem)}
+}
+
+func (m *MockRegistryRepository) rkey(userID, key string, scope []string) string {
+	return userID + ":" + key + ":" + strings.Join(scope, ",")
+}
+
+func (m *MockRegistryRepository) Get(userID, key string, scope []string, _ *string) (*model.RegistryItem, error) {
+	item, ok := m.Items[m.rkey(userID, key, scope)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return item, nil
+}
+
+func (m *MockRegistryRepository) Set(item *model.RegistryItem) error {
+	m.Items[m.rkey(item.UserID, item.Key, item.Scope)] = item
+	return nil
+}
+
+func (m *MockRegistryRepository) GetAll(userID string, scope []string, _ *string) ([]*model.RegistryItem, error) {
+	var result []*model.RegistryItem
+	prefix := userID + ":"
+	for k, item := range m.Items {
+		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockRegistryRepository) KeysWithType(userID string, scope []string, domain *string) (map[string]string, error) {
+	items, _ := m.GetAll(userID, scope, domain)
+	result := make(map[string]string, len(items))
+	for _, item := range items {
+		result[item.Key] = "object"
+	}
+	return result, nil
+}
+
+func (m *MockRegistryRepository) Remove(userID, key string, scope []string, _ *string) error {
+	delete(m.Items, m.rkey(userID, key, scope))
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // MockAbuseReportRepository
 // ---------------------------------------------------------------------------
 
