@@ -71,6 +71,15 @@ func FrontendDir() string {
 	return filepath.Join("built", "_frontend_vite_")
 }
 
+// StaticDir returns the path to static assets (icons, splash, favicon etc.).
+// 環境変数 MISSKEY_STATIC_DIR で上書き可能。
+func StaticDir() string {
+	if v := os.Getenv("MISSKEY_STATIC_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join("assets")
+}
+
 // detectClientEntry reads the Vite manifest to find the entry script path.
 // ビルド済みアセットが存在しない場合は空文字列を返す (dev mode)。
 func detectClientEntry() string {

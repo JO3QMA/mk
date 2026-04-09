@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
@@ -623,6 +624,15 @@ func (s *Server) setupRoutes() {
 		s.echo.Static("/vite", frontendDir)
 	} else {
 		s.echo.Any("/vite/*", newViteProxy("http://localhost:5173"))
+	}
+
+	// 静的アセット配信 (favicon, splash, icons等)
+	staticDir := StaticDir()
+	if _, err := os.Stat(staticDir); err == nil {
+		s.echo.Static("/static-assets", staticDir)
+		s.echo.File("/favicon.ico", filepath.Join(staticDir, "favicon.ico"))
+		s.echo.File("/apple-touch-icon.png", filepath.Join(staticDir, "apple-touch-icon.png"))
+		s.echo.File("/robots.txt", filepath.Join(staticDir, "robots.txt"))
 	}
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
