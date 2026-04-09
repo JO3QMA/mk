@@ -562,3 +562,100 @@ func idsOf(notes []*model.Note) []string {
 	}
 	return out
 }
+
+func TestNoteRepository_ListFeatured(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "feat_u", "featuser")
+	defer cleanupUser(t, user.ID)
+
+	n := &model.Note{ID: "feat_n1", UserID: user.ID, Visibility: "public", RenoteCount: 10}
+	require.NoError(t, testDB.Create(n).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
+
+	notes, err := repo.ListFeatured(10, 0)
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+
+	// default limit
+	notes, err = repo.ListFeatured(0, 0)
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+
+	// offset
+	notes, err = repo.ListFeatured(10, 1)
+	require.NoError(t, err)
+	_ = notes
+}
+
+func TestNoteRepository_ListFeatured_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewNoteRepository(testDB.WithContext(ctx))
+	_, err := repo.ListFeatured(10, 0)
+	assert.Error(t, err)
+}
+
+func TestNoteRepository_FindRenoteByUser(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "unrn_u", "unrnuser")
+	defer cleanupUser(t, user.ID)
+
+	orig := &model.Note{ID: "unrn_orig", UserID: user.ID, Visibility: "public"}
+	require.NoError(t, testDB.Create(orig).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, orig.ID)
+
+	renoteID := orig.ID
+	rn := &model.Note{ID: "unrn_rn", UserID: user.ID, RenoteID: &renoteID, Visibility: "public"}
+	require.NoError(t, testDB.Create(rn).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, rn.ID)
+
+	found, err := repo.FindRenoteByUser(user.ID, orig.ID)
+	require.NoError(t, err)
+	assert.Equal(t, rn.ID, found.ID)
+}
+
+func TestNoteRepository_FindRenoteByUser_NotFound(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	_, err := repo.FindRenoteByUser("ghost", "ghost")
+	assert.Error(t, err)
+}
+
+func TestNoteRepository_ListMentions(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "ment_u", "mentuser")
+	mentionee := insertTestUser(t, "ment_m", "mentionee")
+	defer cleanupUser(t, user.ID)
+	defer cleanupUser(t, mentionee.ID)
+
+	n := &model.Note{ID: "ment_n1", UserID: user.ID, Visibility: "public", Mentions: []string{mentionee.ID}}
+	require.NoError(t, testDB.Create(n).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
+
+	notes, err := repo.ListMentions(mentionee.ID, 10, "", "")
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+
+	// with cursors
+	notes, err = repo.ListMentions(mentionee.ID, 10, "", "zzz")
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+
+	notes, err = repo.ListMentions(mentionee.ID, 10, "000", "")
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+}
+
+func TestNoteRepository_ListMentions_DefaultLimit(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	notes, err := repo.ListMentions("nobody", 0, "", "")
+	require.NoError(t, err)
+	assert.Empty(t, notes)
+}
+
+func TestNoteRepository_ListMentions_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewNoteRepository(testDB.WithContext(ctx))
+	_, err := repo.ListMentions("x", 10, "", "")
+	assert.Error(t, err)
+}

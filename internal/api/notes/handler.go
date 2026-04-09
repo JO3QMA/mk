@@ -29,6 +29,7 @@ type Handler struct {
 	pollService     *poll.Service
 	searchService   *search.Service
 	idGen           id.Generator
+	favoriteRepo    repository.NoteFavoriteRepository
 }
 
 // NewHandler creates a new notes Handler.

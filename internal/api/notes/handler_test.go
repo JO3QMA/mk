@@ -460,6 +460,15 @@ func (f *failingNoteRepo) ListChildrenOf(_ string, _, _ string, _ int) ([]*model
 func (f *failingNoteRepo) SearchByFilter(_ model.NoteSearchFilter) ([]*model.Note, error) {
 	return nil, nil
 }
+func (f *failingNoteRepo) ListFeatured(_, _ int) ([]*model.Note, error) {
+	return nil, nil
+}
+func (f *failingNoteRepo) FindRenoteByUser(_, _ string) (*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
+func (f *failingNoteRepo) ListMentions(_ string, _ int, _, _ string) ([]*model.Note, error) {
+	return nil, nil
+}
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct {

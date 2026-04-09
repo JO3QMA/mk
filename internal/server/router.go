@@ -286,6 +286,15 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/reactions/create", notesHandler.ReactionsCreate, middleware.RequireAuth())
 	api.POST("/notes/reactions/delete", notesHandler.ReactionsDelete, middleware.RequireAuth())
 	api.POST("/notes/polls/vote", notesHandler.PollsVote, middleware.RequireAuth())
+	// Notes extra endpoints (Phase 6)
+	noteFavoriteRepo := repository.NewNoteFavoriteRepository(s.db)
+	notesHandler.SetFavoriteRepo(noteFavoriteRepo)
+	api.POST("/notes/favorites/create", notesHandler.FavoritesCreate, middleware.RequireAuth())
+	api.POST("/notes/favorites/delete", notesHandler.FavoritesDelete, middleware.RequireAuth())
+	api.POST("/notes/featured", notesHandler.Featured)
+	api.POST("/notes/unrenote", notesHandler.Unrenote, middleware.RequireAuth())
+	api.POST("/notes/mentions", notesHandler.Mentions, middleware.RequireAuth())
+	api.POST("/notes/user-list-timeline", notesHandler.UserListTimeline, middleware.RequireAuth())
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)

@@ -508,6 +508,85 @@ func (m *MockNoteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note,
 	return out, nil
 }
 
+func (m *MockNoteRepository) ListFeatured(limit, offset int) ([]*model.Note, error) {
+	var result []*model.Note
+	for _, n := range m.Notes {
+		if string(n.Visibility) == "public" {
+			result = append(result, n)
+		}
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
+func (m *MockNoteRepository) FindRenoteByUser(userID, renoteID string) (*model.Note, error) {
+	for _, n := range m.Notes {
+		if n.UserID == userID && n.RenoteID != nil && *n.RenoteID == renoteID && n.Text == nil {
+			return n, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockNoteRepository) ListMentions(userID string, limit int, _, _ string) ([]*model.Note, error) {
+	var result []*model.Note
+	for _, n := range m.Notes {
+		for _, mention := range n.Mentions {
+			if mention == userID {
+				result = append(result, n)
+				break
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+// MockNoteFavoriteRepository is a test double for repository.NoteFavoriteRepository.
+type MockNoteFavoriteRepository struct {
+	Favorites map[string]*model.NoteFavorite // keyed by "userId:noteId"
+}
+
+func NewMockNoteFavoriteRepository() *MockNoteFavoriteRepository {
+	return &MockNoteFavoriteRepository{Favorites: make(map[string]*model.NoteFavorite)}
+}
+
+func (m *MockNoteFavoriteRepository) Create(f *model.NoteFavorite) error {
+	m.Favorites[f.UserID+":"+f.NoteID] = f
+	return nil
+}
+
+func (m *MockNoteFavoriteRepository) Delete(userID, noteID string) error {
+	delete(m.Favorites, userID+":"+noteID)
+	return nil
+}
+
+func (m *MockNoteFavoriteRepository) Exists(userID, noteID string) (bool, error) {
+	_, ok := m.Favorites[userID+":"+noteID]
+	return ok, nil
+}
+
+func (m *MockNoteFavoriteRepository) ListByUser(userID string, limit, offset int) ([]*model.NoteFavorite, error) {
+	var result []*model.NoteFavorite
+	for _, f := range m.Favorites {
+		if f.UserID == userID {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
 // MockNoteReactionRepository is a test double for repository.NoteReactionRepository.
 type MockNoteReactionRepository struct {
 	Reactions map[string]*model.NoteReaction // keyed by id

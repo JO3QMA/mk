@@ -1,0 +1,150 @@
+package notes
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+)
+
+// SetFavoriteRepo attaches a NoteFavoriteRepository for favorites endpoints.
+func (h *Handler) SetFavoriteRepo(r repository.NoteFavoriteRepository) {
+	h.favoriteRepo = r
+}
+
+// FavoritesCreate handles POST /api/notes/favorites/create.
+func (h *Handler) FavoritesCreate(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		NoteID string `json:"noteId"`
+	}
+	if err := c.Bind(&req); err != nil || req.NoteID == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if _, err := h.noteRepo.FindByID(req.NoteID); err != nil {
+		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_NOTE", "No such note.", "a6584e14-6e01-4ad3-b566-851571b1e7c6"))
+	}
+	if h.favoriteRepo == nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	exists, _ := h.favoriteRepo.Exists(user.ID, req.NoteID)
+	if exists {
+		return c.JSON(http.StatusConflict, apiError("ALREADY_FAVORITED", "Already favorited.", "a402c12b-34dd-41d2-97d8-4d2c5b7e4645"))
+	}
+	fav := &model.NoteFavorite{
+		ID:     h.idGen.Generate(time.Now()),
+		UserID: user.ID,
+		NoteID: req.NoteID,
+	}
+	if err := h.favoriteRepo.Create(fav); err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// FavoritesDelete handles POST /api/notes/favorites/delete.
+func (h *Handler) FavoritesDelete(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		NoteID string `json:"noteId"`
+	}
+	if err := c.Bind(&req); err != nil || req.NoteID == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.favoriteRepo == nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	if err := h.favoriteRepo.Delete(user.ID, req.NoteID); err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// Featured handles POST /api/notes/featured.
+func (h *Handler) Featured(c echo.Context) error {
+	// 注目ノート — renoteCount + repliesCount が高いノートを返す簡易版
+	var req struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	notes, err := h.noteRepo.ListFeatured(req.Limit, req.Offset)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, h.packMany(notes))
+}
+
+// Unrenote handles POST /api/notes/unrenote.
+func (h *Handler) Unrenote(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		NoteID string `json:"noteId"`
+	}
+	if err := c.Bind(&req); err != nil || req.NoteID == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	// renoteId が指定ノートの自分のノートを探して削除
+	renote, err := h.noteRepo.FindRenoteByUser(user.ID, req.NoteID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_NOTE", "No such renote.", "a6584e14-6e01-4ad3-b566-851571b1e7c6"))
+	}
+	if err := h.deleteService.Delete(user, renote.ID); err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// Mentions handles POST /api/notes/mentions.
+func (h *Handler) Mentions(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	notes, err := h.noteRepo.ListMentions(user.ID, req.Limit, req.SinceID, req.UntilID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, h.packMany(notes))
+}
+
+// UserListTimeline handles POST /api/notes/user-list-timeline.
+func (h *Handler) UserListTimeline(c echo.Context) error {
+	var req struct {
+		ListID  string `json:"listId"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ListID == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "listId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	// ユーザーリストのメンバーのノートを返す (簡易版: 空配列)
+	return c.JSON(http.StatusOK, []entity.NoteEntity{})
+}
+
+func apiError(code, message, id string) map[string]any {
+	return map[string]any{
+		"error": map[string]any{"message": message, "code": code, "id": id},
+	}
+}

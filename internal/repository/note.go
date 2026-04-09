@@ -23,6 +23,9 @@ type NoteRepository interface {
 	ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	SearchByFilter(filter model.NoteSearchFilter) ([]*model.Note, error)
+	ListFeatured(limit, offset int) ([]*model.Note, error)
+	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
+	ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 }
 
 type noteRepository struct {
@@ -257,4 +260,51 @@ func (r *noteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note, err
 		}
 	}
 	return ordered, nil
+}
+
+func (r *noteRepository) ListFeatured(limit, offset int) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := r.db.Preload("User").
+		Where("visibility = 'public'").
+		Order("(\"renoteCount\" + \"repliesCount\") DESC, id DESC").
+		Limit(limit)
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	var notes []*model.Note
+	if err := q.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+func (r *noteRepository) FindRenoteByUser(userID, renoteID string) (*model.Note, error) {
+	var note model.Note
+	if err := r.db.Where("\"userId\" = ? AND \"renoteId\" = ? AND text IS NULL", userID, renoteID).
+		Order("id DESC").First(&note).Error; err != nil {
+		return nil, err
+	}
+	return &note, nil
+}
+
+func (r *noteRepository) ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := r.db.Preload("User").
+		Where("mentions @> ARRAY[?]::varchar[]", userID).
+		Order("id DESC").Limit(limit)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	var notes []*model.Note
+	if err := q.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
 }
