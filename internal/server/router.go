@@ -319,6 +319,12 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/registry/get-all", iHandler.RegistryGetAll, middleware.RequireAuth())
 	api.POST("/i/registry/keys-with-type", iHandler.RegistryKeysWithType, middleware.RequireAuth())
 	api.POST("/i/registry/remove", iHandler.RegistryRemove, middleware.RequireAuth())
+	api.POST("/i/change-password", iHandler.ChangePassword, middleware.RequireAuth())
+	api.POST("/i/delete-account", iHandler.DeleteAccount, middleware.RequireAuth())
+	api.POST("/i/favorites", iHandler.Favorites, middleware.RequireAuth())
+	api.POST("/i/notifications-grouped", iHandler.NotificationsGrouped, middleware.RequireAuth())
+	api.POST("/i/regenerate-token", iHandler.RegenerateToken, middleware.RequireAuth())
+	iHandler.SetFavoriteRepo(noteFavoriteRepo)
 
 	// Notifications endpoints
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)

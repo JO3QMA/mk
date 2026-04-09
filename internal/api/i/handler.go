@@ -31,6 +31,12 @@ type Handler struct {
 	idGen        id.Generator
 	roleProvider RoleProvider
 	registryRepo repository.RegistryRepository
+	favoriteRepo repository.NoteFavoriteRepository
+}
+
+// SetFavoriteRepo attaches a NoteFavoriteRepository for i/favorites.
+func (h *Handler) SetFavoriteRepo(r repository.NoteFavoriteRepository) {
+	h.favoriteRepo = r
 }
 
 // NewHandler creates a new account Handler.

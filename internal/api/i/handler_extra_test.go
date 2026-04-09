@@ -1,0 +1,269 @@
+package i
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	coreuser "github.com/shiroha-a/mk/internal/core/user"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
+)
+
+func newExtraHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	h := NewHandler(svc, idGen)
+	h.SetFavoriteRepo(testutil.NewMockNoteFavoriteRepository())
+	return h, userRepo
+}
+
+func postExtra(h func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if user != nil {
+		c.Set(string(middleware.UserContextKey), user)
+	}
+	_ = h(c)
+	return rec
+}
+
+func setupUserWithPassword(repo *testutil.MockUserRepository, uid, password string) *model.User {
+	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	hashStr := string(hash)
+	token := "tok12345678901234"
+	user := &model.User{ID: uid, Username: uid, Token: &token}
+	repo.Users[uid] = user
+	repo.Profiles[uid] = &model.UserProfile{UserID: uid, Password: &hashStr}
+	return user
+}
+
+// --- ChangePassword ---
+
+func TestChangePassword_Success(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "oldpass")
+	rec := postExtra(h.ChangePassword, `{"currentPassword":"oldpass","newPassword":"newpass"}`, user)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestChangePassword_WrongPassword(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "correct")
+	rec := postExtra(h.ChangePassword, `{"currentPassword":"wrong","newPassword":"x"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestChangePassword_NoProfile(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := &model.User{ID: "u1"}
+	repo.Users["u1"] = user
+	rec := postExtra(h.ChangePassword, `{"currentPassword":"x","newPassword":"y"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestChangePassword_InvalidParam(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.ChangePassword, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- DeleteAccount ---
+
+func TestDeleteAccount_Success(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	rec := postExtra(h.DeleteAccount, `{"password":"pass"}`, user)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.True(t, repo.Users["u1"].IsSuspended)
+	assert.True(t, repo.Users["u1"].IsDeleted)
+}
+
+func TestDeleteAccount_WrongPassword(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	_ = user
+	rec := postExtra(h.DeleteAccount, `{"password":"wrong"}`, repo.Users["u1"])
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestDeleteAccount_NoProfile(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := &model.User{ID: "u1"}
+	repo.Users["u1"] = user
+	rec := postExtra(h.DeleteAccount, `{"password":"x"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestDeleteAccount_InvalidParam(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.DeleteAccount, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Favorites ---
+
+func TestFavorites_Success(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.Favorites, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFavorites_NilRepo(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	h := NewHandler(svc, idGen)
+	// favoriteRepo not set
+	rec := postExtra(h.Favorites, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFavorites_InvalidJSON(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.Favorites, `invalid`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestFavorites_WithNote(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	favRepo := testutil.NewMockNoteFavoriteRepository()
+	favRepo.Favorites["u1:n1"] = &model.NoteFavorite{
+		ID: "f1", UserID: "u1", NoteID: "n1",
+		Note: &model.Note{ID: "n1", UserID: "u1", Visibility: "public"},
+	}
+	h.SetFavoriteRepo(favRepo)
+	rec := postExtra(h.Favorites, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- NotificationsGrouped ---
+
+func TestNotificationsGrouped(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.NotificationsGrouped, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- RegenerateToken ---
+
+func TestRegenerateToken_Success(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	rec := postExtra(h.RegenerateToken, `{"password":"pass"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp["token"])
+}
+
+func TestRegenerateToken_WrongPassword(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	_ = user
+	rec := postExtra(h.RegenerateToken, `{"password":"wrong"}`, repo.Users["u1"])
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestRegenerateToken_NoProfile(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := &model.User{ID: "u1"}
+	repo.Users["u1"] = user
+	rec := postExtra(h.RegenerateToken, `{"password":"x"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// --- Error path tests ---
+
+type failingUpdateUserRepo struct {
+	*testutil.MockUserRepository
+}
+
+func (f *failingUpdateUserRepo) UpdateUser(_ string, _ map[string]any) error {
+	return testutil.ErrNotFound
+}
+
+func (f *failingUpdateUserRepo) UpdateProfile(_ string, _ map[string]any) error {
+	return testutil.ErrNotFound
+}
+
+func TestChangePassword_UpdateError(t *testing.T) {
+	failRepo := &failingUpdateUserRepo{testutil.NewMockUserRepository()}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hashStr := string(hash)
+	failRepo.Users["u1"] = &model.User{ID: "u1"}
+	failRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Password: &hashStr}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(failRepo, testutil.NewMockNoteRepository(), testutil.NewMockUserNotePiningRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	rec := postExtra(h.ChangePassword, `{"currentPassword":"pass","newPassword":"new"}`, failRepo.Users["u1"])
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestDeleteAccount_UpdateError(t *testing.T) {
+	failRepo := &failingUpdateUserRepo{testutil.NewMockUserRepository()}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hashStr := string(hash)
+	failRepo.Users["u1"] = &model.User{ID: "u1"}
+	failRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Password: &hashStr}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(failRepo, testutil.NewMockNoteRepository(), testutil.NewMockUserNotePiningRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	rec := postExtra(h.DeleteAccount, `{"password":"pass"}`, failRepo.Users["u1"])
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRegenerateToken_UpdateError(t *testing.T) {
+	failRepo := &failingUpdateUserRepo{testutil.NewMockUserRepository()}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hashStr := string(hash)
+	failRepo.Users["u1"] = &model.User{ID: "u1"}
+	failRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Password: &hashStr}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(failRepo, testutil.NewMockNoteRepository(), testutil.NewMockUserNotePiningRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	rec := postExtra(h.RegenerateToken, `{"password":"pass"}`, failRepo.Users["u1"])
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingFavListRepo struct {
+	*testutil.MockNoteFavoriteRepository
+}
+
+func (f *failingFavListRepo) ListByUser(_ string, _, _ int) ([]*model.NoteFavorite, error) {
+	return nil, testutil.ErrNotFound
+}
+
+func TestFavorites_ListError(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, testutil.NewMockNoteRepository(), testutil.NewMockUserNotePiningRepository(), idGen)
+	h := NewHandler(svc, idGen)
+	h.SetFavoriteRepo(&failingFavListRepo{testutil.NewMockNoteFavoriteRepository()})
+	rec := postExtra(h.Favorites, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRegenerateToken_InvalidParam(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.RegenerateToken, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}

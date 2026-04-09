@@ -208,6 +208,18 @@ func applyUserFields(u *model.User, fields map[string]any) {
 			if b, ok := v.(bool); ok {
 				u.HideOnlineStatus = b
 			}
+		case "isSuspended":
+			if b, ok := v.(bool); ok {
+				u.IsSuspended = b
+			}
+		case "isDeleted":
+			if b, ok := v.(bool); ok {
+				u.IsDeleted = b
+			}
+		case "token":
+			if s, ok := v.(string); ok {
+				u.Token = &s
+			}
 		}
 	}
 }
@@ -246,6 +258,10 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 		case "preventAiLearning":
 			if b, ok := v.(bool); ok {
 				p.PreventAiLearning = b
+			}
+		case "password":
+			if s, ok := v.(string); ok {
+				p.Password = &s
 			}
 		}
 	}

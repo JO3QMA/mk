@@ -245,3 +245,13 @@ func (s *Service) ListPinnedNotes(userID string) ([]*model.Note, error) {
 	}
 	return s.noteRepo.FindManyByIDsWithUser(ids)
 }
+
+// UpdateUserFields updates arbitrary fields on the user table.
+func (s *Service) UpdateUserFields(userID string, fields map[string]any) error {
+	return s.userRepo.UpdateUser(userID, fields)
+}
+
+// UpdateProfileFields updates arbitrary fields on the user_profile table.
+func (s *Service) UpdateProfileFields(userID string, fields map[string]any) error {
+	return s.userRepo.UpdateProfile(userID, fields)
+}

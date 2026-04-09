@@ -347,3 +347,18 @@ func TestService_ListPinnedNotes_Error(t *testing.T) {
 	_, err := svc.ListPinnedNotes("u1")
 	assert.ErrorIs(t, err, stubError)
 }
+
+func TestUpdateUserFields(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "test"}
+	err := svc.UpdateUserFields("u1", map[string]any{"isSuspended": true})
+	require.NoError(t, err)
+}
+
+func TestUpdateProfileFields(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1"}
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"}
+	err := svc.UpdateProfileFields("u1", map[string]any{"description": "new"})
+	require.NoError(t, err)
+}
