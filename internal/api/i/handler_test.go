@@ -192,6 +192,66 @@ func TestMe_Success(t *testing.T) {
 	assert.Nil(t, resp["alsoKnownAs"])
 }
 
+// stubRoleProvider implements i.RoleProvider for testing.
+type stubRoleProvider struct {
+	admin     bool
+	moderator bool
+	roles     []*model.Role
+	policies  map[string]any
+}
+
+func (s *stubRoleProvider) IsAdministrator(_ string) bool { return s.admin }
+func (s *stubRoleProvider) IsModerator(_ string) bool     { return s.moderator }
+func (s *stubRoleProvider) GetUserRoles(_ string) ([]*model.Role, error) {
+	return s.roles, nil
+}
+func (s *stubRoleProvider) GetUserPolicies(_ string) map[string]any {
+	if s.policies != nil {
+		return s.policies
+	}
+	return map[string]any{}
+}
+
+func TestMe_WithRoleProvider(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRoleProvider(&stubRoleProvider{
+		admin:     true,
+		moderator: true,
+		roles: []*model.Role{
+			{ID: "r1", Name: "Admin", IsAdministrator: true, DisplayOrder: 10},
+		},
+		policies: map[string]any{"gtlAvailable": true, "driveCapacityMb": 500},
+	})
+
+	user := &model.User{
+		ID:                "user1",
+		Username:          "admin",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), user)
+
+	err := h.Me(c)
+	require.NoError(t, err)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["isAdmin"])
+	assert.Equal(t, true, resp["isModerator"])
+
+	roles := resp["roles"].([]any)
+	assert.Len(t, roles, 1)
+	role := roles[0].(map[string]any)
+	assert.Equal(t, "Admin", role["name"])
+
+	policies := resp["policies"].(map[string]any)
+	assert.Equal(t, float64(500), policies["driveCapacityMb"])
+}
+
 func TestMe_CreatedAtFromValidID(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 

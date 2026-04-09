@@ -297,6 +297,104 @@ func TestAuthenticate_BearerTakesPrecedenceOverBody(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// --- RequireAdmin / RequireModerator tests ---
+
+type stubRoleChecker struct {
+	admin     bool
+	moderator bool
+}
+
+func (s *stubRoleChecker) IsAdministrator(_ string) bool { return s.admin }
+func (s *stubRoleChecker) IsModerator(_ string) bool     { return s.moderator }
+
+func TestRequireAdmin_Success(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(UserContextKey), &model.User{ID: "u1"})
+
+	handler := RequireAdmin(&stubRoleChecker{admin: true})(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	err := handler(c)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRequireAdmin_NotAdmin(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(UserContextKey), &model.User{ID: "u1"})
+
+	handler := RequireAdmin(&stubRoleChecker{admin: false})(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	err := handler(c)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestRequireAdmin_NoUser(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	handler := RequireAdmin(&stubRoleChecker{})(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	err := handler(c)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestRequireModerator_Success(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(UserContextKey), &model.User{ID: "u1"})
+
+	handler := RequireModerator(&stubRoleChecker{moderator: true})(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	err := handler(c)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRequireModerator_NotModerator(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(UserContextKey), &model.User{ID: "u1"})
+
+	handler := RequireModerator(&stubRoleChecker{moderator: false})(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	err := handler(c)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestRequireModerator_NoUser(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	handler := RequireModerator(&stubRoleChecker{})(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	err := handler(c)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
 func TestGetUser_NoUser(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

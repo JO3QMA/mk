@@ -9,18 +9,34 @@ import (
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
+// RoleProvider abstracts role queries for /api/i responses.
+// 循環参照を避けるため interface で受け取る。
+type RoleProvider interface {
+	IsAdministrator(userID string) bool
+	IsModerator(userID string) bool
+	GetUserRoles(userID string) ([]*model.Role, error)
+	GetUserPolicies(userID string) map[string]any
+}
+
 // Handler handles account-related API endpoints.
 type Handler struct {
-	userService *user.Service
-	idGen       id.Generator
+	userService  *user.Service
+	idGen        id.Generator
+	roleProvider RoleProvider
 }
 
 // NewHandler creates a new account Handler.
 func NewHandler(userService *user.Service, idGen id.Generator) *Handler {
 	return &Handler{userService: userService, idGen: idGen}
+}
+
+// SetRoleProvider attaches a RoleProvider for dynamic role/policy resolution.
+func (h *Handler) SetRoleProvider(rp RoleProvider) {
+	h.roleProvider = rp
 }
 
 // Me handles POST /api/i - returns the authenticated user's info.
@@ -107,9 +123,35 @@ func (h *Handler) Me(c echo.Context) error {
 		resp["publicReactions"] = profile.PublicReactions
 	}
 
-	// フロントエンド互換性フィールド (Phase 4.5c)
-	resp["isAdmin"] = false
-	resp["isModerator"] = false
+	// フロントエンド互換性フィールド (Phase 4.5c / Phase 5)
+	isAdmin := false
+	isMod := false
+	userPolicies := defaultMePolicies()
+	var userRoles []any
+	if h.roleProvider != nil {
+		isAdmin = h.roleProvider.IsAdministrator(u.ID)
+		isMod = h.roleProvider.IsModerator(u.ID)
+		userPolicies = h.roleProvider.GetUserPolicies(u.ID)
+		if roles, err := h.roleProvider.GetUserRoles(u.ID); err == nil {
+			for _, r := range roles {
+				userRoles = append(userRoles, map[string]any{
+					"id":              r.ID,
+					"name":            r.Name,
+					"color":           r.Color,
+					"iconUrl":         r.IconURL,
+					"description":     r.Description,
+					"isModerator":     r.IsModerator,
+					"isAdministrator": r.IsAdministrator,
+					"displayOrder":    r.DisplayOrder,
+				})
+			}
+		}
+	}
+	if userRoles == nil {
+		userRoles = []any{}
+	}
+	resp["isAdmin"] = isAdmin
+	resp["isModerator"] = isMod
 	resp["isDeleted"] = u.IsDeleted
 	resp["isExplorable"] = u.IsExplorable
 	resp["hasUnreadNotification"] = false
@@ -127,8 +169,8 @@ func (h *Handler) Me(c echo.Context) error {
 	resp["pinnedPageId"] = nil
 	resp["pinnedPage"] = nil
 	resp["loggedInDays"] = 0
-	resp["policies"] = defaultMePolicies()
-	resp["roles"] = []any{}
+	resp["policies"] = userPolicies
+	resp["roles"] = userRoles
 	resp["achievements"] = []any{}
 	resp["twoFactorBackupCodesStock"] = "none"
 	resp["securityKeys"] = false

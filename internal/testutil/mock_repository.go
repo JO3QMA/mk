@@ -1956,3 +1956,143 @@ func paginateRequests(rows []*model.FollowRequest, limit, offset int) []*model.F
 	end := min(offset+limit, len(rows))
 	return rows[offset:end]
 }
+
+// ---------------------------------------------------------------------------
+// MockRoleRepository
+// ---------------------------------------------------------------------------
+
+// MockRoleRepository is a test double for repository.RoleRepository.
+type MockRoleRepository struct {
+	Roles map[string]*model.Role
+}
+
+func NewMockRoleRepository() *MockRoleRepository {
+	return &MockRoleRepository{Roles: make(map[string]*model.Role)}
+}
+
+func (m *MockRoleRepository) Create(role *model.Role) error {
+	m.Roles[role.ID] = role
+	return nil
+}
+
+func (m *MockRoleRepository) FindByID(id string) (*model.Role, error) {
+	r, ok := m.Roles[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return r, nil
+}
+
+func (m *MockRoleRepository) List() ([]*model.Role, error) {
+	result := make([]*model.Role, 0, len(m.Roles))
+	for _, r := range m.Roles {
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+func (m *MockRoleRepository) UpdateFields(id string, fields map[string]any) error {
+	r, ok := m.Roles[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if v, ok := fields["name"]; ok {
+		r.Name = v.(string)
+	}
+	if v, ok := fields["description"]; ok {
+		r.Description = v.(string)
+	}
+	if v, ok := fields["isModerator"]; ok {
+		r.IsModerator = v.(bool)
+	}
+	if v, ok := fields["isAdministrator"]; ok {
+		r.IsAdministrator = v.(bool)
+	}
+	if v, ok := fields["isPublic"]; ok {
+		r.IsPublic = v.(bool)
+	}
+	return nil
+}
+
+func (m *MockRoleRepository) Delete(id string) error {
+	delete(m.Roles, id)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// MockRoleAssignmentRepository
+// ---------------------------------------------------------------------------
+
+// MockRoleAssignmentRepository is a test double for repository.RoleAssignmentRepository.
+type MockRoleAssignmentRepository struct {
+	Assignments map[string]*model.RoleAssignment // keyed by "userId:roleId"
+	RoleRepo    *MockRoleRepository
+}
+
+func NewMockRoleAssignmentRepository(roleRepo *MockRoleRepository) *MockRoleAssignmentRepository {
+	return &MockRoleAssignmentRepository{
+		Assignments: make(map[string]*model.RoleAssignment),
+		RoleRepo:    roleRepo,
+	}
+}
+
+func (m *MockRoleAssignmentRepository) key(userID, roleID string) string {
+	return userID + ":" + roleID
+}
+
+func (m *MockRoleAssignmentRepository) Create(a *model.RoleAssignment) error {
+	m.Assignments[m.key(a.UserID, a.RoleID)] = a
+	return nil
+}
+
+func (m *MockRoleAssignmentRepository) Delete(userID, roleID string) error {
+	delete(m.Assignments, m.key(userID, roleID))
+	return nil
+}
+
+func (m *MockRoleAssignmentRepository) ListByUser(userID string) ([]*model.RoleAssignment, error) {
+	var result []*model.RoleAssignment
+	now := time.Now()
+	for _, a := range m.Assignments {
+		if a.UserID == userID && (a.ExpiresAt == nil || a.ExpiresAt.After(now)) {
+			// ロール情報を付与
+			if m.RoleRepo != nil {
+				if r, ok := m.RoleRepo.Roles[a.RoleID]; ok {
+					a.Role = r
+				}
+			}
+			result = append(result, a)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockRoleAssignmentRepository) ListByRole(roleID string, limit, offset int) ([]*model.RoleAssignment, error) {
+	var result []*model.RoleAssignment
+	now := time.Now()
+	for _, a := range m.Assignments {
+		if a.RoleID == roleID && (a.ExpiresAt == nil || a.ExpiresAt.After(now)) {
+			result = append(result, a)
+		}
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	if limit <= 0 {
+		end = len(result)
+	}
+	return result[offset:end], nil
+}
+
+func (m *MockRoleAssignmentRepository) Exists(userID, roleID string) (bool, error) {
+	a, ok := m.Assignments[m.key(userID, roleID)]
+	if !ok {
+		return false, nil
+	}
+	now := time.Now()
+	if a.ExpiresAt != nil && a.ExpiresAt.Before(now) {
+		return false, nil
+	}
+	return true, nil
+}

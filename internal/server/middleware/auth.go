@@ -78,6 +78,68 @@ func GetUser(c echo.Context) *model.User {
 	return u
 }
 
+// RoleChecker abstracts role checking to avoid circular dependency with core/role.
+type RoleChecker interface {
+	IsAdministrator(userID string) bool
+	IsModerator(userID string) bool
+}
+
+// RequireAdmin is a middleware that requires the user to have an administrator role.
+func RequireAdmin(checker RoleChecker) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			user := GetUser(c)
+			if user == nil {
+				return c.JSON(http.StatusUnauthorized, map[string]any{
+					"error": map[string]any{
+						"message": "Authentication is required.",
+						"code":    "CREDENTIAL_REQUIRED",
+						"id":      "1384574d-a912-4b81-8601-c7b1c4085df1",
+					},
+				})
+			}
+			if !checker.IsAdministrator(user.ID) {
+				return c.JSON(http.StatusForbidden, map[string]any{
+					"error": map[string]any{
+						"message": "You are not an administrator.",
+						"code":    "ROLE_PERMISSION_DENIED",
+						"id":      "c3d38592-54c0-429d-bfe8-f1571e00eb14",
+					},
+				})
+			}
+			return next(c)
+		}
+	}
+}
+
+// RequireModerator is a middleware that requires the user to have a moderator or admin role.
+func RequireModerator(checker RoleChecker) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			user := GetUser(c)
+			if user == nil {
+				return c.JSON(http.StatusUnauthorized, map[string]any{
+					"error": map[string]any{
+						"message": "Authentication is required.",
+						"code":    "CREDENTIAL_REQUIRED",
+						"id":      "1384574d-a912-4b81-8601-c7b1c4085df1",
+					},
+				})
+			}
+			if !checker.IsModerator(user.ID) {
+				return c.JSON(http.StatusForbidden, map[string]any{
+					"error": map[string]any{
+						"message": "You are not a moderator.",
+						"code":    "ROLE_PERMISSION_DENIED",
+						"id":      "c3d38592-54c0-429d-bfe8-f1571e00eb14",
+					},
+				})
+			}
+			return next(c)
+		}
+	}
+}
+
 func extractToken(c echo.Context) string {
 	// Bearer token from Authorization header
 	auth := c.Request().Header.Get("Authorization")
