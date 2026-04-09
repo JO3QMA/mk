@@ -580,6 +580,28 @@ func TestCreateService_IndexHookInvoked(t *testing.T) {
 	assert.Equal(t, created.ID, hook.created.ID)
 }
 
+// recordingChartHook captures the chart hook firing path so we can
+// verify NoteCreateService.Create / NoteDeleteService.Delete fan it
+// out alongside the other registered hooks.
+type recordingChartHook struct {
+	created *model.Note
+}
+
+func (h *recordingChartHook) OnNoteCreated(n *model.Note) { h.created = n }
+
+func TestCreateService_ChartHookInvoked(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	hook := &recordingChartHook{}
+	svc.SetChartHook(hook)
+
+	user := &model.User{ID: "u1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{User: user, Text: &text})
+	require.NoError(t, err)
+	require.NotNil(t, hook.created)
+	assert.Equal(t, created.ID, hook.created.ID)
+}
+
 func TestIsPureRenote_ModelNote(t *testing.T) {
 	renoteID := "r1"
 	text := "x"

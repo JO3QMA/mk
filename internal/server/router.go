@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/ap"
 	"github.com/shiroha-a/mk/internal/api/blocking"
 	apichannels "github.com/shiroha-a/mk/internal/api/channels"
+	apicharts "github.com/shiroha-a/mk/internal/api/charts"
 	"github.com/shiroha-a/mk/internal/api/clips"
 	"github.com/shiroha-a/mk/internal/api/drive"
 	apifederation "github.com/shiroha-a/mk/internal/api/federation"
@@ -29,6 +30,8 @@ import (
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
+	"github.com/shiroha-a/mk/internal/core/chart"
+	"github.com/shiroha-a/mk/internal/core/chart/charthook"
 	coreclip "github.com/shiroha-a/mk/internal/core/clip"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/core/event"
@@ -175,6 +178,50 @@ func (s *Server) setupRoutes() {
 	deliverProcessor.SetResponseHook(instanceService)
 	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 
+	// Charts (Phase 4 Step Q / 4.7) — 12 chart engines + management
+	// service + hook adapter. The hooks must be wired before any
+	// service that consumes them is invoked, so we construct the
+	// bundle here, before the handler-binding section below.
+	chartCharts := buildChartBundle(s.db)
+	chartMgmt := chart.NewManagementService([]*chart.Chart{
+		chartCharts.Notes,
+		chartCharts.Users,
+		chartCharts.Drive,
+		chartCharts.Federation,
+		chartCharts.Instance,
+		chartCharts.ApRequest,
+		chartCharts.ActiveUsers,
+		chartCharts.PerUserNotes,
+		chartCharts.PerUserDrive,
+		chartCharts.PerUserFollowing,
+		chartCharts.PerUserPv,
+		chartCharts.PerUserReaction,
+	}, 0)
+	s.setChartManagement(chartMgmt)
+	chartHooks := charthook.New(charthook.Config{
+		Notes:            chartCharts.Notes,
+		Users:            chartCharts.Users,
+		Drive:            chartCharts.Drive,
+		Federation:       chartCharts.Federation,
+		Instance:         chartCharts.Instance,
+		ApRequest:        chartCharts.ApRequest,
+		ActiveUsers:      chartCharts.ActiveUsers,
+		PerUserNotes:     chartCharts.PerUserNotes,
+		PerUserDrive:     chartCharts.PerUserDrive,
+		PerUserFollowing: chartCharts.PerUserFollowing,
+		PerUserPv:        chartCharts.PerUserPv,
+		PerUserReaction:  chartCharts.PerUserReaction,
+		IDGen:            idGen,
+	})
+	// 各サービスへ chart hook を注入する。Set* は nil 安全なので順序は不問。
+	noteCreateService.SetChartHook(chartHooks)
+	noteDeleteService.SetChartHook(chartHooks)
+	followingService.SetChartHook(chartHooks)
+	reactionService.SetChartHook(chartHooks)
+	driveService.SetChartHook(chartHooks)
+	federationResolver.SetChartHook(chartHooks)
+	deliverProcessor.SetChartHook(chartHooks)
+
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -209,6 +256,7 @@ func (s *Server) setupRoutes() {
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)
+	usersHandler.SetChartHook(chartHooks)
 	api.POST("/users/show", usersHandler.Show)
 	api.POST("/users/search", usersHandler.Search)
 	api.POST("/users/notes", usersHandler.Notes)
@@ -286,6 +334,7 @@ func (s *Server) setupRoutes() {
 	inboxHandler := inbox.NewHandler(federationResolver, federationProcessor)
 	inboxHandler.SetHostBlockChecker(instanceService)
 	inboxHandler.SetInstanceTracker(instanceService)
+	inboxHandler.SetChartHook(chartHooks)
 	s.echo.POST("/inbox", inboxHandler.Inbox)
 	s.echo.POST("/users/:id/inbox", inboxHandler.Inbox)
 
@@ -381,6 +430,21 @@ func (s *Server) setupRoutes() {
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
 	s.echo.GET("/streaming", streamingHandler.Stream)
+
+	// Charts API endpoints (engines + hooks already wired earlier).
+	chartsHandler := apicharts.NewHandler(chartCharts, nil)
+	api.POST("/charts/notes", chartsHandler.Notes)
+	api.POST("/charts/users", chartsHandler.Users)
+	api.POST("/charts/drive", chartsHandler.Drive)
+	api.POST("/charts/federation", chartsHandler.Federation)
+	api.POST("/charts/instance", chartsHandler.Instance)
+	api.POST("/charts/ap-request", chartsHandler.ApRequest)
+	api.POST("/charts/active-users", chartsHandler.ActiveUsers)
+	api.POST("/charts/user/notes", chartsHandler.UserNotes)
+	api.POST("/charts/user/drive", chartsHandler.UserDrive)
+	api.POST("/charts/user/following", chartsHandler.UserFollowing)
+	api.POST("/charts/user/pv", chartsHandler.UserPv)
+	api.POST("/charts/user/reactions", chartsHandler.UserReactions)
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)

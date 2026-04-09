@@ -68,6 +68,60 @@ func TestShow_ByUserID(t *testing.T) {
 	assert.Equal(t, "Test User", resp["name"])
 }
 
+// stubChartHook captures users handler chart fires.
+type stubChartHook struct {
+	calls []struct {
+		ownerID, viewerID, visitor string
+	}
+}
+
+func (s *stubChartHook) OnUserShow(ownerID, viewerID, visitor string) {
+	s.calls = append(s.calls, struct {
+		ownerID, viewerID, visitor string
+	}{ownerID, viewerID, visitor})
+}
+
+func TestShow_FiresChartHookAuthenticated(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+	addTestUser(userRepo)
+	hook := &stubChartHook{}
+	h.SetChartHook(hook)
+
+	body := `{"userId": "user1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set("misskeyUser", &model.User{ID: "viewer1"})
+
+	require.NoError(t, h.Show(c))
+	require.Len(t, hook.calls, 1)
+	assert.Equal(t, "user1", hook.calls[0].ownerID)
+	assert.Equal(t, "viewer1", hook.calls[0].viewerID)
+	assert.Empty(t, hook.calls[0].visitor)
+}
+
+func TestShow_FiresChartHookAnonymous(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+	addTestUser(userRepo)
+	hook := &stubChartHook{}
+	h.SetChartHook(hook)
+
+	body := `{"userId": "user1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Show(c))
+	require.Len(t, hook.calls, 1)
+	assert.Equal(t, "user1", hook.calls[0].ownerID)
+	assert.Equal(t, "", hook.calls[0].viewerID)
+	assert.NotEmpty(t, hook.calls[0].visitor) // RemoteAddr is set by httptest
+}
+
 func TestShow_ByUsername(t *testing.T) {
 	h, userRepo := newTestHandler(t)
 	addTestUser(userRepo)

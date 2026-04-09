@@ -71,6 +71,13 @@ type FederationHook interface {
 	OnReactionRemoved(reactor *model.User, target *model.Note, reaction string)
 }
 
+// ChartHook is invoked after a reaction is created so the chart
+// subsystem can record per-user reaction counts. パッケージ間の循環
+// 依存を避けるため interface で受け取る (実装は core/chart/charthook)。
+type ChartHook interface {
+	OnReactionCreated(reactor *model.User, note *model.Note)
+}
+
 // Service manages note reactions.
 type Service struct {
 	noteRepo         repository.NoteRepository
@@ -81,6 +88,7 @@ type Service struct {
 	notificationHook NotificationHook
 	blockingChecker  BlockingChecker
 	federationHook   FederationHook
+	chartHook        ChartHook
 }
 
 // NewService constructs a new ReactionService.
@@ -114,6 +122,12 @@ func (s *Service) SetBlockingChecker(c BlockingChecker) {
 // succeed.
 func (s *Service) SetFederationHook(h FederationHook) {
 	s.federationHook = h
+}
+
+// SetChartHook attaches a ChartHook invoked after a reaction is
+// created so the chart subsystem can record the event.
+func (s *Service) SetChartHook(h ChartHook) {
+	s.chartHook = h
 }
 
 // Create attaches a reaction by user to the target note.
@@ -183,6 +197,10 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 	// AP配信もベストエフォート。
 	if s.federationHook != nil {
 		s.federationHook.OnReactionAdded(user, target, reaction)
+	}
+	// チャート集計もベストエフォート。
+	if s.chartHook != nil {
+		s.chartHook.OnReactionCreated(user, target)
 	}
 
 	return reaction, nil

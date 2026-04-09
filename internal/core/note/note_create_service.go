@@ -99,6 +99,14 @@ type IndexHook interface {
 	OnNoteDeleted(note *model.Note)
 }
 
+// ChartHook is invoked after a note has been persisted so the chart
+// subsystem can fan the event into NotesChart, PerUserNotesChart,
+// InstanceChart and ActiveUsersChart. パッケージ間の循環依存を避ける
+// ため interface で受け取る (実装は core/chart/charthook)。
+type ChartHook interface {
+	OnNoteCreated(note *model.Note)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
 	noteRepo         repository.NoteRepository
@@ -111,6 +119,7 @@ type CreateService struct {
 	channelHook      ChannelHook
 	antennaHook      AntennaHook
 	indexHook        IndexHook
+	chartHook        ChartHook
 }
 
 // NewCreateService creates a new CreateService.
@@ -164,6 +173,12 @@ func (s *CreateService) SetAntennaHook(h AntennaHook) {
 // search backend can index the new note.
 func (s *CreateService) SetIndexHook(h IndexHook) {
 	s.indexHook = h
+}
+
+// SetChartHook attaches a ChartHook invoked after note creation so the
+// chart subsystem can record the event in the relevant time series.
+func (s *CreateService) SetChartHook(h ChartHook) {
+	s.chartHook = h
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -323,6 +338,10 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// 検索インデックスへの反映もベストエフォート。
 	if s.indexHook != nil {
 		s.indexHook.OnNoteCreated(finalNote)
+	}
+	// チャート集計もベストエフォート。失敗してもノート作成自体は成功扱い。
+	if s.chartHook != nil {
+		s.chartHook.OnNoteCreated(finalNote)
 	}
 
 	return finalNote, nil

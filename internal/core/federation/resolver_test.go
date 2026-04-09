@@ -747,6 +747,30 @@ func TestResolveActor_NoTrackerNoOp(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// stubChartHook captures chart hook fires from the federation resolver.
+type stubChartHook struct {
+	users []string // user IDs
+}
+
+func (s *stubChartHook) OnRemoteUserCreated(u *model.User) {
+	s.users = append(s.users, u.ID)
+}
+
+func TestResolveActor_ChartHookFiresOnNewUser(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	hook := &stubChartHook{}
+	r.SetChartHook(hook)
+
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+	require.Len(t, hook.users, 1)
+	assert.Equal(t, user.ID, hook.users[0])
+}
+
 func TestResolveActor_FreshButCacheMissFetchError(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
 	noteRepo := testutil.NewMockNoteRepository()

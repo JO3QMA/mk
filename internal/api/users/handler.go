@@ -9,7 +9,16 @@ import (
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 )
+
+// ChartHook is invoked after a user/show request resolves so the
+// chart subsystem can record the profile pageview and the
+// activeUsers Read event. パッケージ間の循環依存を避けるため
+// interface で受け取る (実装は core/chart/charthook)。
+type ChartHook interface {
+	OnUserShow(ownerID, viewerID, visitorKey string)
+}
 
 // Handler handles user-related API endpoints.
 type Handler struct {
@@ -17,6 +26,7 @@ type Handler struct {
 	followingService *corefollowing.Service
 	noteRepo         repository.NoteRepository
 	idGen            id.Generator
+	chartHook        ChartHook
 }
 
 // NewHandler creates a new users Handler.
@@ -33,6 +43,12 @@ func NewHandler(
 		noteRepo:         noteRepo,
 		idGen:            idGen,
 	}
+}
+
+// SetChartHook attaches a ChartHook invoked after Show successfully
+// resolves a profile.
+func (h *Handler) SetChartHook(c ChartHook) {
+	h.chartHook = c
 }
 
 // ShowRequest is the request body for users/show.
@@ -72,6 +88,19 @@ func (h *Handler) Show(c echo.Context) error {
 	if err != nil {
 		// Service.ShowByID/ShowByUsernameはErrUserNotFoundのみ返す
 		return noSuchUser(c)
+	}
+
+	// チャート集計はベストエフォート。匿名訪問者は visitor key として
+	// リモートホスト名を使う (簡易実装; 認証済みなら viewer id を渡す)。
+	if h.chartHook != nil {
+		viewerID := ""
+		visitorKey := ""
+		if viewer := middleware.GetUser(c); viewer != nil {
+			viewerID = viewer.ID
+		} else {
+			visitorKey = c.Request().RemoteAddr
+		}
+		h.chartHook.OnUserShow(bundle.User.ID, viewerID, visitorKey)
 	}
 
 	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))

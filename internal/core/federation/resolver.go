@@ -32,6 +32,14 @@ type InstanceTracker interface {
 	RegisterFromHost(host string) (*model.Instance, error)
 }
 
+// ChartHook is invoked after a remote user has been freshly created so
+// the chart subsystem can record the new-user event into UsersChart and
+// InstanceChart. パッケージ間の循環依存を避けるため interface で受け取る
+// (実装は core/chart/charthook)。
+type ChartHook interface {
+	OnRemoteUserCreated(user *model.User)
+}
+
 // Errors returned by Resolver.
 var (
 	// ErrInvalidActor is returned when the fetched JSON cannot be parsed.
@@ -68,6 +76,7 @@ type Resolver struct {
 	clock           func() time.Time          // テストで差し替える時計
 	actorTTL        time.Duration             // アクター情報の最大寿命
 	instanceTracker InstanceTracker           // optional: ホスト発見を通知
+	chartHook       ChartHook                 // optional: 新規 remote user の集計
 }
 
 // NewResolver constructs a Resolver.
@@ -112,6 +121,12 @@ func (r *Resolver) SetActorTTL(d time.Duration) {
 // 同義。
 func (r *Resolver) SetInstanceTracker(t InstanceTracker) {
 	r.instanceTracker = t
+}
+
+// SetChartHook attaches a ChartHook invoked after a remote user has
+// been freshly created. nil 渡しは無効化と同義。
+func (r *Resolver) SetChartHook(h ChartHook) {
+	r.chartHook = h
 }
 
 // PublicKeyForActor returns the cached public key PEM for an actor ID. TTL を
@@ -177,6 +192,9 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	}
 	r.cachePublicKey(user.ID, actor.PublicKey.PublicKeyPEM)
 	r.notifyInstance(host)
+	if r.chartHook != nil {
+		r.chartHook.OnRemoteUserCreated(user)
+	}
 	return user, nil
 }
 

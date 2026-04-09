@@ -34,6 +34,15 @@ type StreamingPublisher interface {
 	PublishDriveEvent(userID, eventType string, file *model.DriveFile)
 }
 
+// ChartHook is invoked after a drive file has been uploaded or deleted
+// so the chart subsystem can record the byte / count delta. パッケージ
+// 間の循環依存を避けるため interface で受け取る (実装は core/chart/
+// charthook)。
+type ChartHook interface {
+	OnFileUploaded(file *model.DriveFile)
+	OnFileDeleted(file *model.DriveFile)
+}
+
 // Service manages drive files and folders.
 type Service struct {
 	fileRepo   repository.DriveFileRepository
@@ -41,6 +50,7 @@ type Service struct {
 	storage    Storage
 	idGen      id.Generator
 	publisher  StreamingPublisher
+	chartHook  ChartHook
 }
 
 // NewService constructs a DriveService.
@@ -62,6 +72,12 @@ func NewService(
 // after Upload / Update / Delete succeed.
 func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 	s.publisher = p
+}
+
+// SetChartHook attaches a ChartHook invoked best-effort after a drive
+// file has been uploaded or deleted.
+func (s *Service) SetChartHook(h ChartHook) {
+	s.chartHook = h
 }
 
 // publishEvent is a tiny best-effort wrapper around publisher.PublishDriveEvent.
@@ -144,6 +160,9 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		return nil, err
 	}
 	s.publishEvent(in.User.ID, "fileCreated", f)
+	if s.chartHook != nil {
+		s.chartHook.OnFileUploaded(f)
+	}
 	return f, nil
 }
 
@@ -237,6 +256,9 @@ func (s *Service) Delete(user *model.User, id string) error {
 		return err
 	}
 	s.publishEvent(user.ID, "fileDeleted", f)
+	if s.chartHook != nil {
+		s.chartHook.OnFileDeleted(f)
+	}
 	return nil
 }
 

@@ -441,3 +441,25 @@ func TestService_FederationHook_OnDelete(t *testing.T) {
 	require.NoError(t, svc.Delete(&model.User{ID: "viewer"}, "n1"))
 	assert.Equal(t, []string{"n1:👍"}, hook.removed)
 }
+
+// recordingChartHook captures chart hook fires from the reaction
+// service.
+type recordingChartHook struct {
+	created [][2]string // [reactorID, noteID]
+}
+
+func (h *recordingChartHook) OnReactionCreated(reactor *model.User, note *model.Note) {
+	h.created = append(h.created, [2]string{reactor.ID, note.ID})
+}
+
+func TestService_ChartHook_OnCreate(t *testing.T) {
+	svc, repo, _, _, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	hook := &recordingChartHook{}
+	svc.SetChartHook(hook)
+
+	_, err := svc.Create(&model.User{ID: "viewer"}, "n1", "👍")
+	require.NoError(t, err)
+	require.Len(t, hook.created, 1)
+	assert.Equal(t, [2]string{"viewer", "n1"}, hook.created[0])
+}

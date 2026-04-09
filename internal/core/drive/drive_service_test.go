@@ -511,6 +511,37 @@ func TestDelete_PublishesStreamingEvent(t *testing.T) {
 	assert.Equal(t, []string{"u1:fileDeleted"}, pub.events)
 }
 
+// stubChartHook captures chart hook fires from the drive service.
+type stubChartHook struct {
+	uploaded []string // file ids
+	deleted  []string
+}
+
+func (s *stubChartHook) OnFileUploaded(f *model.DriveFile) { s.uploaded = append(s.uploaded, f.ID) }
+func (s *stubChartHook) OnFileDeleted(f *model.DriveFile)  { s.deleted = append(s.deleted, f.ID) }
+
+func TestUpload_FiresChartHook(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	hook := &stubChartHook{}
+	svc.SetChartHook(hook)
+	user := &model.User{ID: "u1"}
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("hi"), Name: "x.txt"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{f.ID}, hook.uploaded)
+}
+
+func TestDelete_FiresChartHook(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	user := &model.User{ID: "u1"}
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("hi"), Name: "x.txt"})
+	require.NoError(t, err)
+
+	hook := &stubChartHook{}
+	svc.SetChartHook(hook)
+	require.NoError(t, svc.Delete(user, f.ID))
+	assert.Equal(t, []string{f.ID}, hook.deleted)
+}
+
 // failingFindByIDRepo wraps the mock to make FindByID fail when called the
 // second time (after the initial create succeeds in Update). 1 回目の Show ()
 // は成功させ、2 回目 (Update 後の reload) で失敗させる。

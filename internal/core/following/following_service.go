@@ -60,6 +60,15 @@ type FederationHook interface {
 	OnLocalFollowAccepted(follower, followee *model.User)
 }
 
+// ChartHook is invoked after follow / unfollow events so the chart
+// subsystem can record per-user and per-instance follow deltas.
+// パッケージ間の循環依存を避けるため interface で受け取る (実装は
+// core/chart/charthook)。
+type ChartHook interface {
+	OnFollow(follower, followee *model.User)
+	OnUnfollow(follower, followee *model.User)
+}
+
 // Service manages following relationships and follow requests.
 type Service struct {
 	userRepo          repository.UserRepository
@@ -69,6 +78,7 @@ type Service struct {
 	notificationHook  NotificationHook
 	blockingChecker   BlockingChecker
 	federationHook    FederationHook
+	chartHook         ChartHook
 }
 
 // NewService creates a new following Service.
@@ -100,6 +110,11 @@ func (s *Service) SetBlockingChecker(c BlockingChecker) {
 // Accept activities to remote inboxes.
 func (s *Service) SetFederationHook(h FederationHook) {
 	s.federationHook = h
+}
+
+// SetChartHook attaches a ChartHook invoked after follow / unfollow.
+func (s *Service) SetChartHook(h ChartHook) {
+	s.chartHook = h
 }
 
 // Follow creates a following relationship from follower to followee.
@@ -193,6 +208,9 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 	if s.federationHook != nil {
 		s.federationHook.OnLocalFollowed(follower, followee)
 	}
+	if s.chartHook != nil {
+		s.chartHook.OnFollow(follower, followee)
+	}
 
 	return &FollowResult{Following: f}, nil
 }
@@ -216,13 +234,18 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 	if err := s.userRepo.IncrementFollowersCount(followeeID, -1); err != nil {
 		return err
 	}
-	if s.federationHook != nil {
-		// hook 呼び出しに必要なユーザー情報を取得する。失敗してもベストエフォートで
-		// continue する。
+	// hook 呼び出しに必要なユーザー情報を一度だけロードして使い回す。
+	// 失敗してもベストエフォートで continue する。
+	if s.federationHook != nil || s.chartHook != nil {
 		follower, ferr := s.userRepo.FindByID(followerID)
 		followee, eerr := s.userRepo.FindByID(followeeID)
 		if ferr == nil && eerr == nil {
-			s.federationHook.OnLocalUnfollowed(follower, followee)
+			if s.federationHook != nil {
+				s.federationHook.OnLocalUnfollowed(follower, followee)
+			}
+			if s.chartHook != nil {
+				s.chartHook.OnUnfollow(follower, followee)
+			}
 		}
 	}
 	return nil
@@ -257,11 +280,16 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 	if s.notificationHook != nil {
 		s.notificationHook.OnFollowAccepted(req.FollowerID, req.FolloweeID)
 	}
-	if s.federationHook != nil {
+	if s.federationHook != nil || s.chartHook != nil {
 		follower, ferr := s.userRepo.FindByID(req.FollowerID)
 		followee, eerr := s.userRepo.FindByID(req.FolloweeID)
 		if ferr == nil && eerr == nil {
-			s.federationHook.OnLocalFollowAccepted(follower, followee)
+			if s.federationHook != nil {
+				s.federationHook.OnLocalFollowAccepted(follower, followee)
+			}
+			if s.chartHook != nil {
+				s.chartHook.OnFollow(follower, followee)
+			}
 		}
 	}
 	return nil

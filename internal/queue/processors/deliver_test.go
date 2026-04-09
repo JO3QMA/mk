@@ -252,3 +252,58 @@ func TestDeliverProcessor_ResponseHook_UnparseableInboxError(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, hook.errors)
 }
+
+// stubChartHook captures OnDelivered events from DeliverProcessor.
+type stubChartHook struct {
+	delivered []struct {
+		host      string
+		succeeded bool
+	}
+}
+
+func (s *stubChartHook) OnDelivered(host string, succeeded bool) {
+	s.delivered = append(s.delivered, struct {
+		host      string
+		succeeded bool
+	}{host, succeeded})
+}
+
+func TestDeliverProcessor_ChartHook_Success(t *testing.T) {
+	signer := &stubSigner{resp: okResponse(http.StatusOK)}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubChartHook{}
+	p.SetChartHook(hook)
+	require.NoError(t, p.Handle(context.Background(), makeTask(t, makePayload(t))))
+	require.Len(t, hook.delivered, 1)
+	assert.Equal(t, "remote.example", hook.delivered[0].host)
+	assert.True(t, hook.delivered[0].succeeded)
+}
+
+func TestDeliverProcessor_ChartHook_NetworkError(t *testing.T) {
+	signer := &stubSigner{err: errors.New("net down")}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubChartHook{}
+	p.SetChartHook(hook)
+	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
+	require.Error(t, err)
+	require.Len(t, hook.delivered, 1)
+	assert.False(t, hook.delivered[0].succeeded)
+}
+
+func TestDeliverProcessor_ChartHook_UnparseableInbox(t *testing.T) {
+	// 不正な inbox URL でも chart hook は host="" で発火し、route 別に
+	// no-op で扱われる (charthook 側のテストでカバー)。
+	signer := &stubSigner{resp: okResponse(http.StatusOK)}
+	p := processors.NewDeliverProcessor(signer)
+	hook := &stubChartHook{}
+	p.SetChartHook(hook)
+	payload := queue.DeliverPayload{
+		Inbox:  "://bad-url",
+		Body:   []byte(`{}`),
+		KeyID:  "https://example.com/users/u1#main-key",
+		KeyPEM: generateTestKey(t),
+	}
+	require.NoError(t, p.Handle(context.Background(), makeTask(t, payload)))
+	require.Len(t, hook.delivered, 1)
+	assert.Equal(t, "", hook.delivered[0].host)
+}

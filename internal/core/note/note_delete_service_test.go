@@ -111,3 +111,23 @@ func TestDeleteService_IndexHookInvoked(t *testing.T) {
 	require.NotNil(t, hook.deleted)
 	assert.Equal(t, "n1", hook.deleted.ID)
 }
+
+// recordingDeleteChartHook captures chart hook firings on the delete
+// path so we can check the chart subsystem hookup.
+type recordingDeleteChartHook struct {
+	deleted *model.Note
+}
+
+func (h *recordingDeleteChartHook) OnNoteDeleted(n *model.Note) { h.deleted = n }
+
+func TestDeleteService_ChartHookInvoked(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "user1"}
+	svc := note.NewDeleteService(noteRepo)
+	hook := &recordingDeleteChartHook{}
+	svc.SetChartHook(hook)
+
+	require.NoError(t, svc.Delete(&model.User{ID: "user1"}, "n1"))
+	require.NotNil(t, hook.deleted)
+	assert.Equal(t, "n1", hook.deleted.ID)
+}

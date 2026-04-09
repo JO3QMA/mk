@@ -29,11 +29,19 @@ type ResponseHook interface {
 	RecordResponseError(host string) error
 }
 
+// ChartHook is invoked after each HTTP attempt so the chart subsystem
+// can record ApRequest / Federation / Instance metrics. パッケージ間の
+// 循環依存を避けるため interface で受け取る。実装は core/chart/charthook。
+type ChartHook interface {
+	OnDelivered(host string, succeeded bool)
+}
+
 // DeliverProcessor handles ap:deliver tasks by posting the activity body to
 // the recipient inbox with an HTTP signature.
 type DeliverProcessor struct {
 	signer       HTTPSigner
 	responseHook ResponseHook
+	chartHook    ChartHook
 }
 
 // NewDeliverProcessor constructs a DeliverProcessor.
@@ -46,6 +54,11 @@ func (p *DeliverProcessor) SetResponseHook(h ResponseHook) {
 	p.responseHook = h
 }
 
+// SetChartHook attaches a ChartHook invoked after each delivery attempt.
+func (p *DeliverProcessor) SetChartHook(h ChartHook) {
+	p.chartHook = h
+}
+
 // hostFromInbox returns the host portion of an inbox URL, or "" if the URL is
 // not parseable. ResponseHook 通知用に共通化する。
 func hostFromInbox(inbox string) string {
@@ -56,28 +69,28 @@ func hostFromInbox(inbox string) string {
 	return u.Host
 }
 
-// recordSuccess is a best-effort wrapper around responseHook.RecordResponseSuccess.
+// recordSuccess is a best-effort wrapper that fires both the response
+// hook and the chart hook for a successful inbox POST.
 func (p *DeliverProcessor) recordSuccess(inbox string) {
-	if p.responseHook == nil {
-		return
-	}
 	host := hostFromInbox(inbox)
-	if host == "" {
-		return
+	if p.responseHook != nil && host != "" {
+		_ = p.responseHook.RecordResponseSuccess(host)
 	}
-	_ = p.responseHook.RecordResponseSuccess(host)
+	if p.chartHook != nil {
+		p.chartHook.OnDelivered(host, true)
+	}
 }
 
-// recordError is a best-effort wrapper around responseHook.RecordResponseError.
+// recordError is a best-effort wrapper that fires both the response
+// hook and the chart hook for a failed inbox POST.
 func (p *DeliverProcessor) recordError(inbox string) {
-	if p.responseHook == nil {
-		return
-	}
 	host := hostFromInbox(inbox)
-	if host == "" {
-		return
+	if p.responseHook != nil && host != "" {
+		_ = p.responseHook.RecordResponseError(host)
 	}
-	_ = p.responseHook.RecordResponseError(host)
+	if p.chartHook != nil {
+		p.chartHook.OnDelivered(host, false)
+	}
 }
 
 // Handle dispatches a single deliver task. The asynq runtime invokes this for

@@ -223,6 +223,64 @@ func TestUnfollow_SelfFollow(t *testing.T) {
 	assert.True(t, errors.Is(err, following.ErrSelfFollow))
 }
 
+// recordingChartHook captures Follow / Unfollow events forwarded by
+// FollowingService so we can verify the chart hook firing path.
+type recordingChartHook struct {
+	follows   [][2]string
+	unfollows [][2]string
+}
+
+func (h *recordingChartHook) OnFollow(follower, followee *model.User) {
+	h.follows = append(h.follows, [2]string{follower.ID, followee.ID})
+}
+
+func (h *recordingChartHook) OnUnfollow(follower, followee *model.User) {
+	h.unfollows = append(h.unfollows, [2]string{follower.ID, followee.ID})
+}
+
+func TestFollow_ChartHookInvoked(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	hook := &recordingChartHook{}
+	svc.SetChartHook(hook)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	require.Len(t, hook.follows, 1)
+	assert.Equal(t, [2]string{"alice", "bob"}, hook.follows[0])
+}
+
+func TestUnfollow_ChartHookInvoked(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	hook := &recordingChartHook{}
+	svc.SetChartHook(hook)
+
+	require.NoError(t, svc.Unfollow("alice", "bob"))
+	require.Len(t, hook.unfollows, 1)
+	assert.Equal(t, [2]string{"alice", "bob"}, hook.unfollows[0])
+}
+
+func TestAcceptRequest_ChartHookInvoked(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	hook := &recordingChartHook{}
+	svc.SetChartHook(hook)
+
+	require.NoError(t, svc.AcceptRequest("bob", "alice"))
+	require.Len(t, hook.follows, 1)
+	assert.Equal(t, [2]string{"alice", "bob"}, hook.follows[0])
+}
+
 func TestAcceptRequest_Success(t *testing.T) {
 	svc, userRepo, fRepo, frRepo := newSvc(t)
 	addUser(t, userRepo, "alice", false)

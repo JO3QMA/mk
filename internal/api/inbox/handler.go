@@ -26,6 +26,14 @@ type InstanceTracker interface {
 	MarkRequestReceived(host string) error
 }
 
+// ChartHook is invoked after a successfully verified inbound request
+// so the chart subsystem can record ApRequest.Inbox / FederationChart.
+// Inbox / InstanceChart.RequestReceived. パッケージ間の循環依存を
+// 避けるため interface で受け取る (実装は core/chart/charthook)。
+type ChartHook interface {
+	OnInboxReceived(host string)
+}
+
 // Handler accepts incoming activities and dispatches them to the federation
 // processor after verifying their HTTP signature.
 type Handler struct {
@@ -33,6 +41,7 @@ type Handler struct {
 	processor       *federation.Processor
 	hostBlocker     HostBlockChecker
 	instanceTracker InstanceTracker
+	chartHook       ChartHook
 }
 
 // NewHandler constructs a Handler.
@@ -51,6 +60,12 @@ func (h *Handler) SetHostBlockChecker(c HostBlockChecker) {
 // 成功するたびに対応 instance row の latestRequestReceivedAt が更新される。
 func (h *Handler) SetInstanceTracker(t InstanceTracker) {
 	h.instanceTracker = t
+}
+
+// SetChartHook attaches a ChartHook invoked after each successfully
+// verified inbound request.
+func (h *Handler) SetChartHook(c ChartHook) {
+	h.chartHook = c
 }
 
 // Inbox handles POST /inbox and POST /users/:id/inbox.
@@ -79,6 +94,7 @@ func (h *Handler) Inbox(c echo.Context) error {
 	}
 
 	h.touchInstance(actor)
+	h.commitChart(actor)
 
 	if err := h.processor.Process(body); err != nil {
 		if errors.Is(err, federation.ErrUnsupportedActivity) {
@@ -130,4 +146,13 @@ func (h *Handler) touchInstance(actor *model.User) {
 		return
 	}
 	_ = h.instanceTracker.MarkRequestReceived(*actor.Host)
+}
+
+// commitChart fires the chart hook for one inbound request. Chart hook
+// が未設定 / actor がローカル / Host nil の場合は no-op。
+func (h *Handler) commitChart(actor *model.User) {
+	if h.chartHook == nil || actor == nil || actor.Host == nil {
+		return
+	}
+	h.chartHook.OnInboxReceived(*actor.Host)
 }

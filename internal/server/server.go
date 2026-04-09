@@ -11,6 +11,7 @@ import (
 	echomw "github.com/labstack/echo/v4/middleware"
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/core/cache"
+	"github.com/shiroha-a/mk/internal/core/chart"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -26,6 +27,7 @@ type Server struct {
 	auth        *middleware.AuthMiddleware
 	queueClient *queue.Client
 	queueServer *queue.Server
+	chartMgmt   *chart.ManagementService
 }
 
 // New creates a new Server.
@@ -86,16 +88,32 @@ func (s *Server) Start() error {
 	if err := s.queueServer.Start(); err != nil {
 		return fmt.Errorf("start queue worker: %w", err)
 	}
+	if s.chartMgmt != nil {
+		if err := s.chartMgmt.Start(context.Background()); err != nil {
+			slog.Warn("chart management service start failed", "err", err)
+		}
+	}
 	addr := fmt.Sprintf(":%d", s.config.Port)
 	slog.Info("starting Misskey server", "addr", addr, "url", s.config.URL)
 	return s.echo.Start(addr)
 }
 
-// Shutdown gracefully shuts down the server and the asynq worker.
+// Shutdown gracefully shuts down the server, the asynq worker and
+// any background services such as the chart management loop.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.chartMgmt != nil {
+		s.chartMgmt.Stop(ctx)
+	}
 	s.queueServer.Shutdown()
 	if err := s.queueClient.Close(); err != nil {
 		slog.Warn("queue client close failed", "err", err)
 	}
 	return s.echo.Shutdown(ctx)
+}
+
+// setChartManagement registers the chart management service so its
+// save loop is started/stopped together with the HTTP server. Called
+// from setupRoutes after the chart engines are constructed.
+func (s *Server) setChartManagement(m *chart.ManagementService) {
+	s.chartMgmt = m
 }
