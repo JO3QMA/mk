@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main, develop]
 
-env:
-  TESTCONTAINERS_RYUK_DISABLED: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,6 +21,42 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mk
+          POSTGRES_PASSWORD: mk
+          POSTGRES_DB: misskey_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DB_HOST: localhost
+      TEST_DB_PORT: 5432
+      TEST_DB_NAME: misskey_test
+      TEST_DB_USER: mk
+      TEST_DB_PASS: mk
+      TEST_DB_SSLMODE: disable
+      TEST_REDIS_HOST: localhost
+      TEST_REDIS_PORT: 6379
+
     steps:
       - uses: actions/checkout@v4
 
@@ -32,8 +65,6 @@ jobs:
           go-version-file: go.mod
 
       # テスト対象は go list でテストファイルのあるパッケージのみに絞る。
-      # 全パッケージ展開だと cmd/* や internal/{model,server,testutil} のような
-      # テスト不要な package が 0% としてカウントされ、全体カバレッジが落ちる。
       - name: Run all tests with coverage
         run: |
           PKGS=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | tr '\n' ' ')
