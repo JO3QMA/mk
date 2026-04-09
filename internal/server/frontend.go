@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
@@ -23,8 +25,12 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 
 	return func(c echo.Context) error {
 		instanceName := "Misskey"
-		if m, err := metaRepo.Fetch(); err == nil && m.Name != nil {
-			instanceName = *m.Name
+		metaJSON := "{}"
+		if m, err := metaRepo.Fetch(); err == nil {
+			if m.Name != nil {
+				instanceName = *m.Name
+			}
+			metaJSON = buildMetaJSON(cfg, m)
 		}
 
 		// CLIENT_ENTRYの設定
@@ -47,7 +53,7 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 %s
 <link rel="stylesheet" href="/vite/loader/style.css">
 <script>const VERSION = '%s'; const CLIENT_ENTRY = %s; const LANGS = ["ja-JP","en-US"];</script>
-<script type="application/json" id="misskey_meta" data-generated-at="0">{}</script>
+<script type="application/json" id="misskey_meta" data-generated-at="%d">%s</script>
 <script src="/vite/loader/boot.js"></script>
 </head><body>
 <noscript><p>Please turn on your JavaScript</p></noscript>
@@ -56,7 +62,9 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 <p>Loading...</p>
 </div>
 </div>
-</body></html>`, instanceName, cfg.URL, instanceName, viteClientTag, cfg.Version, clientEntryJS)
+</body></html>`, instanceName, cfg.URL, instanceName, viteClientTag,
+			cfg.Version, clientEntryJS,
+			time.Now().UnixMilli(), metaJSON)
 
 		return c.HTML(http.StatusOK, html)
 	}
@@ -99,6 +107,49 @@ func detectClientEntry() string {
 		return entry.File
 	}
 	return ""
+}
+
+// buildMetaJSON constructs the /api/meta equivalent JSON for inline embedding.
+// meta handler と同じフィールドを返す。フロントエンドはこのJSONを先に読んで
+// /api/meta の呼び出しを省略する。
+func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
+	resp := map[string]any{
+		"maintainerName": m.MaintainerName, "maintainerEmail": m.MaintainerEmail,
+		"version": cfg.Version, "name": m.Name, "shortName": m.ShortName,
+		"uri": cfg.URL, "description": m.Description, "langs": m.Langs,
+		"disableRegistration":    m.DisableRegistration,
+		"emailRequiredForSignup": m.EmailRequiredForSignup,
+		"enableHcaptcha":         m.EnableHcaptcha, "hcaptchaSiteKey": m.HcaptchaSiteKey,
+		"enableRecaptcha": m.EnableRecaptcha, "recaptchaSiteKey": m.RecaptchaSiteKey,
+		"enableTurnstile": m.EnableTurnstile, "turnstileSiteKey": m.TurnstileSiteKey,
+		"themeColor": m.ThemeColor, "bannerUrl": m.BannerURL,
+		"backgroundImageUrl": m.BackgroundImageURL,
+		"logoImageUrl":       m.LogoImageURL, "iconUrl": m.IconURL,
+		"cacheRemoteFiles":    m.CacheRemoteFiles,
+		"enableServiceWorker": m.EnableServiceWorker,
+		"swPublickey":         m.SwPublicKey, "serverRules": m.ServerRules,
+		"maxNoteTextLength": 3000,
+		"tosUrl":            m.TermsOfServiceURL, "repositoryUrl": m.RepositoryURL,
+		"feedbackUrl": m.FeedbackURL, "impressumUrl": m.ImpressumURL,
+		"privacyPolicyUrl":    m.PrivacyPolicyURL,
+		"federation":          m.Federation,
+		"translatorAvailable": false, "enableEmail": m.EnableEmail,
+		"ads": []any{}, "notesPerOneAd": 0,
+		"cacheRemoteSensitiveFiles": m.CacheRemoteSensitiveFiles,
+		"requireSetup":              false,
+		"features": map[string]any{
+			"registration":           !m.DisableRegistration,
+			"emailRequiredForSignup": m.EmailRequiredForSignup,
+			"hcaptcha":               m.EnableHcaptcha, "recaptcha": m.EnableRecaptcha,
+			"turnstile": m.EnableTurnstile, "objectStorage": m.UseObjectStorage,
+			"serviceWorker": m.EnableServiceWorker, "miauth": true,
+		},
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 // newViteProxy creates a reverse proxy handler that forwards requests to
