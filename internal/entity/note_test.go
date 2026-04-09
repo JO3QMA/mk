@@ -65,11 +65,10 @@ func TestPackNote_NilArrays(t *testing.T) {
 
 	entity := PackNote(note, idGen)
 
-	// nil配列は空スライスに変換される
+	// FileIDsはnilでも空スライスに変換、Tagsはomitemptyでnil維持
 	assert.NotNil(t, entity.FileIDs)
 	assert.Empty(t, entity.FileIDs)
-	assert.NotNil(t, entity.Tags)
-	assert.Empty(t, entity.Tags)
+	assert.Nil(t, entity.Tags) // omitempty: nil → JSON省略
 }
 
 func TestPackNote_WithUser(t *testing.T) {

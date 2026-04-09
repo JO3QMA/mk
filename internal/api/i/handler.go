@@ -2,6 +2,7 @@ package i
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -30,13 +31,21 @@ func (h *Handler) Me(c echo.Context) error {
 
 	detailed := entity.PackUserDetailed(u, profile)
 
+	// avatarUrl が未設定の場合は identicon URL を生成
+	avatarURL := detailed.AvatarURL
+	if avatarURL == nil {
+		ident := fmt.Sprintf("/identicon/%s", u.Username)
+		avatarURL = &ident
+	}
+
 	// /api/i returns additional private fields
 	resp := map[string]any{
+		// UserLite fields
 		"id":                u.ID,
 		"name":              detailed.Name,
 		"username":          detailed.Username,
 		"host":              detailed.Host,
-		"avatarUrl":         detailed.AvatarURL,
+		"avatarUrl":         avatarURL,
 		"avatarBlurhash":    detailed.AvatarBlurhash,
 		"avatarDecorations": detailed.AvatarDecorations,
 		"isBot":             detailed.IsBot,
@@ -44,21 +53,41 @@ func (h *Handler) Me(c echo.Context) error {
 		"emojis":            detailed.Emojis,
 		"onlineStatus":      detailed.OnlineStatus,
 		"badgeRoles":        detailed.BadgeRoles,
-		"bannerUrl":         detailed.BannerURL,
-		"bannerBlurhash":    detailed.BannerBlurhash,
-		"isLocked":          detailed.IsLocked,
-		"isSuspended":       detailed.IsSuspended,
-		"description":       detailed.Description,
-		"location":          detailed.Location,
-		"birthday":          detailed.Birthday,
-		"lang":              detailed.Lang,
-		"fields":            detailed.Fields,
-		"followersCount":    detailed.FollowersCount,
-		"followingCount":    detailed.FollowingCount,
-		"notesCount":        detailed.NotesCount,
+		// UserDetailed fields
+		"bannerUrl":      detailed.BannerURL,
+		"bannerBlurhash": detailed.BannerBlurhash,
+		"isLocked":       detailed.IsLocked,
+		"isSilenced":     u.IsSuspended && false, // ロールベースで判定 (未実装)
+		"isSuspended":    detailed.IsSuspended,
+		"description":    detailed.Description,
+		"location":       detailed.Location,
+		"birthday":       detailed.Birthday,
+		"lang":           detailed.Lang,
+		"fields":         detailed.Fields,
+		"verifiedLinks":  []string{},
+		"followersCount": detailed.FollowersCount,
+		"followingCount": detailed.FollowingCount,
+		"notesCount":     detailed.NotesCount,
+		"uri":            detailed.URI,
+		"url":            detailed.URL,
+		"movedTo":        nil,
+		"alsoKnownAs":    nil,
+		"updatedAt":      detailed.UpdatedAt,
+		"lastFetchedAt":  nil,
+		// MeDetailed fields
+		"avatarId":            nil,
+		"bannerId":            nil,
+		"followersVisibility": "public",
+		"followingVisibility": "public",
+		"chatScope":           "mutual",
+		"canChat":             true,
+		"followedMessage":     nil,
+		"memo":                nil,
+		"moderationNote":      nil,
+		"hideOnlineStatus":    u.HideOnlineStatus,
 	}
 
-	// Private fields
+	// Private fields from profile
 	if profile != nil {
 		resp["email"] = profile.Email
 		resp["emailVerified"] = profile.EmailVerified
@@ -71,7 +100,6 @@ func (h *Handler) Me(c echo.Context) error {
 		resp["injectFeaturedNote"] = profile.InjectFeaturedNote
 		resp["receiveAnnouncementEmail"] = profile.ReceiveAnnouncementEmail
 		resp["twoFactorEnabled"] = profile.TwoFactorEnabled
-		resp["securityKeysAvailable"] = profile.SecurityKeysAvailable
 		resp["usePasswordLessLogin"] = profile.UsePasswordLessLogin
 		resp["mutedWords"] = profile.MutedWords
 		resp["hardMutedWords"] = profile.HardMutedWords
@@ -79,10 +107,10 @@ func (h *Handler) Me(c echo.Context) error {
 		resp["publicReactions"] = profile.PublicReactions
 	}
 
-	// フロントエンド互換性フィールド (Phase 4.5i)
+	// フロントエンド互換性フィールド (Phase 4.5c)
 	resp["isAdmin"] = false
 	resp["isModerator"] = false
-	resp["isDeleted"] = false
+	resp["isDeleted"] = u.IsDeleted
 	resp["isExplorable"] = u.IsExplorable
 	resp["hasUnreadNotification"] = false
 	resp["hasPendingReceivedFollowRequest"] = false
@@ -91,6 +119,7 @@ func (h *Handler) Me(c echo.Context) error {
 	resp["hasUnreadChannel"] = false
 	resp["hasUnreadMentions"] = false
 	resp["hasUnreadSpecifiedNotes"] = false
+	resp["hasUnreadChatMessages"] = false
 	resp["unreadNotificationsCount"] = 0
 	resp["unreadAnnouncements"] = []any{}
 	resp["pinnedNoteIds"] = []string{}
@@ -98,37 +127,13 @@ func (h *Handler) Me(c echo.Context) error {
 	resp["pinnedPageId"] = nil
 	resp["pinnedPage"] = nil
 	resp["loggedInDays"] = 0
-	resp["policies"] = map[string]any{
-		"gtlAvailable":               true,
-		"ltlAvailable":               true,
-		"canPublicNote":              true,
-		"mentionLimit":               150,
-		"canInvite":                  false,
-		"inviteLimit":                0,
-		"inviteLimitCycle":           10080,
-		"inviteExpirationTime":       0,
-		"canManageCustomEmojis":      false,
-		"canManageAvatarDecorations": false,
-		"canSearchNotes":             true,
-		"canUseTranslator":           false,
-		"canHideAds":                 false,
-		"driveCapacityMb":            100,
-		"alwaysMarkNsfw":             false,
-		"pinLimit":                   5,
-		"antennaLimit":               5,
-		"wordMuteLimit":              200,
-		"webhookLimit":               3,
-		"clipLimit":                  10,
-		"noteEachClipsLimit":         200,
-		"userListLimit":              10,
-		"userEachUserListsLimit":     50,
-		"rateLimitFactor":            1,
-		"avatarDecorationLimit":      1,
-	}
+	resp["policies"] = defaultMePolicies()
 	resp["roles"] = []any{}
 	resp["achievements"] = []any{}
 	resp["twoFactorBackupCodesStock"] = "none"
 	resp["securityKeys"] = false
+	resp["securityKeysList"] = []any{}
+	resp["mutingNotificationTypes"] = []any{}
 	resp["notificationRecieveConfig"] = map[string]any{}
 	resp["emailNotificationTypes"] = []string{"follow", "receiveFollowRequest"}
 
@@ -271,5 +276,49 @@ func errEnvelope(message, code, id string) map[string]any {
 			"code":    code,
 			"id":      id,
 		},
+	}
+}
+
+// defaultMePolicies returns the Misskey default policies for MeDetailed.
+func defaultMePolicies() map[string]any {
+	return map[string]any{
+		"gtlAvailable":               true,
+		"ltlAvailable":               true,
+		"canPublicNote":              true,
+		"mentionLimit":               20,
+		"canInvite":                  false,
+		"inviteLimit":                0,
+		"inviteLimitCycle":           10080,
+		"inviteExpirationTime":       0,
+		"canManageCustomEmojis":      false,
+		"canManageAvatarDecorations": false,
+		"canSearchNotes":             false,
+		"canSearchUsers":             true,
+		"canUseTranslator":           true,
+		"canHideAds":                 false,
+		"driveCapacityMb":            100,
+		"maxFileSizeMb":              30,
+		"alwaysMarkNsfw":             false,
+		"canUpdateBioMedia":          true,
+		"pinLimit":                   5,
+		"antennaLimit":               5,
+		"wordMuteLimit":              200,
+		"webhookLimit":               3,
+		"clipLimit":                  10,
+		"noteEachClipsLimit":         200,
+		"userListLimit":              10,
+		"userEachUserListsLimit":     50,
+		"rateLimitFactor":            1,
+		"avatarDecorationLimit":      1,
+		"canImportAntennas":          false,
+		"canImportBlocking":          false,
+		"canImportFollowing":         false,
+		"canImportMuting":            false,
+		"canImportUserLists":         false,
+		"chatAvailability":           "available",
+		"uploadableFileTypes":        []string{"text/*", "application/json", "image/*", "video/*", "audio/*"},
+		"noteDraftLimit":             10,
+		"scheduledNoteLimit":         1,
+		"watermarkAvailable":         true,
 	}
 }

@@ -18,20 +18,23 @@ type NoteEntity struct {
 	LocalOnly          bool              `json:"localOnly"`
 	ReactionAcceptance *string           `json:"reactionAcceptance"`
 	Reactions          datatypes.JSON    `json:"reactions"`
+	ReactionCount      int               `json:"reactionCount"`
+	ReactionEmojis     map[string]string `json:"reactionEmojis"`
 	RenoteCount        int16             `json:"renoteCount"`
 	RepliesCount       int16             `json:"repliesCount"`
-	URI                *string           `json:"uri"`
-	URL                *string           `json:"url"`
+	ClippedCount       int               `json:"clippedCount"`
+	URI                *string           `json:"uri,omitempty"`
+	URL                *string           `json:"url,omitempty"`
 	ReplyID            *string           `json:"replyId"`
 	RenoteID           *string           `json:"renoteId"`
-	Reply              *NoteEntity       `json:"reply"`
-	Renote             *NoteEntity       `json:"renote"`
+	Reply              *NoteEntity       `json:"reply,omitempty"`
+	Renote             *NoteEntity       `json:"renote,omitempty"`
 	FileIDs            []string          `json:"fileIds"`
 	Files              []any             `json:"files"`
-	Tags               []string          `json:"tags"`
-	Poll               *PollEntity       `json:"poll"`
-	Emojis             map[string]string `json:"emojis"`
-	ChannelID          *string           `json:"channelId"`
+	Tags               []string          `json:"tags,omitempty"`
+	Poll               *PollEntity       `json:"poll,omitempty"`
+	Emojis             map[string]string `json:"emojis,omitempty"`
+	ChannelID          *string           `json:"channelId,omitempty"`
 }
 
 // PollEntity is the poll representation in a note.
@@ -59,10 +62,6 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 	if n.FileIDs != nil {
 		fileIDs = n.FileIDs
 	}
-	tags := make([]string, 0)
-	if n.Tags != nil {
-		tags = n.Tags
-	}
 
 	entity := NoteEntity{
 		ID:                 n.ID,
@@ -74,15 +73,18 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 		LocalOnly:          n.LocalOnly,
 		ReactionAcceptance: n.ReactionAcceptance,
 		Reactions:          n.Reactions,
+		ReactionCount:      0,
+		ReactionEmojis:     make(map[string]string),
 		RenoteCount:        n.RenoteCount,
 		RepliesCount:       n.RepliesCount,
+		ClippedCount:       0,
 		URI:                n.URI,
 		URL:                n.URL,
 		ReplyID:            n.ReplyID,
 		RenoteID:           n.RenoteID,
 		FileIDs:            fileIDs,
 		Files:              []any{},
-		Tags:               tags,
+		Tags:               n.Tags,
 		Emojis:             make(map[string]string),
 		ChannelID:          n.ChannelID,
 	}

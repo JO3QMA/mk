@@ -165,7 +165,7 @@ func TestMe_Success(t *testing.T) {
 	assert.Equal(t, false, resp["hasUnreadNotification"])
 	assert.Equal(t, false, resp["hasPendingReceivedFollowRequest"])
 
-	// Phase 4.5i 互換性フィールド
+	// Phase 4.5c 互換性フィールド
 	assert.Equal(t, false, resp["isAdmin"])
 	assert.Equal(t, false, resp["isModerator"])
 	assert.Equal(t, false, resp["isDeleted"])
@@ -177,6 +177,19 @@ func TestMe_Success(t *testing.T) {
 	assert.NotNil(t, resp["achievements"])
 	assert.NotNil(t, resp["unreadAnnouncements"])
 	assert.Equal(t, false, resp["publicReactions"]) // profile has default false
+	// C3 追加フィールド
+	assert.NotNil(t, resp["avatarUrl"]) // identicon URL 自動生成
+	assert.Equal(t, false, resp["hasUnreadChatMessages"])
+	assert.Equal(t, "public", resp["followersVisibility"])
+	assert.Equal(t, "public", resp["followingVisibility"])
+	assert.Equal(t, "mutual", resp["chatScope"])
+	assert.Equal(t, true, resp["canChat"])
+	assert.NotNil(t, resp["verifiedLinks"])
+	assert.NotNil(t, resp["securityKeysList"])
+	assert.NotNil(t, resp["mutingNotificationTypes"])
+	assert.Equal(t, false, resp["securityKeys"])
+	assert.Nil(t, resp["movedTo"])
+	assert.Nil(t, resp["alsoKnownAs"])
 }
 
 func TestMe_CreatedAtFromValidID(t *testing.T) {
