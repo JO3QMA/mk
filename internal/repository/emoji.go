@@ -8,6 +8,8 @@ import (
 // EmojiRepository provides data access for the `emoji` table.
 type EmojiRepository interface {
 	FindByNameAndHost(name string, host *string) (*model.Emoji, error)
+	// ListLocal returns all local custom emojis (host IS NULL).
+	ListLocal() ([]*model.Emoji, error)
 }
 
 type emojiRepository struct {
@@ -17,6 +19,14 @@ type emojiRepository struct {
 // NewEmojiRepository creates a new EmojiRepository.
 func NewEmojiRepository(db *gorm.DB) EmojiRepository {
 	return &emojiRepository{db: db}
+}
+
+func (r *emojiRepository) ListLocal() ([]*model.Emoji, error) {
+	var emojis []*model.Emoji
+	if err := r.db.Where("host IS NULL").Find(&emojis).Error; err != nil {
+		return nil, err
+	}
+	return emojis, nil
 }
 
 // FindByNameAndHost looks up a custom emoji by its name and host.

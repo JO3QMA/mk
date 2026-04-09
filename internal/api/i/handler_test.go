@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
@@ -163,6 +164,54 @@ func TestMe_Success(t *testing.T) {
 	// Hardcoded fields
 	assert.Equal(t, false, resp["hasUnreadNotification"])
 	assert.Equal(t, false, resp["hasPendingReceivedFollowRequest"])
+
+	// Phase 4.5i 互換性フィールド
+	assert.Equal(t, false, resp["isAdmin"])
+	assert.Equal(t, false, resp["isModerator"])
+	assert.Equal(t, false, resp["isDeleted"])
+	assert.NotNil(t, resp["pinnedNoteIds"])
+	assert.NotNil(t, resp["pinnedNotes"])
+	assert.Nil(t, resp["pinnedPageId"])
+	assert.NotNil(t, resp["policies"])
+	assert.NotNil(t, resp["roles"])
+	assert.NotNil(t, resp["achievements"])
+	assert.NotNil(t, resp["unreadAnnouncements"])
+	assert.Equal(t, false, resp["publicReactions"]) // profile has default false
+}
+
+func TestMe_CreatedAtFromValidID(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+
+	// AIDXで生成した有効なIDを使う
+	idGen, _ := id.NewGenerator("aidx")
+	validID := idGen.Generate(java_time())
+
+	user := &model.User{
+		ID:                validID,
+		Username:          "validid",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), user)
+
+	err := h.Me(c)
+	require.NoError(t, err)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	// createdAt は有効なIDから復元される
+	createdAt, ok := resp["createdAt"].(string)
+	require.True(t, ok, "createdAt should be a string")
+	assert.Contains(t, createdAt, "T") // ISO8601 format
+}
+
+func java_time() time.Time {
+	return time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 }
 
 func TestMe_NoProfile(t *testing.T) {

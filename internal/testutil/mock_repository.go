@@ -539,6 +539,16 @@ func NewMockEmojiRepository() *MockEmojiRepository {
 	return &MockEmojiRepository{Emojis: make(map[string]*model.Emoji)}
 }
 
+func (m *MockEmojiRepository) ListLocal() ([]*model.Emoji, error) {
+	var result []*model.Emoji
+	for _, e := range m.Emojis {
+		if e.Host == nil {
+			result = append(result, e)
+		}
+	}
+	return result, nil
+}
+
 func (m *MockEmojiRepository) FindByNameAndHost(name string, host *string) (*model.Emoji, error) {
 	key := name + "@"
 	if host != nil {

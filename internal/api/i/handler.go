@@ -73,9 +73,69 @@ func (h *Handler) Me(c echo.Context) error {
 		resp["twoFactorEnabled"] = profile.TwoFactorEnabled
 		resp["securityKeysAvailable"] = profile.SecurityKeysAvailable
 		resp["usePasswordLessLogin"] = profile.UsePasswordLessLogin
+		resp["mutedWords"] = profile.MutedWords
+		resp["hardMutedWords"] = profile.HardMutedWords
+		resp["mutedInstances"] = profile.MutedInstances
+		resp["publicReactions"] = profile.PublicReactions
 	}
+
+	// フロントエンド互換性フィールド (Phase 4.5i)
+	resp["isAdmin"] = false
+	resp["isModerator"] = false
+	resp["isDeleted"] = false
+	resp["isExplorable"] = u.IsExplorable
 	resp["hasUnreadNotification"] = false
 	resp["hasPendingReceivedFollowRequest"] = false
+	resp["hasUnreadAnnouncement"] = false
+	resp["hasUnreadAntenna"] = false
+	resp["hasUnreadChannel"] = false
+	resp["hasUnreadMentions"] = false
+	resp["hasUnreadSpecifiedNotes"] = false
+	resp["unreadNotificationsCount"] = 0
+	resp["unreadAnnouncements"] = []any{}
+	resp["pinnedNoteIds"] = []string{}
+	resp["pinnedNotes"] = []any{}
+	resp["pinnedPageId"] = nil
+	resp["pinnedPage"] = nil
+	resp["loggedInDays"] = 0
+	resp["policies"] = map[string]any{
+		"gtlAvailable":               true,
+		"ltlAvailable":               true,
+		"canPublicNote":              true,
+		"mentionLimit":               150,
+		"canInvite":                  false,
+		"inviteLimit":                0,
+		"inviteLimitCycle":           10080,
+		"inviteExpirationTime":       0,
+		"canManageCustomEmojis":      false,
+		"canManageAvatarDecorations": false,
+		"canSearchNotes":             true,
+		"canUseTranslator":           false,
+		"canHideAds":                 false,
+		"driveCapacityMb":            100,
+		"alwaysMarkNsfw":             false,
+		"pinLimit":                   5,
+		"antennaLimit":               5,
+		"wordMuteLimit":              200,
+		"webhookLimit":               3,
+		"clipLimit":                  10,
+		"noteEachClipsLimit":         200,
+		"userListLimit":              10,
+		"userEachUserListsLimit":     50,
+		"rateLimitFactor":            1,
+		"avatarDecorationLimit":      1,
+	}
+	resp["roles"] = []any{}
+	resp["achievements"] = []any{}
+	resp["twoFactorBackupCodesStock"] = "none"
+	resp["securityKeys"] = false
+	resp["notificationRecieveConfig"] = map[string]any{}
+	resp["emailNotificationTypes"] = []string{"follow", "receiveFollowRequest"}
+
+	// createdAt は ID から復元
+	if t, err := h.idGen.ParseTime(u.ID); err == nil {
+		resp["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+	}
 
 	return c.JSON(http.StatusOK, resp)
 }

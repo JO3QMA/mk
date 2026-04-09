@@ -61,6 +61,29 @@ func (h *Handler) Meta(c echo.Context) error {
 		"serverRules":            m.ServerRules,
 		"policies":               m.Policies,
 		"maxNoteTextLength":      3000,
+
+		// フロントエンド互換性フィールド (Phase 4.5i)
+		"tosUrl":                    m.TermsOfServiceURL,
+		"repositoryUrl":             m.RepositoryURL,
+		"feedbackUrl":               m.FeedbackURL,
+		"impressumUrl":              m.ImpressumURL,
+		"privacyPolicyUrl":          m.PrivacyPolicyURL,
+		"federation":                m.Federation,
+		"defaultLightTheme":         nil,
+		"defaultDarkTheme":          nil,
+		"serverErrorImageUrl":       nil,
+		"notFoundImageUrl":          nil,
+		"infoImageUrl":              nil,
+		"app512IconUrl":             nil,
+		"translatorAvailable":       false,
+		"enableEmail":               m.EnableEmail,
+		"enableUrlPreview":          false,
+		"ads":                       []any{},
+		"notesPerOneAd":             0,
+		"mediaProxy":                "",
+		"cacheRemoteSensitiveFiles": m.CacheRemoteSensitiveFiles,
+		"requireSetup":              false,
+
 		"features": map[string]any{
 			"registration":           !m.DisableRegistration,
 			"emailRequiredForSignup": m.EmailRequiredForSignup,
@@ -70,6 +93,8 @@ func (h *Handler) Meta(c echo.Context) error {
 			"objectStorage":          m.UseObjectStorage,
 			"serviceWorker":          m.EnableServiceWorker,
 			"miauth":                 true,
+			"localTimeline":          true,
+			"globalTimeline":         true,
 		},
 	}
 

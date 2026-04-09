@@ -61,3 +61,36 @@ func TestEmojiRepository_FindByNameAndHost_Error(t *testing.T) {
 	_, err := repo.FindByNameAndHost("x", nil)
 	assert.Error(t, err)
 }
+
+func TestEmojiRepository_ListLocal_Empty(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+	emojis, err := repo.ListLocal()
+	require.NoError(t, err)
+	assert.Empty(t, emojis)
+}
+
+func TestEmojiRepository_ListLocal_ReturnsLocalOnly(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	local := &model.Emoji{ID: "e_ll", Name: "local_smile", OriginalURL: "https://example.com/s.png"}
+	require.NoError(t, testDB.Create(local).Error)
+	defer cleanupEmoji(t, local.ID)
+
+	host := "remote.example"
+	remote := &model.Emoji{ID: "e_lr", Name: "remote_smile", Host: &host, OriginalURL: "https://remote.example/s.png"}
+	require.NoError(t, testDB.Create(remote).Error)
+	defer cleanupEmoji(t, remote.ID)
+
+	emojis, err := repo.ListLocal()
+	require.NoError(t, err)
+	assert.Len(t, emojis, 1)
+	assert.Equal(t, "local_smile", emojis[0].Name)
+}
+
+func TestEmojiRepository_ListLocal_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewEmojiRepository(testDB.WithContext(ctx))
+	_, err := repo.ListLocal()
+	assert.Error(t, err)
+}

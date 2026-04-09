@@ -14,6 +14,7 @@ import (
 	apicharts "github.com/shiroha-a/mk/internal/api/charts"
 	"github.com/shiroha-a/mk/internal/api/clips"
 	"github.com/shiroha-a/mk/internal/api/drive"
+	apiemojis "github.com/shiroha-a/mk/internal/api/emojis"
 	apifederation "github.com/shiroha-a/mk/internal/api/federation"
 	apiflash "github.com/shiroha-a/mk/internal/api/flash"
 	"github.com/shiroha-a/mk/internal/api/following"
@@ -57,6 +58,7 @@ import (
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/shiroha-a/mk/internal/stream/channels"
+	"log/slog"
 )
 
 func (s *Server) setupRoutes() {
@@ -245,6 +247,10 @@ func (s *Server) setupRoutes() {
 	metaHandler := meta.NewHandler(s.config, metaRepo)
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
+
+	// Emojis endpoint (public, Phase 4.5i)
+	emojisHandler := apiemojis.NewHandler(emojiRepo)
+	api.POST("/emojis", emojisHandler.Emojis)
 
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
@@ -474,4 +480,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/accept", followingHandler.AcceptRequest, middleware.RequireAuth())
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
+
+	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
+	api.Any("/*", func(c echo.Context) error {
+		slog.Warn("unimplemented API endpoint", "method", c.Request().Method, "path", c.Request().URL.Path)
+		return c.JSON(http.StatusOK, map[string]any{})
+	})
+
+	// Vite dev server reverse proxy (Phase 4.5i)
+	s.echo.Any("/vite/*", newViteProxy("http://localhost:5173"))
+
+	// Frontend HTML shell — SPA catchall (最後に登録)
+	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
 }
