@@ -63,6 +63,7 @@ import (
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -263,6 +264,24 @@ func (s *Server) setupRoutes() {
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
 
+	// Stats endpoint (public)
+	api.POST("/stats", func(c echo.Context) error {
+		var notesCount, usersCount, instancesCount int64
+		s.db.Model(&model.Note{}).Where("\"userHost\" IS NULL").Count(&notesCount)
+		s.db.Model(&model.User{}).Where("host IS NULL").Count(&usersCount)
+		s.db.Model(&model.Instance{}).Count(&instancesCount)
+		return c.JSON(http.StatusOK, map[string]any{
+			"notesCount":         notesCount,
+			"originalNotesCount": notesCount,
+			"usersCount":         usersCount,
+			"originalUsersCount": usersCount,
+			"instances":          instancesCount,
+			"driveUsageLocal":    0,
+			"driveUsageRemote":   0,
+			"reactionsCount":     0,
+		})
+	})
+
 	// Signin (Phase 6)
 	signinHandler := apisignin.NewHandler(userRepo)
 	api.POST("/signin", signinHandler.Signin)
@@ -297,6 +316,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/favorites/create", notesHandler.FavoritesCreate, middleware.RequireAuth())
 	api.POST("/notes/favorites/delete", notesHandler.FavoritesDelete, middleware.RequireAuth())
 	api.POST("/notes/featured", notesHandler.Featured)
+	api.GET("/notes/featured", notesHandler.Featured)
 	api.POST("/notes/unrenote", notesHandler.Unrenote, middleware.RequireAuth())
 	api.POST("/notes/mentions", notesHandler.Mentions, middleware.RequireAuth())
 	api.POST("/notes/user-list-timeline", notesHandler.UserListTimeline, middleware.RequireAuth())
@@ -440,6 +460,7 @@ func (s *Server) setupRoutes() {
 	// Federation endpoints
 	federationHandler := apifederation.NewHandler(instanceService)
 	api.POST("/federation/instances", federationHandler.Instances)
+	api.GET("/federation/instances", federationHandler.Instances)
 	api.POST("/federation/show-instance", federationHandler.ShowInstance)
 
 	// Channels endpoints (Phase 4.2)
