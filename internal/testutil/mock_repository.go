@@ -581,6 +581,68 @@ func NewMockEmojiRepository() *MockEmojiRepository {
 	return &MockEmojiRepository{Emojis: make(map[string]*model.Emoji)}
 }
 
+func (m *MockEmojiRepository) Create(e *model.Emoji) error {
+	key := e.Name + "@"
+	if e.Host != nil {
+		key += *e.Host
+	}
+	m.Emojis[key] = e
+	return nil
+}
+
+func (m *MockEmojiRepository) FindByID(id string) (*model.Emoji, error) {
+	for _, e := range m.Emojis {
+		if e.ID == id {
+			return e, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) error {
+	for _, e := range m.Emojis {
+		if e.ID == id {
+			if v, ok := fields["name"]; ok {
+				e.Name = v.(string)
+			}
+			if v, ok := fields["category"]; ok {
+				s := v.(string)
+				e.Category = &s
+			}
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *MockEmojiRepository) Delete(id string) error {
+	for k, e := range m.Emojis {
+		if e.ID == id {
+			delete(m.Emojis, k)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *MockEmojiRepository) ListWithFilter(query, category string, local bool, limit, offset int) ([]*model.Emoji, error) {
+	var result []*model.Emoji
+	for _, e := range m.Emojis {
+		if local && e.Host != nil {
+			continue
+		}
+		result = append(result, e)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
 func (m *MockEmojiRepository) ListLocal() ([]*model.Emoji, error) {
 	var result []*model.Emoji
 	for _, e := range m.Emojis {
@@ -2009,6 +2071,92 @@ func paginateRequests(rows []*model.FollowRequest, limit, offset int) []*model.F
 	}
 	end := min(offset+limit, len(rows))
 	return rows[offset:end]
+}
+
+// ---------------------------------------------------------------------------
+// MockAbuseReportRepository
+// ---------------------------------------------------------------------------
+
+type MockAbuseReportRepository struct {
+	Reports map[string]*model.AbuseUserReport
+}
+
+func NewMockAbuseReportRepository() *MockAbuseReportRepository {
+	return &MockAbuseReportRepository{Reports: make(map[string]*model.AbuseUserReport)}
+}
+
+func (m *MockAbuseReportRepository) Create(r *model.AbuseUserReport) error {
+	m.Reports[r.ID] = r
+	return nil
+}
+
+func (m *MockAbuseReportRepository) FindByID(id string) (*model.AbuseUserReport, error) {
+	r, ok := m.Reports[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return r, nil
+}
+
+func (m *MockAbuseReportRepository) List(resolved *bool, limit, offset int) ([]*model.AbuseUserReport, error) {
+	var result []*model.AbuseUserReport
+	for _, r := range m.Reports {
+		if resolved != nil && r.Resolved != *resolved {
+			continue
+		}
+		result = append(result, r)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
+func (m *MockAbuseReportRepository) UpdateFields(id string, fields map[string]any) error {
+	r, ok := m.Reports[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if v, ok := fields["resolved"]; ok {
+		r.Resolved = v.(bool)
+	}
+	if v, ok := fields["resolvedAs"]; ok {
+		s := v.(string)
+		r.ResolvedAs = &s
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// MockModerationLogRepository
+// ---------------------------------------------------------------------------
+
+type MockModerationLogRepository struct {
+	Logs []*model.ModerationLog
+}
+
+func NewMockModerationLogRepository() *MockModerationLogRepository {
+	return &MockModerationLogRepository{}
+}
+
+func (m *MockModerationLogRepository) Create(log *model.ModerationLog) error {
+	m.Logs = append(m.Logs, log)
+	return nil
+}
+
+func (m *MockModerationLogRepository) List(limit, offset int) ([]*model.ModerationLog, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if offset >= len(m.Logs) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(m.Logs))
+	return m.Logs[offset:end], nil
 }
 
 // ---------------------------------------------------------------------------

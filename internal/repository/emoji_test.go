@@ -62,6 +62,90 @@ func TestEmojiRepository_FindByNameAndHost_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestEmojiRepository_CRUD(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e := &model.Emoji{ID: "e_crud", Name: "testcrud", OriginalURL: "https://example.com/x.png"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	found, err := repo.FindByID(e.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "testcrud", found.Name)
+
+	require.NoError(t, repo.UpdateFields(e.ID, map[string]any{"name": "updated"}))
+	found, _ = repo.FindByID(e.ID)
+	assert.Equal(t, "updated", found.Name)
+
+	require.NoError(t, repo.Delete(e.ID))
+	_, err = repo.FindByID(e.ID)
+	assert.Error(t, err)
+}
+
+func TestEmojiRepository_FindByID_NotFound(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+	_, err := repo.FindByID("ghost")
+	assert.Error(t, err)
+}
+
+func TestEmojiRepository_ListWithFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e := &model.Emoji{ID: "e_lwf", Name: "filtertest", OriginalURL: "https://example.com/f.png"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	emojis, err := repo.ListWithFilter("filter", "", true, 10, 0)
+	require.NoError(t, err)
+	assert.NotEmpty(t, emojis)
+
+	// category filter
+	emojis, err = repo.ListWithFilter("", "nonexistent", true, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, emojis)
+
+	// pagination
+	emojis, err = repo.ListWithFilter("", "", true, 1, 0)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(emojis), 1)
+}
+
+func TestEmojiRepository_ListWithFilter_DefaultLimit(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+	emojis, err := repo.ListWithFilter("", "", true, 0, 0) // limit=0 → default 50
+	require.NoError(t, err)
+	_ = emojis
+}
+
+func TestEmojiRepository_ListWithFilter_LimitCap(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+	emojis, err := repo.ListWithFilter("", "", true, 999, 0)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(emojis), 500)
+}
+
+func TestEmojiRepository_ListWithFilter_Offset(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+	emojis, err := repo.ListWithFilter("", "", true, 10, 99999)
+	require.NoError(t, err)
+	assert.Empty(t, emojis)
+}
+
+func TestEmojiRepository_ListWithFilter_NonLocal(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+	emojis, err := repo.ListWithFilter("", "", false, 10, 0)
+	require.NoError(t, err)
+	_ = emojis // ローカルフィルタなし
+}
+
+func TestEmojiRepository_ListWithFilter_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewEmojiRepository(testDB.WithContext(ctx))
+	_, err := repo.ListWithFilter("", "", true, 10, 0)
+	assert.Error(t, err)
+}
+
 func TestEmojiRepository_ListLocal_Empty(t *testing.T) {
 	repo := NewEmojiRepository(testDB)
 	emojis, err := repo.ListLocal()

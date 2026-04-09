@@ -490,7 +490,12 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
 
 	// Admin endpoints (Phase 5)
+	abuseReportRepo := repository.NewAbuseReportRepository(s.db)
+	modLogRepo := repository.NewModerationLogRepository(s.db)
 	adminHandler := apiadmin.NewHandler(signupService, roleService, metaRepo, userRepo, idGen)
+	adminHandler.SetAbuseRepo(abuseReportRepo)
+	adminHandler.SetModLogRepo(modLogRepo)
+	adminHandler.SetEmojiRepo(emojiRepo)
 	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
 	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))
@@ -507,6 +512,13 @@ func (s *Server) setupRoutes() {
 	api.POST("/admin/roles/unassign", adminHandler.RolesUnassign, middleware.RequireModerator(roleService))
 	api.POST("/admin/roles/users", adminHandler.RolesUsers, middleware.RequireModerator(roleService))
 	api.POST("/admin/roles/update-default-policies", adminHandler.RolesUpdateDefaultPolicies, middleware.RequireAdmin(roleService))
+	api.POST("/admin/abuse-user-reports", adminHandler.AbuseReports, middleware.RequireModerator(roleService))
+	api.POST("/admin/resolve-abuse-user-report", adminHandler.ResolveAbuseReport, middleware.RequireModerator(roleService))
+	api.POST("/admin/show-moderation-logs", adminHandler.ShowModerationLogs, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/add", adminHandler.EmojiAdd, middleware.RequireAdmin(roleService))
+	api.POST("/admin/emoji/update", adminHandler.EmojiUpdate, middleware.RequireAdmin(roleService))
+	api.POST("/admin/emoji/delete", adminHandler.EmojiDelete, middleware.RequireAdmin(roleService))
+	api.POST("/admin/emoji/list", adminHandler.EmojiList, middleware.RequireAdmin(roleService))
 
 	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
 	api.Any("/*", func(c echo.Context) error {

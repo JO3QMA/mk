@@ -20,6 +20,9 @@ type Handler struct {
 	roleService   *role.Service
 	metaRepo      repository.MetaRepository
 	userRepo      repository.UserRepository
+	abuseRepo     repository.AbuseReportRepository
+	modLogRepo    repository.ModerationLogRepository
+	emojiRepo     repository.EmojiRepository
 	idGen         id.Generator
 }
 
@@ -38,6 +41,14 @@ func NewHandler(
 		userRepo:      userRepo,
 		idGen:         idGen,
 	}
+}
+
+// SetAbuseRepo attaches the abuse report repository.
+func (h *Handler) SetAbuseRepo(r repository.AbuseReportRepository) { h.abuseRepo = r }
+
+// SetModLogRepo attaches the moderation log repository.
+func (h *Handler) SetModLogRepo(r repository.ModerationLogRepository) {
+	h.modLogRepo = r
 }
 
 // AccountsCreate handles POST /api/admin/accounts/create.
@@ -392,6 +403,166 @@ func (h *Handler) RolesUpdateDefaultPolicies(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// --- Emoji Admin endpoints ---
+
+// SetEmojiRepo attaches the emoji repository.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) { h.emojiRepo = r }
+
+// EmojiAdd handles POST /api/admin/emoji/add.
+func (h *Handler) EmojiAdd(c echo.Context) error {
+	var req struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	if err := c.Bind(&req); err != nil || req.Name == "" {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.emojiRepo == nil {
+		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	e := &model.Emoji{
+		ID:          h.idGen.Generate(time.Now()),
+		Name:        req.Name,
+		OriginalURL: req.URL,
+		PublicURL:   req.URL,
+	}
+	if err := h.emojiRepo.Create(e); err != nil {
+		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, e)
+}
+
+// EmojiUpdate handles POST /api/admin/emoji/update.
+func (h *Handler) EmojiUpdate(c echo.Context) error {
+	var req struct {
+		ID       string   `json:"id"`
+		Name     *string  `json:"name"`
+		Category *string  `json:"category"`
+		Aliases  []string `json:"aliases"`
+	}
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.emojiRepo == nil {
+		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	fields := map[string]any{}
+	if req.Name != nil {
+		fields["name"] = *req.Name
+	}
+	if req.Category != nil {
+		fields["category"] = *req.Category
+	}
+	if req.Aliases != nil {
+		fields["aliases"] = req.Aliases
+	}
+	if err := h.emojiRepo.UpdateFields(req.ID, fields); err != nil {
+		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// EmojiDelete handles POST /api/admin/emoji/delete.
+func (h *Handler) EmojiDelete(c echo.Context) error {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.emojiRepo == nil {
+		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	if err := h.emojiRepo.Delete(req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// EmojiList handles POST /api/admin/emoji/list.
+func (h *Handler) EmojiList(c echo.Context) error {
+	var req struct {
+		Query    string `json:"query"`
+		Category string `json:"category"`
+		Limit    int    `json:"limit"`
+		Offset   int    `json:"offset"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.emojiRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	emojis, err := h.emojiRepo.ListWithFilter(req.Query, req.Category, true, req.Limit, req.Offset)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, emojis)
+}
+
+// --- Abuse Report endpoints ---
+
+// AbuseReports handles POST /api/admin/abuse-user-reports.
+func (h *Handler) AbuseReports(c echo.Context) error {
+	var req struct {
+		Resolved *bool `json:"resolved"`
+		Limit    int   `json:"limit"`
+		Offset   int   `json:"offset"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.abuseRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	reports, err := h.abuseRepo.List(req.Resolved, req.Limit, req.Offset)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, reports)
+}
+
+// ResolveAbuseReport handles POST /api/admin/resolve-abuse-user-report.
+func (h *Handler) ResolveAbuseReport(c echo.Context) error {
+	var req struct {
+		ReportID string `json:"reportId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ReportID == "" {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "reportId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.abuseRepo == nil {
+		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
+	}
+	resolvedAs := "accept"
+	err := h.abuseRepo.UpdateFields(req.ReportID, map[string]any{
+		"resolved":   true,
+		"resolvedAs": resolvedAs,
+	})
+	if err != nil {
+		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// ShowModerationLogs handles POST /api/admin/show-moderation-logs.
+func (h *Handler) ShowModerationLogs(c echo.Context) error {
+	var req struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.modLogRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	logs, err := h.modLogRepo.List(req.Limit, req.Offset)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, logs)
 }
 
 func errResp(code, message, id string) map[string]any {

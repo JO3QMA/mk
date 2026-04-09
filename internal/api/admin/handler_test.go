@@ -617,3 +617,276 @@ func TestRolesUpdateDefaultPolicies_InvalidParam(t *testing.T) {
 	rec := doPost(h.RolesUpdateDefaultPolicies, `invalid`, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+// --- Abuse Report / Moderation Log endpoints ---
+
+func TestAbuseReports_Empty(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// abuseRepo=nil → 空配列
+	rec := doPost(h.AbuseReports, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAbuseReports_WithRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	abuseRepo.Reports["r1"] = &model.AbuseUserReport{ID: "r1", Comment: "spam"}
+	h.SetAbuseRepo(abuseRepo)
+
+	rec := doPost(h.AbuseReports, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+}
+
+func TestResolveAbuseReport_WithRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	abuseRepo.Reports["r1"] = &model.AbuseUserReport{ID: "r1"}
+	h.SetAbuseRepo(abuseRepo)
+
+	rec := doPost(h.ResolveAbuseReport, `{"reportId":"r1"}`, nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.True(t, abuseRepo.Reports["r1"].Resolved)
+}
+
+func TestResolveAbuseReport_NotFound(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	h.SetAbuseRepo(abuseRepo)
+
+	rec := doPost(h.ResolveAbuseReport, `{"reportId":"ghost"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShowModerationLogs_WithRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	modLogRepo := testutil.NewMockModerationLogRepository()
+	modLogRepo.Logs = append(modLogRepo.Logs, &model.ModerationLog{ID: "l1", Type: "suspend"})
+	h.SetModLogRepo(modLogRepo)
+
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+}
+
+func TestAbuseReports_InvalidJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.AbuseReports, `invalid`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestResolveAbuseReport_InvalidParam(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.ResolveAbuseReport, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestResolveAbuseReport_NilRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.ResolveAbuseReport, `{"reportId":"r1"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShowModerationLogs_Empty(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+type failingAbuseListRepo struct {
+	*testutil.MockAbuseReportRepository
+}
+
+func (f *failingAbuseListRepo) List(_ *bool, _ int, _ int) ([]*model.AbuseUserReport, error) {
+	return nil, assert.AnError
+}
+
+func TestAbuseReports_ListError(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAbuseRepo(&failingAbuseListRepo{testutil.NewMockAbuseReportRepository()})
+	rec := doPost(h.AbuseReports, `{}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingModLogListRepo struct {
+	*testutil.MockModerationLogRepository
+}
+
+func (f *failingModLogListRepo) List(_ int, _ int) ([]*model.ModerationLog, error) {
+	return nil, assert.AnError
+}
+
+func TestShowModerationLogs_ListError(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetModLogRepo(&failingModLogListRepo{testutil.NewMockModerationLogRepository()})
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Emoji Admin endpoints ---
+
+func TestEmojiAdd_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	h.SetEmojiRepo(emojiRepo)
+	rec := doPost(h.EmojiAdd, `{"name":"smile","url":"https://example.com/smile.png"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestEmojiAdd_InvalidParam(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiAdd, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestEmojiAdd_NilRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiAdd, `{"name":"x","url":"u"}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestEmojiUpdate_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	emojiRepo.Emojis["test@"] = &model.Emoji{ID: "e1", Name: "test"}
+	h.SetEmojiRepo(emojiRepo)
+	rec := doPost(h.EmojiUpdate, `{"id":"e1","name":"updated"}`, nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestEmojiUpdate_WithAliases(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	emojiRepo.Emojis["test@"] = &model.Emoji{ID: "e1", Name: "test"}
+	h.SetEmojiRepo(emojiRepo)
+	rec := doPost(h.EmojiUpdate, `{"id":"e1","name":"new","category":"faces","aliases":["smile"]}`, nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestEmojiUpdate_NotFound(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	h.SetEmojiRepo(emojiRepo)
+	rec := doPost(h.EmojiUpdate, `{"id":"ghost","name":"x"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestEmojiUpdate_InvalidParam(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiUpdate, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestEmojiUpdate_NilRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiUpdate, `{"id":"e1"}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestEmojiDelete_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	emojiRepo.Emojis["test@"] = &model.Emoji{ID: "e1", Name: "test"}
+	h.SetEmojiRepo(emojiRepo)
+	rec := doPost(h.EmojiDelete, `{"id":"e1"}`, nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestEmojiDelete_InvalidParam(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiDelete, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestEmojiDelete_NilRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiDelete, `{"id":"e1"}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestEmojiList_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	emojiRepo.Emojis["smile@"] = &model.Emoji{ID: "e1", Name: "smile"}
+	h.SetEmojiRepo(emojiRepo)
+	rec := doPost(h.EmojiList, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestEmojiList_NilRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiList, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+type failingCreateEmojiRepo struct {
+	*testutil.MockEmojiRepository
+}
+
+func (f *failingCreateEmojiRepo) Create(_ *model.Emoji) error { return assert.AnError }
+
+func TestEmojiAdd_CreateError(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiRepo(&failingCreateEmojiRepo{testutil.NewMockEmojiRepository()})
+	rec := doPost(h.EmojiAdd, `{"name":"x","url":"u"}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingListEmojiRepo struct {
+	*testutil.MockEmojiRepository
+}
+
+func (f *failingListEmojiRepo) ListWithFilter(_, _ string, _ bool, _, _ int) ([]*model.Emoji, error) {
+	return nil, assert.AnError
+}
+
+func TestEmojiList_Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiRepo(&failingListEmojiRepo{testutil.NewMockEmojiRepository()})
+	rec := doPost(h.EmojiList, `{}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingDeleteEmojiRepo struct {
+	*testutil.MockEmojiRepository
+}
+
+func (f *failingDeleteEmojiRepo) Delete(_ string) error { return assert.AnError }
+
+func TestEmojiDelete_Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiRepo(&failingDeleteEmojiRepo{testutil.NewMockEmojiRepository()})
+	rec := doPost(h.EmojiDelete, `{"id":"e1"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+type failingUpdateEmojiRepo struct {
+	*testutil.MockEmojiRepository
+}
+
+func (f *failingUpdateEmojiRepo) UpdateFields(_ string, _ map[string]any) error {
+	return assert.AnError
+}
+
+func TestEmojiUpdate_Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiRepo(&failingUpdateEmojiRepo{testutil.NewMockEmojiRepository()})
+	rec := doPost(h.EmojiUpdate, `{"id":"e1","name":"x"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestEmojiList_InvalidJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiList, `invalid`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestShowModerationLogs_InvalidJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.ShowModerationLogs, `invalid`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
