@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
@@ -614,8 +615,14 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, map[string]any{})
 	})
 
-	// Vite dev server reverse proxy (Phase 4.5i)
-	s.echo.Any("/vite/*", newViteProxy("http://localhost:5173"))
+	// フロントエンドアセット配信
+	// ビルド済みアセットがあれば静的配信、なければVite dev serverプロキシ
+	frontendDir := FrontendDir()
+	if _, err := os.Stat(frontendDir); err == nil {
+		s.echo.Static("/vite", frontendDir)
+	} else {
+		s.echo.Any("/vite/*", newViteProxy("http://localhost:5173"))
+	}
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
