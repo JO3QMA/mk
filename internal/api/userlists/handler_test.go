@@ -1,0 +1,193 @@
+package userlists_test
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/userlists"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func newTestHandler(t *testing.T) (*userlists.Handler, *testutil.MockUserListRepository) {
+	t.Helper()
+	repo := testutil.NewMockUserListRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	return userlists.NewHandler(repo, idGen), repo
+}
+
+func doPost(h func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if user != nil {
+		c.Set(string(middleware.UserContextKey), user)
+	}
+	_ = h(c)
+	return rec
+}
+
+func TestList_Success(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.List, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestCreate_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	rec := doPost(h.Create, `{"name":"My List"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Len(t, repo.Lists, 1)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "My List", resp["name"])
+}
+
+func TestCreate_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Create, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestShow_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "Test"}
+	rec := doPost(h.Show, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShow_NotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Show, `{"listId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShow_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Show, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPush_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1"}
+	rec := doPost(h.Push, `{"listId":"l1","userId":"u2"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestPush_ListNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Push, `{"listId":"ghost","userId":"u2"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestPush_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Push, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPull_Success(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Pull, `{"listId":"l1","userId":"u2"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestPull_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Pull, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_Success(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Lists["l1"] = &model.UserList{ID: "l1"}
+	rec := doPost(h.Delete, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestDelete_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Delete, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// Failing repo tests
+
+type failingListRepo struct {
+	*testutil.MockUserListRepository
+}
+
+func (f *failingListRepo) ListByUser(_ string) ([]*model.UserList, error) { return nil, assert.AnError }
+
+func TestList_Error(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(&failingListRepo{testutil.NewMockUserListRepository()}, idGen)
+	rec := doPost(h.List, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingCreateRepo struct {
+	*testutil.MockUserListRepository
+}
+
+func (f *failingCreateRepo) Create(_ *model.UserList) error { return assert.AnError }
+
+func TestCreate_Error(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(&failingCreateRepo{testutil.NewMockUserListRepository()}, idGen)
+	rec := doPost(h.Create, `{"name":"x"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingAddMemberRepo struct {
+	*testutil.MockUserListRepository
+}
+
+func (f *failingAddMemberRepo) AddMember(_ *model.UserListMembership) error { return assert.AnError }
+
+func TestPush_Error(t *testing.T) {
+	repo := &failingAddMemberRepo{testutil.NewMockUserListRepository()}
+	repo.Lists["l1"] = &model.UserList{ID: "l1"}
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(repo, idGen)
+	rec := doPost(h.Push, `{"listId":"l1","userId":"u2"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingRemoveMemberRepo struct {
+	*testutil.MockUserListRepository
+}
+
+func (f *failingRemoveMemberRepo) RemoveMember(_, _ string) error { return assert.AnError }
+
+func TestPull_Error(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(&failingRemoveMemberRepo{testutil.NewMockUserListRepository()}, idGen)
+	rec := doPost(h.Pull, `{"listId":"l1","userId":"u2"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingDeleteRepo struct {
+	*testutil.MockUserListRepository
+}
+
+func (f *failingDeleteRepo) Delete(_ string) error { return assert.AnError }
+
+func TestDelete_Error(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(&failingDeleteRepo{testutil.NewMockUserListRepository()}, idGen)
+	rec := doPost(h.Delete, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}

@@ -29,7 +29,9 @@ import (
 	"github.com/shiroha-a/mk/internal/api/notifications"
 	"github.com/shiroha-a/mk/internal/api/pages"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
+	apiroles "github.com/shiroha-a/mk/internal/api/roles"
 	"github.com/shiroha-a/mk/internal/api/streaming"
+	apiuserlists "github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/api/users"
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
@@ -496,6 +498,22 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/accept", followingHandler.AcceptRequest, middleware.RequireAuth())
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
+
+	// Public roles (Phase 6)
+	rolesHandler := apiroles.NewHandler(roleService)
+	api.POST("/roles/list", rolesHandler.List)
+	api.POST("/roles/show", rolesHandler.Show)
+	api.POST("/roles/users", rolesHandler.Users)
+
+	// User lists (Phase 6)
+	userListRepo := repository.NewUserListRepository(s.db)
+	userListHandler := apiuserlists.NewHandler(userListRepo, idGen)
+	api.POST("/users/lists/list", userListHandler.List, middleware.RequireAuth())
+	api.POST("/users/lists/create", userListHandler.Create, middleware.RequireAuth())
+	api.POST("/users/lists/show", userListHandler.Show, middleware.RequireAuth())
+	api.POST("/users/lists/push", userListHandler.Push, middleware.RequireAuth())
+	api.POST("/users/lists/pull", userListHandler.Pull, middleware.RequireAuth())
+	api.POST("/users/lists/delete", userListHandler.Delete, middleware.RequireAuth())
 
 	// Announcements (Phase 6)
 	announcementRepo := repository.NewAnnouncementRepository(s.db)

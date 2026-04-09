@@ -2074,6 +2074,73 @@ func paginateRequests(rows []*model.FollowRequest, limit, offset int) []*model.F
 }
 
 // ---------------------------------------------------------------------------
+// MockUserListRepository
+// ---------------------------------------------------------------------------
+
+type MockUserListRepository struct {
+	Lists   map[string]*model.UserList
+	Members []*model.UserListMembership
+}
+
+func NewMockUserListRepository() *MockUserListRepository {
+	return &MockUserListRepository{Lists: make(map[string]*model.UserList)}
+}
+
+func (m *MockUserListRepository) Create(list *model.UserList) error {
+	m.Lists[list.ID] = list
+	return nil
+}
+
+func (m *MockUserListRepository) FindByID(id string) (*model.UserList, error) {
+	l, ok := m.Lists[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return l, nil
+}
+
+func (m *MockUserListRepository) ListByUser(userID string) ([]*model.UserList, error) {
+	var result []*model.UserList
+	for _, l := range m.Lists {
+		if l.UserID == userID {
+			result = append(result, l)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockUserListRepository) Delete(id string) error {
+	delete(m.Lists, id)
+	return nil
+}
+
+func (m *MockUserListRepository) AddMember(mem *model.UserListMembership) error {
+	m.Members = append(m.Members, mem)
+	return nil
+}
+
+func (m *MockUserListRepository) RemoveMember(listID, userID string) error {
+	var filtered []*model.UserListMembership
+	for _, mem := range m.Members {
+		if !(mem.UserListID == listID && mem.UserID == userID) {
+			filtered = append(filtered, mem)
+		}
+	}
+	m.Members = filtered
+	return nil
+}
+
+func (m *MockUserListRepository) ListMembers(listID string) ([]*model.UserListMembership, error) {
+	var result []*model.UserListMembership
+	for _, mem := range m.Members {
+		if mem.UserListID == listID {
+			result = append(result, mem)
+		}
+	}
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
 // MockAnnouncementRepository
 // ---------------------------------------------------------------------------
 

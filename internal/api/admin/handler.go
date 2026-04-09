@@ -117,9 +117,8 @@ func (h *Handler) ShowUser(c echo.Context) error {
 	}
 
 	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
-	detailed := entity.PackUserDetailed(user, profile)
 
-	return c.JSON(http.StatusOK, detailed)
+	return c.JSON(http.StatusOK, h.packAdminUser(user, profile))
 }
 
 // ShowUsers handles POST /api/admin/show-users.
@@ -146,12 +145,89 @@ func (h *Handler) ShowUsers(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	result := make([]entity.UserDetailed, 0, len(users))
+	result := make([]map[string]any, 0, len(users))
 	for _, u := range users {
 		profile, _ := h.userRepo.FindProfileByUserID(u.ID)
-		result = append(result, entity.PackUserDetailed(u, profile))
+		result = append(result, h.packAdminUser(u, profile))
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+// packAdminUser returns a MeDetailed-equivalent response for admin endpoints.
+func (h *Handler) packAdminUser(u *model.User, profile *model.UserProfile) map[string]any {
+	detailed := entity.PackUserDetailed(u, profile)
+	resp := map[string]any{
+		// UserLite
+		"id": detailed.ID, "name": detailed.Name, "username": detailed.Username,
+		"host": detailed.Host, "avatarUrl": detailed.AvatarURL,
+		"avatarBlurhash": detailed.AvatarBlurhash, "avatarDecorations": detailed.AvatarDecorations,
+		"isBot": detailed.IsBot, "isCat": detailed.IsCat,
+		"emojis": detailed.Emojis, "onlineStatus": detailed.OnlineStatus,
+		"badgeRoles": detailed.BadgeRoles,
+		// UserDetailed
+		"bannerUrl": detailed.BannerURL, "bannerBlurhash": detailed.BannerBlurhash,
+		"isLocked": detailed.IsLocked, "isSilenced": false, "isSuspended": detailed.IsSuspended,
+		"description": detailed.Description, "location": detailed.Location,
+		"birthday": detailed.Birthday, "lang": detailed.Lang, "fields": detailed.Fields,
+		"verifiedLinks": []string{}, "followersCount": detailed.FollowersCount,
+		"followingCount": detailed.FollowingCount, "notesCount": detailed.NotesCount,
+		"uri": detailed.URI, "url": detailed.URL,
+		"movedTo": nil, "alsoKnownAs": nil,
+		"updatedAt": detailed.UpdatedAt, "lastFetchedAt": nil,
+		// MeDetailed
+		"avatarId": nil, "bannerId": nil,
+		"followersVisibility": "public", "followingVisibility": "public",
+		"chatScope": "mutual", "canChat": true,
+		"followedMessage": nil, "memo": nil, "moderationNote": "",
+		"hideOnlineStatus": u.HideOnlineStatus,
+		"isAdmin":          false, "isModerator": false,
+		"isDeleted": u.IsDeleted, "isExplorable": u.IsExplorable,
+		"hasUnreadNotification": false, "hasPendingReceivedFollowRequest": false,
+		"hasUnreadAnnouncement": false, "hasUnreadAntenna": false,
+		"hasUnreadChannel": false, "hasUnreadMentions": false,
+		"hasUnreadSpecifiedNotes": false, "hasUnreadChatMessages": false,
+		"unreadNotificationsCount": 0, "unreadAnnouncements": []any{},
+		"pinnedNoteIds": []string{}, "pinnedNotes": []any{},
+		"pinnedPageId": nil, "pinnedPage": nil,
+		"loggedInDays":              0,
+		"policies":                  role.DefaultPolicies(),
+		"roles":                     []any{},
+		"achievements":              []any{},
+		"twoFactorBackupCodesStock": "none",
+		"securityKeys":              false, "securityKeysList": []any{},
+		"mutingNotificationTypes":   []any{},
+		"notificationRecieveConfig": map[string]any{},
+		"emailNotificationTypes":    []string{"follow", "receiveFollowRequest"},
+	}
+	// Profile fields
+	if profile != nil {
+		resp["email"] = profile.Email
+		resp["emailVerified"] = profile.EmailVerified
+		resp["autoAcceptFollowed"] = profile.AutoAcceptFollowed
+		resp["noCrawle"] = profile.NoCrawle
+		resp["preventAiLearning"] = profile.PreventAiLearning
+		resp["alwaysMarkNsfw"] = profile.AlwaysMarkNsfw
+		resp["autoSensitive"] = profile.AutoSensitive
+		resp["carefulBot"] = profile.CarefulBot
+		resp["injectFeaturedNote"] = profile.InjectFeaturedNote
+		resp["receiveAnnouncementEmail"] = profile.ReceiveAnnouncementEmail
+		resp["twoFactorEnabled"] = profile.TwoFactorEnabled
+		resp["usePasswordLessLogin"] = profile.UsePasswordLessLogin
+		resp["mutedWords"] = profile.MutedWords
+		resp["hardMutedWords"] = profile.HardMutedWords
+		resp["mutedInstances"] = profile.MutedInstances
+		resp["publicReactions"] = profile.PublicReactions
+	}
+	// createdAt
+	if t, err := h.idGen.ParseTime(u.ID); err == nil {
+		resp["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+	}
+	// RoleService integration
+	if h.roleService != nil {
+		resp["isAdmin"] = h.roleService.IsAdministrator(u.ID)
+		resp["isModerator"] = h.roleService.IsModerator(u.ID)
+	}
+	return resp
 }
 
 // SuspendUser handles POST /api/admin/suspend-user.
@@ -194,11 +270,51 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 
 // AdminMeta handles POST /api/admin/meta.
 func (h *Handler) AdminMeta(c echo.Context) error {
-	meta, err := h.metaRepo.Fetch()
+	m, err := h.metaRepo.Fetch()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	return c.JSON(http.StatusOK, meta)
+	resp := map[string]any{
+		"maintainerName": m.MaintainerName, "maintainerEmail": m.MaintainerEmail,
+		"name": m.Name, "shortName": m.ShortName, "description": m.Description,
+		"langs": m.Langs, "pinnedUsers": m.PinnedUsers,
+		"hiddenTags": m.HiddenTags, "blockedHosts": m.BlockedHosts,
+		"silencedHosts": m.SilencedHosts, "sensitiveWords": m.SensitiveWords,
+		"prohibitedWords": m.ProhibitedWords,
+		"themeColor":      m.ThemeColor, "bannerUrl": m.BannerURL,
+		"backgroundImageUrl": m.BackgroundImageURL, "logoImageUrl": m.LogoImageURL,
+		"iconUrl": m.IconURL, "serverRules": m.ServerRules,
+		"disableRegistration":       m.DisableRegistration,
+		"emailRequiredForSignup":    m.EmailRequiredForSignup,
+		"cacheRemoteFiles":          m.CacheRemoteFiles,
+		"cacheRemoteSensitiveFiles": m.CacheRemoteSensitiveFiles,
+		"enableHcaptcha":            m.EnableHcaptcha, "hcaptchaSiteKey": m.HcaptchaSiteKey,
+		"enableRecaptcha": m.EnableRecaptcha, "recaptchaSiteKey": m.RecaptchaSiteKey,
+		"enableTurnstile": m.EnableTurnstile, "turnstileSiteKey": m.TurnstileSiteKey,
+		"enableEmail": m.EnableEmail, "smtpHost": m.SmtpHost, "smtpPort": m.SmtpPort,
+		"enableServiceWorker": m.EnableServiceWorker, "swPublicKey": m.SwPublicKey,
+		"useObjectStorage":              m.UseObjectStorage,
+		"objectStorageBucket":           m.ObjectStorageBucket,
+		"objectStoragePrefix":           m.ObjectStoragePrefix,
+		"objectStorageBaseUrl":          m.ObjectStorageBaseURL,
+		"objectStorageEndpoint":         m.ObjectStorageEndpoint,
+		"objectStorageRegion":           m.ObjectStorageRegion,
+		"objectStoragePort":             m.ObjectStoragePort,
+		"objectStorageUseSSL":           m.ObjectStorageUseSSL,
+		"objectStorageUseProxy":         m.ObjectStorageUseProxy,
+		"objectStorageSetPublicRead":    m.ObjectStorageSetPublicRead,
+		"objectStorageS3ForcePathStyle": m.ObjectStorageS3ForcePathStyle,
+		"tosUrl":                        m.TermsOfServiceURL, "repositoryUrl": m.RepositoryURL,
+		"feedbackUrl": m.FeedbackURL, "impressumUrl": m.ImpressumURL,
+		"privacyPolicyUrl":               m.PrivacyPolicyURL,
+		"federation":                     m.Federation,
+		"enableFanoutTimeline":           m.EnableFanoutTimeline,
+		"enableFanoutTimelineDbFallback": m.EnableFanoutTimelineDbFallback,
+		"proxyRemoteFiles":               m.ProxyRemoteFiles,
+		"signToActivityPubGet":           m.SignToActivityPubGet,
+		"policies":                       m.Policies,
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
 // UpdateMeta handles POST /api/admin/update-meta.

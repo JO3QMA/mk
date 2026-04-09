@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
@@ -118,10 +119,33 @@ func TestAccountsCreate_MetaFetchError(t *testing.T) {
 
 func TestShowUser_Success(t *testing.T) {
 	h, userRepo, _, _ := newTestHandler(t)
-	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "test"}
+	idGen, _ := id.NewGenerator("aidx")
+	uid := idGen.Generate(time.Now())
+	userRepo.Users[uid] = &model.User{ID: uid, Username: "test", IsExplorable: true, AvatarDecorations: []byte("[]")}
+	userRepo.Profiles[uid] = &model.UserProfile{
+		UserID:             uid,
+		AutoAcceptFollowed: true,
+		PublicReactions:    true,
+		MutedWords:         []byte("[]"),
+		HardMutedWords:     []byte("[]"),
+		MutedInstances:     []byte("[]"),
+	}
 
-	rec := doPost(h.ShowUser, `{"userId":"u1"}`, nil)
+	rec := doPost(h.ShowUser, `{"userId":"`+uid+`"}`, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	// MeDetailed fields
+	assert.Equal(t, uid, resp["id"])
+	assert.NotNil(t, resp["createdAt"])
+	assert.NotNil(t, resp["policies"])
+	assert.NotNil(t, resp["roles"])
+	assert.Equal(t, true, resp["publicReactions"])
+	assert.Equal(t, "public", resp["followersVisibility"])
+	assert.NotNil(t, resp["securityKeysList"])
+	assert.NotNil(t, resp["achievements"])
+	assert.Equal(t, false, resp["isAdmin"])
 }
 
 func TestShowUser_NotFound(t *testing.T) {
