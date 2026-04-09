@@ -18,6 +18,7 @@ var testDB *gorm.DB
 
 func init() {
 	testDB = testutil.MustOpenTestDB()
+	testutil.ApplyMigrations(testDB)
 }
 
 func newHandler() *hashtags.Handler {

@@ -25,6 +25,7 @@ var testIDGen id.Generator
 func init() {
 	testDB = testutil.MustOpenTestDB()
 	testIDGen, _ = id.NewGenerator("aidx")
+	testutil.ApplyMigrations(testDB)
 	testDB.Exec(`INSERT INTO "user" (id, username, "usernameLower", "avatarDecorations") VALUES ('gal_u1', 'galuser', 'galuser', '[]') ON CONFLICT DO NOTHING`)
 }
 
@@ -181,18 +182,20 @@ func TestPostsUpdate_InvalidParam(t *testing.T) {
 
 func TestPostsLike_Success(t *testing.T) {
 	cleanup()
-	testDB.Create(&model.GalleryPost{ID: "gp_l1", UpdatedAt: time.Now(), Title: "Likeable", UserID: "gal_u1", FileIDs: []string{}, Tags: []string{}})
+	pid := testIDGen.Generate(time.Now())
+	testDB.Create(&model.GalleryPost{ID: pid, UpdatedAt: time.Now(), Title: "Likeable", UserID: "gal_u1", FileIDs: []string{}, Tags: []string{}})
 	defer cleanup()
-	assert.Equal(t, http.StatusNoContent, doPost(newHandler().PostsLike, `{"postId":"gp_l1"}`, &model.User{ID: "gal_u1"}).Code)
+	assert.Equal(t, http.StatusNoContent, doPost(newHandler().PostsLike, `{"postId":"`+pid+`"}`, &model.User{ID: "gal_u1"}).Code)
 }
 
 func TestPostsLike_AlreadyLiked(t *testing.T) {
 	cleanup()
-	testDB.Create(&model.GalleryPost{ID: "gp_l2", UpdatedAt: time.Now(), Title: "Liked", UserID: "gal_u1", FileIDs: []string{}, Tags: []string{}})
+	pid := testIDGen.Generate(time.Now())
+	testDB.Create(&model.GalleryPost{ID: pid, UpdatedAt: time.Now(), Title: "Liked", UserID: "gal_u1", FileIDs: []string{}, Tags: []string{}})
 	defer cleanup()
 	h := newHandler()
-	doPost(h.PostsLike, `{"postId":"gp_l2"}`, &model.User{ID: "gal_u1"})
-	assert.Equal(t, http.StatusConflict, doPost(h.PostsLike, `{"postId":"gp_l2"}`, &model.User{ID: "gal_u1"}).Code)
+	doPost(h.PostsLike, `{"postId":"`+pid+`"}`, &model.User{ID: "gal_u1"})
+	assert.Equal(t, http.StatusConflict, doPost(h.PostsLike, `{"postId":"`+pid+`"}`, &model.User{ID: "gal_u1"}).Code)
 }
 
 func TestPostsLike_InvalidParam(t *testing.T) {
