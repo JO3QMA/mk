@@ -30,6 +30,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/pages"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
 	apiroles "github.com/shiroha-a/mk/internal/api/roles"
+	apisignin "github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/api/streaming"
 	apiuserlists "github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/api/users"
@@ -257,6 +258,10 @@ func (s *Server) setupRoutes() {
 	metaHandler := meta.NewHandler(s.config, metaRepo)
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
+
+	// Signin (Phase 6)
+	signinHandler := apisignin.NewHandler(userRepo)
+	api.POST("/signin", signinHandler.Signin)
 
 	// Emojis endpoint (public, Phase 4.5i)
 	emojisHandler := apiemojis.NewHandler(emojiRepo)
