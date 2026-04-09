@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -82,10 +85,27 @@ func extractToken(c echo.Context) string {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
 
-	// "i" parameter from request body (Misskey-style)
-	// Echo will parse the body later, so we check query params and form
+	// Query parameter
 	if t := c.QueryParam("i"); t != "" {
 		return t
+	}
+
+	// JSON body の "i" フィールド (Misskey-style)
+	// フロントエンドは全 API で POST {"i":"token", ...} を送信する。
+	// ボディを読んだ後にリセットし、後続ハンドラが再読み取り可能にする。
+	req := c.Request()
+	if req.Body != nil && req.ContentLength != 0 {
+		body, err := io.ReadAll(req.Body)
+		if err == nil && len(body) > 0 {
+			// ボディをリセット
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			var parsed struct {
+				I string `json:"i"`
+			}
+			if json.Unmarshal(body, &parsed) == nil && parsed.I != "" {
+				return parsed.I
+			}
+		}
 	}
 
 	return ""
