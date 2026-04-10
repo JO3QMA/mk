@@ -15,9 +15,13 @@ func TestAccountsDelete(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.AccountsDelete, `{}`, adminUser).Code)
 }
-func TestAccountsFindByEmail(t *testing.T) {
+func TestAccountsFindByEmail_Empty(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNotFound, doPost(h.AccountsFindByEmail, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.AccountsFindByEmail, `{}`, adminUser).Code)
+}
+func TestAccountsFindByEmail_NotFound(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.AccountsFindByEmail, `{"email":"ghost@example.com"}`, adminUser).Code)
 }
 
 // --- ad ---
@@ -113,9 +117,17 @@ func TestGetUserIPs(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusOK, doPost(h.GetUserIPs, `{}`, adminUser).Code)
 }
-func TestResetPasswordAdmin(t *testing.T) {
+func TestResetPasswordAdmin_Empty(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.ResetPassword, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.ResetPassword, `{}`, adminUser).Code)
+}
+func TestResetPasswordAdmin_Success(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "testuser"}
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"}
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "password")
 }
 func TestSendEmail(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
@@ -161,9 +173,13 @@ func TestDriveFilesAdmin(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusOK, doPost(h.DriveFiles, `{}`, adminUser).Code)
 }
-func TestDriveShowFile(t *testing.T) {
+func TestDriveShowFile_Empty(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNotFound, doPost(h.DriveShowFile, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.DriveShowFile, `{}`, adminUser).Code)
+}
+func TestDriveShowFile_NotFound(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.DriveShowFile, `{"fileId":"ghost"}`, adminUser).Code)
 }
 
 // --- emoji bulk ops ---

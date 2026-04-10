@@ -23,7 +23,13 @@ type Handler struct {
 	abuseRepo     repository.AbuseReportRepository
 	modLogRepo    repository.ModerationLogRepository
 	emojiRepo     repository.EmojiRepository
+	driveFileRepo repository.DriveFileRepository
 	idGen         id.Generator
+}
+
+// SetDriveFileRepo attaches a DriveFileRepository for admin drive operations.
+func (h *Handler) SetDriveFileRepo(r repository.DriveFileRepository) {
+	h.driveFileRepo = r
 }
 
 // NewHandler creates a new admin Handler.
