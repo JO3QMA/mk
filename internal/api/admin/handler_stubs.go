@@ -432,17 +432,43 @@ func (h *Handler) AdUpdate(c echo.Context) error {
 
 // AvatarDecorationsCreate handles POST /api/admin/avatar-decorations/create.
 func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		URL         string `json:"url"`
+	}
+	_ = c.Bind(&req)
+	d := &model.AvatarDecoration{
+		ID: h.idGen.Generate(time.Now()), Name: req.Name, Description: req.Description, URL: req.URL,
+	}
+	h.adminDB.Create(d)
+	return c.JSON(http.StatusOK, d)
 }
 
 // AvatarDecorationsDelete handles POST /api/admin/avatar-decorations/delete.
 func (h *Handler) AvatarDecorationsDelete(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.AvatarDecoration{})
 	return c.NoContent(http.StatusNoContent)
 }
 
 // AvatarDecorationsList handles POST /api/admin/avatar-decorations/list.
 func (h *Handler) AvatarDecorationsList(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var decorations []*model.AvatarDecoration
+	h.adminDB.Order(`"id" DESC`).Find(&decorations)
+	return c.JSON(http.StatusOK, decorations)
 }
 
 // AvatarDecorationsUpdate handles POST /api/admin/avatar-decorations/update.
@@ -630,20 +656,61 @@ func (h *Handler) RelaysRemove(c echo.Context) error {
 
 // SystemWebhookCreate handles POST /api/admin/system-webhook/create.
 func (h *Handler) SystemWebhookCreate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		Name   string   `json:"name"`
+		URL    string   `json:"url"`
+		Secret string   `json:"secret"`
+		On     []string `json:"on"`
+	}
+	_ = c.Bind(&req)
+	sw := &model.SystemWebhook{
+		ID: h.idGen.Generate(time.Now()), Name: req.Name, URL: req.URL, Secret: req.Secret,
+		On: req.On, IsActive: true, UpdatedAt: time.Now(),
+	}
+	h.adminDB.Create(sw)
+	return c.JSON(http.StatusOK, sw)
 }
 
 // SystemWebhookDelete handles POST /api/admin/system-webhook/delete.
 func (h *Handler) SystemWebhookDelete(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.SystemWebhook{})
 	return c.NoContent(http.StatusNoContent)
 }
 
 // SystemWebhookList handles POST /api/admin/system-webhook/list.
-func (h *Handler) SystemWebhookList(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+func (h *Handler) SystemWebhookList(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var webhooks []*model.SystemWebhook
+	h.adminDB.Order(`"id" DESC`).Find(&webhooks)
+	return c.JSON(http.StatusOK, webhooks)
+}
 
 // SystemWebhookShow handles POST /api/admin/system-webhook/show.
 func (h *Handler) SystemWebhookShow(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	if h.adminDB == nil {
+		return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	var sw model.SystemWebhook
+	if err := h.adminDB.Where(`"id" = ?`, req.ID).First(&sw).Error; err != nil {
+		return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, sw)
 }
 
 // SystemWebhookTest handles POST /api/admin/system-webhook/test.

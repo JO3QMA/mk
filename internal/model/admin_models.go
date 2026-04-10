@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/lib/pq"
+)
 
 // Ad represents the `ad` table.
 type Ad struct {
@@ -39,3 +43,30 @@ type Relay struct {
 }
 
 func (Relay) TableName() string { return "relay" }
+
+// AvatarDecoration represents the `avatar_decoration` table.
+type AvatarDecoration struct {
+	ID          string         `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	UpdatedAt   *time.Time     `gorm:"column:updatedAt;type:timestamp with time zone" json:"updatedAt"`
+	URL         string         `gorm:"column:url;type:varchar(1024);not null" json:"url"`
+	Name        string         `gorm:"column:name;type:varchar(256);not null" json:"name"`
+	Description string         `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
+	RoleIDs     pq.StringArray `gorm:"column:roleIdsThatCanBeUsedThisDecoration;type:varchar(128)[];default:'{}'" json:"roleIdsThatCanBeUsedThisDecoration"`
+}
+
+func (AvatarDecoration) TableName() string { return "avatar_decoration" }
+
+// SystemWebhook represents the `system_webhook` table.
+type SystemWebhook struct {
+	ID           string         `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	IsActive     bool           `gorm:"column:isActive;default:true" json:"isActive"`
+	UpdatedAt    time.Time      `gorm:"column:updatedAt;type:timestamp with time zone;default:now()" json:"updatedAt"`
+	LatestSentAt *time.Time     `gorm:"column:latestSentAt;type:timestamp with time zone" json:"latestSentAt"`
+	LatestStatus *int           `gorm:"column:latestStatus;type:integer" json:"latestStatus"`
+	Name         string         `gorm:"column:name;type:varchar(255);not null" json:"name"`
+	On           pq.StringArray `gorm:"column:on;type:varchar(128)[];default:'{}'" json:"on"`
+	URL          string         `gorm:"column:url;type:varchar(1024);not null" json:"url"`
+	Secret       string         `gorm:"column:secret;type:varchar(1024);not null;default:''" json:"secret"`
+}
+
+func (SystemWebhook) TableName() string { return "system_webhook" }
