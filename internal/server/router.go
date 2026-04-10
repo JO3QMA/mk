@@ -1095,10 +1095,10 @@ func (s *Server) setupRoutes() {
 			})
 		}
 		return c.JSON(http.StatusOK, map[string]any{
-			"state":      "already-subscribed",
-			"key":        nil,
-			"userId":     "",
-			"endpoint":   req.Endpoint,
+			"state":           "already-subscribed",
+			"key":             nil,
+			"userId":          "",
+			"endpoint":        req.Endpoint,
 			"sendReadMessage": false,
 		})
 	}, middleware.RequireAuth())
