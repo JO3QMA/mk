@@ -520,3 +520,233 @@ func TestFoldersDelete_NotEmpty(t *testing.T) {
 	require.NoError(t, h.FoldersDelete(c))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+// --- New drive listing endpoints ---
+
+func newHandlerWithRepos(t *testing.T) (*Handler, *testutil.MockDriveFileRepository, *testutil.MockDriveFolderRepository) {
+	t.Helper()
+	h, fileRepo, folderRepo := newHandler(t)
+	h.SetRepos(fileRepo, folderRepo, testutil.NewMockNoteRepository())
+	return h, fileRepo, folderRepo
+}
+
+func TestUsage_Success(t *testing.T) {
+	h, fileRepo, _ := newHandlerWithRepos(t)
+	uid := "u1"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid, Size: 1024}
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.Usage(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUsage_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.Usage(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesList_Success(t *testing.T) {
+	h, fileRepo, _ := newHandlerWithRepos(t)
+	uid := "u1"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid, Name: "test.png"}
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesList(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesList_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesList(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesFind_Success(t *testing.T) {
+	h, fileRepo, _ := newHandlerWithRepos(t)
+	uid := "u1"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid, Name: "test.png"}
+	c, rec := newJSONReq(t, `{"name":"test.png"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesFind(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesFind_InvalidParam(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesFind(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestFilesFind_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{"name":"x"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesFind(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesCheckExistence_True(t *testing.T) {
+	h, fileRepo, _ := newHandlerWithRepos(t)
+	uid := "u1"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid, MD5: "abc123"}
+	c, rec := newJSONReq(t, `{"md5":"abc123"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesCheckExistence(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "true")
+}
+
+func TestFilesCheckExistence_False(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{"md5":"ghost"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesCheckExistence(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "false")
+}
+
+func TestFilesCheckExistence_InvalidParam(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesCheckExistence(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestFilesCheckExistence_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{"md5":"x"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesCheckExistence(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesAttachedNotes_Success(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{"fileId":"f1"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesAttachedNotes(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesAttachedNotes_InvalidParam(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesAttachedNotes(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestFilesAttachedNotes_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{"fileId":"f1"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesAttachedNotes(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesAttachedChatMessages(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{"fileId":"f1"}`)
+	require.NoError(t, h.FilesAttachedChatMessages(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFilesUploadFromURL(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{"url":"https://example.com/img.png"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesUploadFromURL(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestFilesMoveBulk_Success(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{"fileIds":["f1","f2"]}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesMoveBulk(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestFilesMoveBulk_InvalidParam(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesMoveBulk(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestFilesMoveBulk_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{"fileIds":["f1"]}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesMoveBulk(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestStream_Success(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.Stream(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestStream_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.Stream(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFoldersList_Success(t *testing.T) {
+	h, _, folderRepo := newHandlerWithRepos(t)
+	uid := "u1"
+	folderRepo.Folders["d1"] = &model.DriveFolder{ID: "d1", UserID: &uid, Name: "photos"}
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FoldersList(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFoldersList_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FoldersList(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFoldersFind_Success(t *testing.T) {
+	h, _, folderRepo := newHandlerWithRepos(t)
+	uid := "u1"
+	folderRepo.Folders["d1"] = &model.DriveFolder{ID: "d1", UserID: &uid, Name: "photos"}
+	c, rec := newJSONReq(t, `{"name":"photos"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FoldersFind(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestFoldersFind_InvalidParam(t *testing.T) {
+	h, _, _ := newHandlerWithRepos(t)
+	c, rec := newJSONReq(t, `{}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FoldersFind(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestFoldersFind_NilRepo(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newJSONReq(t, `{"name":"x"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FoldersFind(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
