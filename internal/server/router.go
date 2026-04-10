@@ -393,6 +393,38 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/unrenote", notesHandler.Unrenote, middleware.RequireAuth())
 	api.POST("/notes/mentions", notesHandler.Mentions, middleware.RequireAuth())
 	api.POST("/notes/user-list-timeline", notesHandler.UserListTimeline, middleware.RequireAuth())
+	api.POST("/notes/search-by-tag", notesHandler.SearchByTag)
+	api.POST("/notes/clips", notesHandler.Clips)
+	api.POST("/notes/translate", notesHandler.Translate)
+	api.POST("/notes/show-partial-bulk", notesHandler.ShowPartialBulk)
+	// notes/drafts + notes/thread-muting + notes/polls/recommendation (スタブ)
+	for _, ep := range []string{
+		"notes/thread-muting/create", "notes/thread-muting/delete",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	for _, ep := range []string{
+		"notes/drafts/list", "notes/polls/recommendation",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		}, middleware.RequireAuth())
+	}
+	api.POST("/notes/drafts/count", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"count": 0})
+	}, middleware.RequireAuth())
+	for _, ep := range []string{
+		"notes/drafts/create", "notes/drafts/update", "notes/drafts/delete",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)

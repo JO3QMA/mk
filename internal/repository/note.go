@@ -26,6 +26,7 @@ type NoteRepository interface {
 	ListFeatured(limit, offset int) ([]*model.Note, error)
 	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
 	ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
+	SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error)
 }
 
 type noteRepository struct {
@@ -295,6 +296,26 @@ func (r *noteRepository) ListMentions(userID string, limit int, sinceID, untilID
 	}
 	q := r.db.Preload("User").
 		Where("mentions @> ARRAY[?]::varchar[]", userID).
+		Order("id DESC").Limit(limit)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	var notes []*model.Note
+	if err := q.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+func (r *noteRepository) SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := r.db.Preload("User").
+		Where("tags @> ARRAY[?]::varchar[]", tag).
 		Order("id DESC").Limit(limit)
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)

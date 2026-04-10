@@ -173,6 +173,90 @@ func TestUserListTimeline_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// --- SearchByTag ---
+
+func TestSearchByTag_Success(t *testing.T) {
+	h, noteRepo, _ := newExtraHandler(t)
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1", Tags: []string{"golang"}, Visibility: "public", User: &model.User{ID: "u1"}}
+	rec := postExtra(h.SearchByTag, `{"tag":"golang"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestSearchByTag_InvalidParam(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	rec := postExtra(h.SearchByTag, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+type failingSearchByTagRepo struct{ *testutil.MockNoteRepository }
+
+func (f *failingSearchByTagRepo) SearchByTag(_ string, _ int, _, _ string) ([]*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
+
+func TestSearchByTag_RepoError(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(&failingSearchByTagRepo{testutil.NewMockNoteRepository()}, nil, nil, nil, nil, nil, nil, nil, idGen)
+	rec := postExtra(h.SearchByTag, `{"tag":"x"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Clips ---
+
+func TestClips_Success(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	rec := postExtra(h.Clips, `{"noteId":"n1"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Translate ---
+
+func TestTranslate_Success(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	rec := postExtra(h.Translate, `{"noteId":"n1","targetLang":"en"}`, nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestTranslate_InvalidParam(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	rec := postExtra(h.Translate, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- ShowPartialBulk ---
+
+func TestShowPartialBulk_Success(t *testing.T) {
+	h, noteRepo, _ := newExtraHandler(t)
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1", User: &model.User{ID: "u1"}}
+	rec := postExtra(h.ShowPartialBulk, `{"noteIds":["n1"]}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShowPartialBulk_Empty(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	rec := postExtra(h.ShowPartialBulk, `{"noteIds":[]}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+type failingFindManyRepo struct{ *testutil.MockNoteRepository }
+
+func (f *failingFindManyRepo) FindManyByIDsWithUser(_ []string) ([]*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
+
+func TestShowPartialBulk_Error(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(&failingFindManyRepo{testutil.NewMockNoteRepository()}, nil, nil, nil, nil, nil, nil, nil, idGen)
+	rec := postExtra(h.ShowPartialBulk, `{"noteIds":["n1"]}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShowPartialBulk_InvalidParam(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	rec := postExtra(h.ShowPartialBulk, `invalid`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 // --- Failing repo tests ---
 
 type failingFavCreateRepo struct {

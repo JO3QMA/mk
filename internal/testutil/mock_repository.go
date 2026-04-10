@@ -569,6 +569,25 @@ func (m *MockNoteRepository) ListMentions(userID string, limit int, _, _ string)
 	return result, nil
 }
 
+func (m *MockNoteRepository) SearchByTag(tag string, limit int, _, _ string) ([]*model.Note, error) {
+	var result []*model.Note
+	for _, n := range m.Notes {
+		for _, t := range n.Tags {
+			if t == tag {
+				result = append(result, n)
+				break
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
 // MockNoteFavoriteRepository is a test double for repository.NoteFavoriteRepository.
 type MockNoteFavoriteRepository struct {
 	Favorites map[string]*model.NoteFavorite // keyed by "userId:noteId"

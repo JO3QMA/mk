@@ -659,3 +659,39 @@ func TestNoteRepository_ListMentions_Error(t *testing.T) {
 	_, err := repo.ListMentions("x", 10, "", "")
 	assert.Error(t, err)
 }
+
+func TestNoteRepository_SearchByTag(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "tag_u", "taguser")
+	defer cleanupUser(t, user.ID)
+
+	n := &model.Note{ID: "tag_n1", UserID: user.ID, Visibility: "public", Tags: []string{"golang", "misskey"}}
+	require.NoError(t, testDB.Create(n).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
+
+	notes, err := repo.SearchByTag("golang", 10, "", "")
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+
+	notes, err = repo.SearchByTag("nonexistent", 10, "", "")
+	require.NoError(t, err)
+	assert.Empty(t, notes)
+
+	// default limit
+	notes, err = repo.SearchByTag("golang", 0, "", "")
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+
+	// with cursors
+	notes, err = repo.SearchByTag("golang", 10, "000", "zzz")
+	require.NoError(t, err)
+	assert.NotEmpty(t, notes)
+}
+
+func TestNoteRepository_SearchByTag_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewNoteRepository(testDB.WithContext(ctx))
+	_, err := repo.SearchByTag("x", 10, "", "")
+	assert.Error(t, err)
+}

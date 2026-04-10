@@ -143,6 +143,64 @@ func (h *Handler) UserListTimeline(c echo.Context) error {
 	return c.JSON(http.StatusOK, []entity.NoteEntity{})
 }
 
+// SearchByTag handles POST /api/notes/search-by-tag.
+func (h *Handler) SearchByTag(c echo.Context) error {
+	var req struct {
+		Tag     string `json:"tag"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+	}
+	if err := c.Bind(&req); err != nil || req.Tag == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "tag is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	// tagsカラムにtagを含むノートを検索
+	notes, err := h.noteRepo.SearchByTag(req.Tag, req.Limit, req.SinceID, req.UntilID)
+	if err != nil {
+		return c.JSON(http.StatusOK, []entity.NoteEntity{})
+	}
+	return c.JSON(http.StatusOK, h.packMany(notes))
+}
+
+// Clips handles POST /api/notes/clips.
+func (h *Handler) Clips(c echo.Context) error {
+	return c.JSON(http.StatusOK, []any{})
+}
+
+// Translate handles POST /api/notes/translate.
+func (h *Handler) Translate(c echo.Context) error {
+	var req struct {
+		NoteID     string `json:"noteId"`
+		TargetLang string `json:"targetLang"`
+	}
+	if err := c.Bind(&req); err != nil || req.NoteID == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	// 翻訳は未実装 (翻訳サービス未接続)
+	return c.JSON(http.StatusNoContent, nil)
+}
+
+// ShowPartialBulk handles POST /api/notes/show-partial-bulk.
+func (h *Handler) ShowPartialBulk(c echo.Context) error {
+	var req struct {
+		NoteIDs []string `json:"noteIds"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteIds is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if len(req.NoteIDs) == 0 {
+		return c.JSON(http.StatusOK, []entity.NoteEntity{})
+	}
+	notes, err := h.noteRepo.FindManyByIDsWithUser(req.NoteIDs)
+	if err != nil {
+		return c.JSON(http.StatusOK, []entity.NoteEntity{})
+	}
+	return c.JSON(http.StatusOK, h.packMany(notes))
+}
+
 func apiError(code, message, id string) map[string]any {
 	return map[string]any{
 		"error": map[string]any{"message": message, "code": code, "id": id},
