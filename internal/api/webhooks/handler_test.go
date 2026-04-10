@@ -1,0 +1,269 @@
+package webhooks
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+var errMock = assert.AnError
+
+type mockWebhookRepo struct {
+	webhooks  map[string]*model.Webhook
+	createErr error
+	updateErr error
+	deleteErr error
+}
+
+func newMockRepo() *mockWebhookRepo {
+	return &mockWebhookRepo{webhooks: make(map[string]*model.Webhook)}
+}
+
+func (m *mockWebhookRepo) Create(w *model.Webhook) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.webhooks[w.ID] = w
+	return nil
+}
+
+func (m *mockWebhookRepo) FindByID(id string) (*model.Webhook, error) {
+	if w, ok := m.webhooks[id]; ok {
+		return w, nil
+	}
+	return nil, errMock
+}
+
+func (m *mockWebhookRepo) FindByIDAndUserID(id, userID string) (*model.Webhook, error) {
+	if w, ok := m.webhooks[id]; ok && w.UserID == userID {
+		return w, nil
+	}
+	return nil, errMock
+}
+
+func (m *mockWebhookRepo) ListByUserID(userID string) ([]*model.Webhook, error) {
+	var result []*model.Webhook
+	for _, w := range m.webhooks {
+		if w.UserID == userID {
+			result = append(result, w)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockWebhookRepo) Update(w *model.Webhook) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	m.webhooks[w.ID] = w
+	return nil
+}
+
+func (m *mockWebhookRepo) Delete(id, userID string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	delete(m.webhooks, id)
+	return nil
+}
+
+func newTestHandler() (*Handler, *mockWebhookRepo) {
+	repo := newMockRepo()
+	idGen, _ := id.NewGenerator("aidx")
+	return NewHandler(repo, idGen), repo
+}
+
+func post(handler func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if user != nil {
+		c.Set(string(middleware.UserContextKey), user)
+	}
+	_ = handler(c)
+	return rec
+}
+
+// --- Create ---
+
+func TestCreate_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	rec := post(h.Create, `{"name":"test","url":"https://example.com/hook","on":["note"]}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Len(t, repo.webhooks, 1)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "test", resp["name"])
+}
+
+func TestCreate_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Create, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_Error(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.createErr = errMock
+	rec := post(h.Create, `{"name":"test","url":"https://example.com"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- List ---
+
+func TestList_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1", Name: "hook1", On: pq.StringArray{"note"}}
+	rec := post(h.List, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+}
+
+func TestList_Empty(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.List, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+type failListRepo struct{ *mockWebhookRepo }
+
+func (f *failListRepo) ListByUserID(_ string) ([]*model.Webhook, error) { return nil, errMock }
+
+func TestList_Error(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(&failListRepo{newMockRepo()}, idGen)
+	rec := post(h.List, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Show ---
+
+func TestShow_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1", Name: "hook1", On: pq.StringArray{}}
+	rec := post(h.Show, `{"webhookId":"w1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestShow_NotFound(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Show, `{"webhookId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShow_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Show, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Update ---
+
+func TestUpdate_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1", Name: "old", URL: "https://old.example", On: pq.StringArray{}}
+	rec := post(h.Update, `{"webhookId":"w1","name":"new","url":"https://new.example","on":["follow"],"active":false}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "new", resp["name"])
+	assert.Equal(t, false, resp["active"])
+}
+
+func TestUpdate_Partial(t *testing.T) {
+	h, repo := newTestHandler()
+	secret := "oldsecret"
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1", Name: "name", URL: "https://example.com", Secret: secret, On: pq.StringArray{}}
+	newSecret := "newsecret"
+	rec := post(h.Update, `{"webhookId":"w1","secret":"`+newSecret+`"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, newSecret, repo.webhooks["w1"].Secret)
+}
+
+func TestUpdate_NotFound(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Update, `{"webhookId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUpdate_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Update, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_Error(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1", On: pq.StringArray{}}
+	repo.updateErr = errMock
+	rec := post(h.Update, `{"webhookId":"w1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Delete ---
+
+func TestDelete_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1"}
+	rec := post(h.Delete, `{"webhookId":"w1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, repo.webhooks)
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Delete, `{"webhookId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestDelete_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Delete, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDelete_Error(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1"}
+	repo.deleteErr = errMock
+	rec := post(h.Delete, `{"webhookId":"w1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Test ---
+
+func TestTest_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1"}
+	rec := post(h.Test, `{"webhookId":"w1","type":"note"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestTest_NotFound(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Test, `{"webhookId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestTest_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Test, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}

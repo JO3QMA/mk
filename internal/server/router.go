@@ -40,6 +40,7 @@ import (
 	apisw "github.com/shiroha-a/mk/internal/api/sw"
 	apiuserlists "github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/api/users"
+	apiwebhooks "github.com/shiroha-a/mk/internal/api/webhooks"
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
@@ -491,6 +492,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/regenerate-token", iHandler.RegenerateToken, middleware.RequireAuth())
 	iHandler.SetFavoriteRepo(noteFavoriteRepo)
 
+	// i/webhooks/* — Webhook管理 (実データ)
+	webhookRepo := repository.NewWebhookRepository(s.db)
+	webhookHandler := apiwebhooks.NewHandler(webhookRepo, idGen)
+	api.POST("/i/webhooks/create", webhookHandler.Create, middleware.RequireAuth())
+	api.POST("/i/webhooks/list", webhookHandler.List, middleware.RequireAuth())
+	api.POST("/i/webhooks/show", webhookHandler.Show, middleware.RequireAuth())
+	api.POST("/i/webhooks/update", webhookHandler.Update, middleware.RequireAuth())
+	api.POST("/i/webhooks/delete", webhookHandler.Delete, middleware.RequireAuth())
+	api.POST("/i/webhooks/test", webhookHandler.Test, middleware.RequireAuth())
+
 	// Notifications endpoints
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)
 	api.POST("/i/notifications", notificationsHandler.Show, middleware.RequireAuth())
@@ -528,7 +539,6 @@ func (s *Server) setupRoutes() {
 		"i/2fa/register", "i/2fa/done", "i/2fa/unregister",
 		"i/2fa/register-key", "i/2fa/key-done", "i/2fa/remove-key",
 		"i/2fa/update-key", "i/2fa/password-less",
-		"i/webhooks/create", "i/webhooks/update", "i/webhooks/delete", "i/webhooks/test",
 	} {
 		ep := ep
 		api.POST("/"+ep, func(c echo.Context) error {
@@ -538,7 +548,6 @@ func (s *Server) setupRoutes() {
 	// 空配列を返すエンドポイント
 	for _, ep := range []string{
 		"i/gallery/likes", "i/gallery/posts", "i/page-likes",
-		"i/webhooks/list", "i/webhooks/show",
 		"i/registry/keys", "i/registry/scopes-with-domain",
 	} {
 		ep := ep
