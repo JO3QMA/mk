@@ -36,6 +36,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/notifications"
 	"github.com/shiroha-a/mk/internal/api/pages"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
+	apireversi "github.com/shiroha-a/mk/internal/api/reversi"
 	apiroles "github.com/shiroha-a/mk/internal/api/roles"
 	apisignin "github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/api/streaming"
@@ -1085,37 +1086,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/sw/update-registration", swHandler.UpdateRegistration, middleware.RequireAuth())
 	api.POST("/sw/unregister", swHandler.Unregister)
 
-	// reversi/* — オセロゲーム
-	api.POST("/reversi/games", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	})
-	api.POST("/reversi/invitations", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAuth())
-	api.POST("/reversi/show-game", func(c echo.Context) error {
-		var req struct {
-			GameID string `json:"gameId"`
-		}
-		if err := c.Bind(&req); err != nil || req.GameID == "" {
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{"code": "INVALID_PARAM", "message": "gameId is required."},
-			})
-		}
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{"code": "NO_SUCH_GAME", "message": "No such game.", "id": "d8a95858-973b-4f3b-8592-fcf2eb4dd044"},
-		})
-	})
-	for _, ep := range []string{
-		"reversi/match",
-		"reversi/cancel-match",
-		"reversi/surrender",
-		"reversi/verify",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
+	// reversi/* — オセロゲーム (実データ)
+	reversiRepo := repository.NewReversiRepository(s.db)
+	reversiHandler := apireversi.NewHandler(reversiRepo, idGen)
+	api.POST("/reversi/games", reversiHandler.Games)
+	api.POST("/reversi/invitations", reversiHandler.Invitations, middleware.RequireAuth())
+	api.POST("/reversi/show-game", reversiHandler.ShowGame)
+	api.POST("/reversi/match", reversiHandler.Match, middleware.RequireAuth())
+	api.POST("/reversi/cancel-match", reversiHandler.CancelMatch, middleware.RequireAuth())
+	api.POST("/reversi/surrender", reversiHandler.Surrender, middleware.RequireAuth())
+	api.POST("/reversi/verify", reversiHandler.Verify)
 
 	// bubble-game/* — バブルゲーム (実データ)
 	bubbleGameRepo := repository.NewBubbleGameRepository(s.db)
