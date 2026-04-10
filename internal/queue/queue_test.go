@@ -244,5 +244,38 @@ func TestClient_EnqueueImport(t *testing.T) {
 	assert.Equal(t, queue.TaskTypeImport, tasks[0].Type)
 }
 
+func TestInspector_QueuesAndInfo(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	// エンキューしてキューを作成
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p"}))
+
+	insp := queue.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	queues, err := insp.Queues()
+	require.NoError(t, err)
+	assert.Contains(t, queues, queue.QueueName)
+
+	info, err := insp.GetQueueInfo(queue.QueueName)
+	require.NoError(t, err)
+	assert.Equal(t, queue.QueueName, info.Queue)
+	assert.GreaterOrEqual(t, info.Size, 0)
+}
+
+func TestInspector_GetQueueInfo_NotFound(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	insp := queue.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	_, err := insp.GetQueueInfo("nonexistent")
+	assert.Error(t, err)
+}
+
 // ensure errors package referenced for completeness in CI builds.
 var _ = errors.New
