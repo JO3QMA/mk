@@ -62,6 +62,7 @@ import (
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
@@ -303,6 +304,57 @@ func (s *Server) setupRoutes() {
 		})
 	})
 
+	// Users endpoint (public) — ユーザー一覧
+	api.POST("/users", func(c echo.Context) error {
+		var req struct {
+			Limit  int    `json:"limit"`
+			Offset int    `json:"offset"`
+			Sort   string `json:"sort"`
+			State  string `json:"state"`
+			Origin string `json:"origin"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		if req.Limit <= 0 {
+			req.Limit = 10
+		}
+		if req.Origin == "" {
+			req.Origin = "local"
+		}
+		users, err := userRepo.ListUsers(model.UserListFilter{
+			State: req.State, Origin: req.Origin, Sort: req.Sort,
+			Limit: req.Limit, Offset: req.Offset,
+		})
+		if err != nil {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		result := make([]entity.UserDetailed, 0, len(users))
+		for _, u := range users {
+			profile, _ := userRepo.FindProfileByUserID(u.ID)
+			result = append(result, entity.PackUserDetailed(u, profile))
+		}
+		return c.JSON(http.StatusOK, result)
+	})
+
+	// Pinned users (public)
+	api.POST("/pinned-users", func(c echo.Context) error {
+		m, err := metaRepo.Fetch()
+		if err != nil || len(m.PinnedUsers) == 0 {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		var result []entity.UserLite
+		for _, username := range m.PinnedUsers {
+			if u, err := userRepo.FindByUsernameLower(username, nil); err == nil {
+				result = append(result, entity.PackUserLite(u))
+			}
+		}
+		if result == nil {
+			result = []entity.UserLite{}
+		}
+		return c.JSON(http.StatusOK, result)
+	})
+
 	// Signin (Phase 6)
 	signinHandler := apisignin.NewHandler(userRepo)
 	api.POST("/signin", signinHandler.Signin)
@@ -386,6 +438,23 @@ func (s *Server) setupRoutes() {
 	api.POST("/notifications/create", notificationsHandler.Create, middleware.RequireAuth())
 	api.POST("/notifications/flush", notificationsHandler.Flush, middleware.RequireAuth())
 	api.POST("/notifications/test-notification", notificationsHandler.TestNotification, middleware.RequireAuth())
+
+	// Phase 7.1a: フロントエンドが呼ぶ i/* スタブ
+	api.POST("/i/claim-achievement", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+	api.POST("/i/apps", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAuth())
+	api.POST("/i/authorized-apps", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAuth())
+	api.POST("/i/signin-history", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAuth())
+	api.POST("/i/revoke-token", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
 
 	// Hashtags endpoints (Phase 6)
 	hashtagsHandler := apihashtags.NewHandler(s.db)
