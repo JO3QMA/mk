@@ -13,7 +13,7 @@ import (
 
 // sendEmailSMTP sends an email via SMTP. ベストエフォート (goroutineで呼ばれる)。
 func sendEmailSMTP(host string, port int, user, pass *string, from, to, subject, body string) {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	var auth smtp.Auth
 	if user != nil && pass != nil && *user != "" {
