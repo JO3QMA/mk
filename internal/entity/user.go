@@ -45,6 +45,8 @@ type UserDetailed struct {
 	PinnedNoteIDs  []string       `json:"pinnedNoteIds"`
 	PinnedNotes    []any          `json:"pinnedNotes"`
 	Roles          []any          `json:"roles"`
+	IsFollowing    *bool          `json:"isFollowing"`
+	IsFollowed     *bool          `json:"isFollowed"`
 }
 
 // PackUserLite converts a model.User to a UserLite DTO.

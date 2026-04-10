@@ -152,6 +152,7 @@ func (s *Server) setupRoutes() {
 	notificationService := corenotification.NewService(s.redis.Default, idGen)
 	notificationHook := corenotification.NewHook(notificationService, userRepo)
 	noteCreateService.SetNotificationHook(notificationHook)
+	noteCreateService.SetUserRepo(userRepo)
 	followingService.SetNotificationHook(notificationHook)
 	reactionService.SetNotificationHook(notificationHook)
 
@@ -435,6 +436,7 @@ func (s *Server) setupRoutes() {
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)
 	usersHandler.SetChartHook(chartHooks)
+	usersHandler.SetFollowingRepo(followingRepo)
 	api.POST("/users/show", usersHandler.Show)
 	api.POST("/users/search", usersHandler.Search)
 	api.POST("/users/notes", usersHandler.Notes)
@@ -491,7 +493,6 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/change-password", iHandler.ChangePassword, middleware.RequireAuth())
 	api.POST("/i/delete-account", iHandler.DeleteAccount, middleware.RequireAuth())
 	api.POST("/i/favorites", iHandler.Favorites, middleware.RequireAuth())
-	api.POST("/i/notifications-grouped", iHandler.NotificationsGrouped, middleware.RequireAuth())
 	api.POST("/i/regenerate-token", iHandler.RegenerateToken, middleware.RequireAuth())
 	iHandler.SetFavoriteRepo(noteFavoriteRepo)
 
@@ -507,7 +508,9 @@ func (s *Server) setupRoutes() {
 
 	// Notifications endpoints
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)
+	notificationsHandler.SetRepos(userRepo, noteRepo)
 	api.POST("/i/notifications", notificationsHandler.Show, middleware.RequireAuth())
+	api.POST("/i/notifications-grouped", notificationsHandler.Show, middleware.RequireAuth())
 	api.POST("/notifications/mark-all-as-read", notificationsHandler.MarkAllAsRead, middleware.RequireAuth())
 	api.POST("/notifications/create", notificationsHandler.Create, middleware.RequireAuth())
 	api.POST("/notifications/flush", notificationsHandler.Flush, middleware.RequireAuth())

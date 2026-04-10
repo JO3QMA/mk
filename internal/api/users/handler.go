@@ -28,6 +28,12 @@ type Handler struct {
 	idGen            id.Generator
 	chartHook        ChartHook
 	abuseRepo        repository.AbuseReportRepository
+	followingRepo    repository.FollowingRepository
+}
+
+// SetFollowingRepo attaches a FollowingRepository for follow relation queries.
+func (h *Handler) SetFollowingRepo(r repository.FollowingRepository) {
+	h.followingRepo = r
 }
 
 // NewHandler creates a new users Handler.
@@ -105,6 +111,15 @@ func (h *Handler) Show(c echo.Context) error {
 	}
 
 	detailed := entity.PackUserDetailed(bundle.User, bundle.Profile, h.idGen)
+
+	// viewerがログインしている場合、フォロー関係を追加
+	if viewer := middleware.GetUser(c); viewer != nil && viewer.ID != bundle.User.ID && h.followingRepo != nil {
+		isFollowing, _ := h.followingRepo.Exists(viewer.ID, bundle.User.ID)
+		isFollowed, _ := h.followingRepo.Exists(bundle.User.ID, viewer.ID)
+		detailed.IsFollowing = &isFollowing
+		detailed.IsFollowed = &isFollowed
+	}
+
 	return c.JSON(http.StatusOK, detailed)
 }
 
@@ -177,9 +192,11 @@ func (h *Handler) Notes(c echo.Context) error {
 
 // FollowersRequest is the request body for users/followers and users/following.
 type FollowersRequest struct {
-	UserID string `json:"userId"`
-	Limit  int    `json:"limit"`
-	Offset int    `json:"offset"`
+	UserID  string `json:"userId"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // Followers handles POST /api/users/followers.
@@ -240,6 +257,13 @@ func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error)
 	}
 	out := make([]relationItem, 0, len(rows))
 	for _, f := range rows {
+		// カーソルベースページネーション
+		if req.SinceID != "" && f.ID <= req.SinceID {
+			continue
+		}
+		if req.UntilID != "" && f.ID >= req.UntilID {
+			continue
+		}
 		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
 		if b, err := h.userService.ShowByID(f.FollowerID); err == nil {
 			d := entity.PackUserDetailed(b.User, b.Profile)
@@ -257,6 +281,12 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 	}
 	out := make([]relationItem, 0, len(rows))
 	for _, f := range rows {
+		if req.SinceID != "" && f.ID <= req.SinceID {
+			continue
+		}
+		if req.UntilID != "" && f.ID >= req.UntilID {
+			continue
+		}
 		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
 		if b, err := h.userService.ShowByID(f.FolloweeID); err == nil {
 			d := entity.PackUserDetailed(b.User, b.Profile)

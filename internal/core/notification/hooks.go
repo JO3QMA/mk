@@ -68,24 +68,29 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 		})
 	}
 
-	// mentions: note.Mentions はローカルユーザー名のリスト想定
-	for _, name := range n.Mentions {
-		if name == "" {
+	// mentions: note.Mentions はユーザーIDのリスト (またはレガシーのユーザー名)
+	for _, idOrName := range n.Mentions {
+		if idOrName == "" {
 			continue
 		}
-		mentioned, err := h.userRepo.FindByUsernameLower(name, nil)
-		if err != nil {
-			continue
+		// まずIDとして解決を試みる。失敗したらユーザー名として解決する。
+		mentionedID := idOrName
+		if _, err := h.userRepo.FindByID(idOrName); err != nil {
+			mentioned, err := h.userRepo.FindByUsernameLower(idOrName, nil)
+			if err != nil {
+				continue
+			}
+			mentionedID = mentioned.ID
 		}
-		if mentioned.ID == author.ID {
+		if mentionedID == author.ID {
 			continue
 		}
 		// reply先と同じユーザーには replyとmentionの両方を出さない
-		if replyTarget != nil && replyTarget.UserID == mentioned.ID {
+		if replyTarget != nil && replyTarget.UserID == mentionedID {
 			continue
 		}
-		h.notifyLocalUser(ctx, mentioned.ID, CreateInput{
-			NotifieeID: mentioned.ID,
+		h.notifyLocalUser(ctx, mentionedID, CreateInput{
+			NotifieeID: mentionedID,
 			NotifierID: author.ID,
 			Type:       TypeMention,
 			NoteID:     n.ID,

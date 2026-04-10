@@ -173,3 +173,91 @@ func TestTestNotification_Success(t *testing.T) {
 	require.NoError(t, h.TestNotification(c))
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
+
+func TestShow_WithUserAndNoteResolution(t *testing.T) {
+	h, svc := newTestHandler(t)
+	userRepo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bobuser"}
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: "public", User: &model.User{ID: "bob", Username: "bobuser"}}
+	h.SetRepos(userRepo, noteRepo)
+
+	ctx := context.Background()
+	_, err := svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeMention, NoteID: "n1",
+	})
+	require.NoError(t, err)
+
+	c, rec := newJSONRequest(t, "/api/i/notifications", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "mention", resp[0]["type"])
+	assert.NotNil(t, resp[0]["user"])
+	assert.NotNil(t, resp[0]["note"])
+}
+
+func TestShow_IncludeTypesFilter(t *testing.T) {
+	h, svc := newTestHandler(t)
+	ctx := context.Background()
+	_, _ = svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeFollow,
+	})
+	_, _ = svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeMention, NoteID: "n1",
+	})
+
+	c, rec := newJSONRequest(t, "/api/i/notifications", `{"includeTypes":["mention"]}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+	assert.Equal(t, "mention", resp[0]["type"])
+}
+
+func TestShow_ExcludeTypesFilter(t *testing.T) {
+	h, svc := newTestHandler(t)
+	ctx := context.Background()
+	_, _ = svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeFollow,
+	})
+	_, _ = svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeMention, NoteID: "n1",
+	})
+
+	c, rec := newJSONRequest(t, "/api/i/notifications", `{"excludeTypes":["follow"]}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+	assert.Equal(t, "mention", resp[0]["type"])
+}
+
+func TestShow_CursorPagination(t *testing.T) {
+	h, svc := newTestHandler(t)
+	ctx := context.Background()
+	_, _ = svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeFollow,
+	})
+	n2, _ := svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeMention, NoteID: "n1",
+	})
+
+	// sinceId: n2より新しいものだけ (= 該当なし)
+	body := `{"sinceId":"` + n2.ID + `"}`
+	c, rec := newJSONRequest(t, "/api/i/notifications", body)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Empty(t, resp)
+}

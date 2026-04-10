@@ -120,6 +120,12 @@ type CreateService struct {
 	antennaHook      AntennaHook
 	indexHook        IndexHook
 	chartHook        ChartHook
+	userRepo         repository.UserRepository
+}
+
+// SetUserRepo attaches a UserRepository for resolving mention usernames to IDs.
+func (s *CreateService) SetUserRepo(r repository.UserRepository) {
+	s.userRepo = r
 }
 
 // NewCreateService creates a new CreateService.
@@ -263,10 +269,20 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		note.VisibleUserIDs = in.VisibleUserIDs
 	}
 
-	// メンションの抽出。MFM完全対応はPhase 4で行うが、@username[@host]形式は
-	// この時点で確実にメンションとして解釈する必要がある。
+	// メンションの抽出。ユーザー名をユーザーIDに解決する。
 	if in.Text != nil {
-		note.Mentions = ExtractMentions(*in.Text)
+		usernames := ExtractMentions(*in.Text)
+		if s.userRepo != nil && len(usernames) > 0 {
+			var ids []string
+			for _, name := range usernames {
+				if u, err := s.userRepo.FindByUsernameLower(name, nil); err == nil {
+					ids = append(ids, u.ID)
+				}
+			}
+			note.Mentions = ids
+		} else {
+			note.Mentions = usernames
+		}
 	}
 
 	if err := s.noteRepo.Create(note); err != nil {

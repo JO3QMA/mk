@@ -108,9 +108,10 @@ func (h *Handler) Unrenote(c echo.Context) error {
 func (h *Handler) Mentions(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req struct {
-		Limit   int    `json:"limit"`
-		SinceID string `json:"sinceId"`
-		UntilID string `json:"untilId"`
+		Limit      int    `json:"limit"`
+		SinceID    string `json:"sinceId"`
+		UntilID    string `json:"untilId"`
+		Visibility string `json:"visibility"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -122,7 +123,21 @@ func (h *Handler) Mentions(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes))
+	// visibilityフィルタ
+	// "specified" → DMのみ、未指定 → DM以外
+	var filtered []*model.Note
+	for _, n := range notes {
+		if req.Visibility == "specified" {
+			if n.Visibility == model.NoteVisibilitySpecified {
+				filtered = append(filtered, n)
+			}
+		} else {
+			if n.Visibility != model.NoteVisibilitySpecified {
+				filtered = append(filtered, n)
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, h.packMany(filtered))
 }
 
 // UserListTimeline handles POST /api/notes/user-list-timeline.

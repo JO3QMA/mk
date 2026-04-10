@@ -6,14 +6,18 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/core/notification"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles notifications-related API endpoints.
 type Handler struct {
-	svc   *notification.Service
-	idGen id.Generator
+	svc      *notification.Service
+	idGen    id.Generator
+	userRepo repository.UserRepository
+	noteRepo repository.NoteRepository
 }
 
 // NewHandler creates a new notifications Handler.
@@ -21,9 +25,19 @@ func NewHandler(svc *notification.Service, idGen id.Generator) *Handler {
 	return &Handler{svc: svc, idGen: idGen}
 }
 
+// SetRepos attaches repositories for resolving user/note objects in notifications.
+func (h *Handler) SetRepos(userRepo repository.UserRepository, noteRepo repository.NoteRepository) {
+	h.userRepo = userRepo
+	h.noteRepo = noteRepo
+}
+
 // ListRequest is the request body for notifications.
 type ListRequest struct {
-	Limit int `json:"limit"`
+	Limit        int      `json:"limit"`
+	IncludeTypes []string `json:"includeTypes"`
+	ExcludeTypes []string `json:"excludeTypes"`
+	SinceID      string   `json:"sinceId"`
+	UntilID      string   `json:"untilId"`
 }
 
 // Show handles POST /api/i/notifications - returns the authenticated user's
@@ -40,8 +54,32 @@ func (h *Handler) Show(c echo.Context) error {
 		return internalError(c)
 	}
 
+	// includeTypes / excludeTypes フィルタ
+	includeSet := make(map[string]bool, len(req.IncludeTypes))
+	for _, t := range req.IncludeTypes {
+		includeSet[t] = true
+	}
+	excludeSet := make(map[string]bool, len(req.ExcludeTypes))
+	for _, t := range req.ExcludeTypes {
+		excludeSet[t] = true
+	}
+
 	out := make([]map[string]any, 0, len(rows))
 	for _, n := range rows {
+		// カーソルベースページネーション
+		if req.SinceID != "" && n.ID <= req.SinceID {
+			continue
+		}
+		if req.UntilID != "" && n.ID >= req.UntilID {
+			continue
+		}
+		// タイプフィルタ
+		if len(includeSet) > 0 && !includeSet[string(n.Type)] {
+			continue
+		}
+		if excludeSet[string(n.Type)] {
+			continue
+		}
 		entry := map[string]any{
 			"id":        n.ID,
 			"createdAt": n.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
@@ -49,9 +87,19 @@ func (h *Handler) Show(c echo.Context) error {
 		}
 		if n.NotifierID != "" {
 			entry["userId"] = n.NotifierID
+			if h.userRepo != nil {
+				if u, err := h.userRepo.FindByID(n.NotifierID); err == nil {
+					entry["user"] = entity.PackUserLite(u)
+				}
+			}
 		}
 		if n.NoteID != "" {
 			entry["noteId"] = n.NoteID
+			if h.noteRepo != nil {
+				if note, err := h.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
+					entry["note"] = entity.PackNote(note, h.idGen)
+				}
+			}
 		}
 		if n.Reaction != "" {
 			entry["reaction"] = n.Reaction
