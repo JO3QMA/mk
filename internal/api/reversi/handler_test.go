@@ -12,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
@@ -253,4 +254,72 @@ func TestVerify_InvalidParam(t *testing.T) {
 	h, _ := newTestHandler()
 	rec := post(h.Verify, `{}`, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestVerify_WithLogs(t *testing.T) {
+	h, repo := newTestHandler()
+	g := sampleGame()
+	g.Logs = datatypes.JSON(`[[26,1]]`) // pos=26 (2,3 on 8x8 board)
+	repo.games["g1"] = g
+	rec := post(h.Verify, `{"gameId":"g1"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Federation ---
+
+type mockDeliverer struct {
+	calls int
+}
+
+func (m *mockDeliverer) DeliverToUser(_ any, _, _ string) error {
+	m.calls++
+	return nil
+}
+
+func TestSetFederation(t *testing.T) {
+	h, _ := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	h.SetFederation("https://example.com", d, nil, userRepo)
+	assert.Equal(t, "https://example.com", h.baseURL)
+	assert.NotNil(t, h.deliverer)
+}
+
+func TestMatch_WithRemoteUser(t *testing.T) {
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	uri := "https://remote.example/users/u2"
+	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", Host: &host, URI: &uri}
+	h.SetFederation("https://example.com", d, nil, userRepo)
+
+	rec := post(h.Match, `{"userId":"u2"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Len(t, repo.games, 1)
+	// 連合ゲーム: federationIdが設定される
+	for _, g := range repo.games {
+		assert.NotNil(t, g.FederationID)
+	}
+	assert.Equal(t, 1, d.calls) // Invite送信
+}
+
+func TestSurrender_WithRemoteUser(t *testing.T) {
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	uri := "https://remote.example/users/u2"
+	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", Host: &host, URI: &uri}
+	h.SetFederation("https://example.com", d, nil, userRepo)
+
+	fedID := "fed-123"
+	g := sampleGame()
+	g.IsStarted = true
+	g.FederationID = &fedID
+	repo.games["g1"] = g
+
+	rec := post(h.Surrender, `{"gameId":"g1"}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, 1, d.calls) // Leave送信
 }
