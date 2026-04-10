@@ -49,6 +49,21 @@ func (i *Inspector) GetQueueInfo(qname string) (*InspectorInfo, error) {
 	}, nil
 }
 
+// DeleteTask deletes a task by queue and ID.
+func (i *Inspector) DeleteTask(qname, taskID string) error {
+	return i.inner.DeleteTask(qname, taskID)
+}
+
+// DeleteAllPendingTasks deletes all pending tasks in a queue.
+func (i *Inspector) DeleteAllPendingTasks(qname string) (int, error) {
+	return i.inner.DeleteAllPendingTasks(qname)
+}
+
+// RunTask promotes a scheduled/retry task to run immediately.
+func (i *Inspector) RunTask(qname, taskID string) error {
+	return i.inner.RunTask(qname, taskID)
+}
+
 // Close releases the underlying inspector.
 func (i *Inspector) Close() error {
 	return i.inner.Close()

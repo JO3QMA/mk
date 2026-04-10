@@ -30,3 +30,15 @@ func (a *queueInspectorAdapter) GetQueueInfo(qname string) (*apiadmin.QueueInfoR
 		Retry:     info.Retry,
 	}, nil
 }
+
+func (a *queueInspectorAdapter) DeleteTask(qname, taskID string) error {
+	return a.inner.DeleteTask(qname, taskID)
+}
+
+func (a *queueInspectorAdapter) DeleteAllPendingTasks(qname string) (int, error) {
+	return a.inner.DeleteAllPendingTasks(qname)
+}
+
+func (a *queueInspectorAdapter) RunTask(qname, taskID string) error {
+	return a.inner.RunTask(qname, taskID)
+}

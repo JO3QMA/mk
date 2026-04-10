@@ -70,3 +70,17 @@ type SystemWebhook struct {
 }
 
 func (SystemWebhook) TableName() string { return "system_webhook" }
+
+// AbuseReportNotificationRecipient represents a notification recipient for abuse reports.
+type AbuseReportNotificationRecipient struct {
+	ID              string  `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	IsActive        bool    `gorm:"column:isActive;default:true" json:"isActive"`
+	Name            string  `gorm:"column:name;type:varchar(255);not null" json:"name"`
+	Method          string  `gorm:"column:method;type:varchar(64);not null;default:'email'" json:"method"`
+	UserID          *string `gorm:"column:userId;type:varchar(32)" json:"userId"`
+	SystemWebhookID *string `gorm:"column:systemWebhookId;type:varchar(32)" json:"systemWebhookId"`
+}
+
+func (AbuseReportNotificationRecipient) TableName() string {
+	return "abuse_report_notification_recipient"
+}

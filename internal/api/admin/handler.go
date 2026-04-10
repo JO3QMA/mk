@@ -34,6 +34,9 @@ type Handler struct {
 type QueueInspector interface {
 	Queues() ([]string, error)
 	GetQueueInfo(qname string) (*QueueInfoResult, error)
+	DeleteTask(qname, taskID string) error
+	DeleteAllPendingTasks(qname string) (int, error)
+	RunTask(qname, taskID string) error
 }
 
 // QueueInfoResult holds basic queue statistics.

@@ -506,11 +506,34 @@ func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
 
 // AbuseReportNotificationRecipientCreate handles POST /api/admin/abuse-report/notification-recipient/create.
 func (h *Handler) AbuseReportNotificationRecipientCreate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		Name   string `json:"name"`
+		Method string `json:"method"`
+	}
+	_ = c.Bind(&req)
+	if req.Method == "" {
+		req.Method = "email"
+	}
+	r := &model.AbuseReportNotificationRecipient{
+		ID: h.idGen.Generate(time.Now()), Name: req.Name, Method: req.Method, IsActive: true,
+	}
+	h.adminDB.Create(r)
+	return c.JSON(http.StatusOK, r)
 }
 
 // AbuseReportNotificationRecipientDelete handles POST /api/admin/abuse-report/notification-recipient/delete.
 func (h *Handler) AbuseReportNotificationRecipientDelete(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.AbuseReportNotificationRecipient{})
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -526,7 +549,7 @@ func (h *Handler) AbuseReportNotificationRecipientShow(c echo.Context) error {
 
 // AbuseReportNotificationRecipientUpdate handles POST /api/admin/abuse-report/notification-recipient/update.
 func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	return c.NoContent(http.StatusNoContent) // 更新ロジックは将来対応
 }
 
 // --- federation ---
@@ -634,7 +657,15 @@ func (h *Handler) PromoCreate(c echo.Context) error { return c.NoContent(http.St
 // --- queue ---
 
 // QueueClear handles POST /api/admin/queue/clear.
-func (h *Handler) QueueClear(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) QueueClear(c echo.Context) error {
+	if h.queueInspector != nil {
+		queues, _ := h.queueInspector.Queues()
+		for _, q := range queues {
+			_, _ = h.queueInspector.DeleteAllPendingTasks(q)
+		}
+	}
+	return c.NoContent(http.StatusNoContent)
+}
 
 // QueueDeliverDelayed handles POST /api/admin/queue/deliver-delayed.
 func (h *Handler) QueueDeliverDelayed(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
@@ -646,7 +677,10 @@ func (h *Handler) QueueInboxDelayed(c echo.Context) error { return c.JSON(http.S
 func (h *Handler) QueueJobs(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
 
 // QueuePromoteJobs handles POST /api/admin/queue/promote-jobs.
-func (h *Handler) QueuePromoteJobs(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) QueuePromoteJobs(c echo.Context) error {
+	// asynqにはpromote機能がないため、NoContentを返す
+	return c.NoContent(http.StatusNoContent)
+}
 
 // QueueQueueStats handles POST /api/admin/queue/queue-stats.
 func (h *Handler) QueueQueueStats(c echo.Context) error {
@@ -681,10 +715,30 @@ func (h *Handler) QueueQueues(c echo.Context) error {
 }
 
 // QueueRemoveJob handles POST /api/admin/queue/remove-job.
-func (h *Handler) QueueRemoveJob(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) QueueRemoveJob(c echo.Context) error {
+	var req struct {
+		Queue string `json:"queue"`
+		ID    string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	if h.queueInspector != nil && req.Queue != "" && req.ID != "" {
+		_ = h.queueInspector.DeleteTask(req.Queue, req.ID)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
 
 // QueueRetryJob handles POST /api/admin/queue/retry-job.
-func (h *Handler) QueueRetryJob(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) QueueRetryJob(c echo.Context) error {
+	var req struct {
+		Queue string `json:"queue"`
+		ID    string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	if h.queueInspector != nil && req.Queue != "" && req.ID != "" {
+		_ = h.queueInspector.RunTask(req.Queue, req.ID)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
 
 // QueueShowJob handles POST /api/admin/queue/show-job.
 func (h *Handler) QueueShowJob(c echo.Context) error {
@@ -822,7 +876,10 @@ func (h *Handler) SystemWebhookShow(c echo.Context) error {
 }
 
 // SystemWebhookTest handles POST /api/admin/system-webhook/test.
-func (h *Handler) SystemWebhookTest(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) SystemWebhookTest(c echo.Context) error {
+	// テスト送信 (実際のHTTP送信は将来対応)
+	return c.NoContent(http.StatusNoContent)
+}
 
 // SystemWebhookUpdate handles POST /api/admin/system-webhook/update.
 func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
