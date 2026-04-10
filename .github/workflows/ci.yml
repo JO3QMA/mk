@@ -74,13 +74,28 @@ jobs:
             -count=1 \
             -timeout 10m \
             -coverprofile=coverage.out \
-            -covermode=atomic
+            -covermode=atomic 2>&1 | tee test_output.txt
 
-      - name: Enforce 100% coverage
+      - name: Enforce per-package coverage
         run: |
-          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $NF}' | tr -d '%')
-          echo "Total coverage: ${total}%"
-          awk -v c="$total" 'BEGIN { if (c+0 < 99) { print "FAIL: coverage " c "% is below 99%"; exit 1 } }'
+          # repositoryパッケージのみDB統合テストで到達不能なGORMエラーパスがあるため99%に緩和
+          # 他の全パッケージは100%を維持
+          fail=0
+          while IFS= read -r line; do
+            pkg=$(echo "$line" | awk '{print $2}')
+            cov=$(echo "$line" | grep -oP '[0-9.]+(?=%)' || echo "100.0")
+            if echo "$pkg" | grep -q '/repository$'; then
+              threshold=99
+            else
+              threshold=100
+            fi
+            if awk -v c="$cov" -v t="$threshold" 'BEGIN { if (c+0 < t) exit 1 }'; then :; else
+              echo "FAIL: $pkg coverage ${cov}% is below ${threshold}%"
+              fail=1
+            fi
+          done < <(grep '^ok' test_output.txt)
+          if [ "$fail" -eq 1 ]; then exit 1; fi
+          echo "All packages meet coverage thresholds"
 
       - name: Upload coverage report
         if: always()
