@@ -27,6 +27,9 @@ type NoteRepository interface {
 	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
 	ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error)
+	ListHomeTimeline(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
+	ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
+	ListGlobalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
 }
 
 type noteRepository struct {
@@ -322,6 +325,61 @@ func (r *noteRepository) SearchByTag(tag string, limit int, sinceID, untilID str
 	}
 	if untilID != "" {
 		q = q.Where("id < ?", untilID)
+	}
+	var notes []*model.Note
+	if err := q.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// ListHomeTimeline returns notes by the user and users they follow.
+// DBフォールバック用。Redisが空のときに使う。
+func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+	q := r.db.Preload("User").
+		Where(`("userId" = ? OR "userId" IN (SELECT "followeeId" FROM "following" WHERE "followerId" = ?)) AND "visibility" IN ('public','home','followers')`, userID, userID).
+		Order(`"id" DESC`).Limit(limit)
+	if sinceID != "" {
+		q = q.Where(`"id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"id" < ?`, untilID)
+	}
+	var notes []*model.Note
+	if err := q.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// ListLocalTimeline returns public/home notes by local users.
+func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error) {
+	q := r.db.Preload("User").
+		Where(`"userHost" IS NULL AND "visibility" IN ('public','home')`).
+		Order(`"id" DESC`).Limit(limit)
+	if sinceID != "" {
+		q = q.Where(`"id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"id" < ?`, untilID)
+	}
+	var notes []*model.Note
+	if err := q.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+// ListGlobalTimeline returns all public notes.
+func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error) {
+	q := r.db.Preload("User").
+		Where(`"visibility" = 'public'`).
+		Order(`"id" DESC`).Limit(limit)
+	if sinceID != "" {
+		q = q.Where(`"id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"id" < ?`, untilID)
 	}
 	var notes []*model.Note
 	if err := q.Find(&notes).Error; err != nil {

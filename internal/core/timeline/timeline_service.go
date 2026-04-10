@@ -44,29 +44,50 @@ func (s *Service) HomeTimeline(ctx context.Context, viewer *model.User, untilID,
 	if viewer == nil {
 		return nil, ErrUnauthenticated
 	}
+	if limit <= 0 {
+		limit = 20
+	}
 	ids, err := s.fanout.Get(ctx, HomeTimelineName(viewer.ID), untilID, sinceID, limit)
 	if err != nil {
 		return nil, err
 	}
-	return s.resolve(ids)
+	if len(ids) > 0 {
+		return s.resolve(ids)
+	}
+	// Redisが空の場合、DBから直接取得 (自分+フォロー中のユーザーのノート)
+	return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID)
 }
 
 // LocalTimeline returns notes posted by local users with public/home visibility.
 func (s *Service) LocalTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 20
+	}
 	ids, err := s.fanout.Get(ctx, LocalTimeline, untilID, sinceID, limit)
 	if err != nil {
 		return nil, err
 	}
-	return s.resolve(ids)
+	if len(ids) > 0 {
+		return s.resolve(ids)
+	}
+	// Redisが空の場合、DBから直接取得
+	return s.noteRepo.ListLocalTimeline(limit, sinceID, untilID)
 }
 
 // GlobalTimeline returns all public notes including federated remotes.
 func (s *Service) GlobalTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 20
+	}
 	ids, err := s.fanout.Get(ctx, GlobalTimeline, untilID, sinceID, limit)
 	if err != nil {
 		return nil, err
 	}
-	return s.resolve(ids)
+	if len(ids) > 0 {
+		return s.resolve(ids)
+	}
+	// Redisが空の場合、DBから直接取得
+	return s.noteRepo.ListGlobalTimeline(limit, sinceID, untilID)
 }
 
 // HybridTimeline merges home and local timelines into a single feed.
@@ -74,12 +95,19 @@ func (s *Service) HybridTimeline(ctx context.Context, viewer *model.User, untilI
 	if viewer == nil {
 		return nil, ErrUnauthenticated
 	}
+	if limit <= 0 {
+		limit = 20
+	}
 	multi, err := s.fanout.GetMulti(ctx, []Name{HomeTimelineName(viewer.ID), LocalTimeline}, untilID, sinceID, limit)
 	if err != nil {
 		return nil, err
 	}
 	merged := mergeIDs(multi, limit)
-	return s.resolve(merged)
+	if len(merged) > 0 {
+		return s.resolve(merged)
+	}
+	// Redisが空の場合、DBフォールバック (homeとlocalを統合)
+	return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID)
 }
 
 // resolve fetches notes from the repository preserving id ordering.

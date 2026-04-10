@@ -592,6 +592,31 @@ func (m *MockNoteRepository) SearchByTag(tag string, limit int, _, _ string) ([]
 	return result, nil
 }
 
+func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, _, _ string) ([]*model.Note, error) {
+	return m.listPublic(limit)
+}
+
+func (m *MockNoteRepository) ListLocalTimeline(limit int, _, _ string) ([]*model.Note, error) {
+	return m.listPublic(limit)
+}
+
+func (m *MockNoteRepository) ListGlobalTimeline(limit int, _, _ string) ([]*model.Note, error) {
+	return m.listPublic(limit)
+}
+
+func (m *MockNoteRepository) listPublic(limit int) ([]*model.Note, error) {
+	var result []*model.Note
+	for _, n := range m.Notes {
+		if n.Visibility == "public" || n.Visibility == "home" {
+			result = append(result, n)
+		}
+	}
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
 // MockNoteFavoriteRepository is a test double for repository.NoteFavoriteRepository.
 type MockNoteFavoriteRepository struct {
 	Favorites map[string]*model.NoteFavorite // keyed by "userId:noteId"

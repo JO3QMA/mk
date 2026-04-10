@@ -472,6 +472,15 @@ func (f *failingNoteRepo) ListMentions(_ string, _ int, _, _ string) ([]*model.N
 func (f *failingNoteRepo) SearchByTag(_ string, _ int, _, _ string) ([]*model.Note, error) {
 	return nil, nil
 }
+func (f *failingNoteRepo) ListHomeTimeline(_ string, _ int, _, _ string) ([]*model.Note, error) {
+	return nil, nil
+}
+func (f *failingNoteRepo) ListLocalTimeline(_ int, _, _ string) ([]*model.Note, error) {
+	return nil, nil
+}
+func (f *failingNoteRepo) ListGlobalTimeline(_ int, _, _ string) ([]*model.Note, error) {
+	return nil, nil
+}
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct {
