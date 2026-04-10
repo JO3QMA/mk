@@ -25,10 +25,22 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 
 	return func(c echo.Context) error {
 		instanceName := "Misskey"
+		instanceDesc := ""
+		iconURL := "/static-assets/icons/192.png"
+		themeColor := "#86b300"
 		metaJSON := "{}"
 		if m, err := metaRepo.Fetch(); err == nil {
-			if m.Name != nil {
+			if m.Name != nil && *m.Name != "" {
 				instanceName = *m.Name
+			}
+			if m.Description != nil {
+				instanceDesc = *m.Description
+			}
+			if m.IconURL != nil && *m.IconURL != "" {
+				iconURL = *m.IconURL
+			}
+			if m.ThemeColor != nil && *m.ThemeColor != "" {
+				themeColor = *m.ThemeColor
 			}
 			metaJSON = buildMetaJSON(cfg, m)
 		}
@@ -46,10 +58,19 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 <meta charset="UTF-8">
 <meta name="application-name" content="Misskey">
 <meta name="referer" content="origin">
+<meta property="og:type" content="website">
 <meta property="og:site_name" content="%s">
+<meta property="og:title" content="%s">
+<meta property="og:description" content="%s">
+<meta property="og:image" content="%s">
+<meta property="og:url" content="%s">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="%s">
 <meta property="instance_url" content="%s">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>%s</title>
+<link rel="icon" href="%s">
+<link rel="manifest" href="/manifest.json">
 %s
 <link rel="stylesheet" href="/vite/loader/style.css">
 <script>const VERSION = '%s'; const CLIENT_ENTRY = %s; const LANGS = ["ja-JP","en-US"];</script>
@@ -62,7 +83,8 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 <p>Loading...</p>
 </div>
 </div>
-</body></html>`, instanceName, cfg.URL, instanceName, viteClientTag,
+</body></html>`, instanceName, instanceName, instanceDesc, iconURL, cfg.URL,
+			themeColor, cfg.URL, instanceName, iconURL, viteClientTag,
 			cfg.Version, clientEntryJS,
 			time.Now().UnixMilli(), metaJSON)
 
@@ -168,6 +190,57 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+// manifestJSON generates a PWA manifest.json response.
+// TSバックエンドの manifestHandler と同等。
+func manifestJSON(cfg *config.Config, metaRepo repository.MetaRepository) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		m, _ := metaRepo.Fetch()
+		name := cfg.URL
+		shortName := cfg.URL
+		themeColor := "#86b300"
+		icon192 := "/static-assets/icons/192.png"
+		icon512 := "/static-assets/icons/512.png"
+		if m != nil {
+			if m.Name != nil && *m.Name != "" {
+				name = *m.Name
+			}
+			if m.ShortName != nil && *m.ShortName != "" {
+				shortName = *m.ShortName
+			} else if m.Name != nil && *m.Name != "" {
+				shortName = *m.Name
+			}
+			if m.ThemeColor != nil && *m.ThemeColor != "" {
+				themeColor = *m.ThemeColor
+			}
+		}
+		manifest := map[string]any{
+			"short_name":       shortName,
+			"name":             name,
+			"start_url":        "/",
+			"display":          "standalone",
+			"background_color": "#313a42",
+			"theme_color":      themeColor,
+			"icons": []map[string]any{
+				{"src": icon192, "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+				{"src": icon512, "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+				{"src": "/static-assets/splash.png", "sizes": "300x300", "type": "image/png"},
+			},
+			"share_target": map[string]any{
+				"action":  "/share/",
+				"method":  "GET",
+				"enctype": "application/x-www-form-urlencoded",
+				"params": map[string]any{
+					"title": "title",
+					"text":  "text",
+					"url":   "url",
+				},
+			},
+		}
+		c.Response().Header().Set("Cache-Control", "max-age=300")
+		return c.JSON(http.StatusOK, manifest)
+	}
 }
 
 // newViteProxy creates a reverse proxy handler that forwards requests to

@@ -1266,6 +1266,9 @@ func (s *Server) setupRoutes() {
 		s.echo.File("/robots.txt", filepath.Join(staticDir, "robots.txt"))
 	}
 
+	// manifest.json — PWA用
+	s.echo.GET("/manifest.json", manifestJSON(s.config, metaRepo))
+
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
 }
