@@ -3,7 +3,9 @@ package i
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -132,4 +134,47 @@ func (h *Handler) RegenerateToken(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, map[string]any{"token": newToken})
+}
+
+// ClaimAchievement handles POST /api/i/claim-achievement.
+// ユーザーの実績を記録する。既に獲得済みの場合は何もしない。
+func (h *Handler) ClaimAchievement(c echo.Context) error {
+	u := middleware.GetUser(c)
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := c.Bind(&req); err != nil || req.Name == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "name is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+	}
+
+	profile := h.userService.GetProfile(u.ID)
+	if profile == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+
+	// 既存の実績をパース
+	var achievements []map[string]any
+	if profile.Achievements != nil {
+		_ = json.Unmarshal(profile.Achievements, &achievements)
+	}
+
+	// 既に獲得済みか確認
+	for _, a := range achievements {
+		if a["name"] == req.Name {
+			return c.NoContent(http.StatusNoContent)
+		}
+	}
+
+	// 新しい実績を追加
+	achievements = append(achievements, map[string]any{
+		"name":       req.Name,
+		"unlockedAt": time.Now().UnixMilli(),
+	})
+	data, _ := json.Marshal(achievements)
+
+	if err := h.userService.UpdateProfileFields(u.ID, map[string]any{"achievements": string(data)}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }

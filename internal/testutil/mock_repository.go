@@ -263,6 +263,10 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 			if s, ok := v.(string); ok {
 				p.Password = &s
 			}
+		case "achievements":
+			if s, ok := v.(string); ok {
+				p.Achievements = []byte(s)
+			}
 		}
 	}
 }

@@ -511,9 +511,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/notifications/test-notification", notificationsHandler.TestNotification, middleware.RequireAuth())
 
 	// Phase 7.1a: フロントエンドが呼ぶ i/* スタブ
-	api.POST("/i/claim-achievement", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}, middleware.RequireAuth())
+	api.POST("/i/claim-achievement", iHandler.ClaimAchievement, middleware.RequireAuth())
 	api.POST("/i/apps", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}, middleware.RequireAuth())

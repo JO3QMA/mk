@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/datatypes"
 )
 
 func newExtraHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
@@ -266,4 +267,76 @@ func TestRegenerateToken_InvalidParam(t *testing.T) {
 	h, _ := newExtraHandler(t)
 	rec := postExtra(h.RegenerateToken, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- ClaimAchievement ---
+
+func TestClaimAchievement_New(t *testing.T) {
+	h, userRepo := newExtraHandler(t)
+	pw, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	pwStr := string(pw)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "test"}
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Password: &pwStr}
+
+	rec := postExtra(h.ClaimAchievement, `{"name":"notes1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	// 実績が保存されたか確認
+	profile := userRepo.Profiles["u1"]
+	var achievements []map[string]any
+	_ = json.Unmarshal(profile.Achievements, &achievements)
+	require.Len(t, achievements, 1)
+	assert.Equal(t, "notes1", achievements[0]["name"])
+}
+
+func TestClaimAchievement_Duplicate(t *testing.T) {
+	h, userRepo := newExtraHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1"}
+	userRepo.Profiles["u1"] = &model.UserProfile{
+		UserID:       "u1",
+		Achievements: datatypes.JSON(`[{"name":"notes1","unlockedAt":1000}]`),
+	}
+
+	rec := postExtra(h.ClaimAchievement, `{"name":"notes1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	// 実績が増えていないか確認
+	var achievements []map[string]any
+	_ = json.Unmarshal(userRepo.Profiles["u1"].Achievements, &achievements)
+	assert.Len(t, achievements, 1)
+}
+
+func TestClaimAchievement_NoProfile(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.ClaimAchievement, `{"name":"notes1"}`, &model.User{ID: "ghost"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestClaimAchievement_InvalidParam(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	rec := postExtra(h.ClaimAchievement, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+type failingProfileUpdateRepo struct {
+	*testutil.MockUserRepository
+}
+
+func (f *failingProfileUpdateRepo) UpdateProfile(_ string, _ map[string]any) error {
+	return testutil.ErrNotFound
+}
+
+func TestClaimAchievement_UpdateError(t *testing.T) {
+	baseRepo := testutil.NewMockUserRepository()
+	baseRepo.Users["u1"] = &model.User{ID: "u1"}
+	baseRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"}
+
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(&failingProfileUpdateRepo{baseRepo}, noteRepo, piningRepo, idGen)
+	h := NewHandler(svc, idGen)
+
+	rec := postExtra(h.ClaimAchievement, `{"name":"notes1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
