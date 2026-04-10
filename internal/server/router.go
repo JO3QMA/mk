@@ -17,6 +17,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/blocking"
 	apichannels "github.com/shiroha-a/mk/internal/api/channels"
 	apicharts "github.com/shiroha-a/mk/internal/api/charts"
+	apichat "github.com/shiroha-a/mk/internal/api/chat"
 	"github.com/shiroha-a/mk/internal/api/clips"
 	"github.com/shiroha-a/mk/internal/api/drive"
 	apiemojis "github.com/shiroha-a/mk/internal/api/emojis"
@@ -1134,67 +1135,36 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, []any{})
 	})
 
-	// chat/* — Misskey v2026 チャット機能
-	for _, ep := range []string{
-		"chat/messages",
-		"chat/messages/search",
-		"chat/rooms",
-		"chat/rooms/owned",
-		"chat/rooms/joined",
-		"chat/history",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		}, middleware.RequireAuth())
-	}
-	for _, ep := range []string{
-		"chat/messages/create",
-		"chat/messages/update",
-		"chat/messages/reactions/create",
-		"chat/messages/reactions/delete",
-		"chat/rooms/create",
-		"chat/rooms/update",
-		"chat/rooms/transfer-ownership",
-		"chat/rooms/invitations/create",
-		"chat/rooms/members/update-membership",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
-	for _, ep := range []string{
-		"chat/messages/show",
-		"chat/rooms/show",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusNotFound, map[string]any{
-				"error": map[string]any{"code": "NOT_FOUND", "message": "Not found.", "id": "00000000-0000-0000-0000-000000000000"},
-			})
-		}, middleware.RequireAuth())
-	}
-	for _, ep := range []string{
-		"chat/messages/delete",
-		"chat/messages/read",
-		"chat/rooms/delete",
-		"chat/rooms/leave",
-		"chat/rooms/mute",
-		"chat/rooms/unmute",
-		"chat/rooms/invitations/delete",
-		"chat/rooms/invitations/accept",
-		"chat/rooms/invitations/reject",
-		"chat/rooms/members/ban",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
-	api.POST("/chat/unread-count", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{"count": 0})
-	}, middleware.RequireAuth())
+	// chat/* — Misskey v2026 チャット機能 (実データ)
+	chatRepo := repository.NewChatRepository(s.db)
+	chatHandler := apichat.NewHandler(chatRepo, idGen)
+	api.POST("/chat/rooms/create", chatHandler.RoomsCreate, middleware.RequireAuth())
+	api.POST("/chat/rooms/show", chatHandler.RoomsShow, middleware.RequireAuth())
+	api.POST("/chat/rooms/update", chatHandler.RoomsUpdate, middleware.RequireAuth())
+	api.POST("/chat/rooms/delete", chatHandler.RoomsDelete, middleware.RequireAuth())
+	api.POST("/chat/rooms/owned", chatHandler.RoomsOwned, middleware.RequireAuth())
+	api.POST("/chat/rooms/joined", chatHandler.RoomsJoined, middleware.RequireAuth())
+	api.POST("/chat/rooms/leave", chatHandler.RoomsLeave, middleware.RequireAuth())
+	api.POST("/chat/rooms/mute", chatHandler.RoomsMute, middleware.RequireAuth())
+	api.POST("/chat/rooms/unmute", chatHandler.RoomsUnmute, middleware.RequireAuth())
+	api.POST("/chat/rooms/transfer-ownership", chatHandler.RoomsTransferOwnership, middleware.RequireAuth())
+	api.POST("/chat/rooms/invitations/create", chatHandler.InvitationsCreate, middleware.RequireAuth())
+	api.POST("/chat/rooms/invitations/delete", chatHandler.InvitationsDelete, middleware.RequireAuth())
+	api.POST("/chat/rooms/invitations/accept", chatHandler.InvitationsAccept, middleware.RequireAuth())
+	api.POST("/chat/rooms/invitations/reject", chatHandler.InvitationsReject, middleware.RequireAuth())
+	api.POST("/chat/rooms/members/ban", chatHandler.MembersBan, middleware.RequireAuth())
+	api.POST("/chat/rooms/members/update-membership", chatHandler.MembersUpdateMembership, middleware.RequireAuth())
+	api.POST("/chat/messages", chatHandler.Messages, middleware.RequireAuth())
+	api.POST("/chat/messages/create", chatHandler.MessagesCreate, middleware.RequireAuth())
+	api.POST("/chat/messages/show", chatHandler.MessagesShow, middleware.RequireAuth())
+	api.POST("/chat/messages/update", chatHandler.MessagesUpdate, middleware.RequireAuth())
+	api.POST("/chat/messages/delete", chatHandler.MessagesDelete, middleware.RequireAuth())
+	api.POST("/chat/messages/read", chatHandler.MessagesRead, middleware.RequireAuth())
+	api.POST("/chat/messages/search", chatHandler.MessagesSearch, middleware.RequireAuth())
+	api.POST("/chat/messages/reactions/create", chatHandler.ReactionsCreate, middleware.RequireAuth())
+	api.POST("/chat/messages/reactions/delete", chatHandler.ReactionsDelete, middleware.RequireAuth())
+	api.POST("/chat/history", chatHandler.History, middleware.RequireAuth())
+	api.POST("/chat/unread-count", chatHandler.UnreadCount, middleware.RequireAuth())
 
 	// --- その他の残りエンドポイント ---
 	// test — フロントエンドのテスト用
