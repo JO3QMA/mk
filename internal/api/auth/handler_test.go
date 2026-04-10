@@ -1,0 +1,379 @@
+package auth
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- Mock Repository ---
+
+type mockAuthSessionRepo struct {
+	apps         map[string]*model.App    // secret -> app
+	sessions     map[string]*model.AuthSession // token -> session
+	accessTokens map[string]*model.AccessToken // appID:userID -> token
+	createErr    error
+}
+
+func newMockRepo() *mockAuthSessionRepo {
+	return &mockAuthSessionRepo{
+		apps:         make(map[string]*model.App),
+		sessions:     make(map[string]*model.AuthSession),
+		accessTokens: make(map[string]*model.AccessToken),
+	}
+}
+
+func (m *mockAuthSessionRepo) FindAppBySecret(secret string) (*model.App, error) {
+	if app, ok := m.apps[secret]; ok {
+		return app, nil
+	}
+	return nil, errNotFound
+}
+
+func (m *mockAuthSessionRepo) CreateApp(app *model.App) error {
+	m.apps[app.Secret] = app
+	return nil
+}
+
+func (m *mockAuthSessionRepo) CreateSession(session *model.AuthSession) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.sessions[session.Token] = session
+	return nil
+}
+
+func (m *mockAuthSessionRepo) FindSessionByToken(token string) (*model.AuthSession, error) {
+	if s, ok := m.sessions[token]; ok {
+		// Appリレーションを模擬
+		if s.App == nil {
+			if app := m.findAppByID(s.AppID); app != nil {
+				s.App = app
+			}
+		}
+		return s, nil
+	}
+	return nil, errNotFound
+}
+
+func (m *mockAuthSessionRepo) FindSessionByTokenAndAppID(token, appID string) (*model.AuthSession, error) {
+	if s, ok := m.sessions[token]; ok && s.AppID == appID {
+		if s.App == nil {
+			if app := m.findAppByID(s.AppID); app != nil {
+				s.App = app
+			}
+		}
+		if s.UserID != nil {
+			s.User = &model.User{ID: *s.UserID, Username: "testuser"}
+		}
+		return s, nil
+	}
+	return nil, errNotFound
+}
+
+func (m *mockAuthSessionRepo) UpdateSessionUserID(sessionID, userID string) error {
+	for _, s := range m.sessions {
+		if s.ID == sessionID {
+			s.UserID = &userID
+			return nil
+		}
+	}
+	return errNotFound
+}
+
+func (m *mockAuthSessionRepo) DeleteSession(sessionID string) error {
+	for token, s := range m.sessions {
+		if s.ID == sessionID {
+			delete(m.sessions, token)
+			return nil
+		}
+	}
+	return errNotFound
+}
+
+func (m *mockAuthSessionRepo) FindAccessTokenByAppAndUser(appID, userID string) (*model.AccessToken, error) {
+	key := appID + ":" + userID
+	if t, ok := m.accessTokens[key]; ok {
+		return t, nil
+	}
+	return nil, errNotFound
+}
+
+func (m *mockAuthSessionRepo) CreateAccessToken(token *model.AccessToken) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	key := ""
+	if token.AppID != nil {
+		key = *token.AppID + ":" + token.UserID
+	}
+	m.accessTokens[key] = token
+	return nil
+}
+
+func (m *mockAuthSessionRepo) findAppByID(appID string) *model.App {
+	for _, app := range m.apps {
+		if app.ID == appID {
+			return app
+		}
+	}
+	return nil
+}
+
+var errNotFound = assert.AnError
+
+func newTestHandler() (*Handler, *mockAuthSessionRepo) {
+	repo := newMockRepo()
+	cfg := &config.Config{URL: "http://localhost:3000"}
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(repo, cfg, idGen)
+	return h, repo
+}
+
+func post(handler func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if user != nil {
+		c.Set(string(middleware.UserContextKey), user)
+	}
+	_ = handler(c)
+	return rec
+}
+
+// --- SessionGenerate ---
+
+func TestSessionGenerate_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["secret123"] = &model.App{ID: "app1", Secret: "secret123", Name: "TestApp", Permission: pq.StringArray{"read:account"}}
+
+	rec := post(h.SessionGenerate, `{"appSecret":"secret123"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp["token"])
+	assert.Contains(t, resp["url"], "http://localhost:3000/auth/")
+}
+
+func TestSessionGenerate_NoSuchApp(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.SessionGenerate, `{"appSecret":"ghost"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestSessionGenerate_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.SessionGenerate, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSessionGenerate_CreateError(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1"}
+	repo.createErr = errNotFound
+	rec := post(h.SessionGenerate, `{"appSecret":"s1"}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- SessionShow ---
+
+func TestSessionShow_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1", Name: "App", Permission: pq.StringArray{"read:account"}}
+	repo.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1"}
+
+	rec := post(h.SessionShow, `{"token":"tok1"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "sess1", resp["id"])
+	assert.NotNil(t, resp["app"])
+}
+
+func TestSessionShow_NotFound(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.SessionShow, `{"token":"ghost"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestSessionShow_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.SessionShow, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Accept ---
+
+func TestAccept_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1", Permission: pq.StringArray{"read:account"}}
+	repo.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1"}
+	user := &model.User{ID: "u1"}
+
+	rec := post(h.Accept, `{"token":"tok1"}`, user)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	// アクセストークンが作成され、セッションにユーザーIDが設定されたか確認
+	assert.Len(t, repo.accessTokens, 1)
+	assert.NotNil(t, repo.sessions["tok1"].UserID)
+}
+
+func TestAccept_ExistingToken(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1", Permission: pq.StringArray{}}
+	repo.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1"}
+	appID := "a1"
+	repo.accessTokens["a1:u1"] = &model.AccessToken{ID: "at1", AppID: &appID, UserID: "u1", Token: "existing"}
+
+	rec := post(h.Accept, `{"token":"tok1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	// 既存トークンがあるので新しく作られない
+	assert.Len(t, repo.accessTokens, 1)
+}
+
+func TestAccept_SessionNotFound(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Accept, `{"token":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAccept_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Accept, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+type failUpdateRepo struct {
+	*mockAuthSessionRepo
+}
+
+func (f *failUpdateRepo) UpdateSessionUserID(_, _ string) error { return errNotFound }
+
+func TestAccept_UpdateSessionError(t *testing.T) {
+	base := newMockRepo()
+	base.apps["s1"] = &model.App{ID: "a1", Secret: "s1", Permission: pq.StringArray{}}
+	appID := "a1"
+	base.accessTokens["a1:u1"] = &model.AccessToken{ID: "at1", AppID: &appID, UserID: "u1"}
+	base.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1"}
+
+	cfg := &config.Config{URL: "http://localhost:3000"}
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(&failUpdateRepo{base}, cfg, idGen)
+
+	rec := post(h.Accept, `{"token":"tok1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestAccept_CreateTokenError(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1", Permission: pq.StringArray{}}
+	repo.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1"}
+	repo.createErr = errNotFound
+
+	rec := post(h.Accept, `{"token":"tok1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- SessionUserkey ---
+
+func TestSessionUserkey_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1"}
+	userID := "u1"
+	repo.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1", UserID: &userID}
+	appID := "a1"
+	repo.accessTokens["a1:u1"] = &model.AccessToken{ID: "at1", Token: "mytoken", AppID: &appID, UserID: "u1"}
+
+	rec := post(h.SessionUserkey, `{"appSecret":"s1","token":"tok1"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "mytoken", resp["accessToken"])
+	assert.NotNil(t, resp["user"])
+	// セッション削除されたか
+	assert.Empty(t, repo.sessions)
+}
+
+func TestSessionUserkey_NoSuchApp(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.SessionUserkey, `{"appSecret":"ghost","token":"tok1"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestSessionUserkey_NoSuchSession(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1"}
+	rec := post(h.SessionUserkey, `{"appSecret":"s1","token":"ghost"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestSessionUserkey_PendingSession(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1"}
+	repo.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1", UserID: nil}
+
+	rec := post(h.SessionUserkey, `{"appSecret":"s1","token":"tok1"}`, nil)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestSessionUserkey_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.SessionUserkey, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSessionUserkey_TokenNotFound(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["s1"] = &model.App{ID: "a1", Secret: "s1"}
+	userID := "u1"
+	repo.sessions["tok1"] = &model.AuthSession{ID: "sess1", Token: "tok1", AppID: "a1", UserID: &userID}
+	// accessTokensにエントリなし
+
+	rec := post(h.SessionUserkey, `{"appSecret":"s1","token":"tok1"}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Helper functions ---
+
+func TestSecureRandomHex(t *testing.T) {
+	s := secureRandomHex(32)
+	assert.Len(t, s, 32)
+	// 2回呼ぶと異なる値
+	s2 := secureRandomHex(32)
+	assert.NotEqual(t, s, s2)
+}
+
+func TestSha256Hex(t *testing.T) {
+	h := sha256Hex("hello")
+	assert.Len(t, h, 64)
+	// 同じ入力 → 同じ出力
+	assert.Equal(t, h, sha256Hex("hello"))
+}
+
+func TestPackSession_NilApp(t *testing.T) {
+	s := &model.AuthSession{ID: "s1", Token: "t1"}
+	result := packSession(s)
+	assert.Equal(t, "s1", result["id"])
+	_, hasApp := result["app"]
+	assert.False(t, hasApp)
+}
+
+func TestPackUser_Nil(t *testing.T) {
+	result := packUser(nil)
+	assert.Empty(t, result)
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
+	apiauth "github.com/shiroha-a/mk/internal/api/auth"
 	apiannouncements "github.com/shiroha-a/mk/internal/api/announcements"
 	"github.com/shiroha-a/mk/internal/api/antennas"
 	"github.com/shiroha-a/mk/internal/api/ap"
@@ -1041,19 +1042,12 @@ func (s *Server) setupRoutes() {
 	})
 
 	// auth/* — MiAuth/OAuth セッション
-	for _, ep := range []string{
-		"auth/session/generate",
-		"auth/session/show",
-		"auth/session/userkey",
-		"auth/accept",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusNotImplemented, map[string]any{
-				"error": map[string]any{"code": "NOT_IMPLEMENTED", "message": "Not implemented.", "id": "00000000-0000-0000-0000-000000000000"},
-			})
-		})
-	}
+	authSessionRepo := repository.NewAuthSessionRepository(s.db)
+	authHandler := apiauth.NewHandler(authSessionRepo, s.config, idGen)
+	api.POST("/auth/session/generate", authHandler.SessionGenerate)
+	api.POST("/auth/session/show", authHandler.SessionShow)
+	api.POST("/auth/session/userkey", authHandler.SessionUserkey)
+	api.POST("/auth/accept", authHandler.Accept, middleware.RequireAuth())
 
 	// ap/* — ActivityPub API lookup
 	api.POST("/ap/get", func(c echo.Context) error {

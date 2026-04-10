@@ -44,6 +44,12 @@ migrate-create:
 	touch migration/$$(printf "%06d" $$(($$(ls migration/*.up.sql 2>/dev/null | wc -l) + 1)))_$${name}.up.sql; \
 	touch migration/$$(printf "%06d" $$(($$(ls migration/*.down.sql 2>/dev/null | wc -l) + 1)))_$${name}.down.sql
 
-# Build for Docker
+# Docker
 docker-build:
 	docker build -t misskey-go .
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down

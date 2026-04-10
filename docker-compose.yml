@@ -1,0 +1,52 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # フロントエンドアセットをコンテナ外からマウントする場合に設定
+      # MISSKEY_FRONTEND_DIR: /app/frontend
+      # MISSKEY_FRONTEND_DIST_DIR: /app/frontend_dist
+      # MISSKEY_TWEMOJI_DIR: /app/twemoji
+      # MISSKEY_STATIC_DIR: /app/static
+      TZ: Asia/Tokyo
+    volumes:
+      - ./files:/app/files
+      # 設定ファイルを上書きする場合:
+      # - ./.config/default.yml:/app/.config/default.yml:ro
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: misskey
+      POSTGRES_USER: misskey
+      POSTGRES_PASSWORD: misskey
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U misskey"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  redis_data:
