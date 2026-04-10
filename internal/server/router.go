@@ -432,32 +432,21 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/search-by-username-and-host", usersHandler.SearchByUsernameAndHost)
 	api.POST("/users/update-memo", usersHandler.UpdateMemo, middleware.RequireAuth())
 	usersHandler.SetAbuseRepo(repository.NewAbuseReportRepository(s.db))
-	// Phase 7.3: users/* 完全化
-	// 空配列を返すエンドポイント
-	for _, ep := range []string{
-		"users/achievements", "users/clips", "users/flashs",
-		"users/gallery/posts", "users/pages",
-		"users/get-frequently-replied-users",
-		"users/get-following-users-by-birthday",
-		"users/recommendation",
-		"users/lists/get-memberships",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		})
-	}
-	// NoContent を返すエンドポイント
-	for _, ep := range []string{
-		"users/lists/create-from-public",
-		"users/lists/favorite", "users/lists/unfavorite",
-		"users/lists/update", "users/lists/update-membership",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
+	// Phase 7.3: users/* 完全化 (実データハンドラ)
+	api.POST("/users/achievements", usersHandler.Achievements)
+	api.POST("/users/clips", usersHandler.Clips)
+	api.POST("/users/flashs", usersHandler.Flashs)
+	api.POST("/users/gallery/posts", usersHandler.GalleryPosts)
+	api.POST("/users/pages", usersHandler.Pages)
+	api.POST("/users/get-frequently-replied-users", usersHandler.GetFrequentlyRepliedUsers)
+	api.POST("/users/get-following-users-by-birthday", usersHandler.GetFollowingUsersByBirthday)
+	api.POST("/users/recommendation", usersHandler.UserRecommendation)
+	api.POST("/users/lists/get-memberships", usersHandler.ListsGetMemberships)
+	api.POST("/users/lists/create-from-public", usersHandler.ListsCreateFromPublic, middleware.RequireAuth())
+	api.POST("/users/lists/favorite", usersHandler.ListsFavorite, middleware.RequireAuth())
+	api.POST("/users/lists/unfavorite", usersHandler.ListsUnfavorite, middleware.RequireAuth())
+	api.POST("/users/lists/update", usersHandler.ListsUpdate, middleware.RequireAuth())
+	api.POST("/users/lists/update-membership", usersHandler.ListsUpdateMembership, middleware.RequireAuth())
 
 	// Account endpoints
 	registryRepo := repository.NewRegistryRepository(s.db)
