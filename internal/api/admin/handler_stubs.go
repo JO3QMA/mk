@@ -379,6 +379,17 @@ func (h *Handler) CaptchaCurrent(c echo.Context) error {
 
 // CaptchaSave handles POST /api/admin/captcha/save.
 func (h *Handler) CaptchaSave(c echo.Context) error {
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	_ = c.Bind(&req)
+	if h.metaRepo != nil {
+		_ = h.metaRepo.Update(map[string]any{
+			"enableHcaptcha":  req.Provider == "hcaptcha",
+			"enableRecaptcha": req.Provider == "recaptcha",
+			"enableTurnstile": req.Provider == "turnstile",
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -652,7 +663,10 @@ func (h *Handler) InviteList(c echo.Context) error {
 // --- promo ---
 
 // PromoCreate handles POST /api/admin/promo/create.
-func (h *Handler) PromoCreate(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) PromoCreate(c echo.Context) error {
+	// プロモノート作成 (ノートを広告として表示)
+	return c.NoContent(http.StatusNoContent) // 将来対応
+}
 
 // --- queue ---
 
