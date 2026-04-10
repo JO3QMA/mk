@@ -406,7 +406,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/translate", notesHandler.Translate)
 	api.POST("/notes/show-partial-bulk", notesHandler.ShowPartialBulk)
 	// notes/drafts + notes/thread-muting + notes/polls/recommendation (実データ)
-	notesHandler.SetDraftDB(s.db)
+	notesHandler.SetDraftRepo(repository.NewNoteDraftRepository(s.db))
 	api.POST("/notes/drafts/list", notesHandler.DraftsList, middleware.RequireAuth())
 	api.POST("/notes/drafts/create", notesHandler.DraftsCreate, middleware.RequireAuth())
 	api.POST("/notes/drafts/update", notesHandler.DraftsUpdate, middleware.RequireAuth())

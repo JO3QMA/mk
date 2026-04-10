@@ -1,6 +1,7 @@
 package notes
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func postDraft(handler func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
@@ -28,70 +30,189 @@ func postDraft(handler func(echo.Context) error, body string, user *model.User) 
 
 func newDraftHandler() *Handler {
 	idGen, _ := id.NewGenerator("aidx")
-	h := &Handler{idGen: idGen}
-	return h
+	return &Handler{idGen: idGen}
+}
+
+// --- Mock DraftRepo ---
+
+var errDraftMock = assert.AnError
+
+type mockDraftRepo struct {
+	drafts    map[string]*model.NoteDraft
+	createErr error
+}
+
+func newMockDraftRepo() *mockDraftRepo {
+	return &mockDraftRepo{drafts: make(map[string]*model.NoteDraft)}
+}
+
+func (m *mockDraftRepo) Create(d *model.NoteDraft) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.drafts[d.ID] = d
+	return nil
+}
+func (m *mockDraftRepo) FindByIDAndUser(id, userID string) (*model.NoteDraft, error) {
+	if d, ok := m.drafts[id]; ok && d.UserID == userID {
+		return d, nil
+	}
+	return nil, errDraftMock
+}
+func (m *mockDraftRepo) ListByUser(userID string, _ int) ([]*model.NoteDraft, error) {
+	var result []*model.NoteDraft
+	for _, d := range m.drafts {
+		if d.UserID == userID {
+			result = append(result, d)
+		}
+	}
+	return result, nil
+}
+func (m *mockDraftRepo) Update(d *model.NoteDraft) error {
+	m.drafts[d.ID] = d
+	return nil
+}
+func (m *mockDraftRepo) Delete(id, _ string) error {
+	delete(m.drafts, id)
+	return nil
+}
+func (m *mockDraftRepo) CountByUser(userID string) (int64, error) {
+	var count int64
+	for _, d := range m.drafts {
+		if d.UserID == userID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func newDraftHandlerWithRepo() (*Handler, *mockDraftRepo) {
+	h := newDraftHandler()
+	repo := newMockDraftRepo()
+	h.draftRepo = repo
+	return h, repo
 }
 
 // --- DraftsList ---
 
-func TestDraftsList_NilDB(t *testing.T) {
+func TestDraftsList_NilRepo(t *testing.T) {
 	h := newDraftHandler()
 	rec := postDraft(h.DraftsList, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "[]\n", rec.Body.String())
 }
 
+func TestDraftsList_WithData(t *testing.T) {
+	h, repo := newDraftHandlerWithRepo()
+	text := "hello"
+	repo.drafts["d1"] = &model.NoteDraft{ID: "d1", UserID: "u1", Text: &text, Visibility: "public"}
+	rec := postDraft(h.DraftsList, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+}
+
 // --- DraftsCreate ---
 
-func TestDraftsCreate_NilDB(t *testing.T) {
+func TestDraftsCreate_NilRepo(t *testing.T) {
 	h := newDraftHandler()
 	rec := postDraft(h.DraftsCreate, `{"text":"hello"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
-func TestDraftsCreate_NilDB_InvalidJSON(t *testing.T) {
-	h := newDraftHandler()
-	// draftDB nil → NoContent (Bindの前にreturn)
+func TestDraftsCreate_Success(t *testing.T) {
+	h, repo := newDraftHandlerWithRepo()
+	rec := postDraft(h.DraftsCreate, `{"text":"draft text"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Len(t, repo.drafts, 1)
+}
+
+func TestDraftsCreate_DefaultVisibility(t *testing.T) {
+	h, _ := newDraftHandlerWithRepo()
+	rec := postDraft(h.DraftsCreate, `{"text":"test"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestDraftsCreate_InvalidJSON(t *testing.T) {
+	h, _ := newDraftHandlerWithRepo()
 	rec := postDraft(h.DraftsCreate, `invalid`, &model.User{ID: "u1"})
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDraftsCreate_Error(t *testing.T) {
+	h, repo := newDraftHandlerWithRepo()
+	repo.createErr = errDraftMock
+	rec := postDraft(h.DraftsCreate, `{"text":"x"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 // --- DraftsUpdate ---
 
-func TestDraftsUpdate_NilDB(t *testing.T) {
+func TestDraftsUpdate_NilRepo(t *testing.T) {
 	h := newDraftHandler()
 	rec := postDraft(h.DraftsUpdate, `{"draftId":"d1"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
-func TestDraftsUpdate_NilDB_InvalidParam(t *testing.T) {
-	h := newDraftHandler()
+func TestDraftsUpdate_Success(t *testing.T) {
+	h, repo := newDraftHandlerWithRepo()
+	text := "old"
+	repo.drafts["d1"] = &model.NoteDraft{ID: "d1", UserID: "u1", Text: &text, Visibility: "public"}
+	rec := postDraft(h.DraftsUpdate, `{"draftId":"d1","text":"new","visibility":"home"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "new", *repo.drafts["d1"].Text)
+}
+
+func TestDraftsUpdate_NotFound(t *testing.T) {
+	h, _ := newDraftHandlerWithRepo()
+	rec := postDraft(h.DraftsUpdate, `{"draftId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestDraftsUpdate_InvalidParam(t *testing.T) {
+	h, _ := newDraftHandlerWithRepo()
 	rec := postDraft(h.DraftsUpdate, `{}`, &model.User{ID: "u1"})
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 // --- DraftsDelete ---
 
-func TestDraftsDelete_NilDB(t *testing.T) {
+func TestDraftsDelete_NilRepo(t *testing.T) {
 	h := newDraftHandler()
 	rec := postDraft(h.DraftsDelete, `{"draftId":"d1"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
-func TestDraftsDelete_NilDB_InvalidParam(t *testing.T) {
-	h := newDraftHandler()
-	// draftDB nil → NoContent (パラメータチェック前にreturn)
-	rec := postDraft(h.DraftsDelete, `{}`, &model.User{ID: "u1"})
+func TestDraftsDelete_Success(t *testing.T) {
+	h, repo := newDraftHandlerWithRepo()
+	repo.drafts["d1"] = &model.NoteDraft{ID: "d1", UserID: "u1"}
+	rec := postDraft(h.DraftsDelete, `{"draftId":"d1"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, repo.drafts)
+}
+
+func TestDraftsDelete_InvalidParam(t *testing.T) {
+	h, _ := newDraftHandlerWithRepo()
+	rec := postDraft(h.DraftsDelete, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 // --- DraftsCount ---
 
-func TestDraftsCount_NilDB(t *testing.T) {
+func TestDraftsCount_NilRepo(t *testing.T) {
 	h := newDraftHandler()
 	rec := postDraft(h.DraftsCount, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"count":0`)
+}
+
+func TestDraftsCount_WithData(t *testing.T) {
+	h, repo := newDraftHandlerWithRepo()
+	repo.drafts["d1"] = &model.NoteDraft{ID: "d1", UserID: "u1"}
+	rec := postDraft(h.DraftsCount, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"count":1`)
 }
 
 // --- ThreadMuting ---

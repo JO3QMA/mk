@@ -16,7 +16,6 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
-	"gorm.io/gorm"
 )
 
 // Handler handles note-related API endpoints.
@@ -32,7 +31,7 @@ type Handler struct {
 	idGen           id.Generator
 	favoriteRepo    repository.NoteFavoriteRepository
 	driveFileRepo   repository.DriveFileRepository
-	draftDB         *gorm.DB
+	draftRepo       repository.NoteDraftRepository
 }
 
 // SetDriveFileRepo attaches a DriveFileRepository for file resolution.
