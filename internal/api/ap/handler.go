@@ -2,6 +2,7 @@
 package ap
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -13,13 +14,31 @@ import (
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
+// RemoteFetcher fetches remote ActivityPub objects.
+type RemoteFetcher interface {
+	FetchObject(uri string) ([]byte, error)
+}
+
+// RemoteResolver resolves remote actors.
+type RemoteResolver interface {
+	ResolveActor(uri string) (*model.User, error)
+}
+
 // Handler handles ActivityPub resource endpoints.
 type Handler struct {
-	renderer     *activitypub.Renderer
-	userService  *coreuser.Service
-	queryService *corenote.QueryService
-	keypairRepo  repository.UserKeypairRepository
-	idGen        id.Generator
+	renderer       *activitypub.Renderer
+	userService    *coreuser.Service
+	queryService   *corenote.QueryService
+	keypairRepo    repository.UserKeypairRepository
+	idGen          id.Generator
+	remoteFetcher  RemoteFetcher
+	remoteResolver RemoteResolver
+}
+
+// SetRemote attaches remote AP fetcher and resolver.
+func (h *Handler) SetRemote(fetcher RemoteFetcher, resolver RemoteResolver) {
+	h.remoteFetcher = fetcher
+	h.remoteResolver = resolver
 }
 
 // NewHandler constructs a Handler.
@@ -63,7 +82,6 @@ func (h *Handler) User(c echo.Context) error {
 }
 
 // APIGet handles POST /api/ap/get — Admin専用。URIからActivityPubオブジェクトを取得。
-// 現時点ではローカルオブジェクトのみ対応。リモートフェッチは将来対応。
 func (h *Handler) APIGet(c echo.Context) error {
 	var req struct {
 		URI string `json:"uri"`
@@ -74,10 +92,22 @@ func (h *Handler) APIGet(c echo.Context) error {
 
 	// ローカルURIからオブジェクトを解決
 	obj, err := h.resolveLocal(req.URI)
-	if err != nil {
-		return c.JSON(http.StatusOK, map[string]any{})
+	if err == nil {
+		return c.JSON(http.StatusOK, obj)
 	}
-	return c.JSON(http.StatusOK, obj)
+
+	// リモートフェッチ
+	if h.remoteFetcher != nil {
+		data, err := h.remoteFetcher.FetchObject(req.URI)
+		if err == nil {
+			var parsed map[string]any
+			if json.Unmarshal(data, &parsed) == nil {
+				return c.JSON(http.StatusOK, parsed)
+			}
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{})
 }
 
 // APIShow handles POST /api/ap/show — URIからUser/Noteを解決して返す。
@@ -108,6 +138,31 @@ func (h *Handler) APIShow(c echo.Context) error {
 				"type":   "User",
 				"object": packUserForAPI(bundle.User),
 			})
+		}
+	}
+
+	// リモートユーザー解決
+	if h.remoteResolver != nil {
+		if remoteUser, err := h.remoteResolver.ResolveActor(req.URI); err == nil {
+			return c.JSON(http.StatusOK, map[string]any{
+				"type":   "User",
+				"object": packUserForAPI(remoteUser),
+			})
+		}
+	}
+
+	// リモートオブジェクトをフェッチしてNoteかどうか判定
+	if h.remoteFetcher != nil {
+		if data, err := h.remoteFetcher.FetchObject(req.URI); err == nil {
+			var parsed map[string]any
+			if json.Unmarshal(data, &parsed) == nil {
+				if t, ok := parsed["type"].(string); ok && (t == "Note" || t == "Article" || t == "Question") {
+					return c.JSON(http.StatusOK, map[string]any{
+						"type":   "Note",
+						"object": parsed,
+					})
+				}
+			}
 		}
 	}
 

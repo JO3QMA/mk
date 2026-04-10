@@ -622,6 +622,7 @@ func (s *Server) setupRoutes() {
 
 	// ActivityPub resource endpoints
 	apHandler := ap.NewHandler(apRenderer, userService, noteQueryService, keypairRepo, idGen)
+	apHandler.SetRemote(apFetcher, federationResolver)
 	s.echo.GET("/users/:id", apHandler.User)
 	s.echo.GET("/notes/:id", apHandler.Note)
 
