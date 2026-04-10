@@ -839,124 +839,79 @@ func (s *Server) setupRoutes() {
 	api.POST("/admin/announcements/delete", announcementHandler.AdminDelete, middleware.RequireAdmin(roleService))
 	api.POST("/admin/announcements/list", announcementHandler.AdminList, middleware.RequireAdmin(roleService))
 
-	// Phase 7.5: admin/* 残りエンドポイント一括追加
-	// NoContent を返す admin エンドポイント (moderator)
-	for _, ep := range []string{
-		"admin/delete-account", "admin/delete-all-files-of-a-user",
-		"admin/reset-password", "admin/send-email",
-		"admin/unset-user-avatar", "admin/unset-user-banner",
-		"admin/update-user-note", "admin/update-proxy-account",
-		"admin/forward-abuse-user-report", "admin/update-abuse-user-report",
-		"admin/accounts/delete",
-		"admin/federation/delete-all-files",
-		"admin/federation/refresh-remote-instance-metadata",
-		"admin/federation/remove-all-following",
-		"admin/federation/update-instance",
-		"admin/drive/clean-remote-files", "admin/drive/cleanup",
-		"admin/ad/create", "admin/ad/update", "admin/ad/delete",
-		"admin/avatar-decorations/create", "admin/avatar-decorations/update",
-		"admin/avatar-decorations/delete",
-		"admin/promo/create",
-		"admin/relays/add", "admin/relays/remove",
-		"admin/invite/create",
-		"admin/captcha/save",
-		"admin/emoji/copy", "admin/emoji/import-zip",
-		"admin/emoji/add-aliases-bulk", "admin/emoji/remove-aliases-bulk",
-		"admin/emoji/set-aliases-bulk", "admin/emoji/set-category-bulk",
-		"admin/emoji/set-license-bulk", "admin/emoji/delete-bulk",
-		"admin/system-webhook/create", "admin/system-webhook/update",
-		"admin/system-webhook/delete", "admin/system-webhook/test",
-		"admin/abuse-report/notification-recipient/create",
-		"admin/abuse-report/notification-recipient/update",
-		"admin/abuse-report/notification-recipient/delete",
-		"admin/queue/clear", "admin/queue/promote-jobs",
-		"admin/queue/remove-job", "admin/queue/retry-job",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireModerator(roleService))
-	}
-	// 空配列・オブジェクトを返す admin エンドポイント
-	for _, ep := range []string{
-		"admin/ad/list",
-		"admin/avatar-decorations/list",
-		"admin/drive/files",
-		"admin/emoji/list-remote",
-		"admin/invite/list",
-		"admin/relays/list",
-		"admin/system-webhook/list",
-		"admin/abuse-report/notification-recipient/list",
-		"admin/queue/deliver-delayed", "admin/queue/inbox-delayed",
-		"admin/queue/jobs",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		}, middleware.RequireModerator(roleService))
-	}
-	// オブジェクトを返す admin エンドポイント
-	api.POST("/admin/accounts/find-by-email", func(c echo.Context) error {
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{"code": "USER_NOT_FOUND", "message": "User not found.", "id": "a]504947-b888-4a99-9f62-8c4a0f3a3dab"},
-		})
-	}, middleware.RequireModerator(roleService))
-	api.POST("/admin/get-user-ips", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireModerator(roleService))
-	api.POST("/admin/get-index-stats", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/get-table-stats", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/server-info", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{
-			"machine": "misskey-go", "os": "linux", "node": "n/a",
-			"cpu": map[string]any{"model": "unknown", "cores": 0},
-			"mem": map[string]any{"total": 0},
-			"fs":  map[string]any{"total": 0, "used": 0},
-		})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/captcha/current", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{"provider": nil})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/drive/show-file", func(c echo.Context) error {
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{"code": "NO_SUCH_FILE", "message": "No such file.", "id": "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"},
-		})
-	}, middleware.RequireModerator(roleService))
-	for _, ep := range []string{
-		"admin/system-webhook/show",
-		"admin/abuse-report/notification-recipient/show",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusNotFound, map[string]any{
-				"error": map[string]any{"code": "NOT_FOUND", "message": "Not found.", "id": "00000000-0000-0000-0000-000000000000"},
-			})
-		}, middleware.RequireModerator(roleService))
-	}
-	api.POST("/admin/queue/queues", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/queue/queue-stats", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/queue/stats", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{
-			"deliver": map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
-			"inbox":   map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
-		})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/queue/show-job", func(c echo.Context) error {
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{"code": "NOT_FOUND", "message": "Not found."},
-		})
-	}, middleware.RequireAdmin(roleService))
-	api.POST("/admin/queue/show-job-logs", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAdmin(roleService))
+	// Phase 7.5: admin/* 残りエンドポイント (ハンドラメソッド化)
+	api.POST("/admin/delete-account", adminHandler.DeleteAccount, middleware.RequireModerator(roleService))
+	api.POST("/admin/delete-all-files-of-a-user", adminHandler.DeleteAllFilesOfUser, middleware.RequireModerator(roleService))
+	api.POST("/admin/reset-password", adminHandler.ResetPassword, middleware.RequireModerator(roleService))
+	api.POST("/admin/send-email", adminHandler.SendEmail, middleware.RequireModerator(roleService))
+	api.POST("/admin/unset-user-avatar", adminHandler.UnsetUserAvatar, middleware.RequireModerator(roleService))
+	api.POST("/admin/unset-user-banner", adminHandler.UnsetUserBanner, middleware.RequireModerator(roleService))
+	api.POST("/admin/update-user-note", adminHandler.UpdateUserNote, middleware.RequireModerator(roleService))
+	api.POST("/admin/update-proxy-account", adminHandler.UpdateProxyAccount, middleware.RequireModerator(roleService))
+	api.POST("/admin/forward-abuse-user-report", adminHandler.ForwardAbuseUserReport, middleware.RequireModerator(roleService))
+	api.POST("/admin/update-abuse-user-report", adminHandler.UpdateAbuseUserReport, middleware.RequireModerator(roleService))
+	api.POST("/admin/accounts/delete", adminHandler.AccountsDelete, middleware.RequireModerator(roleService))
+	api.POST("/admin/accounts/find-by-email", adminHandler.AccountsFindByEmail, middleware.RequireModerator(roleService))
+	api.POST("/admin/get-user-ips", adminHandler.GetUserIPs, middleware.RequireModerator(roleService))
+	api.POST("/admin/get-index-stats", adminHandler.GetIndexStats, middleware.RequireAdmin(roleService))
+	api.POST("/admin/get-table-stats", adminHandler.GetTableStats, middleware.RequireAdmin(roleService))
+	api.POST("/admin/server-info", adminHandler.ServerInfo, middleware.RequireAdmin(roleService))
+	api.POST("/admin/captcha/current", adminHandler.CaptchaCurrent, middleware.RequireAdmin(roleService))
+	api.POST("/admin/captcha/save", adminHandler.CaptchaSave, middleware.RequireModerator(roleService))
+	api.POST("/admin/ad/create", adminHandler.AdCreate, middleware.RequireModerator(roleService))
+	api.POST("/admin/ad/delete", adminHandler.AdDelete, middleware.RequireModerator(roleService))
+	api.POST("/admin/ad/list", adminHandler.AdList, middleware.RequireModerator(roleService))
+	api.POST("/admin/ad/update", adminHandler.AdUpdate, middleware.RequireModerator(roleService))
+	api.POST("/admin/avatar-decorations/create", adminHandler.AvatarDecorationsCreate, middleware.RequireModerator(roleService))
+	api.POST("/admin/avatar-decorations/delete", adminHandler.AvatarDecorationsDelete, middleware.RequireModerator(roleService))
+	api.POST("/admin/avatar-decorations/list", adminHandler.AvatarDecorationsList, middleware.RequireModerator(roleService))
+	api.POST("/admin/avatar-decorations/update", adminHandler.AvatarDecorationsUpdate, middleware.RequireModerator(roleService))
+	api.POST("/admin/drive/clean-remote-files", adminHandler.DriveCleanRemoteFiles, middleware.RequireModerator(roleService))
+	api.POST("/admin/drive/cleanup", adminHandler.DriveCleanup, middleware.RequireModerator(roleService))
+	api.POST("/admin/drive/files", adminHandler.DriveFiles, middleware.RequireModerator(roleService))
+	api.POST("/admin/drive/show-file", adminHandler.DriveShowFile, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/add-aliases-bulk", adminHandler.EmojiAddAliasesBulk, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/copy", adminHandler.EmojiCopy, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/delete-bulk", adminHandler.EmojiDeleteBulk, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/import-zip", adminHandler.EmojiImportZip, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/list-remote", adminHandler.EmojiListRemote, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/remove-aliases-bulk", adminHandler.EmojiRemoveAliasesBulk, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/set-aliases-bulk", adminHandler.EmojiSetAliasesBulk, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/set-category-bulk", adminHandler.EmojiSetCategoryBulk, middleware.RequireModerator(roleService))
+	api.POST("/admin/emoji/set-license-bulk", adminHandler.EmojiSetLicenseBulk, middleware.RequireModerator(roleService))
+	api.POST("/admin/federation/delete-all-files", adminHandler.FederationDeleteAllFiles, middleware.RequireModerator(roleService))
+	api.POST("/admin/federation/refresh-remote-instance-metadata", adminHandler.FederationRefreshRemoteInstanceMetadata, middleware.RequireModerator(roleService))
+	api.POST("/admin/federation/remove-all-following", adminHandler.FederationRemoveAllFollowing, middleware.RequireModerator(roleService))
+	api.POST("/admin/federation/update-instance", adminHandler.FederationUpdateInstance, middleware.RequireModerator(roleService))
+	api.POST("/admin/invite/create", adminHandler.InviteCreate, middleware.RequireModerator(roleService))
+	api.POST("/admin/invite/list", adminHandler.InviteList, middleware.RequireModerator(roleService))
+	api.POST("/admin/promo/create", adminHandler.PromoCreate, middleware.RequireModerator(roleService))
+	api.POST("/admin/relays/add", adminHandler.RelaysAdd, middleware.RequireModerator(roleService))
+	api.POST("/admin/relays/list", adminHandler.RelaysList, middleware.RequireModerator(roleService))
+	api.POST("/admin/relays/remove", adminHandler.RelaysRemove, middleware.RequireModerator(roleService))
+	api.POST("/admin/system-webhook/create", adminHandler.SystemWebhookCreate, middleware.RequireModerator(roleService))
+	api.POST("/admin/system-webhook/delete", adminHandler.SystemWebhookDelete, middleware.RequireModerator(roleService))
+	api.POST("/admin/system-webhook/list", adminHandler.SystemWebhookList, middleware.RequireModerator(roleService))
+	api.POST("/admin/system-webhook/show", adminHandler.SystemWebhookShow, middleware.RequireModerator(roleService))
+	api.POST("/admin/system-webhook/test", adminHandler.SystemWebhookTest, middleware.RequireModerator(roleService))
+	api.POST("/admin/system-webhook/update", adminHandler.SystemWebhookUpdate, middleware.RequireModerator(roleService))
+	api.POST("/admin/abuse-report/notification-recipient/create", adminHandler.AbuseReportNotificationRecipientCreate, middleware.RequireModerator(roleService))
+	api.POST("/admin/abuse-report/notification-recipient/delete", adminHandler.AbuseReportNotificationRecipientDelete, middleware.RequireModerator(roleService))
+	api.POST("/admin/abuse-report/notification-recipient/list", adminHandler.AbuseReportNotificationRecipientList, middleware.RequireModerator(roleService))
+	api.POST("/admin/abuse-report/notification-recipient/show", adminHandler.AbuseReportNotificationRecipientShow, middleware.RequireModerator(roleService))
+	api.POST("/admin/abuse-report/notification-recipient/update", adminHandler.AbuseReportNotificationRecipientUpdate, middleware.RequireModerator(roleService))
+	api.POST("/admin/queue/clear", adminHandler.QueueClear, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/deliver-delayed", adminHandler.QueueDeliverDelayed, middleware.RequireModerator(roleService))
+	api.POST("/admin/queue/inbox-delayed", adminHandler.QueueInboxDelayed, middleware.RequireModerator(roleService))
+	api.POST("/admin/queue/jobs", adminHandler.QueueJobs, middleware.RequireModerator(roleService))
+	api.POST("/admin/queue/promote-jobs", adminHandler.QueuePromoteJobs, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/queue-stats", adminHandler.QueueQueueStats, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/queues", adminHandler.QueueQueues, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/remove-job", adminHandler.QueueRemoveJob, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/retry-job", adminHandler.QueueRetryJob, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/show-job", adminHandler.QueueShowJob, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/show-job-logs", adminHandler.QueueShowJobLogs, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/stats", adminHandler.QueueStats, middleware.RequireAdmin(roleService))
 
 	// --- Phase 7.6b: chat/*, auth/*, ap/*, sw/*, reversi/*, bubble-game/*, misc ---
 
