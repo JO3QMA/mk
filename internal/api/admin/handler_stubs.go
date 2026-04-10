@@ -217,6 +217,21 @@ func (h *Handler) DriveShowFile(c echo.Context) error {
 
 // EmojiAddAliasesBulk handles POST /api/admin/emoji/add-aliases-bulk.
 func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
+	var req struct {
+		IDs     []string `json:"ids"`
+		Aliases []string `json:"aliases"`
+	}
+	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.emojiRepo != nil {
+		for _, eid := range req.IDs {
+			if e, err := h.emojiRepo.FindByID(eid); err == nil {
+				merged := append(e.Aliases, req.Aliases...)
+				_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": merged})
+			}
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -227,36 +242,115 @@ func (h *Handler) EmojiCopy(c echo.Context) error {
 
 // EmojiDeleteBulk handles POST /api/admin/emoji/delete-bulk.
 func (h *Handler) EmojiDeleteBulk(c echo.Context) error {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.emojiRepo != nil {
+		for _, eid := range req.IDs {
+			_ = h.emojiRepo.Delete(eid)
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiImportZip handles POST /api/admin/emoji/import-zip.
 func (h *Handler) EmojiImportZip(c echo.Context) error {
+	// ZIP展開+インポートは将来対応
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiListRemote handles POST /api/admin/emoji/list-remote.
 func (h *Handler) EmojiListRemote(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	if h.emojiRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	emojis, err := h.emojiRepo.ListWithFilter("", "", false, 20, 0)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, emojis)
 }
 
 // EmojiRemoveAliasesBulk handles POST /api/admin/emoji/remove-aliases-bulk.
 func (h *Handler) EmojiRemoveAliasesBulk(c echo.Context) error {
+	var req struct {
+		IDs     []string `json:"ids"`
+		Aliases []string `json:"aliases"`
+	}
+	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.emojiRepo != nil {
+		removeSet := make(map[string]bool, len(req.Aliases))
+		for _, a := range req.Aliases {
+			removeSet[a] = true
+		}
+		for _, eid := range req.IDs {
+			if e, err := h.emojiRepo.FindByID(eid); err == nil {
+				var filtered []string
+				for _, a := range e.Aliases {
+					if !removeSet[a] {
+						filtered = append(filtered, a)
+					}
+				}
+				_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": filtered})
+			}
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiSetAliasesBulk handles POST /api/admin/emoji/set-aliases-bulk.
 func (h *Handler) EmojiSetAliasesBulk(c echo.Context) error {
+	var req struct {
+		IDs     []string `json:"ids"`
+		Aliases []string `json:"aliases"`
+	}
+	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.emojiRepo != nil {
+		for _, eid := range req.IDs {
+			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": req.Aliases})
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiSetCategoryBulk handles POST /api/admin/emoji/set-category-bulk.
 func (h *Handler) EmojiSetCategoryBulk(c echo.Context) error {
+	var req struct {
+		IDs      []string `json:"ids"`
+		Category string   `json:"category"`
+	}
+	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.emojiRepo != nil {
+		for _, eid := range req.IDs {
+			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"category": req.Category})
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiSetLicenseBulk handles POST /api/admin/emoji/set-license-bulk.
 func (h *Handler) EmojiSetLicenseBulk(c echo.Context) error {
+	var req struct {
+		IDs     []string `json:"ids"`
+		License string   `json:"license"`
+	}
+	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.emojiRepo != nil {
+		for _, eid := range req.IDs {
+			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"license": req.License})
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
