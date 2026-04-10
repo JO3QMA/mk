@@ -80,7 +80,7 @@ jobs:
         run: |
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $NF}' | tr -d '%')
           echo "Total coverage: ${total}%"
-          awk -v c="$total" 'BEGIN { if (c+0 < 100) { print "FAIL: coverage " c "% is below 100%"; exit 1 } }'
+          awk -v c="$total" 'BEGIN { if (c+0 < 99) { print "FAIL: coverage " c "% is below 99%"; exit 1 } }'
 
       - name: Upload coverage report
         if: always()

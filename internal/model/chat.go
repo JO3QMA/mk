@@ -4,11 +4,11 @@ import "github.com/lib/pq"
 
 // ChatRoom represents the `chat_room` table.
 type ChatRoom struct {
-	ID          string  `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
-	Name        string  `gorm:"column:name;type:varchar(256);not null" json:"name"`
-	OwnerID     string  `gorm:"column:ownerId;type:varchar(32);not null" json:"ownerId"`
-	Description string  `gorm:"column:description;type:varchar(2048);default:''" json:"description"`
-	IsArchived  bool    `gorm:"column:isArchived;default:false" json:"isArchived"`
+	ID          string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	Name        string `gorm:"column:name;type:varchar(256);not null" json:"name"`
+	OwnerID     string `gorm:"column:ownerId;type:varchar(32);not null" json:"ownerId"`
+	Description string `gorm:"column:description;type:varchar(2048);default:''" json:"description"`
+	IsArchived  bool   `gorm:"column:isArchived;default:false" json:"isArchived"`
 
 	Owner *User `gorm:"foreignKey:OwnerID" json:"owner,omitempty"`
 }
