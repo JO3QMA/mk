@@ -34,17 +34,20 @@ func TestMoveAccount(t *testing.T) {
 	h, _ := newExtraHandler(t)
 	assert.Equal(t, http.StatusNoContent, postExtra(h.Move, `{}`, stubUser).Code)
 }
-func TestTwoFARegister(t *testing.T) {
+func TestTwoFARegister_NoPassword(t *testing.T) {
 	h, _ := newExtraHandler(t)
-	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFARegister, `{}`, stubUser).Code)
+	// パスワード未指定 → BadRequest
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFARegister, `{}`, stubUser).Code)
 }
-func TestTwoFADone(t *testing.T) {
+func TestTwoFADone_NoToken(t *testing.T) {
 	h, _ := newExtraHandler(t)
-	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFADone, `{}`, stubUser).Code)
+	// トークン未指定 → BadRequest
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFADone, `{}`, stubUser).Code)
 }
-func TestTwoFAUnregister(t *testing.T) {
+func TestTwoFAUnregister_NoPassword(t *testing.T) {
 	h, _ := newExtraHandler(t)
-	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFAUnregister, `{}`, stubUser).Code)
+	// パスワード未指定 → BadRequest
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFAUnregister, `{}`, stubUser).Code)
 }
 func TestTwoFARegisterKey(t *testing.T) {
 	h, _ := newExtraHandler(t)
