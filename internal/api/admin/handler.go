@@ -12,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
+	"gorm.io/gorm"
 )
 
 // Handler handles admin API endpoints.
@@ -24,12 +25,18 @@ type Handler struct {
 	modLogRepo    repository.ModerationLogRepository
 	emojiRepo     repository.EmojiRepository
 	driveFileRepo repository.DriveFileRepository
+	adminDB       *gorm.DB
 	idGen         id.Generator
 }
 
 // SetDriveFileRepo attaches a DriveFileRepository for admin drive operations.
 func (h *Handler) SetDriveFileRepo(r repository.DriveFileRepository) {
 	h.driveFileRepo = r
+}
+
+// SetAdminDB attaches a DB connection for ad/invite/relay operations.
+func (h *Handler) SetAdminDB(db *gorm.DB) {
+	h.adminDB = db
 }
 
 // NewHandler creates a new admin Handler.

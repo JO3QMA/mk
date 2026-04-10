@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS "relay";
+DROP TABLE IF EXISTS "registration_ticket";
+DROP TABLE IF EXISTS "ad";

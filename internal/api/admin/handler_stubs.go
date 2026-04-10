@@ -4,9 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -272,16 +275,64 @@ func (h *Handler) CaptchaSave(c echo.Context) error {
 // --- ad ---
 
 // AdCreate handles POST /api/admin/ad/create.
-func (h *Handler) AdCreate(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) AdCreate(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		URL      string `json:"url"`
+		ImageURL string `json:"imageUrl"`
+		Place    string `json:"place"`
+		Memo     string `json:"memo"`
+		Priority string `json:"priority"`
+		Ratio    int    `json:"ratio"`
+	}
+	_ = c.Bind(&req)
+	if req.Place == "" {
+		req.Place = "square"
+	}
+	if req.Priority == "" {
+		req.Priority = "middle"
+	}
+	if req.Ratio <= 0 {
+		req.Ratio = 1
+	}
+	ad := &model.Ad{
+		ID: h.idGen.Generate(time.Now()), URL: req.URL, ImageURL: req.ImageURL,
+		Place: req.Place, Memo: req.Memo, Priority: req.Priority, Ratio: req.Ratio,
+		ExpiresAt: time.Now().Add(30 * 24 * time.Hour), StartsAt: time.Now(),
+	}
+	h.adminDB.Create(ad)
+	return c.JSON(http.StatusOK, ad)
+}
 
 // AdDelete handles POST /api/admin/ad/delete.
-func (h *Handler) AdDelete(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) AdDelete(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.Ad{})
+	return c.NoContent(http.StatusNoContent)
+}
 
 // AdList handles POST /api/admin/ad/list.
-func (h *Handler) AdList(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+func (h *Handler) AdList(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var ads []*model.Ad
+	h.adminDB.Order(`"id" DESC`).Limit(20).Find(&ads)
+	return c.JSON(http.StatusOK, ads)
+}
 
 // AdUpdate handles POST /api/admin/ad/update.
-func (h *Handler) AdUpdate(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) AdUpdate(c echo.Context) error {
+	return c.NoContent(http.StatusNoContent)
+}
 
 // --- avatar-decorations ---
 
@@ -357,10 +408,33 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 // --- invite ---
 
 // InviteCreate handles POST /api/admin/invite/create.
-func (h *Handler) InviteCreate(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) InviteCreate(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	user := middleware.GetUser(c)
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	code := hex.EncodeToString(b)
+	ticket := &model.RegistrationTicket{
+		ID: h.idGen.Generate(time.Now()), Code: code, CreatedByID: &user.ID,
+	}
+	h.adminDB.Create(ticket)
+	return c.JSON(http.StatusOK, map[string]any{
+		"id": ticket.ID, "code": ticket.Code, "expiresAt": ticket.ExpiresAt,
+		"createdAt": time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+	})
+}
 
 // InviteList handles POST /api/admin/invite/list.
-func (h *Handler) InviteList(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+func (h *Handler) InviteList(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var tickets []*model.RegistrationTicket
+	h.adminDB.Order(`"id" DESC`).Limit(20).Find(&tickets)
+	return c.JSON(http.StatusOK, tickets)
+}
 
 // --- promo ---
 
@@ -417,13 +491,46 @@ func (h *Handler) QueueStats(c echo.Context) error {
 // --- relays ---
 
 // RelaysAdd handles POST /api/admin/relays/add.
-func (h *Handler) RelaysAdd(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) RelaysAdd(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		Inbox string `json:"inbox"`
+	}
+	_ = c.Bind(&req)
+	if req.Inbox == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	relay := &model.Relay{
+		ID: h.idGen.Generate(time.Now()), Inbox: req.Inbox, Status: "requesting",
+	}
+	h.adminDB.Create(relay)
+	return c.JSON(http.StatusOK, relay)
+}
 
 // RelaysList handles POST /api/admin/relays/list.
-func (h *Handler) RelaysList(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+func (h *Handler) RelaysList(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var relays []*model.Relay
+	h.adminDB.Order(`"id" DESC`).Find(&relays)
+	return c.JSON(http.StatusOK, relays)
+}
 
 // RelaysRemove handles POST /api/admin/relays/remove.
-func (h *Handler) RelaysRemove(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+func (h *Handler) RelaysRemove(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.Relay{})
+	return c.NoContent(http.StatusNoContent)
+}
 
 // --- system-webhook ---
 

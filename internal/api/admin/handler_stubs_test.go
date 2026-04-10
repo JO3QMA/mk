@@ -5,10 +5,21 @@ import (
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
 var adminUser = &model.User{ID: "admin1"}
+
+func TestSetDriveFileRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetDriveFileRepo(testutil.NewMockDriveFileRepository())
+}
+
+func TestSetAdminDB(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAdminDB(nil)
+}
 
 // --- accounts ---
 func TestAccountsDelete(t *testing.T) {

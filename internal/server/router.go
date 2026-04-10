@@ -812,6 +812,7 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetModLogRepo(modLogRepo)
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
+	adminHandler.SetAdminDB(s.db)
 	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
 	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))
