@@ -592,6 +592,8 @@ func (m *MockNoteRepository) SearchByTag(tag string, limit int, _, _ string) ([]
 	return result, nil
 }
 
+func (m *MockNoteRepository) IncrementUserNotesCount(_ string, _ int) error { return nil }
+
 func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, _, _ string) ([]*model.Note, error) {
 	return m.listPublic(limit)
 }

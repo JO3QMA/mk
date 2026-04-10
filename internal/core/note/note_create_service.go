@@ -344,6 +344,9 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		s.chartHook.OnNoteCreated(finalNote)
 	}
 
+	// ユーザーのnotesCountをインクリメント (ベストエフォート)
+	_ = s.noteRepo.IncrementUserNotesCount(in.User.ID, 1)
+
 	return finalNote, nil
 }
 

@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/datatypes"
 )
@@ -41,6 +42,9 @@ type UserDetailed struct {
 	UpdatedAt      *string        `json:"updatedAt"`
 	URI            *string        `json:"uri"`
 	URL            *string        `json:"url"`
+	PinnedNoteIDs  []string       `json:"pinnedNoteIds"`
+	PinnedNotes    []any          `json:"pinnedNotes"`
+	Roles          []any          `json:"roles"`
 }
 
 // PackUserLite converts a model.User to a UserLite DTO.
@@ -72,7 +76,7 @@ func PackUserLite(u *model.User) UserLite {
 }
 
 // PackUserDetailed converts a model.User and optional profile to UserDetailed.
-func PackUserDetailed(u *model.User, profile *model.UserProfile) UserDetailed {
+func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Generator) UserDetailed {
 	d := UserDetailed{
 		UserLite:       PackUserLite(u),
 		BannerURL:      u.BannerURL,
@@ -83,6 +87,16 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile) UserDetailed {
 		FollowingCount: u.FollowingCount,
 		NotesCount:     u.NotesCount,
 		URI:            u.URI,
+		PinnedNoteIDs:  []string{},
+		PinnedNotes:    []any{},
+		Roles:          []any{},
+	}
+
+	// IDからcreatedAtを抽出
+	if len(idGens) > 0 && idGens[0] != nil {
+		if t, err := idGens[0].ParseTime(u.ID); err == nil {
+			d.CreatedAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		}
 	}
 
 	if profile != nil {

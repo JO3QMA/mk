@@ -104,7 +104,8 @@ func (h *Handler) Show(c echo.Context) error {
 		h.chartHook.OnUserShow(bundle.User.ID, viewerID, visitorKey)
 	}
 
-	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
+	detailed := entity.PackUserDetailed(bundle.User, bundle.Profile, h.idGen)
+	return c.JSON(http.StatusOK, detailed)
 }
 
 // SearchRequest is the request body for users/search.

@@ -27,6 +27,7 @@ type NoteRepository interface {
 	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
 	ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error)
+	IncrementUserNotesCount(userID string, delta int) error
 	ListHomeTimeline(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
 	ListGlobalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
@@ -331,6 +332,10 @@ func (r *noteRepository) SearchByTag(tag string, limit int, sinceID, untilID str
 		return nil, err
 	}
 	return notes, nil
+}
+
+func (r *noteRepository) IncrementUserNotesCount(userID string, delta int) error {
+	return r.db.Exec(`UPDATE "user" SET "notesCount" = "notesCount" + ? WHERE "id" = ?`, delta, userID).Error
 }
 
 // ListHomeTimeline returns notes by the user and users they follow.
