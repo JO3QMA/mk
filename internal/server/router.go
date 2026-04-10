@@ -441,6 +441,32 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/search-by-username-and-host", usersHandler.SearchByUsernameAndHost)
 	api.POST("/users/update-memo", usersHandler.UpdateMemo, middleware.RequireAuth())
 	usersHandler.SetAbuseRepo(repository.NewAbuseReportRepository(s.db))
+	// Phase 7.3: users/* 完全化
+	// 空配列を返すエンドポイント
+	for _, ep := range []string{
+		"users/achievements", "users/clips", "users/flashs",
+		"users/gallery/posts", "users/pages",
+		"users/get-frequently-replied-users",
+		"users/get-following-users-by-birthday",
+		"users/recommendation",
+		"users/lists/get-memberships",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		})
+	}
+	// NoContent を返すエンドポイント
+	for _, ep := range []string{
+		"users/lists/create-from-public",
+		"users/lists/favorite", "users/lists/unfavorite",
+		"users/lists/update", "users/lists/update-membership",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
 
 	// Account endpoints
 	registryRepo := repository.NewRegistryRepository(s.db)
@@ -572,6 +598,34 @@ func (s *Server) setupRoutes() {
 	api.POST("/drive/folders/show", driveHandler.FoldersShow, middleware.RequireAuth())
 	api.POST("/drive/folders/update", driveHandler.FoldersUpdate, middleware.RequireAuth())
 	api.POST("/drive/folders/delete", driveHandler.FoldersDelete, middleware.RequireAuth())
+	// Phase 7.4: drive/* 残りエンドポイント
+	// drive (使用量サマリ)
+	api.POST("/drive", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"capacity": 1073741824, "usage": 0,
+		})
+	}, middleware.RequireAuth())
+	// 空配列を返すエンドポイント
+	for _, ep := range []string{
+		"drive/files", "drive/files/attached-notes",
+		"drive/files/attached-chat-messages",
+		"drive/folders", "drive/folders/find", "drive/stream",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		}, middleware.RequireAuth())
+	}
+	// NoContent を返すエンドポイント
+	for _, ep := range []string{
+		"drive/files/check-existence", "drive/files/upload-from-url",
+		"drive/files/find", "drive/files/move-bulk",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
 
 	// Static file serving for LocalStorage
 	// MIME type はファイル内容の先頭から自動判定する。
@@ -731,6 +785,67 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/accept", followingHandler.AcceptRequest, middleware.RequireAuth())
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
+	// Phase 7.6: following/channels/clips/federation 残りエンドポイント
+	for _, ep := range []string{
+		"following/invalidate", "following/update", "following/update-all",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	api.POST("/following/requests/sent", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAuth())
+	// channels 残り
+	for _, ep := range []string{
+		"channels/favorite", "channels/unfavorite",
+		"channels/mute/create", "channels/mute/delete",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	for _, ep := range []string{
+		"channels/my-favorites", "channels/mute/list",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		}, middleware.RequireAuth())
+	}
+	// clips 残り
+	for _, ep := range []string{
+		"clips/favorite", "clips/unfavorite",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	api.POST("/clips/my-favorites", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAuth())
+	// federation 残り
+	for _, ep := range []string{
+		"federation/followers", "federation/following",
+		"federation/users",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		})
+	}
+	api.POST("/federation/stats", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"topSubInstances": []any{}, "otherFollowersCount": 0,
+			"topPubInstances": []any{}, "otherFollowingCount": 0,
+		})
+	})
+	api.POST("/federation/update-remote-user", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
 
 	// Public roles (Phase 6)
 	rolesHandler := apiroles.NewHandler(roleService)
