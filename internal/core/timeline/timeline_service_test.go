@@ -146,6 +146,89 @@ func TestService_ResolveEmpty(t *testing.T) {
 	assert.Empty(t, out)
 }
 
+// --- DB fallback tests (Redis empty) ---
+
+func TestService_HomeTimeline_DBFallback(t *testing.T) {
+	svc, _, repo := newTestServiceWithRepo(t)
+	// Redisにpushしない → DBフォールバック
+	repo.Notes["n1"] = &model.Note{ID: "n1", UserID: "viewer", Visibility: model.NoteVisibilityPublic}
+	out, err := svc.HomeTimeline(context.Background(), &model.User{ID: "viewer"}, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+}
+
+func TestService_LocalTimeline_DBFallback(t *testing.T) {
+	svc, _, repo := newTestServiceWithRepo(t)
+	repo.Notes["n1"] = &model.Note{ID: "n1", UserID: "a", Visibility: model.NoteVisibilityPublic}
+	out, err := svc.LocalTimeline(context.Background(), nil, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+}
+
+func TestService_GlobalTimeline_DBFallback(t *testing.T) {
+	svc, _, repo := newTestServiceWithRepo(t)
+	repo.Notes["n1"] = &model.Note{ID: "n1", UserID: "a", Visibility: model.NoteVisibilityPublic}
+	out, err := svc.GlobalTimeline(context.Background(), nil, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+}
+
+func TestService_HybridTimeline_DBFallback(t *testing.T) {
+	svc, _, repo := newTestServiceWithRepo(t)
+	repo.Notes["n1"] = &model.Note{ID: "n1", UserID: "viewer", Visibility: model.NoteVisibilityPublic}
+	out, err := svc.HybridTimeline(context.Background(), &model.User{ID: "viewer"}, "", "", 10)
+	require.NoError(t, err)
+	assert.Len(t, out, 1)
+}
+
+func TestService_HomeTimeline_DefaultLimit(t *testing.T) {
+	svc, _, _ := newTestServiceWithRepo(t)
+	out, err := svc.HomeTimeline(context.Background(), &model.User{ID: "u"}, "", "", 0)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+func TestService_LocalTimeline_DefaultLimit(t *testing.T) {
+	svc, _, _ := newTestServiceWithRepo(t)
+	out, err := svc.LocalTimeline(context.Background(), nil, "", "", 0)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+func TestService_GlobalTimeline_DefaultLimit(t *testing.T) {
+	svc, _, _ := newTestServiceWithRepo(t)
+	out, err := svc.GlobalTimeline(context.Background(), nil, "", "", 0)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+func TestService_HybridTimeline_DefaultLimit(t *testing.T) {
+	svc, _, _ := newTestServiceWithRepo(t)
+	out, err := svc.HybridTimeline(context.Background(), &model.User{ID: "u"}, "", "", 0)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+func TestService_ResolveError(t *testing.T) {
+	// RedisにIDはあるがrepoのFindManyByIDsWithUserがエラー
+	testRedis.FlushAll(context.Background())
+	failRepo := &failingFindManyRepo{testutil.NewMockNoteRepository()}
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	svc := NewService(fanout, failRepo, testutil.NewMockFollowingRepository())
+	ctx := context.Background()
+
+	noteID := idGen.Generate(time.Now())
+	require.NoError(t, fanout.Push(ctx, LocalTimeline, noteID, 100))
+	_, err := svc.LocalTimeline(ctx, nil, "", "", 10)
+	assert.Error(t, err)
+}
+
+type failingFindManyRepo struct{ *testutil.MockNoteRepository }
+
+func (f *failingFindManyRepo) FindManyByIDsWithUser(_ []string) ([]*model.Note, error) {
+	return nil, assert.AnError
+}
+
 func TestMergeIDs_LimitClamping(t *testing.T) {
 	out := mergeIDs([][]string{{"a", "b"}, {"c", "d"}}, 2)
 	assert.Len(t, out, 2)
