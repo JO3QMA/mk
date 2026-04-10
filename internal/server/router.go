@@ -488,20 +488,28 @@ func (s *Server) setupRoutes() {
 	api.POST("/notifications/flush", notificationsHandler.Flush, middleware.RequireAuth())
 	api.POST("/notifications/test-notification", notificationsHandler.TestNotification, middleware.RequireAuth())
 
-	// Phase 7.1a: フロントエンドが呼ぶ i/* スタブ
+	// i/* ハンドラ
 	api.POST("/i/claim-achievement", iHandler.ClaimAchievement, middleware.RequireAuth())
-	api.POST("/i/apps", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAuth())
-	api.POST("/i/authorized-apps", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAuth())
-	api.POST("/i/signin-history", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAuth())
-	api.POST("/i/revoke-token", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}, middleware.RequireAuth())
+	api.POST("/i/apps", iHandler.Apps, middleware.RequireAuth())
+	api.POST("/i/authorized-apps", iHandler.AuthorizedApps, middleware.RequireAuth())
+	api.POST("/i/signin-history", iHandler.SigninHistory, middleware.RequireAuth())
+	api.POST("/i/revoke-token", iHandler.RevokeToken, middleware.RequireAuth())
+	api.POST("/i/update-email", iHandler.UpdateEmail, middleware.RequireAuth())
+	api.POST("/i/move", iHandler.Move, middleware.RequireAuth())
+	api.POST("/i/2fa/register", iHandler.TwoFARegister, middleware.RequireAuth())
+	api.POST("/i/2fa/done", iHandler.TwoFADone, middleware.RequireAuth())
+	api.POST("/i/2fa/unregister", iHandler.TwoFAUnregister, middleware.RequireAuth())
+	api.POST("/i/2fa/register-key", iHandler.TwoFARegisterKey, middleware.RequireAuth())
+	api.POST("/i/2fa/key-done", iHandler.TwoFAKeyDone, middleware.RequireAuth())
+	api.POST("/i/2fa/remove-key", iHandler.TwoFARemoveKey, middleware.RequireAuth())
+	api.POST("/i/2fa/update-key", iHandler.TwoFAUpdateKey, middleware.RequireAuth())
+	api.POST("/i/2fa/password-less", iHandler.TwoFAPasswordLess, middleware.RequireAuth())
+	api.POST("/i/gallery/likes", iHandler.GalleryLikes, middleware.RequireAuth())
+	api.POST("/i/gallery/posts", iHandler.GalleryPosts, middleware.RequireAuth())
+	api.POST("/i/page-likes", iHandler.PageLikes, middleware.RequireAuth())
+	api.POST("/i/registry/get-detail", iHandler.RegistryGetDetail, middleware.RequireAuth())
+	api.POST("/i/registry/keys", iHandler.RegistryKeys, middleware.RequireAuth())
+	api.POST("/i/registry/scopes-with-domain", iHandler.RegistryScopesWithDomain, middleware.RequireAuth())
 
 	// i/export-* — データエクスポート (asynqキューにエンキュー)
 	for _, exportType := range []string{
@@ -529,34 +537,6 @@ func (s *Server) setupRoutes() {
 			return c.NoContent(http.StatusNoContent)
 		}, middleware.RequireAuth())
 	}
-
-	// Phase 7.1: i/* 完全化 (スタブ: フロントエンドの設定画面が動くように)
-	// NoContent (204) を返すエンドポイント
-	for _, ep := range []string{
-		"i/update-email", "i/move",
-		"i/2fa/register", "i/2fa/done", "i/2fa/unregister",
-		"i/2fa/register-key", "i/2fa/key-done", "i/2fa/remove-key",
-		"i/2fa/update-key", "i/2fa/password-less",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
-	// 空配列を返すエンドポイント
-	for _, ep := range []string{
-		"i/gallery/likes", "i/gallery/posts", "i/page-likes",
-		"i/registry/keys", "i/registry/scopes-with-domain",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		}, middleware.RequireAuth())
-	}
-	// オブジェクトを返すエンドポイント
-	api.POST("/i/registry/get-detail", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{})
-	}, middleware.RequireAuth())
 
 	// Hashtags endpoints (Phase 6)
 	hashtagsHandler := apihashtags.NewHandler(s.db)

@@ -1,0 +1,92 @@
+package i
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+)
+
+var stubUser = &model.User{ID: "u1"}
+
+func TestApps(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.Apps, `{}`, stubUser).Code)
+}
+func TestAuthorizedApps(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.AuthorizedApps, `{}`, stubUser).Code)
+}
+func TestSigninHistory(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.SigninHistory, `{}`, stubUser).Code)
+}
+func TestRevokeToken(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.RevokeToken, `{}`, stubUser).Code)
+}
+func TestUpdateEmail(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.UpdateEmail, `{}`, stubUser).Code)
+}
+func TestMoveAccount(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.Move, `{}`, stubUser).Code)
+}
+func TestTwoFARegister(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFARegister, `{}`, stubUser).Code)
+}
+func TestTwoFADone(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFADone, `{}`, stubUser).Code)
+}
+func TestTwoFAUnregister(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFAUnregister, `{}`, stubUser).Code)
+}
+func TestTwoFARegisterKey(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFARegisterKey, `{}`, stubUser).Code)
+}
+func TestTwoFAKeyDone(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFAKeyDone, `{}`, stubUser).Code)
+}
+func TestTwoFARemoveKey(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFARemoveKey, `{}`, stubUser).Code)
+}
+func TestTwoFAUpdateKey(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFAUpdateKey, `{}`, stubUser).Code)
+}
+func TestTwoFAPasswordLess(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusNoContent, postExtra(h.TwoFAPasswordLess, `{}`, stubUser).Code)
+}
+func TestGalleryLikes(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.GalleryLikes, `{}`, stubUser).Code)
+}
+func TestGalleryPostsI(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.GalleryPosts, `{}`, stubUser).Code)
+}
+func TestPageLikes(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.PageLikes, `{}`, stubUser).Code)
+}
+func TestRegistryGetDetail(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.RegistryGetDetail, `{}`, stubUser).Code)
+}
+func TestRegistryKeys(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.RegistryKeys, `{}`, stubUser).Code)
+}
+func TestRegistryScopesWithDomain(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusOK, postExtra(h.RegistryScopesWithDomain, `{}`, stubUser).Code)
+}
