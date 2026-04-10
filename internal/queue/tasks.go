@@ -10,6 +10,12 @@ import (
 // delivery jobs.
 const TaskTypeDeliver = "ap:deliver"
 
+// TaskTypeExport is the asynq task type for data export jobs.
+const TaskTypeExport = "export"
+
+// TaskTypeImport is the asynq task type for data import jobs.
+const TaskTypeImport = "import"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {
@@ -38,6 +44,49 @@ func DecodeDeliverPayload(body []byte) (DeliverPayload, error) {
 	var p DeliverPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return DeliverPayload{}, err
+	}
+	return p, nil
+}
+
+// ExportPayload is the body of an export task.
+type ExportPayload struct {
+	UserID string `json:"userId"`
+	Type   string `json:"type"` // notes, following, blocking, mute, favorites, user-lists, antennas, clips
+}
+
+// NewExportTask creates an asynq.Task for data export.
+func NewExportTask(payload ExportPayload) *asynq.Task {
+	body, _ := json.Marshal(payload)
+	return asynq.NewTask(TaskTypeExport, body)
+}
+
+// DecodeExportPayload extracts an ExportPayload from a task body.
+func DecodeExportPayload(body []byte) (ExportPayload, error) {
+	var p ExportPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ExportPayload{}, err
+	}
+	return p, nil
+}
+
+// ImportPayload is the body of an import task.
+type ImportPayload struct {
+	UserID string `json:"userId"`
+	Type   string `json:"type"` // following, blocking, muting, user-lists, antennas
+	FileID string `json:"fileId"`
+}
+
+// NewImportTask creates an asynq.Task for data import.
+func NewImportTask(payload ImportPayload) *asynq.Task {
+	body, _ := json.Marshal(payload)
+	return asynq.NewTask(TaskTypeImport, body)
+}
+
+// DecodeImportPayload extracts an ImportPayload from a task body.
+func DecodeImportPayload(body []byte) (ImportPayload, error) {
+	var p ImportPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ImportPayload{}, err
 	}
 	return p, nil
 }

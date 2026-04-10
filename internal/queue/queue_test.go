@@ -178,5 +178,71 @@ func waitGroupTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	}
 }
 
+func TestNewExportTask_RoundTrip(t *testing.T) {
+	payload := queue.ExportPayload{UserID: "u1", Type: "notes"}
+	task := queue.NewExportTask(payload)
+	assert.Equal(t, queue.TaskTypeExport, task.Type())
+
+	decoded, err := queue.DecodeExportPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload, decoded)
+}
+
+func TestDecodeExportPayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeExportPayload([]byte(`{bad`))
+	assert.Error(t, err)
+}
+
+func TestNewImportTask_RoundTrip(t *testing.T) {
+	payload := queue.ImportPayload{UserID: "u1", Type: "following", FileID: "f1"}
+	task := queue.NewImportTask(payload)
+	assert.Equal(t, queue.TaskTypeImport, task.Type())
+
+	decoded, err := queue.DecodeImportPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload, decoded)
+}
+
+func TestDecodeImportPayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeImportPayload([]byte(`{bad`))
+	assert.Error(t, err)
+}
+
+func TestClient_EnqueueExport(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueExport(queue.ExportPayload{UserID: "u1", Type: "notes"}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.ExportQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, queue.TaskTypeExport, tasks[0].Type)
+}
+
+func TestClient_EnqueueImport(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueImport(queue.ImportPayload{UserID: "u1", Type: "following", FileID: "f1"}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.ExportQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, queue.TaskTypeImport, tasks[0].Type)
+}
+
 // ensure errors package referenced for completeness in CI builds.
 var _ = errors.New

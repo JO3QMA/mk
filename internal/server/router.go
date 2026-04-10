@@ -525,15 +525,37 @@ func (s *Server) setupRoutes() {
 		return c.NoContent(http.StatusNoContent)
 	}, middleware.RequireAuth())
 
+	// i/export-* — データエクスポート (asynqキューにエンキュー)
+	for _, exportType := range []string{
+		"notes", "following", "blocking", "mute", "favorites", "user-lists", "antennas", "clips",
+	} {
+		et := exportType
+		api.POST("/i/export-"+et, func(c echo.Context) error {
+			user := middleware.GetUser(c)
+			if s.queueClient != nil {
+				_ = s.queueClient.EnqueueExport(queue.ExportPayload{UserID: user.ID, Type: et})
+			}
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	// i/import-* — データインポート (asynqキューにエンキュー)
+	for _, importType := range []string{
+		"following", "blocking", "muting", "user-lists", "antennas",
+	} {
+		it := importType
+		api.POST("/i/import-"+it, func(c echo.Context) error {
+			user := middleware.GetUser(c)
+			if s.queueClient != nil {
+				_ = s.queueClient.EnqueueImport(queue.ImportPayload{UserID: user.ID, Type: it})
+			}
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+
 	// Phase 7.1: i/* 完全化 (スタブ: フロントエンドの設定画面が動くように)
 	// NoContent (204) を返すエンドポイント
 	for _, ep := range []string{
 		"i/update-email", "i/move",
-		"i/export-notes", "i/export-following", "i/export-blocking",
-		"i/export-mute", "i/export-favorites", "i/export-user-lists",
-		"i/export-antennas", "i/export-clips",
-		"i/import-following", "i/import-blocking",
-		"i/import-muting", "i/import-user-lists", "i/import-antennas",
 		"i/2fa/register", "i/2fa/done", "i/2fa/unregister",
 		"i/2fa/register-key", "i/2fa/key-done", "i/2fa/remove-key",
 		"i/2fa/update-key", "i/2fa/password-less",

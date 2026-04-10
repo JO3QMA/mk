@@ -7,14 +7,18 @@ import (
 	"github.com/hibiken/asynq"
 )
 
-// QueueName is the asynq queue used for AP delivery jobs. 別キューを追加する
-// 場合 (inbox / relationship) はここに定数を増やす。
+// QueueName is the asynq queue used for AP delivery jobs.
 const QueueName = "deliver"
 
+// ExportQueueName is the asynq queue for export/import jobs.
+const ExportQueueName = "export"
+
 // Enqueuer abstracts the asynq client for callers that only need to enqueue
-// deliver tasks. テスト用にmock可能。
+// tasks. テスト用にmock可能。
 type Enqueuer interface {
 	EnqueueDeliver(payload DeliverPayload, opts ...asynq.Option) error
+	EnqueueExport(payload ExportPayload) error
+	EnqueueImport(payload ImportPayload) error
 	Close() error
 }
 
@@ -39,6 +43,20 @@ func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...asynq.Option) er
 		return err
 	}
 	return nil
+}
+
+// EnqueueExport puts an export task on the queue.
+func (c *Client) EnqueueExport(payload ExportPayload) error {
+	task := NewExportTask(payload)
+	_, err := c.inner.Enqueue(task, asynq.Queue(ExportQueueName))
+	return err
+}
+
+// EnqueueImport puts an import task on the queue.
+func (c *Client) EnqueueImport(payload ImportPayload) error {
+	task := NewImportTask(payload)
+	_, err := c.inner.Enqueue(task, asynq.Queue(ExportQueueName))
+	return err
 }
 
 // Close releases the underlying client connection.
