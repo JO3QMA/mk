@@ -15,6 +15,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/ap"
 	apiauth "github.com/shiroha-a/mk/internal/api/auth"
 	"github.com/shiroha-a/mk/internal/api/blocking"
+	apibubblegame "github.com/shiroha-a/mk/internal/api/bubblegame"
 	apichannels "github.com/shiroha-a/mk/internal/api/channels"
 	apicharts "github.com/shiroha-a/mk/internal/api/charts"
 	apichat "github.com/shiroha-a/mk/internal/api/chat"
@@ -1127,13 +1128,11 @@ func (s *Server) setupRoutes() {
 		}, middleware.RequireAuth())
 	}
 
-	// bubble-game/* — バブルゲーム
-	api.POST("/bubble-game/register", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}, middleware.RequireAuth())
-	api.POST("/bubble-game/ranking", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	})
+	// bubble-game/* — バブルゲーム (実データ)
+	bubbleGameRepo := repository.NewBubbleGameRepository(s.db)
+	bubbleGameHandler := apibubblegame.NewHandler(bubbleGameRepo, idGen)
+	api.POST("/bubble-game/register", bubbleGameHandler.Register, middleware.RequireAuth())
+	api.POST("/bubble-game/ranking", bubbleGameHandler.Ranking)
 
 	// chat/* — Misskey v2026 チャット機能 (実データ)
 	chatRepo := repository.NewChatRepository(s.db)

@@ -1,0 +1,164 @@
+package bubblegame
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+var errMock = assert.AnError
+
+type mockBubbleGameRepo struct {
+	records   []*model.BubbleGameRecord
+	createErr error
+}
+
+func (m *mockBubbleGameRepo) Create(r *model.BubbleGameRecord) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.records = append(m.records, r)
+	return nil
+}
+
+func (m *mockBubbleGameRepo) Ranking(_ string, _ int) ([]*model.BubbleGameRecord, error) {
+	return m.records, nil
+}
+
+func newTestHandler() (*Handler, *mockBubbleGameRepo) {
+	repo := &mockBubbleGameRepo{}
+	idGen, _ := id.NewGenerator("aidx")
+	return NewHandler(repo, idGen), repo
+}
+
+func post(handler func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if user != nil {
+		c.Set(string(middleware.UserContextKey), user)
+	}
+	_ = handler(c)
+	return rec
+}
+
+var u1 = &model.User{ID: "u1", Username: "alice"}
+
+func validSeed() string {
+	return fmt.Sprintf("%d", time.Now().UnixMilli())
+}
+
+// --- Register ---
+
+func TestRegister_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	body := fmt.Sprintf(`{"score":100,"seed":"%s","logs":[[1,2]],"gameMode":"normal","gameVersion":1}`, validSeed())
+	rec := post(h.Register, body, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, repo.records, 1)
+}
+
+func TestRegister_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Register, `{}`, u1)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegister_InvalidSeed_NotNumber(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Register, `{"score":1,"seed":"abc","logs":[],"gameMode":"normal","gameVersion":1}`, u1)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegister_InvalidSeed_Future(t *testing.T) {
+	h, _ := newTestHandler()
+	future := fmt.Sprintf("%d", time.Now().Add(time.Hour).UnixMilli())
+	body := fmt.Sprintf(`{"score":1,"seed":"%s","logs":[],"gameMode":"normal","gameVersion":1}`, future)
+	rec := post(h.Register, body, u1)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegister_InvalidSeed_TooOld(t *testing.T) {
+	h, _ := newTestHandler()
+	old := fmt.Sprintf("%d", time.Now().Add(-6*time.Hour).UnixMilli())
+	body := fmt.Sprintf(`{"score":1,"seed":"%s","logs":[],"gameMode":"normal","gameVersion":1}`, old)
+	rec := post(h.Register, body, u1)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRegister_CreateError(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.createErr = errMock
+	body := fmt.Sprintf(`{"score":1,"seed":"%s","logs":[],"gameMode":"normal","gameVersion":1}`, validSeed())
+	rec := post(h.Register, body, u1)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Ranking ---
+
+func TestRanking_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.records = []*model.BubbleGameRecord{
+		{ID: "r1", Score: 200, User: &model.User{ID: "u1", Username: "alice"}},
+		{ID: "r2", Score: 100, User: &model.User{ID: "u2", Username: "bob"}},
+	}
+	rec := post(h.Ranking, `{"gameMode":"normal"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 2)
+}
+
+func TestRanking_Empty(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Ranking, `{"gameMode":"normal"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRanking_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.Ranking, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+type failRankingRepo struct{ *mockBubbleGameRepo }
+
+func (f *failRankingRepo) Ranking(_ string, _ int) ([]*model.BubbleGameRecord, error) {
+	return nil, errMock
+}
+
+func TestRanking_Error(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(&failRankingRepo{&mockBubbleGameRepo{}}, idGen)
+	rec := post(h.Ranking, `{"gameMode":"normal"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
+}
+
+func TestRanking_NilUser(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.records = []*model.BubbleGameRecord{
+		{ID: "r1", Score: 100, User: nil},
+	}
+	rec := post(h.Ranking, `{"gameMode":"normal"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	_, hasUser := resp[0]["user"]
+	assert.False(t, hasUser)
+}
