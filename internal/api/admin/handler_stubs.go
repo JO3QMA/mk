@@ -584,7 +584,31 @@ func (h *Handler) QueueQueueStats(c echo.Context) error {
 }
 
 // QueueQueues handles POST /api/admin/queue/queues.
-func (h *Handler) QueueQueues(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+func (h *Handler) QueueQueues(c echo.Context) error {
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	queues, err := h.queueInspector.Queues()
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var result []map[string]any
+	for _, q := range queues {
+		info, err := h.queueInspector.GetQueueInfo(q)
+		if err != nil {
+			continue
+		}
+		result = append(result, map[string]any{
+			"queue": info.Queue, "size": info.Size,
+			"active": info.Active, "pending": info.Pending,
+			"completed": info.Completed, "failed": info.Failed,
+		})
+	}
+	if result == nil {
+		result = []map[string]any{}
+	}
+	return c.JSON(http.StatusOK, result)
+}
 
 // QueueRemoveJob handles POST /api/admin/queue/remove-job.
 func (h *Handler) QueueRemoveJob(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
@@ -602,10 +626,24 @@ func (h *Handler) QueueShowJobLogs(c echo.Context) error { return c.JSON(http.St
 
 // QueueStats handles POST /api/admin/queue/stats.
 func (h *Handler) QueueStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{
-		"deliver": map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
-		"inbox":   map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
-	})
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, map[string]any{
+			"deliver": map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
+			"inbox":   map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
+		})
+	}
+	result := map[string]any{}
+	for _, qname := range []string{"deliver", "inbox"} {
+		info, err := h.queueInspector.GetQueueInfo(qname)
+		if err != nil {
+			result[qname] = map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0}
+			continue
+		}
+		result[qname] = map[string]any{
+			"activeSince": nil, "active": info.Active, "waiting": info.Pending, "delayed": info.Scheduled,
+		}
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 // --- relays ---

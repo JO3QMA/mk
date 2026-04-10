@@ -17,16 +17,35 @@ import (
 
 // Handler handles admin API endpoints.
 type Handler struct {
-	signupService *signup.Service
-	roleService   *role.Service
-	metaRepo      repository.MetaRepository
-	userRepo      repository.UserRepository
-	abuseRepo     repository.AbuseReportRepository
-	modLogRepo    repository.ModerationLogRepository
-	emojiRepo     repository.EmojiRepository
-	driveFileRepo repository.DriveFileRepository
-	adminDB       *gorm.DB
-	idGen         id.Generator
+	signupService  *signup.Service
+	roleService    *role.Service
+	metaRepo       repository.MetaRepository
+	userRepo       repository.UserRepository
+	abuseRepo      repository.AbuseReportRepository
+	modLogRepo     repository.ModerationLogRepository
+	emojiRepo      repository.EmojiRepository
+	driveFileRepo  repository.DriveFileRepository
+	adminDB        *gorm.DB
+	queueInspector QueueInspector
+	idGen          id.Generator
+}
+
+// QueueInspector abstracts asynq.Inspector for queue management endpoints.
+type QueueInspector interface {
+	Queues() ([]string, error)
+	GetQueueInfo(qname string) (*QueueInfoResult, error)
+}
+
+// QueueInfoResult holds basic queue statistics.
+type QueueInfoResult struct {
+	Queue     string
+	Size      int
+	Active    int
+	Pending   int
+	Completed int
+	Failed    int
+	Scheduled int
+	Retry     int
 }
 
 // SetDriveFileRepo attaches a DriveFileRepository for admin drive operations.
@@ -37,6 +56,11 @@ func (h *Handler) SetDriveFileRepo(r repository.DriveFileRepository) {
 // SetAdminDB attaches a DB connection for ad/invite/relay operations.
 func (h *Handler) SetAdminDB(db *gorm.DB) {
 	h.adminDB = db
+}
+
+// SetQueueInspector attaches a queue inspector for admin queue endpoints.
+func (h *Handler) SetQueueInspector(qi QueueInspector) {
+	h.queueInspector = qi
 }
 
 // NewHandler creates a new admin Handler.

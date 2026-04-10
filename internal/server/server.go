@@ -20,14 +20,15 @@ import (
 
 // Server represents the HTTP server.
 type Server struct {
-	echo        *echo.Echo
-	config      *config.Config
-	db          *gorm.DB
-	redis       *cache.RedisClients
-	auth        *middleware.AuthMiddleware
-	queueClient *queue.Client
-	queueServer *queue.Server
-	chartMgmt   *chart.ManagementService
+	echo           *echo.Echo
+	config         *config.Config
+	db             *gorm.DB
+	redis          *cache.RedisClients
+	auth           *middleware.AuthMiddleware
+	queueClient    *queue.Client
+	queueServer    *queue.Server
+	queueInspector *queue.Inspector
+	chartMgmt      *chart.ManagementService
 }
 
 // New creates a new Server.
@@ -67,15 +68,17 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	}
 	queueClient := queue.NewClient(redisOpt)
 	queueServer := queue.NewServer(redisOpt, queue.ServerConfig{Concurrency: concurrency})
+	queueInspector := queue.NewInspector(redisOpt)
 
 	s := &Server{
-		echo:        e,
-		config:      cfg,
-		db:          db,
-		redis:       redis,
-		auth:        auth,
-		queueClient: queueClient,
-		queueServer: queueServer,
+		echo:           e,
+		config:         cfg,
+		db:             db,
+		redis:          redis,
+		auth:           auth,
+		queueClient:    queueClient,
+		queueServer:    queueServer,
+		queueInspector: queueInspector,
 	}
 
 	s.setupRoutes()

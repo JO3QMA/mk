@@ -813,6 +813,9 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
 	adminHandler.SetAdminDB(s.db)
+	if s.queueInspector != nil {
+		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
+	}
 	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
 	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))
