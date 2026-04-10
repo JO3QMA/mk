@@ -1,0 +1,331 @@
+package admin_test
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+)
+
+var adminUser = &model.User{ID: "admin1"}
+
+// --- accounts ---
+func TestAccountsDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AccountsDelete, `{}`, adminUser).Code)
+}
+func TestAccountsFindByEmail(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.AccountsFindByEmail, `{}`, adminUser).Code)
+}
+
+// --- ad ---
+func TestAdCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AdCreate, `{}`, adminUser).Code)
+}
+func TestAdDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AdDelete, `{}`, adminUser).Code)
+}
+func TestAdList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.AdList, `{}`, adminUser).Code)
+}
+func TestAdUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AdUpdate, `{}`, adminUser).Code)
+}
+
+// --- avatar-decorations ---
+func TestAvatarDecorationsCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AvatarDecorationsCreate, `{}`, adminUser).Code)
+}
+func TestAvatarDecorationsDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AvatarDecorationsDelete, `{}`, adminUser).Code)
+}
+func TestAvatarDecorationsList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.AvatarDecorationsList, `{}`, adminUser).Code)
+}
+func TestAvatarDecorationsUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AvatarDecorationsUpdate, `{}`, adminUser).Code)
+}
+
+// --- captcha ---
+func TestCaptchaCurrent(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.CaptchaCurrent, `{}`, adminUser).Code)
+}
+func TestCaptchaSave(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.CaptchaSave, `{}`, adminUser).Code)
+}
+
+// --- abuse-report/notification-recipient ---
+func TestAbuseReportNotificationRecipientCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AbuseReportNotificationRecipientCreate, `{}`, adminUser).Code)
+}
+func TestAbuseReportNotificationRecipientDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AbuseReportNotificationRecipientDelete, `{}`, adminUser).Code)
+}
+func TestAbuseReportNotificationRecipientList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.AbuseReportNotificationRecipientList, `{}`, adminUser).Code)
+}
+func TestAbuseReportNotificationRecipientShow(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.AbuseReportNotificationRecipientShow, `{}`, adminUser).Code)
+}
+func TestAbuseReportNotificationRecipientUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AbuseReportNotificationRecipientUpdate, `{}`, adminUser).Code)
+}
+
+// --- single endpoints ---
+func TestDeleteAccountAdmin(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.DeleteAccount, `{}`, adminUser).Code)
+}
+func TestDeleteAllFilesOfUser(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
+}
+func TestForwardAbuseUserReport(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.ForwardAbuseUserReport, `{}`, adminUser).Code)
+}
+func TestGetIndexStats(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.GetIndexStats, `{}`, adminUser).Code)
+}
+func TestGetTableStats(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.GetTableStats, `{}`, adminUser).Code)
+}
+func TestGetUserIPs(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.GetUserIPs, `{}`, adminUser).Code)
+}
+func TestResetPasswordAdmin(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.ResetPassword, `{}`, adminUser).Code)
+}
+func TestSendEmail(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SendEmail, `{}`, adminUser).Code)
+}
+func TestServerInfo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.ServerInfo, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "misskey-go")
+}
+func TestUnsetUserAvatar(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserAvatar, `{}`, adminUser).Code)
+}
+func TestUnsetUserBanner(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserBanner, `{}`, adminUser).Code)
+}
+func TestUpdateAbuseUserReport(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateAbuseUserReport, `{}`, adminUser).Code)
+}
+func TestUpdateProxyAccount(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateProxyAccount, `{}`, adminUser).Code)
+}
+func TestUpdateUserNote(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateUserNote, `{}`, adminUser).Code)
+}
+
+// --- drive ---
+func TestDriveCleanRemoteFiles(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.DriveCleanRemoteFiles, `{}`, adminUser).Code)
+}
+func TestDriveCleanup(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.DriveCleanup, `{}`, adminUser).Code)
+}
+func TestDriveFilesAdmin(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.DriveFiles, `{}`, adminUser).Code)
+}
+func TestDriveShowFile(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.DriveShowFile, `{}`, adminUser).Code)
+}
+
+// --- emoji bulk ops ---
+func TestEmojiAddAliasesBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiAddAliasesBulk, `{}`, adminUser).Code)
+}
+func TestEmojiCopy(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiCopy, `{}`, adminUser).Code)
+}
+func TestEmojiDeleteBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiDeleteBulk, `{}`, adminUser).Code)
+}
+func TestEmojiImportZip(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiImportZip, `{}`, adminUser).Code)
+}
+func TestEmojiListRemote(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.EmojiListRemote, `{}`, adminUser).Code)
+}
+func TestEmojiRemoveAliasesBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiRemoveAliasesBulk, `{}`, adminUser).Code)
+}
+func TestEmojiSetAliasesBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiSetAliasesBulk, `{}`, adminUser).Code)
+}
+func TestEmojiSetCategoryBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiSetCategoryBulk, `{}`, adminUser).Code)
+}
+func TestEmojiSetLicenseBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiSetLicenseBulk, `{}`, adminUser).Code)
+}
+
+// --- federation ---
+func TestFederationDeleteAllFiles(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.FederationDeleteAllFiles, `{}`, adminUser).Code)
+}
+func TestFederationRefreshRemoteInstanceMetadata(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.FederationRefreshRemoteInstanceMetadata, `{}`, adminUser).Code)
+}
+func TestFederationRemoveAllFollowing(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.FederationRemoveAllFollowing, `{}`, adminUser).Code)
+}
+func TestFederationUpdateInstance(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.FederationUpdateInstance, `{}`, adminUser).Code)
+}
+
+// --- invite ---
+func TestInviteCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.InviteCreate, `{}`, adminUser).Code)
+}
+func TestInviteList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.InviteList, `{}`, adminUser).Code)
+}
+
+// --- promo ---
+func TestPromoCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.PromoCreate, `{}`, adminUser).Code)
+}
+
+// --- queue ---
+func TestQueueClear(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueClear, `{}`, adminUser).Code)
+}
+func TestQueueDeliverDelayed(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueDeliverDelayed, `{}`, adminUser).Code)
+}
+func TestQueueInboxDelayed(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueInboxDelayed, `{}`, adminUser).Code)
+}
+func TestQueueJobs(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueJobs, `{}`, adminUser).Code)
+}
+func TestQueuePromoteJobs(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueuePromoteJobs, `{}`, adminUser).Code)
+}
+func TestQueueQueueStats(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueQueueStats, `{}`, adminUser).Code)
+}
+func TestQueueQueues(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueQueues, `{}`, adminUser).Code)
+}
+func TestQueueRemoveJob(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRemoveJob, `{}`, adminUser).Code)
+}
+func TestQueueRetryJob(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRetryJob, `{}`, adminUser).Code)
+}
+func TestQueueShowJob(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.QueueShowJob, `{}`, adminUser).Code)
+}
+func TestQueueShowJobLogs(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueShowJobLogs, `{}`, adminUser).Code)
+}
+func TestQueueStatsAdmin(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.QueueStats, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "deliver")
+}
+
+// --- relays ---
+func TestRelaysAdd(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.RelaysAdd, `{}`, adminUser).Code)
+}
+func TestRelaysList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.RelaysList, `{}`, adminUser).Code)
+}
+func TestRelaysRemove(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.RelaysRemove, `{}`, adminUser).Code)
+}
+
+// --- system-webhook ---
+func TestSystemWebhookCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookCreate, `{}`, adminUser).Code)
+}
+func TestSystemWebhookDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookDelete, `{}`, adminUser).Code)
+}
+func TestSystemWebhookList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.SystemWebhookList, `{}`, adminUser).Code)
+}
+func TestSystemWebhookShow(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.SystemWebhookShow, `{}`, adminUser).Code)
+}
+func TestSystemWebhookTest(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookTest, `{}`, adminUser).Code)
+}
+func TestSystemWebhookUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookUpdate, `{}`, adminUser).Code)
+}
