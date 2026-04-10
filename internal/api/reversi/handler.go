@@ -16,15 +16,33 @@ import (
 	"gorm.io/datatypes"
 )
 
+// FederationDeliverer delivers AP activities to remote users.
+// 循環依存を避けるため interface で定義。
+type FederationDeliverer interface {
+	DeliverToUser(activity any, localUserID string, remoteUserURI string) error
+}
+
 // Handler handles reversi/* endpoints.
 type Handler struct {
-	repo  repository.ReversiRepository
-	idGen id.Generator
+	repo      repository.ReversiRepository
+	idGen     id.Generator
+	baseURL   string
+	deliverer FederationDeliverer
+	fedCache  *corereversi.FederationIDCache
+	userRepo  repository.UserRepository
 }
 
 // NewHandler creates a new reversi handler.
 func NewHandler(repo repository.ReversiRepository, idGen id.Generator) *Handler {
 	return &Handler{repo: repo, idGen: idGen}
+}
+
+// SetFederation attaches federation support.
+func (h *Handler) SetFederation(baseURL string, deliverer FederationDeliverer, fedCache *corereversi.FederationIDCache, userRepo repository.UserRepository) {
+	h.baseURL = baseURL
+	h.deliverer = deliverer
+	h.fedCache = fedCache
+	h.userRepo = userRepo
 }
 
 func apiError(code, message, errID string) map[string]any {
@@ -158,9 +176,30 @@ func (h *Handler) Match(c echo.Context) error {
 		// ランダムマッチ — user2IDを空にしてマッチ待ち
 		game.User2ID = user.ID // 自分vs自分 (仮置き、実際はマッチング待ち)
 	}
+	// リモートユーザーへの対戦の場合、federationIdを生成
+	if req.UserID != "" && h.userRepo != nil && h.deliverer != nil {
+		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.Host != nil {
+			sessionID := h.idGen.Generate(now) + "-fed"
+			game.FederationID = &sessionID
+			if h.fedCache != nil {
+				h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
+			}
+		}
+	}
+
 	if err := h.repo.Create(game); err != nil {
 		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+
+	// リモートユーザーにInvite送信
+	if game.FederationID != nil && h.deliverer != nil && h.userRepo != nil {
+		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.URI != nil {
+			invite := corereversi.RenderInvite(h.baseURL, *game.FederationID,
+				h.baseURL+"/users/"+user.ID, *targetUser.URI, now.UTC().Format(time.RFC3339))
+			_ = h.deliverer.DeliverToUser(invite, user.ID, *targetUser.URI)
+		}
+	}
+
 	return c.JSON(http.StatusOK, packGame(game, h.idGen))
 }
 
@@ -207,6 +246,15 @@ func (h *Handler) Surrender(c echo.Context) error {
 	game.WinnerID = &winnerID
 	game.SurrenderedUserID = &user.ID
 	_ = h.repo.Update(game)
+
+	// リモート相手にLeave送信
+	if game.FederationID != nil && h.deliverer != nil && h.userRepo != nil {
+		remoteID := winnerID // 相手
+		if remoteUser, err := h.userRepo.FindByID(remoteID); err == nil && remoteUser.Host != nil && remoteUser.URI != nil {
+			leave := corereversi.RenderLeave(h.baseURL+"/users/"+user.ID, *remoteUser.URI, *game.FederationID)
+			_ = h.deliverer.DeliverToUser(leave, user.ID, *remoteUser.URI)
+		}
+	}
 
 	return c.NoContent(http.StatusNoContent)
 }
