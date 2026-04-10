@@ -191,6 +191,11 @@ func packUserForAPI(u *model.User) map[string]any {
 	}
 }
 
+// APNotes handles POST /api/ap/notes — stub returning empty array.
+func (h *Handler) APNotes(c echo.Context) error {
+	return c.JSON(http.StatusOK, []any{})
+}
+
 // Note handles GET /notes/:id.
 func (h *Handler) Note(c echo.Context) error {
 	noteID := c.Param("id")

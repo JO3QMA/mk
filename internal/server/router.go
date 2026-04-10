@@ -961,19 +961,7 @@ func (s *Server) setupRoutes() {
 	// --- Phase 7.6b: chat/*, auth/*, ap/*, sw/*, reversi/*, bubble-game/*, misc ---
 
 	// announcements/show — 個別アナウンスメント取得
-	api.POST("/announcements/show", func(c echo.Context) error {
-		var req struct {
-			AnnouncementID string `json:"announcementId"`
-		}
-		if err := c.Bind(&req); err != nil || req.AnnouncementID == "" {
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{"code": "INVALID_PARAM", "message": "announcementId is required."},
-			})
-		}
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{"code": "NO_SUCH_ANNOUNCEMENT", "message": "No such announcement.", "id": "e0ef2076-ee94-4ebc-a2c8-63bec9e7ab72"},
-		})
-	})
+	api.POST("/announcements/show", announcementHandler.Show)
 
 	// auth/* — MiAuth/OAuth セッション
 	authSessionRepo := repository.NewAuthSessionRepository(s.db)
@@ -986,9 +974,7 @@ func (s *Server) setupRoutes() {
 	// ap/* — ActivityPub API lookup (実データ: ローカルオブジェクト解決)
 	api.POST("/ap/get", apHandler.APIGet, middleware.RequireAdmin(roleService))
 	api.POST("/ap/show", apHandler.APIShow, middleware.RequireAuth())
-	api.POST("/ap/notes", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	})
+	api.POST("/ap/notes", apHandler.APNotes)
 
 	// sw/* — Service Worker push notifications (実データ)
 	swSubRepo := repository.NewSwSubscriptionRepository(s.db)
