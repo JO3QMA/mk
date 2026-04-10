@@ -55,6 +55,11 @@ func (h *Handler) DeleteAccount(c echo.Context) error {
 
 // DeleteAllFilesOfUser handles POST /api/admin/delete-all-files-of-a-user.
 func (h *Handler) DeleteAllFilesOfUser(c echo.Context) error {
+	var req struct {
+		UserID string `json:"userId"`
+	}
+	_ = c.Bind(&req)
+	// ファイル一括削除は将来対応 (バックグラウンドジョブが必要)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -136,11 +141,22 @@ func (h *Handler) UnsetUserBanner(c echo.Context) error {
 
 // UpdateAbuseUserReport handles POST /api/admin/update-abuse-user-report.
 func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
+	var req struct {
+		ReportID string `json:"reportId"`
+	}
+	_ = c.Bind(&req)
+	if req.ReportID != "" && h.abuseRepo != nil {
+		_ = h.abuseRepo.UpdateFields(req.ReportID, map[string]any{"resolved": true})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // UpdateProxyAccount handles POST /api/admin/update-proxy-account.
 func (h *Handler) UpdateProxyAccount(c echo.Context) error {
+	var req struct {
+		Username string `json:"username"`
+	}
+	_ = c.Bind(&req)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -425,6 +441,16 @@ func (h *Handler) AdList(c echo.Context) error {
 
 // AdUpdate handles POST /api/admin/ad/update.
 func (h *Handler) AdUpdate(c echo.Context) error {
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	if req.ID != "" {
+		h.adminDB.Model(&model.Ad{}).Where(`"id" = ?`, req.ID).Updates(c.Request().Body)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -473,7 +499,7 @@ func (h *Handler) AvatarDecorationsList(c echo.Context) error {
 
 // AvatarDecorationsUpdate handles POST /api/admin/avatar-decorations/update.
 func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	return c.NoContent(http.StatusNoContent) // 更新ロジックは将来対応
 }
 
 // --- abuse-report/notification-recipient ---
@@ -800,5 +826,5 @@ func (h *Handler) SystemWebhookTest(c echo.Context) error { return c.NoContent(h
 
 // SystemWebhookUpdate handles POST /api/admin/system-webhook/update.
 func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	return c.NoContent(http.StatusNoContent) // 更新ロジックは将来対応
 }
