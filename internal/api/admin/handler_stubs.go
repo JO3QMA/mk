@@ -102,6 +102,25 @@ func (h *Handler) ResetPassword(c echo.Context) error {
 
 // SendEmail handles POST /api/admin/send-email.
 func (h *Handler) SendEmail(c echo.Context) error {
+	var req struct {
+		To      string `json:"to"`
+		Subject string `json:"subject"`
+		Text    string `json:"text"`
+	}
+	if err := c.Bind(&req); err != nil || req.To == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// SMTP送信
+	if h.metaRepo != nil {
+		m, err := h.metaRepo.Fetch()
+		if err == nil && m.EnableEmail && m.SmtpHost != nil && m.Email != nil {
+			port := 587
+			if m.SmtpPort != nil {
+				port = *m.SmtpPort
+			}
+			go sendEmailSMTP(*m.SmtpHost, port, m.SmtpUser, m.SmtpPass, *m.Email, req.To, req.Subject, req.Text)
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -253,7 +272,23 @@ func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
 
 // EmojiCopy handles POST /api/admin/emoji/copy.
 func (h *Handler) EmojiCopy(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	var req struct {
+		EmojiID string `json:"emojiId"`
+	}
+	_ = c.Bind(&req)
+	if req.EmojiID == "" || h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	src, err := h.emojiRepo.FindByID(req.EmojiID)
+	if err != nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// コピーを作成 (同じURLで新しいIDを生成)
+	copied := *src
+	copied.ID = h.idGen.Generate(time.Now())
+	copied.Name = src.Name + "_copy"
+	_ = h.emojiRepo.Create(&copied)
+	return c.JSON(http.StatusOK, map[string]any{"id": copied.ID})
 }
 
 // EmojiDeleteBulk handles POST /api/admin/emoji/delete-bulk.
@@ -891,7 +926,20 @@ func (h *Handler) SystemWebhookShow(c echo.Context) error {
 
 // SystemWebhookTest handles POST /api/admin/system-webhook/test.
 func (h *Handler) SystemWebhookTest(c echo.Context) error {
-	// テスト送信 (実際のHTTP送信は将来対応)
+	var req struct {
+		WebhookID string `json:"webhookId"`
+		Type      string `json:"type"`
+	}
+	_ = c.Bind(&req)
+	if req.WebhookID == "" || h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var sw model.SystemWebhook
+	if err := h.adminDB.Where(`"id" = ?`, req.WebhookID).First(&sw).Error; err != nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// テスト送信 (非同期)
+	go sendWebhookTest(sw.URL, sw.Secret, req.Type)
 	return c.NoContent(http.StatusNoContent)
 }
 
