@@ -110,6 +110,15 @@ func FrontendDistDir() string {
 	return filepath.Join("built", "_frontend_dist_")
 }
 
+// ClientAssetsDir returns the path to frontend client assets (game images, etc.).
+// 環境変数 MISSKEY_CLIENT_ASSETS_DIR で上書き可能。
+func ClientAssetsDir() string {
+	if v := os.Getenv("MISSKEY_CLIENT_ASSETS_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join("packages", "frontend", "assets")
+}
+
 // TwemojiDir returns the path to twemoji SVG files.
 // 環境変数 MISSKEY_TWEMOJI_DIR で上書き可能。
 func TwemojiDir() string {

@@ -1198,6 +1198,12 @@ func (s *Server) setupRoutes() {
 		s.echo.Static("/twemoji", twemojiDir)
 	}
 
+	// client-assets配信 (バブルゲーム、フラッシュ等のフロントエンドアセット)
+	clientAssetsDir := ClientAssetsDir()
+	if _, err := os.Stat(clientAssetsDir); err == nil {
+		s.echo.Static("/client-assets", clientAssetsDir)
+	}
+
 	// 静的アセット配信 (favicon, splash, icons等)
 	staticDir := StaticDir()
 	if _, err := os.Stat(staticDir); err == nil {
