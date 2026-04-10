@@ -3,7 +3,6 @@ package i
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -178,13 +177,6 @@ func (h *Handler) Me(c echo.Context) error {
 
 	detailed := entity.PackUserDetailed(u, profile)
 
-	// avatarUrl が未設定の場合は identicon URL を生成
-	avatarURL := detailed.AvatarURL
-	if avatarURL == nil {
-		ident := fmt.Sprintf("/identicon/%s", u.Username)
-		avatarURL = &ident
-	}
-
 	// /api/i returns additional private fields
 	resp := map[string]any{
 		// UserLite fields
@@ -192,7 +184,7 @@ func (h *Handler) Me(c echo.Context) error {
 		"name":              detailed.Name,
 		"username":          detailed.Username,
 		"host":              detailed.Host,
-		"avatarUrl":         avatarURL,
+		"avatarUrl":         detailed.AvatarURL,
 		"avatarBlurhash":    detailed.AvatarBlurhash,
 		"avatarDecorations": detailed.AvatarDecorations,
 		"isBot":             detailed.IsBot,

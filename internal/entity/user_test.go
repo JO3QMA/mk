@@ -59,6 +59,32 @@ func TestPackUserLite_NilFields(t *testing.T) {
 	assert.Nil(t, lite.AvatarBlurhash)
 }
 
+func TestPackUserLite_IdenticonWithHost(t *testing.T) {
+	host := "remote.example"
+	u := &model.User{
+		ID:                "user3",
+		Username:          "alice",
+		Host:              &host,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	lite := PackUserLite(u)
+	require.NotNil(t, lite.AvatarURL)
+	assert.Equal(t, "/identicon/alice@remote.example", *lite.AvatarURL)
+}
+
+func TestPackUserLite_ExistingAvatarURL(t *testing.T) {
+	avatar := "https://example.com/avatar.png"
+	u := &model.User{
+		ID:                "user4",
+		Username:          "bob",
+		AvatarURL:         &avatar,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	lite := PackUserLite(u)
+	require.NotNil(t, lite.AvatarURL)
+	assert.Equal(t, "https://example.com/avatar.png", *lite.AvatarURL)
+}
+
 func TestPackUserDetailed(t *testing.T) {
 	name := "Detailed User"
 	bannerURL := "https://example.com/banner.png"
