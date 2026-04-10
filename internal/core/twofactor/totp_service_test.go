@@ -31,3 +31,13 @@ func TestValidate_WrongCode(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, Validate("000000", secret))
 }
+
+func TestValidate_EmptySecret(t *testing.T) {
+	assert.False(t, Validate("123456", ""))
+}
+
+func TestGenerateSecret_EmptyIssuer(t *testing.T) {
+	_, _, err := GenerateSecret("", "")
+	// 空issuerはエラーになる → エラーパスをカバー
+	assert.Error(t, err)
+}
