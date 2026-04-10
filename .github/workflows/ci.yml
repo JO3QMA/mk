@@ -80,21 +80,16 @@ jobs:
         run: |
           # repositoryパッケージのみDB統合テストで到達不能なGORMエラーパスがあるため99%に緩和
           # 他の全パッケージは100%を維持
-          fail=0
-          while IFS= read -r line; do
-            pkg=$(echo "$line" | awk '{print $2}')
-            cov=$(echo "$line" | grep -oP '[0-9.]+(?=%)' || echo "100.0")
-            if echo "$pkg" | grep -q '/repository$'; then
-              threshold=99
-            else
-              threshold=100
-            fi
-            if awk -v c="$cov" -v t="$threshold" 'BEGIN { if (c+0 < t) exit 1 }'; then :; else
-              echo "FAIL: $pkg coverage ${cov}% is below ${threshold}%"
-              fail=1
-            fi
-          done < <(grep '^ok' test_output.txt)
-          if [ "$fail" -eq 1 ]; then exit 1; fi
+          grep '^ok' test_output.txt | awk '{
+            pkg = $2
+            match($0, /[0-9.]+%/)
+            cov = substr($0, RSTART, RLENGTH-1) + 0
+            threshold = (pkg ~ /\/repository$/) ? 99 : 100
+            if (cov < threshold) {
+              printf "FAIL: %s coverage %.1f%% is below %d%%\n", pkg, cov, threshold
+              fail = 1
+            }
+          } END { if (fail) exit 1 }'
           echo "All packages meet coverage thresholds"
 
       - name: Upload coverage report
