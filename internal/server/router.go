@@ -1023,6 +1023,213 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, []any{})
 	}, middleware.RequireAdmin(roleService))
 
+	// --- Phase 7.6b: chat/*, auth/*, ap/*, sw/*, reversi/*, bubble-game/*, misc ---
+
+	// announcements/show — 個別アナウンスメント取得
+	api.POST("/announcements/show", func(c echo.Context) error {
+		var req struct {
+			AnnouncementID string `json:"announcementId"`
+		}
+		if err := c.Bind(&req); err != nil || req.AnnouncementID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{"code": "INVALID_PARAM", "message": "announcementId is required."},
+			})
+		}
+		return c.JSON(http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "NO_SUCH_ANNOUNCEMENT", "message": "No such announcement.", "id": "e0ef2076-ee94-4ebc-a2c8-63bec9e7ab72"},
+		})
+	})
+
+	// auth/* — MiAuth/OAuth セッション
+	for _, ep := range []string{
+		"auth/session/generate",
+		"auth/session/show",
+		"auth/session/userkey",
+		"auth/accept",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusNotImplemented, map[string]any{
+				"error": map[string]any{"code": "NOT_IMPLEMENTED", "message": "Not implemented.", "id": "00000000-0000-0000-0000-000000000000"},
+			})
+		})
+	}
+
+	// ap/* — ActivityPub API lookup
+	api.POST("/ap/get", func(c echo.Context) error {
+		var req struct {
+			URI string `json:"uri"`
+		}
+		if err := c.Bind(&req); err != nil || req.URI == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{"code": "INVALID_PARAM", "message": "uri is required."},
+			})
+		}
+		return c.JSON(http.StatusOK, map[string]any{})
+	})
+	api.POST("/ap/show", func(c echo.Context) error {
+		var req struct {
+			URI string `json:"uri"`
+		}
+		if err := c.Bind(&req); err != nil || req.URI == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{"code": "INVALID_PARAM", "message": "uri is required."},
+			})
+		}
+		return c.JSON(http.StatusOK, map[string]any{"type": "Note", "object": map[string]any{}})
+	})
+	api.POST("/ap/notes", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	})
+
+	// sw/* — Service Worker push notifications
+	api.POST("/sw/register", func(c echo.Context) error {
+		var req struct {
+			Endpoint  string `json:"endpoint"`
+			Auth      string `json:"auth"`
+			PublicKey string `json:"publickey"`
+		}
+		if err := c.Bind(&req); err != nil || req.Endpoint == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{"code": "INVALID_PARAM", "message": "endpoint is required."},
+			})
+		}
+		return c.JSON(http.StatusOK, map[string]any{
+			"state":      "already-subscribed",
+			"key":        nil,
+			"userId":     "",
+			"endpoint":   req.Endpoint,
+			"sendReadMessage": false,
+		})
+	}, middleware.RequireAuth())
+	api.POST("/sw/show-registration", func(c echo.Context) error {
+		var req struct {
+			Endpoint string `json:"endpoint"`
+		}
+		if err := c.Bind(&req); err != nil || req.Endpoint == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{"code": "INVALID_PARAM", "message": "endpoint is required."},
+			})
+		}
+		return c.JSON(http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "NO_SUCH_REGISTRATION", "message": "No such registration.", "id": "b3a2f3f4-9f1f-4b1a-9b5c-1b1a1b1a1b1a"},
+		})
+	}, middleware.RequireAuth())
+	api.POST("/sw/update-registration", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+	api.POST("/sw/unregister", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// reversi/* — オセロゲーム
+	api.POST("/reversi/games", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	})
+	api.POST("/reversi/invitations", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAuth())
+	api.POST("/reversi/show-game", func(c echo.Context) error {
+		var req struct {
+			GameID string `json:"gameId"`
+		}
+		if err := c.Bind(&req); err != nil || req.GameID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{"code": "INVALID_PARAM", "message": "gameId is required."},
+			})
+		}
+		return c.JSON(http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "NO_SUCH_GAME", "message": "No such game.", "id": "d8a95858-973b-4f3b-8592-fcf2eb4dd044"},
+		})
+	})
+	for _, ep := range []string{
+		"reversi/match",
+		"reversi/cancel-match",
+		"reversi/surrender",
+		"reversi/verify",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+
+	// bubble-game/* — バブルゲーム
+	api.POST("/bubble-game/register", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+	api.POST("/bubble-game/ranking", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	})
+
+	// chat/* — Misskey v2026 チャット機能
+	for _, ep := range []string{
+		"chat/messages",
+		"chat/messages/search",
+		"chat/rooms",
+		"chat/rooms/owned",
+		"chat/rooms/joined",
+		"chat/history",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		}, middleware.RequireAuth())
+	}
+	for _, ep := range []string{
+		"chat/messages/create",
+		"chat/messages/update",
+		"chat/messages/reactions/create",
+		"chat/messages/reactions/delete",
+		"chat/rooms/create",
+		"chat/rooms/update",
+		"chat/rooms/transfer-ownership",
+		"chat/rooms/invitations/create",
+		"chat/rooms/members/update-membership",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	for _, ep := range []string{
+		"chat/messages/show",
+		"chat/rooms/show",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusNotFound, map[string]any{
+				"error": map[string]any{"code": "NOT_FOUND", "message": "Not found.", "id": "00000000-0000-0000-0000-000000000000"},
+			})
+		}, middleware.RequireAuth())
+	}
+	for _, ep := range []string{
+		"chat/messages/delete",
+		"chat/messages/read",
+		"chat/rooms/delete",
+		"chat/rooms/leave",
+		"chat/rooms/mute",
+		"chat/rooms/unmute",
+		"chat/rooms/invitations/delete",
+		"chat/rooms/invitations/accept",
+		"chat/rooms/invitations/reject",
+		"chat/rooms/members/ban",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	api.POST("/chat/unread-count", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"count": 0})
+	}, middleware.RequireAuth())
+
+	// --- その他の残りエンドポイント ---
+	// test — フロントエンドのテスト用
+	api.POST("/test", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{})
+	})
+
 	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
 	api.Any("/*", func(c echo.Context) error {
 		slog.Warn("unimplemented API endpoint", "method", c.Request().Method, "path", c.Request().URL.Path)
