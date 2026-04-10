@@ -276,3 +276,88 @@ func TestMustMarshal_Panics(t *testing.T) {
 	}()
 	_ = mustMarshal(make(chan int))
 }
+
+// --- Remote fetch tests ---
+
+type mockFetcher struct {
+	data []byte
+	err  error
+}
+
+func (m *mockFetcher) FetchObject(_ string) ([]byte, error) {
+	return m.data, m.err
+}
+
+type mockResolver struct {
+	user *model.User
+	err  error
+}
+
+func (m *mockResolver) ResolveActor(_ string) (*model.User, error) {
+	return m.user, m.err
+}
+
+func TestSetRemote(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	h.SetRemote(&mockFetcher{}, &mockResolver{})
+	assert.NotNil(t, h.remoteFetcher)
+}
+
+func TestAPNotes(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	rec := postJSON(h.APNotes, `{}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAPIGet_RemoteFetch(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	h.SetRemote(&mockFetcher{data: []byte(`{"type":"Note","id":"https://remote.example/notes/1"}`)}, nil)
+	rec := postJSON(h.APIGet, `{"uri":"https://remote.example/notes/1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "remote.example")
+}
+
+func TestAPIGet_RemoteFetchError(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	h.SetRemote(&mockFetcher{err: assert.AnError}, nil)
+	rec := postJSON(h.APIGet, `{"uri":"https://remote.example/notes/1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "{}\n", rec.Body.String())
+}
+
+func TestAPIShow_RemoteResolveActor(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	h.SetRemote(nil, &mockResolver{user: &model.User{ID: "ru1", Username: "remote_alice"}})
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/users/alice"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "remote_alice")
+}
+
+func TestAPIShow_RemoteFetchNote(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	h.SetRemote(
+		&mockFetcher{data: []byte(`{"type":"Note","content":"hello"}`)},
+		&mockResolver{err: assert.AnError},
+	)
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/notes/1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"type":"Note"`)
+}
+
+func TestAPIShow_RemoteNothing(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	h.SetRemote(
+		&mockFetcher{err: assert.AnError},
+		&mockResolver{err: assert.AnError},
+	)
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/unknown"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAPIGet_RemoteInvalidJSON(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	h.SetRemote(&mockFetcher{data: []byte(`not json`)}, nil)
+	rec := postJSON(h.APIGet, `{"uri":"https://remote.example/x"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "{}\n", rec.Body.String())
+}
