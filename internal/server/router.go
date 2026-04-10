@@ -904,6 +904,125 @@ func (s *Server) setupRoutes() {
 	api.POST("/admin/announcements/delete", announcementHandler.AdminDelete, middleware.RequireAdmin(roleService))
 	api.POST("/admin/announcements/list", announcementHandler.AdminList, middleware.RequireAdmin(roleService))
 
+	// Phase 7.5: admin/* 残りエンドポイント一括追加
+	// NoContent を返す admin エンドポイント (moderator)
+	for _, ep := range []string{
+		"admin/delete-account", "admin/delete-all-files-of-a-user",
+		"admin/reset-password", "admin/send-email",
+		"admin/unset-user-avatar", "admin/unset-user-banner",
+		"admin/update-user-note", "admin/update-proxy-account",
+		"admin/forward-abuse-user-report", "admin/update-abuse-user-report",
+		"admin/accounts/delete",
+		"admin/federation/delete-all-files",
+		"admin/federation/refresh-remote-instance-metadata",
+		"admin/federation/remove-all-following",
+		"admin/federation/update-instance",
+		"admin/drive/clean-remote-files", "admin/drive/cleanup",
+		"admin/ad/create", "admin/ad/update", "admin/ad/delete",
+		"admin/avatar-decorations/create", "admin/avatar-decorations/update",
+		"admin/avatar-decorations/delete",
+		"admin/promo/create",
+		"admin/relays/add", "admin/relays/remove",
+		"admin/invite/create",
+		"admin/captcha/save",
+		"admin/emoji/copy", "admin/emoji/import-zip",
+		"admin/emoji/add-aliases-bulk", "admin/emoji/remove-aliases-bulk",
+		"admin/emoji/set-aliases-bulk", "admin/emoji/set-category-bulk",
+		"admin/emoji/set-license-bulk", "admin/emoji/delete-bulk",
+		"admin/system-webhook/create", "admin/system-webhook/update",
+		"admin/system-webhook/delete", "admin/system-webhook/test",
+		"admin/abuse-report/notification-recipient/create",
+		"admin/abuse-report/notification-recipient/update",
+		"admin/abuse-report/notification-recipient/delete",
+		"admin/queue/clear", "admin/queue/promote-jobs",
+		"admin/queue/remove-job", "admin/queue/retry-job",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireModerator(roleService))
+	}
+	// 空配列・オブジェクトを返す admin エンドポイント
+	for _, ep := range []string{
+		"admin/ad/list",
+		"admin/avatar-decorations/list",
+		"admin/drive/files",
+		"admin/emoji/list-remote",
+		"admin/invite/list",
+		"admin/relays/list",
+		"admin/system-webhook/list",
+		"admin/abuse-report/notification-recipient/list",
+		"admin/queue/deliver-delayed", "admin/queue/inbox-delayed",
+		"admin/queue/jobs",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		}, middleware.RequireModerator(roleService))
+	}
+	// オブジェクトを返す admin エンドポイント
+	api.POST("/admin/accounts/find-by-email", func(c echo.Context) error {
+		return c.JSON(http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "USER_NOT_FOUND", "message": "User not found.", "id": "a]504947-b888-4a99-9f62-8c4a0f3a3dab"},
+		})
+	}, middleware.RequireModerator(roleService))
+	api.POST("/admin/get-user-ips", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireModerator(roleService))
+	api.POST("/admin/get-index-stats", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/get-table-stats", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/server-info", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"machine": "misskey-go", "os": "linux", "node": "n/a",
+			"cpu": map[string]any{"model": "unknown", "cores": 0},
+			"mem": map[string]any{"total": 0},
+			"fs":  map[string]any{"total": 0, "used": 0},
+		})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/captcha/current", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"provider": nil})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/drive/show-file", func(c echo.Context) error {
+		return c.JSON(http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "NO_SUCH_FILE", "message": "No such file.", "id": "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"},
+		})
+	}, middleware.RequireModerator(roleService))
+	for _, ep := range []string{
+		"admin/system-webhook/show",
+		"admin/abuse-report/notification-recipient/show",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusNotFound, map[string]any{
+				"error": map[string]any{"code": "NOT_FOUND", "message": "Not found.", "id": "00000000-0000-0000-0000-000000000000"},
+			})
+		}, middleware.RequireModerator(roleService))
+	}
+	api.POST("/admin/queue/queues", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/queue-stats", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/stats", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"deliver": map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
+			"inbox":   map[string]any{"activeSince": nil, "active": 0, "waiting": 0, "delayed": 0},
+		})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/show-job", func(c echo.Context) error {
+		return c.JSON(http.StatusNotFound, map[string]any{
+			"error": map[string]any{"code": "NOT_FOUND", "message": "Not found."},
+		})
+	}, middleware.RequireAdmin(roleService))
+	api.POST("/admin/queue/show-job-logs", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, []any{})
+	}, middleware.RequireAdmin(roleService))
+
 	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
 	api.Any("/*", func(c echo.Context) error {
 		slog.Warn("unimplemented API endpoint", "method", c.Request().Method, "path", c.Request().URL.Path)
