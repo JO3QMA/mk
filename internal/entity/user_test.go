@@ -5,6 +5,7 @@ import (
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 )
 
@@ -52,7 +53,9 @@ func TestPackUserLite_NilFields(t *testing.T) {
 	assert.Equal(t, "user2", lite.ID)
 	assert.Nil(t, lite.Name)
 	assert.Nil(t, lite.Host)
-	assert.Nil(t, lite.AvatarURL)
+	// avatarUrlがnullの場合、identiconにフォールバック
+	require.NotNil(t, lite.AvatarURL)
+	assert.Equal(t, "/identicon/minimal", *lite.AvatarURL)
 	assert.Nil(t, lite.AvatarBlurhash)
 }
 

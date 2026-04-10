@@ -45,12 +45,22 @@ type UserDetailed struct {
 
 // PackUserLite converts a model.User to a UserLite DTO.
 func PackUserLite(u *model.User) UserLite {
+	avatarURL := u.AvatarURL
+	// avatarUrlがnullの場合、identiconを生成
+	if avatarURL == nil || *avatarURL == "" {
+		host := ""
+		if u.Host != nil {
+			host = "@" + *u.Host
+		}
+		identicon := "/identicon/" + u.Username + host
+		avatarURL = &identicon
+	}
 	return UserLite{
 		ID:                u.ID,
 		Name:              u.Name,
 		Username:          u.Username,
 		Host:              u.Host,
-		AvatarURL:         u.AvatarURL,
+		AvatarURL:         avatarURL,
 		AvatarBlurhash:    u.AvatarBlurhash,
 		AvatarDecorations: u.AvatarDecorations,
 		IsBot:             u.IsBot,

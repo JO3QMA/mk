@@ -1213,6 +1213,9 @@ func (s *Server) setupRoutes() {
 		s.echo.File("/robots.txt", filepath.Join(staticDir, "robots.txt"))
 	}
 
+	// identicon — ユーザーアイコン自動生成
+	s.echo.GET("/identicon/:x", identiconHandler())
+
 	// manifest.json — PWA用
 	s.echo.GET("/manifest.json", manifestJSON(s.config, metaRepo))
 
