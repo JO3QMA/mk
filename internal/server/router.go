@@ -371,6 +371,7 @@ func (s *Server) setupRoutes() {
 
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
+	notesHandler.SetDriveFileRepo(driveFileRepo)
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())

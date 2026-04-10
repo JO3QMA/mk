@@ -26,6 +26,16 @@ func (m *MockDriveFileRepository) FindByID(id string) (*model.DriveFile, error) 
 	return f, nil
 }
 
+func (m *MockDriveFileRepository) FindByIDs(ids []string) ([]*model.DriveFile, error) {
+	var result []*model.DriveFile
+	for _, id := range ids {
+		if f, ok := m.Files[id]; ok {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
 func (m *MockDriveFileRepository) FindByMD5(userID, md5 string) (*model.DriveFile, error) {
 	var match *model.DriveFile
 	for _, f := range m.Files {

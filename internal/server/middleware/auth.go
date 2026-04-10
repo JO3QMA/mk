@@ -152,10 +152,19 @@ func extractToken(c echo.Context) string {
 		return t
 	}
 
+	// multipart/form-data の "i" フィールド (ファイルアップロード時)
+	req := c.Request()
+	ct := req.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		if t := c.FormValue("i"); t != "" {
+			return t
+		}
+		return ""
+	}
+
 	// JSON body の "i" フィールド (Misskey-style)
 	// フロントエンドは全 API で POST {"i":"token", ...} を送信する。
 	// ボディを読んだ後にリセットし、後続ハンドラが再読み取り可能にする。
-	req := c.Request()
 	if req.Body != nil && req.ContentLength != 0 {
 		body, err := io.ReadAll(req.Body)
 		if err == nil && len(body) > 0 {

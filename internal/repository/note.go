@@ -355,7 +355,7 @@ func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, unt
 // ListLocalTimeline returns public/home notes by local users.
 func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error) {
 	q := r.db.Preload("User").
-		Where(`"userHost" IS NULL AND "visibility" IN ('public','home')`).
+		Where(`"userHost" IS NULL AND "visibility" = 'public'`).
 		Order(`"id" DESC`).Limit(limit)
 	if sinceID != "" {
 		q = q.Where(`"id" > ?`, sinceID)

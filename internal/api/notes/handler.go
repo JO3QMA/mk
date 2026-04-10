@@ -30,6 +30,12 @@ type Handler struct {
 	searchService   *search.Service
 	idGen           id.Generator
 	favoriteRepo    repository.NoteFavoriteRepository
+	driveFileRepo   repository.DriveFileRepository
+}
+
+// SetDriveFileRepo attaches a DriveFileRepository for file resolution.
+func (h *Handler) SetDriveFileRepo(r repository.DriveFileRepository) {
+	h.driveFileRepo = r
 }
 
 // NewHandler creates a new notes Handler.
@@ -148,8 +154,11 @@ func (h *Handler) Create(c echo.Context) error {
 		return internalError(c)
 	}
 
+	packed := entity.PackNote(created, h.idGen)
+	s := []entity.NoteEntity{packed}
+	h.resolveFiles(s)
 	return c.JSON(http.StatusOK, map[string]any{
-		"createdNote": entity.PackNote(created, h.idGen),
+		"createdNote": s[0],
 	})
 }
 
@@ -171,7 +180,10 @@ func (h *Handler) Show(c echo.Context) error {
 		return noSuchNote(c)
 	}
 
-	return c.JSON(http.StatusOK, entity.PackNote(n, h.idGen))
+	packed := entity.PackNote(n, h.idGen)
+	s := []entity.NoteEntity{packed}
+	h.resolveFiles(s)
+	return c.JSON(http.StatusOK, s[0])
 }
 
 // lookupVisible fetches the note via QueryService when available, otherwise
@@ -392,12 +404,49 @@ func (h *Handler) Conversation(c echo.Context) error {
 }
 
 // packMany serializes a list of notes into NoteEntity objects.
+// driveFileRepoが設定されている場合、ファイル情報を解決してFilesに含める。
 func (h *Handler) packMany(notes []*model.Note) []entity.NoteEntity {
 	out := make([]entity.NoteEntity, 0, len(notes))
 	for _, n := range notes {
 		out = append(out, entity.PackNote(n, h.idGen))
 	}
+	h.resolveFiles(out)
 	return out
+}
+
+// resolveFiles collects all fileIds from notes, fetches DriveFiles in bulk,
+// and populates the Files field of each NoteEntity.
+func (h *Handler) resolveFiles(notes []entity.NoteEntity) {
+	if h.driveFileRepo == nil {
+		return
+	}
+	// 全fileIDsを収集
+	var allIDs []string
+	for _, n := range notes {
+		allIDs = append(allIDs, n.FileIDs...)
+	}
+	if len(allIDs) == 0 {
+		return
+	}
+	files, err := h.driveFileRepo.FindByIDs(allIDs)
+	if err != nil || len(files) == 0 {
+		return
+	}
+	// IDでマップ化
+	fileMap := make(map[string]*model.DriveFile, len(files))
+	for _, f := range files {
+		fileMap[f.ID] = f
+	}
+	// 各ノートのFilesに設定
+	for i := range notes {
+		packed := make([]any, 0, len(notes[i].FileIDs))
+		for _, fid := range notes[i].FileIDs {
+			if f, ok := fileMap[fid]; ok {
+				packed = append(packed, entity.PackDriveFile(f, h.idGen))
+			}
+		}
+		notes[i].Files = packed
+	}
 }
 
 func noSuchNote(c echo.Context) error {

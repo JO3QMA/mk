@@ -9,6 +9,7 @@ import (
 type DriveFileRepository interface {
 	Create(f *model.DriveFile) error
 	FindByID(id string) (*model.DriveFile, error)
+	FindByIDs(ids []string) ([]*model.DriveFile, error)
 	FindByMD5(userID, md5 string) (*model.DriveFile, error)
 	Update(id string, fields map[string]any) error
 	Delete(f *model.DriveFile) error
@@ -34,6 +35,17 @@ func (r *driveFileRepository) FindByID(id string) (*model.DriveFile, error) {
 		return nil, err
 	}
 	return &f, nil
+}
+
+func (r *driveFileRepository) FindByIDs(ids []string) ([]*model.DriveFile, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var files []*model.DriveFile
+	if err := r.db.Where("id IN ?", ids).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 // FindByMD5 returns the user's most recent file with the given md5 hash.
