@@ -456,6 +456,41 @@ func (s *Server) setupRoutes() {
 		return c.NoContent(http.StatusNoContent)
 	}, middleware.RequireAuth())
 
+	// Phase 7.1: i/* 完全化 (スタブ: フロントエンドの設定画面が動くように)
+	// NoContent (204) を返すエンドポイント
+	for _, ep := range []string{
+		"i/update-email", "i/move",
+		"i/export-notes", "i/export-following", "i/export-blocking",
+		"i/export-mute", "i/export-favorites", "i/export-user-lists",
+		"i/export-antennas", "i/export-clips",
+		"i/import-following", "i/import-blocking",
+		"i/import-muting", "i/import-user-lists", "i/import-antennas",
+		"i/2fa/register", "i/2fa/done", "i/2fa/unregister",
+		"i/2fa/register-key", "i/2fa/key-done", "i/2fa/remove-key",
+		"i/2fa/update-key", "i/2fa/password-less",
+		"i/webhooks/create", "i/webhooks/update", "i/webhooks/delete", "i/webhooks/test",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		}, middleware.RequireAuth())
+	}
+	// 空配列を返すエンドポイント
+	for _, ep := range []string{
+		"i/gallery/likes", "i/gallery/posts", "i/page-likes",
+		"i/webhooks/list", "i/webhooks/show",
+		"i/registry/keys", "i/registry/scopes-with-domain",
+	} {
+		ep := ep
+		api.POST("/"+ep, func(c echo.Context) error {
+			return c.JSON(http.StatusOK, []any{})
+		}, middleware.RequireAuth())
+	}
+	// オブジェクトを返すエンドポイント
+	api.POST("/i/registry/get-detail", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{})
+	}, middleware.RequireAuth())
+
 	// Hashtags endpoints (Phase 6)
 	hashtagsHandler := apihashtags.NewHandler(s.db)
 	api.POST("/hashtags/list", hashtagsHandler.List)
