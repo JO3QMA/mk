@@ -472,6 +472,7 @@ func (f *failingNoteRepo) ListMentions(_ string, _ int, _, _ string) ([]*model.N
 func (f *failingNoteRepo) SearchByTag(_ string, _ int, _, _ string) ([]*model.Note, error) {
 	return nil, nil
 }
+func (f *failingNoteRepo) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
 func (f *failingNoteRepo) IncrementUserNotesCount(_ string, _ int) error { return nil }
 func (f *failingNoteRepo) ListHomeTimeline(_ string, _ int, _, _ string) ([]*model.Note, error) {
 	return nil, nil

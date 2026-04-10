@@ -60,6 +60,43 @@ func (m *MockDriveFileRepository) Update(id string, fields map[string]any) error
 	return nil
 }
 
+func (m *MockDriveFileRepository) FindByName(userID, name string, _ *string) ([]*model.DriveFile, error) {
+	var result []*model.DriveFile
+	for _, f := range m.Files {
+		if f.UserID != nil && *f.UserID == userID && f.Name == name {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockDriveFileRepository) ExistsByMD5(userID, md5 string) (bool, error) {
+	for _, f := range m.Files {
+		if f.UserID != nil && *f.UserID == userID && f.MD5 == md5 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *MockDriveFileRepository) ListByFileIDs(ids []string) ([]*model.DriveFile, error) {
+	return m.FindByIDs(ids)
+}
+
+func (m *MockDriveFileRepository) UsageByUser(userID string) (int64, error) {
+	var total int64
+	for _, f := range m.Files {
+		if f.UserID != nil && *f.UserID == userID {
+			total += int64(f.Size)
+		}
+	}
+	return total, nil
+}
+
+func (m *MockDriveFileRepository) UpdateBulkFolder(_ []string, _ *string) error {
+	return nil
+}
+
 func (m *MockDriveFileRepository) Delete(f *model.DriveFile) error {
 	delete(m.Files, f.ID)
 	return nil
@@ -207,6 +244,16 @@ func (m *MockDriveFolderRepository) ListByUser(userID string, parentID *string, 
 		rows = rows[:limit]
 	}
 	return rows, nil
+}
+
+func (m *MockDriveFolderRepository) FindByName(userID, name string, _ *string) ([]*model.DriveFolder, error) {
+	var result []*model.DriveFolder
+	for _, f := range m.Folders {
+		if f.UserID != nil && *f.UserID == userID && f.Name == name {
+			result = append(result, f)
+		}
+	}
+	return result, nil
 }
 
 func (m *MockDriveFolderRepository) HasChildren(folderID string) (bool, error) {

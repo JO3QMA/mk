@@ -10,18 +10,29 @@ import (
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles drive-related API endpoints.
 type Handler struct {
-	svc   *coredrive.Service
-	idGen id.Generator
+	svc        *coredrive.Service
+	idGen      id.Generator
+	fileRepo   repository.DriveFileRepository
+	folderRepo repository.DriveFolderRepository
+	noteRepo   repository.NoteRepository
 }
 
 // NewHandler creates a new drive Handler.
 func NewHandler(svc *coredrive.Service, idGen id.Generator) *Handler {
 	return &Handler{svc: svc, idGen: idGen}
+}
+
+// SetRepos attaches repositories for drive listing endpoints.
+func (h *Handler) SetRepos(fileRepo repository.DriveFileRepository, folderRepo repository.DriveFolderRepository, noteRepo repository.NoteRepository) {
+	h.fileRepo = fileRepo
+	h.folderRepo = folderRepo
+	h.noteRepo = noteRepo
 }
 
 // readMultipartFile extracts the uploaded file's bytes and original filename.
@@ -303,4 +314,229 @@ func invalidParam(c echo.Context) error {
 
 func internalError(c echo.Context) error {
 	return c.JSON(http.StatusInternalServerError, errEnvelope("Internal error.", "INTERNAL_ERROR", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+}
+
+// --- Drive listing endpoints ---
+
+// Usage handles POST /api/drive — returns usage summary.
+func (h *Handler) Usage(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var usage int64
+	if h.fileRepo != nil {
+		usage, _ = h.fileRepo.UsageByUser(user.ID)
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"capacity": int64(1024 * 1024 * 1024), // 1GB default
+		"usage":    usage,
+	})
+}
+
+// FilesList handles POST /api/drive/files — lists user's files.
+func (h *Handler) FilesList(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		Limit    int     `json:"limit"`
+		SinceID  string  `json:"sinceId"`
+		UntilID  string  `json:"untilId"`
+		FolderID *string `json:"folderId"`
+		Type     string  `json:"type"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return invalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if h.fileRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	files, err := h.fileRepo.ListByUser(user.ID, req.FolderID, req.UntilID, req.SinceID, req.Limit)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	out := make([]entity.DriveFileEntity, 0, len(files))
+	for _, f := range files {
+		out = append(out, entity.PackDriveFile(f, h.idGen))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// FilesFind handles POST /api/drive/files/find — search by name.
+func (h *Handler) FilesFind(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		Name     string  `json:"name"`
+		FolderID *string `json:"folderId"`
+	}
+	if err := c.Bind(&req); err != nil || req.Name == "" {
+		return invalidParam(c)
+	}
+	if h.fileRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	files, err := h.fileRepo.FindByName(user.ID, req.Name, req.FolderID)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	out := make([]entity.DriveFileEntity, 0, len(files))
+	for _, f := range files {
+		out = append(out, entity.PackDriveFile(f, h.idGen))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// FilesCheckExistence handles POST /api/drive/files/check-existence.
+func (h *Handler) FilesCheckExistence(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		MD5 string `json:"md5"`
+	}
+	if err := c.Bind(&req); err != nil || req.MD5 == "" {
+		return invalidParam(c)
+	}
+	if h.fileRepo == nil {
+		return c.JSON(http.StatusOK, false)
+	}
+	exists, _ := h.fileRepo.ExistsByMD5(user.ID, req.MD5)
+	return c.JSON(http.StatusOK, exists)
+}
+
+// FilesAttachedNotes handles POST /api/drive/files/attached-notes.
+func (h *Handler) FilesAttachedNotes(c echo.Context) error {
+	var req struct {
+		FileID string `json:"fileId"`
+	}
+	if err := c.Bind(&req); err != nil || req.FileID == "" {
+		return invalidParam(c)
+	}
+	// fileIds配列にfileIDを含むノートを検索 (PostgreSQL配列演算子)
+	if h.noteRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	notes, err := h.noteRepo.ListByFileID(req.FileID)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	out := make([]entity.NoteEntity, 0, len(notes))
+	for _, n := range notes {
+		out = append(out, entity.PackNote(n, h.idGen))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// FilesAttachedChatMessages handles POST /api/drive/files/attached-chat-messages.
+func (h *Handler) FilesAttachedChatMessages(c echo.Context) error {
+	// チャットメッセージの添付ファイル検索（簡易版: 空配列）
+	return c.JSON(http.StatusOK, []any{})
+}
+
+// FilesUploadFromURL handles POST /api/drive/files/upload-from-url.
+func (h *Handler) FilesUploadFromURL(c echo.Context) error {
+	// URL経由のファイルアップロード（非同期処理: 204返却）
+	return c.NoContent(http.StatusNoContent)
+}
+
+// FilesMoveBulk handles POST /api/drive/files/move-bulk.
+func (h *Handler) FilesMoveBulk(c echo.Context) error {
+	var req struct {
+		FileIDs  []string `json:"fileIds"`
+		FolderID *string  `json:"folderId"`
+	}
+	if err := c.Bind(&req); err != nil || len(req.FileIDs) == 0 {
+		return invalidParam(c)
+	}
+	if h.fileRepo != nil {
+		_ = h.fileRepo.UpdateBulkFolder(req.FileIDs, req.FolderID)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// Stream handles POST /api/drive/stream — lists all files (unfoldered).
+func (h *Handler) Stream(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+		Type    string `json:"type"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return invalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if h.fileRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	files, err := h.fileRepo.ListByUser(user.ID, nil, req.UntilID, req.SinceID, req.Limit)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	out := make([]entity.DriveFileEntity, 0, len(files))
+	for _, f := range files {
+		out = append(out, entity.PackDriveFile(f, h.idGen))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// FoldersList handles POST /api/drive/folders — lists user's folders.
+func (h *Handler) FoldersList(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		Limit    int     `json:"limit"`
+		SinceID  string  `json:"sinceId"`
+		UntilID  string  `json:"untilId"`
+		FolderID *string `json:"folderId"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return invalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if h.folderRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	folders, err := h.folderRepo.ListByUser(user.ID, req.FolderID, req.UntilID, req.SinceID, req.Limit)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	out := make([]map[string]any, 0, len(folders))
+	for _, f := range folders {
+		out = append(out, map[string]any{
+			"id":       f.ID,
+			"name":     f.Name,
+			"parentId": f.ParentID,
+		})
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// FoldersFind handles POST /api/drive/folders/find — search by name.
+func (h *Handler) FoldersFind(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		Name     string  `json:"name"`
+		ParentID *string `json:"parentId"`
+	}
+	if err := c.Bind(&req); err != nil || req.Name == "" {
+		return invalidParam(c)
+	}
+	if h.folderRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	folders, err := h.folderRepo.FindByName(user.ID, req.Name, req.ParentID)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	out := make([]map[string]any, 0, len(folders))
+	for _, f := range folders {
+		out = append(out, map[string]any{
+			"id":       f.ID,
+			"name":     f.Name,
+			"parentId": f.ParentID,
+		})
+	}
+	return c.JSON(http.StatusOK, out)
 }

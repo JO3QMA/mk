@@ -14,6 +14,11 @@ type DriveFileRepository interface {
 	Update(id string, fields map[string]any) error
 	Delete(f *model.DriveFile) error
 	ListByUser(userID string, folderID *string, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
+	FindByName(userID, name string, folderID *string) ([]*model.DriveFile, error)
+	ExistsByMD5(userID, md5 string) (bool, error)
+	ListByFileIDs(fileIDs []string) ([]*model.DriveFile, error)
+	UsageByUser(userID string) (int64, error)
+	UpdateBulkFolder(fileIDs []string, folderID *string) error
 }
 
 type driveFileRepository struct {
@@ -91,4 +96,49 @@ func (r *driveFileRepository) ListByUser(userID string, folderID *string, untilI
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (r *driveFileRepository) FindByName(userID, name string, folderID *string) ([]*model.DriveFile, error) {
+	q := r.db.Where(`"userId" = ? AND "name" = ?`, userID, name)
+	if folderID != nil {
+		q = q.Where(`"folderId" = ?`, *folderID)
+	} else {
+		q = q.Where(`"folderId" IS NULL`)
+	}
+	var files []*model.DriveFile
+	if err := q.Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func (r *driveFileRepository) ExistsByMD5(userID, md5 string) (bool, error) {
+	var count int64
+	if err := r.db.Model(&model.DriveFile{}).Where(`"userId" = ? AND "md5" = ?`, userID, md5).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (r *driveFileRepository) ListByFileIDs(fileIDs []string) ([]*model.DriveFile, error) {
+	if len(fileIDs) == 0 {
+		return nil, nil
+	}
+	var files []*model.DriveFile
+	if err := r.db.Where("id IN ?", fileIDs).Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func (r *driveFileRepository) UsageByUser(userID string) (int64, error) {
+	var total int64
+	if err := r.db.Model(&model.DriveFile{}).Where(`"userId" = ?`, userID).Select("COALESCE(SUM(size), 0)").Scan(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (r *driveFileRepository) UpdateBulkFolder(fileIDs []string, folderID *string) error {
+	return r.db.Model(&model.DriveFile{}).Where("id IN ?", fileIDs).Update("folderId", folderID).Error
 }

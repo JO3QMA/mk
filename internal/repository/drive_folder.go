@@ -13,6 +13,7 @@ type DriveFolderRepository interface {
 	Delete(f *model.DriveFolder) error
 	ListByUser(userID string, parentID *string, untilID, sinceID string, limit int) ([]*model.DriveFolder, error)
 	HasChildren(folderID string) (bool, error)
+	FindByName(userID, name string, parentID *string) ([]*model.DriveFolder, error)
 }
 
 type driveFolderRepository struct {
@@ -79,4 +80,18 @@ func (r *driveFolderRepository) HasChildren(folderID string) (bool, error) {
 		SELECT 1 FROM "drive_file" WHERE "folderId" = ?
 	)`, folderID, folderID).Scan(&exists).Error
 	return exists, err
+}
+
+func (r *driveFolderRepository) FindByName(userID, name string, parentID *string) ([]*model.DriveFolder, error) {
+	q := r.db.Where(`"userId" = ? AND "name" = ?`, userID, name)
+	if parentID != nil {
+		q = q.Where(`"parentId" = ?`, *parentID)
+	} else {
+		q = q.Where(`"parentId" IS NULL`)
+	}
+	var folders []*model.DriveFolder
+	if err := q.Find(&folders).Error; err != nil {
+		return nil, err
+	}
+	return folders, nil
 }

@@ -27,6 +27,7 @@ type NoteRepository interface {
 	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
 	ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error)
+	ListByFileID(fileID string) ([]*model.Note, error)
 	IncrementUserNotesCount(userID string, delta int) error
 	ListHomeTimeline(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
@@ -329,6 +330,14 @@ func (r *noteRepository) SearchByTag(tag string, limit int, sinceID, untilID str
 	}
 	var notes []*model.Note
 	if err := q.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
+}
+
+func (r *noteRepository) ListByFileID(fileID string) ([]*model.Note, error) {
+	var notes []*model.Note
+	if err := r.db.Preload("User").Where(`"fileIds" @> ARRAY[?]::varchar[]`, fileID).Order(`"id" DESC`).Limit(20).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil

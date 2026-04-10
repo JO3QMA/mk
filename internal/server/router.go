@@ -626,6 +626,9 @@ func (s *Server) setupRoutes() {
 
 	// Drive endpoints
 	driveHandler := drive.NewHandler(driveService, idGen)
+	driveHandler.SetRepos(driveFileRepo, driveFolderRepo, noteRepo)
+	api.POST("/drive", driveHandler.Usage, middleware.RequireAuth())
+	api.POST("/drive/files", driveHandler.FilesList, middleware.RequireAuth())
 	api.POST("/drive/files/create", driveHandler.FilesCreate, middleware.RequireAuth())
 	api.POST("/drive/files/show", driveHandler.FilesShow, middleware.RequireAuth())
 	api.POST("/drive/files/update", driveHandler.FilesUpdate, middleware.RequireAuth())
@@ -635,34 +638,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/drive/folders/show", driveHandler.FoldersShow, middleware.RequireAuth())
 	api.POST("/drive/folders/update", driveHandler.FoldersUpdate, middleware.RequireAuth())
 	api.POST("/drive/folders/delete", driveHandler.FoldersDelete, middleware.RequireAuth())
-	// Phase 7.4: drive/* 残りエンドポイント
-	// drive (使用量サマリ)
-	api.POST("/drive", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{
-			"capacity": 1073741824, "usage": 0,
-		})
-	}, middleware.RequireAuth())
-	// 空配列を返すエンドポイント
-	for _, ep := range []string{
-		"drive/files", "drive/files/attached-notes",
-		"drive/files/attached-chat-messages",
-		"drive/folders", "drive/folders/find", "drive/stream",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		}, middleware.RequireAuth())
-	}
-	// NoContent を返すエンドポイント
-	for _, ep := range []string{
-		"drive/files/check-existence", "drive/files/upload-from-url",
-		"drive/files/find", "drive/files/move-bulk",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
+	api.POST("/drive/folders", driveHandler.FoldersList, middleware.RequireAuth())
+	api.POST("/drive/folders/find", driveHandler.FoldersFind, middleware.RequireAuth())
+	api.POST("/drive/files/find", driveHandler.FilesFind, middleware.RequireAuth())
+	api.POST("/drive/files/check-existence", driveHandler.FilesCheckExistence, middleware.RequireAuth())
+	api.POST("/drive/files/attached-notes", driveHandler.FilesAttachedNotes, middleware.RequireAuth())
+	api.POST("/drive/files/attached-chat-messages", driveHandler.FilesAttachedChatMessages, middleware.RequireAuth())
+	api.POST("/drive/files/upload-from-url", driveHandler.FilesUploadFromURL, middleware.RequireAuth())
+	api.POST("/drive/files/move-bulk", driveHandler.FilesMoveBulk, middleware.RequireAuth())
+	api.POST("/drive/stream", driveHandler.Stream, middleware.RequireAuth())
+	// Phase 7.4: drive/* — 全て実データハンドラに移行済み
 
 	// Static file serving for LocalStorage
 	// MIME type はファイル内容の先頭から自動判定する。
