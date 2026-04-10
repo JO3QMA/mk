@@ -1245,6 +1245,18 @@ func (s *Server) setupRoutes() {
 		s.echo.Any("/vite/*", newViteProxy("http://localhost:5173"))
 	}
 
+	// フロントエンド配布アセット (locales, fonts等)
+	frontendDistDir := FrontendDistDir()
+	if _, err := os.Stat(frontendDistDir); err == nil {
+		s.echo.Static("/assets", frontendDistDir)
+	}
+
+	// twemoji SVG配信
+	twemojiDir := TwemojiDir()
+	if _, err := os.Stat(twemojiDir); err == nil {
+		s.echo.Static("/twemoji", twemojiDir)
+	}
+
 	// 静的アセット配信 (favicon, splash, icons等)
 	staticDir := StaticDir()
 	if _, err := os.Stat(staticDir); err == nil {

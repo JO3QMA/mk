@@ -79,6 +79,24 @@ func FrontendDir() string {
 	return filepath.Join("built", "_frontend_vite_")
 }
 
+// FrontendDistDir returns the path to _frontend_dist_ assets (locales, fonts).
+// 環境変数 MISSKEY_FRONTEND_DIST_DIR で上書き可能。
+func FrontendDistDir() string {
+	if v := os.Getenv("MISSKEY_FRONTEND_DIST_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join("built", "_frontend_dist_")
+}
+
+// TwemojiDir returns the path to twemoji SVG files.
+// 環境変数 MISSKEY_TWEMOJI_DIR で上書き可能。
+func TwemojiDir() string {
+	if v := os.Getenv("MISSKEY_TWEMOJI_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join("node_modules", "@discordapp", "twemoji", "dist", "svg")
+}
+
 // StaticDir returns the path to static assets (icons, splash, favicon etc.).
 // 環境変数 MISSKEY_STATIC_DIR で上書き可能。
 func StaticDir() string {
