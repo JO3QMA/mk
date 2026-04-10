@@ -37,6 +37,7 @@ import (
 	apiroles "github.com/shiroha-a/mk/internal/api/roles"
 	apisignin "github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/api/streaming"
+	apisw "github.com/shiroha-a/mk/internal/api/sw"
 	apiuserlists "github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/api/users"
 	"github.com/shiroha-a/mk/internal/api/wellknown"
@@ -1056,45 +1057,13 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, []any{})
 	})
 
-	// sw/* — Service Worker push notifications
-	api.POST("/sw/register", func(c echo.Context) error {
-		var req struct {
-			Endpoint  string `json:"endpoint"`
-			Auth      string `json:"auth"`
-			PublicKey string `json:"publickey"`
-		}
-		if err := c.Bind(&req); err != nil || req.Endpoint == "" {
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{"code": "INVALID_PARAM", "message": "endpoint is required."},
-			})
-		}
-		return c.JSON(http.StatusOK, map[string]any{
-			"state":           "already-subscribed",
-			"key":             nil,
-			"userId":          "",
-			"endpoint":        req.Endpoint,
-			"sendReadMessage": false,
-		})
-	}, middleware.RequireAuth())
-	api.POST("/sw/show-registration", func(c echo.Context) error {
-		var req struct {
-			Endpoint string `json:"endpoint"`
-		}
-		if err := c.Bind(&req); err != nil || req.Endpoint == "" {
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{"code": "INVALID_PARAM", "message": "endpoint is required."},
-			})
-		}
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{"code": "NO_SUCH_REGISTRATION", "message": "No such registration.", "id": "b3a2f3f4-9f1f-4b1a-9b5c-1b1a1b1a1b1a"},
-		})
-	}, middleware.RequireAuth())
-	api.POST("/sw/update-registration", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}, middleware.RequireAuth())
-	api.POST("/sw/unregister", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}, middleware.RequireAuth())
+	// sw/* — Service Worker push notifications (実データ)
+	swSubRepo := repository.NewSwSubscriptionRepository(s.db)
+	swHandler := apisw.NewHandler(swSubRepo, metaRepo, idGen)
+	api.POST("/sw/register", swHandler.Register, middleware.RequireAuth())
+	api.POST("/sw/show-registration", swHandler.ShowRegistration, middleware.RequireAuth())
+	api.POST("/sw/update-registration", swHandler.UpdateRegistration, middleware.RequireAuth())
+	api.POST("/sw/unregister", swHandler.Unregister)
 
 	// reversi/* — オセロゲーム
 	api.POST("/reversi/games", func(c echo.Context) error {
