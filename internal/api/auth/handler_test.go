@@ -20,7 +20,7 @@ import (
 // --- Mock Repository ---
 
 type mockAuthSessionRepo struct {
-	apps         map[string]*model.App    // secret -> app
+	apps         map[string]*model.App         // secret -> app
 	sessions     map[string]*model.AuthSession // token -> session
 	accessTokens map[string]*model.AccessToken // appID:userID -> token
 	createErr    error
