@@ -779,67 +779,28 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/accept", followingHandler.AcceptRequest, middleware.RequireAuth())
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
-	// Phase 7.6: following/channels/clips/federation 残りエンドポイント
-	for _, ep := range []string{
-		"following/invalidate", "following/update", "following/update-all",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
-	api.POST("/following/requests/sent", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAuth())
+	// following 残り
+	api.POST("/following/invalidate", followingHandler.Invalidate, middleware.RequireAuth())
+	api.POST("/following/update", followingHandler.UpdateFollow, middleware.RequireAuth())
+	api.POST("/following/update-all", followingHandler.UpdateFollowAll, middleware.RequireAuth())
+	api.POST("/following/requests/sent", followingHandler.RequestsSent, middleware.RequireAuth())
 	// channels 残り
-	for _, ep := range []string{
-		"channels/favorite", "channels/unfavorite",
-		"channels/mute/create", "channels/mute/delete",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
-	for _, ep := range []string{
-		"channels/my-favorites", "channels/mute/list",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		}, middleware.RequireAuth())
-	}
+	api.POST("/channels/favorite", channelsHandler.Favorite, middleware.RequireAuth())
+	api.POST("/channels/unfavorite", channelsHandler.Unfavorite, middleware.RequireAuth())
+	api.POST("/channels/mute/create", channelsHandler.MuteCreate, middleware.RequireAuth())
+	api.POST("/channels/mute/delete", channelsHandler.MuteDelete, middleware.RequireAuth())
+	api.POST("/channels/my-favorites", channelsHandler.MyFavorites, middleware.RequireAuth())
+	api.POST("/channels/mute/list", channelsHandler.MuteList, middleware.RequireAuth())
 	// clips 残り
-	for _, ep := range []string{
-		"clips/favorite", "clips/unfavorite",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
-	api.POST("/clips/my-favorites", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, []any{})
-	}, middleware.RequireAuth())
+	api.POST("/clips/favorite", clipsHandler.Favorite, middleware.RequireAuth())
+	api.POST("/clips/unfavorite", clipsHandler.Unfavorite, middleware.RequireAuth())
+	api.POST("/clips/my-favorites", clipsHandler.MyFavorites, middleware.RequireAuth())
 	// federation 残り
-	for _, ep := range []string{
-		"federation/followers", "federation/following",
-		"federation/users",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		})
-	}
-	api.POST("/federation/stats", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{
-			"topSubInstances": []any{}, "otherFollowersCount": 0,
-			"topPubInstances": []any{}, "otherFollowingCount": 0,
-		})
-	})
-	api.POST("/federation/update-remote-user", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}, middleware.RequireAuth())
+	api.POST("/federation/followers", federationHandler.Followers)
+	api.POST("/federation/following", federationHandler.Following)
+	api.POST("/federation/users", federationHandler.Users)
+	api.POST("/federation/stats", federationHandler.Stats)
+	api.POST("/federation/update-remote-user", federationHandler.UpdateRemoteUser, middleware.RequireAuth())
 
 	// Public roles (Phase 6)
 	rolesHandler := apiroles.NewHandler(roleService)
