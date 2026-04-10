@@ -405,34 +405,16 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/clips", notesHandler.Clips)
 	api.POST("/notes/translate", notesHandler.Translate)
 	api.POST("/notes/show-partial-bulk", notesHandler.ShowPartialBulk)
-	// notes/drafts + notes/thread-muting + notes/polls/recommendation (スタブ)
-	for _, ep := range []string{
-		"notes/thread-muting/create", "notes/thread-muting/delete",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
-	for _, ep := range []string{
-		"notes/drafts/list", "notes/polls/recommendation",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.JSON(http.StatusOK, []any{})
-		}, middleware.RequireAuth())
-	}
-	api.POST("/notes/drafts/count", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{"count": 0})
-	}, middleware.RequireAuth())
-	for _, ep := range []string{
-		"notes/drafts/create", "notes/drafts/update", "notes/drafts/delete",
-	} {
-		ep := ep
-		api.POST("/"+ep, func(c echo.Context) error {
-			return c.NoContent(http.StatusNoContent)
-		}, middleware.RequireAuth())
-	}
+	// notes/drafts + notes/thread-muting + notes/polls/recommendation (実データ)
+	notesHandler.SetDraftDB(s.db)
+	api.POST("/notes/drafts/list", notesHandler.DraftsList, middleware.RequireAuth())
+	api.POST("/notes/drafts/create", notesHandler.DraftsCreate, middleware.RequireAuth())
+	api.POST("/notes/drafts/update", notesHandler.DraftsUpdate, middleware.RequireAuth())
+	api.POST("/notes/drafts/delete", notesHandler.DraftsDelete, middleware.RequireAuth())
+	api.POST("/notes/drafts/count", notesHandler.DraftsCount, middleware.RequireAuth())
+	api.POST("/notes/thread-muting/create", notesHandler.ThreadMutingCreate, middleware.RequireAuth())
+	api.POST("/notes/thread-muting/delete", notesHandler.ThreadMutingDelete, middleware.RequireAuth())
+	api.POST("/notes/polls/recommendation", notesHandler.PollsRecommendation)
 
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)
