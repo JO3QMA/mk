@@ -1049,29 +1049,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/auth/session/userkey", authHandler.SessionUserkey)
 	api.POST("/auth/accept", authHandler.Accept, middleware.RequireAuth())
 
-	// ap/* — ActivityPub API lookup
-	api.POST("/ap/get", func(c echo.Context) error {
-		var req struct {
-			URI string `json:"uri"`
-		}
-		if err := c.Bind(&req); err != nil || req.URI == "" {
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{"code": "INVALID_PARAM", "message": "uri is required."},
-			})
-		}
-		return c.JSON(http.StatusOK, map[string]any{})
-	})
-	api.POST("/ap/show", func(c echo.Context) error {
-		var req struct {
-			URI string `json:"uri"`
-		}
-		if err := c.Bind(&req); err != nil || req.URI == "" {
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{"code": "INVALID_PARAM", "message": "uri is required."},
-			})
-		}
-		return c.JSON(http.StatusOK, map[string]any{"type": "Note", "object": map[string]any{}})
-	})
+	// ap/* — ActivityPub API lookup (実データ: ローカルオブジェクト解決)
+	api.POST("/ap/get", apHandler.APIGet, middleware.RequireAdmin(roleService))
+	api.POST("/ap/show", apHandler.APIShow, middleware.RequireAuth())
 	api.POST("/ap/notes", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	})
