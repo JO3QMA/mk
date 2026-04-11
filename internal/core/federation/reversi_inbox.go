@@ -1,0 +1,238 @@
+package federation
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
+	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/datatypes"
+)
+
+// --- Incoming reversi AP activities (CherryPick compatible) ---
+//
+// All four activity types carry a custom Game object as `object`, structured
+// as APGame: { type: "Game", game_type_uuid: "<fixed>", game_state: {...} }.
+// The inbox handler dispatches based on the top-level activity type
+// (Invite / Join / Leave / Update) and, for Update, the inner
+// game_state.type (settings | ready_states | putstone).
+//
+// ゲームの突合は federationId (= game_state.game_session_id) を
+// ReversiRepository.FindByFederationID で検索する。
+// Invite のみ例外的にまだ DB に行がないため、ここで行を作成する。
+
+// handleReversiInvite processes an incoming Invite from a remote player.
+// ローカルフロントエンドに「対戦相手選択画面」が無い問題を回避するため、
+// Invite 受信時点で自動的にローカル reversi_game 行を作成し、招待された
+// ローカルユーザー (user2) が通常の ready フローで対戦できる状態にする。
+// session id → game id の mapping は Redis (FederationIDCache) に保存する。
+func (p *Processor) handleReversiInvite(act genericActivity) error {
+	if !p.reversiReady() {
+		return ErrUnsupportedActivity
+	}
+	actor, gameObj, state, err := p.parseReversiActivity(act)
+	if err != nil {
+		return err
+	}
+	if gameObj == nil || state.GameSessionID == "" {
+		return errors.New("reversi invite: missing game state")
+	}
+	toURI := parseToURI(act.To)
+	if toURI == "" {
+		return errors.New("reversi invite: missing recipient")
+	}
+	invitee, err := p.userRepo.FindByURI(toURI)
+	if err != nil {
+		return fmt.Errorf("reversi invite: recipient %s not found", toURI)
+	}
+	ctx := context.Background()
+	// 既にこの sessionID に対応する game が Redis に居れば二重処理を防ぐ。
+	if gid, gerr := p.reversiFedCache.Get(ctx, state.GameSessionID); gerr == nil && gid != "" {
+		return nil
+	}
+
+	now := nowFn()
+	game := &model.ReversiGame{
+		ID:                   p.reversiIDGen.Generate(now),
+		User1ID:              actor.ID, // inviter = remote
+		User2ID:              invitee.ID,
+		Map:                  defaultReversiMap(),
+		BW:                   "random",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+	}
+	if err := p.reversiRepo.Create(game); err != nil {
+		return fmt.Errorf("reversi invite: create game: %w", err)
+	}
+	p.reversiFedCache.Set(ctx, state.GameSessionID, game.ID)
+	slog.Info("reversi federation: accepted invite",
+		"gameId", game.ID, "session", state.GameSessionID, "inviter", actor.ID, "invitee", invitee.ID)
+	return nil
+}
+
+// handleReversiJoin processes an incoming Join for a game we (the local
+// inviter) previously sent Invite for. CherryPick semantics: the remote
+// player has accepted; no local state change beyond acknowledging existence.
+func (p *Processor) handleReversiJoin(act genericActivity) error {
+	if !p.reversiReady() {
+		return ErrUnsupportedActivity
+	}
+	_, gameObj, state, err := p.parseReversiActivity(act)
+	if err != nil {
+		return err
+	}
+	if gameObj == nil || state.GameSessionID == "" {
+		return errors.New("reversi join: missing game state")
+	}
+	gameID, err := p.reversiFedCache.Get(context.Background(), state.GameSessionID)
+	if err != nil || gameID == "" {
+		return fmt.Errorf("reversi join: unknown session %s", state.GameSessionID)
+	}
+	slog.Info("reversi federation: peer joined", "session", state.GameSessionID, "gameId", gameID)
+	return nil
+}
+
+// handleReversiLeave processes a Leave — remote player either surrenders
+// (started game) or cancels (pre-start). Dispatch accordingly.
+func (p *Processor) handleReversiLeave(act genericActivity) error {
+	if !p.reversiReady() {
+		return ErrUnsupportedActivity
+	}
+	actor, gameObj, state, err := p.parseReversiActivity(act)
+	if err != nil {
+		return err
+	}
+	if gameObj == nil || state.GameSessionID == "" {
+		return errors.New("reversi leave: missing game state")
+	}
+	ctx := context.Background()
+	gameID, err := p.reversiFedCache.Get(ctx, state.GameSessionID)
+	if err != nil || gameID == "" {
+		return fmt.Errorf("reversi leave: unknown session %s", state.GameSessionID)
+	}
+	game, err := p.reversiRepo.FindByID(gameID)
+	if err != nil {
+		return fmt.Errorf("reversi leave: game %s gone", gameID)
+	}
+	if game.IsStarted {
+		return p.reversiSvc.Surrender(ctx, game.ID, actor.ID)
+	}
+	return p.reversiSvc.CancelGame(ctx, game.ID, actor.ID)
+}
+
+// handleReversiUpdate dispatches an Update carrying a reversi Game object.
+// Called from handleUpdate when the object type is "Game" with the reversi
+// UUID. Update semantics come from game_state.type:
+//   - settings    → UpdateSettings(key, value)
+//   - ready_states → UpdateReady(ready)
+//   - putstone    → PutStone(pos)
+func (p *Processor) handleReversiUpdate(act genericActivity) error {
+	if !p.reversiReady() {
+		return ErrUnsupportedActivity
+	}
+	actor, gameObj, state, err := p.parseReversiActivity(act)
+	if err != nil {
+		return err
+	}
+	if gameObj == nil || state.GameSessionID == "" {
+		return errors.New("reversi update: missing game state")
+	}
+	ctx := context.Background()
+	gameID, err := p.reversiFedCache.Get(ctx, state.GameSessionID)
+	if err != nil || gameID == "" {
+		return fmt.Errorf("reversi update: unknown session %s", state.GameSessionID)
+	}
+	game, err := p.reversiRepo.FindByID(gameID)
+	if err != nil {
+		return fmt.Errorf("reversi update: game %s gone", gameID)
+	}
+	switch strings.ToLower(state.Type) {
+	case "settings":
+		if state.Key == "" {
+			return errors.New("reversi update settings: missing key")
+		}
+		raw, _ := json.Marshal(state.Value)
+		return p.reversiSvc.UpdateSettings(ctx, game.ID, actor.ID, state.Key, raw)
+	case "ready_states":
+		if state.Ready == nil {
+			return errors.New("reversi update ready: missing ready flag")
+		}
+		return p.reversiSvc.UpdateReady(ctx, game.ID, actor.ID, *state.Ready)
+	case "putstone":
+		if state.Pos == nil {
+			return errors.New("reversi update putstone: missing pos")
+		}
+		return p.reversiSvc.PutStone(ctx, game.ID, actor.ID, *state.Pos)
+	}
+	return fmt.Errorf("reversi update: unknown game_state.type %q", state.Type)
+}
+
+// --- helpers ---
+
+// reversiReady reports whether all reversi federation dependencies are wired.
+func (p *Processor) reversiReady() bool {
+	return p.reversiSvc != nil && p.reversiRepo != nil && p.reversiIDGen != nil
+}
+
+// parseReversiActivity resolves the actor, parses the activity `object` as a
+// reversi Game, and returns the extracted game state. Activities whose object
+// is not a reversi Game (identified by game_type_uuid) are rejected with a
+// dedicated error so the caller can distinguish "not for us" from "malformed".
+func (p *Processor) parseReversiActivity(act genericActivity) (*model.User, map[string]any, corereversi.APGameState, error) {
+	actor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return nil, nil, corereversi.APGameState{}, err
+	}
+	var objMap map[string]any
+	if err := json.Unmarshal(act.Object, &objMap); err != nil {
+		return nil, nil, corereversi.APGameState{}, fmt.Errorf("reversi: object not a JSON object: %w", err)
+	}
+	if !corereversi.IsReversiGame(objMap) {
+		return nil, nil, corereversi.APGameState{}, ErrNotReversiGame
+	}
+	state := corereversi.ParseGameState(objMap)
+	if state == nil {
+		return nil, nil, corereversi.APGameState{}, errors.New("reversi: missing game_state")
+	}
+	return actor, objMap, *state, nil
+}
+
+// parseToURI extracts a single recipient URI from the raw `to` field of an
+// activity. Accepts string, []string, or null (返り値は先頭要素 / 空文字)。
+func parseToURI(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return single
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		return arr[0]
+	}
+	return ""
+}
+
+// ErrNotReversiGame is returned by parseReversiActivity when the object
+// payload is not a CherryPick-compatible reversi Game.
+var ErrNotReversiGame = errors.New("activity object is not a reversi game")
+
+// defaultReversiMap returns the canonical 8x8 starting board used by
+// auto-created invites. 本家と同じ初期配置。
+func defaultReversiMap() []string {
+	return []string{
+		"--------",
+		"--------",
+		"--------",
+		"---wb---",
+		"---bw---",
+		"--------",
+		"--------",
+		"--------",
+	}
+}

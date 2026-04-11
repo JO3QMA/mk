@@ -16,7 +16,15 @@ import (
 
 // --- Federation ID cache (existing) ---
 
+// FederationIDTTL is how long a reversi federation session mapping lives in
+// Redis. 長時間ゲーム (持ち時間無制限) でも 1 日持てば十分というトレードオフ。
+const FederationIDTTL = 24 * time.Hour
+
 // FederationIDCache manages federationId ↔ gameId mapping in Redis.
+// This is the PRIMARY store for reversi federation session mapping — there
+// is no DB column backing it (so `reversi_game` stays本家 Misskey互換)。
+// Server restart risks: Redis AOF/RDB 永続化に依存する。flush 時は進行中の
+// 連合ゲームが inbox から辿れなくなる (ゲーム行自体はローカルで残る)。
 type FederationIDCache struct {
 	redis redis.Cmdable
 }
@@ -26,12 +34,18 @@ func NewFederationIDCache(r redis.Cmdable) *FederationIDCache {
 	return &FederationIDCache{redis: r}
 }
 
-// Set stores a federationId → gameId mapping.
+// sessionToGameKey / gameToSessionKey は Redis 上の key 構成。前者が双方向
+// lookup の primary、後者は "このゲームは連合ゲームか" を判定する reverse。
+func sessionToGameKey(sessionID string) string { return "reversi:fed:session:" + sessionID }
+func gameToSessionKey(gameID string) string    { return "reversi:fed:game:" + gameID }
+
+// Set stores a bidirectional federationId ↔ gameId mapping.
 func (c *FederationIDCache) Set(ctx context.Context, federationID, gameID string) {
 	if c.redis == nil {
 		return
 	}
-	c.redis.Set(ctx, "reversi:federationId:"+federationID, gameID, 5*time.Minute)
+	c.redis.Set(ctx, sessionToGameKey(federationID), gameID, FederationIDTTL)
+	c.redis.Set(ctx, gameToSessionKey(gameID), federationID, FederationIDTTL)
 }
 
 // Get retrieves a gameId from a federationId.
@@ -39,7 +53,35 @@ func (c *FederationIDCache) Get(ctx context.Context, federationID string) (strin
 	if c.redis == nil {
 		return "", redis.Nil
 	}
-	return c.redis.Get(ctx, "reversi:federationId:"+federationID).Result()
+	return c.redis.Get(ctx, sessionToGameKey(federationID)).Result()
+}
+
+// GetSessionByGame returns the federation session id that maps to gameID, or
+// ("", false) when the game is not federated (or the mapping has expired).
+// 用途: api/reversi/handler が Surrender / Leave 時にリモートへ送信要否を判定する。
+func (c *FederationIDCache) GetSessionByGame(ctx context.Context, gameID string) (string, bool) {
+	if c.redis == nil {
+		return "", false
+	}
+	v, err := c.redis.Get(ctx, gameToSessionKey(gameID)).Result()
+	if err != nil || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
+// Delete removes both directions of the mapping. 呼び出しは明示的な削除が
+// 必要な場面 (ゲーム終了時、CancelMatch 時) に限る。
+func (c *FederationIDCache) Delete(ctx context.Context, federationID, gameID string) {
+	if c.redis == nil {
+		return
+	}
+	if federationID != "" {
+		c.redis.Del(ctx, sessionToGameKey(federationID))
+	}
+	if gameID != "" {
+		c.redis.Del(ctx, gameToSessionKey(gameID))
+	}
 }
 
 // ValidUpdateKeys lists the keys that can be changed via federation Update.
