@@ -65,6 +65,7 @@ import (
 	corepage "github.com/shiroha-a/mk/internal/core/page"
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
+	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	corerole "github.com/shiroha-a/mk/internal/core/role"
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
@@ -131,6 +132,7 @@ func (s *Server) setupRoutes() {
 	userListRepo := repository.NewUserListRepository(s.db)
 	webhookRepo := repository.NewWebhookRepository(s.db)
 	systemWebhookRepo := repository.NewSystemWebhookRepository(s.db)
+	reversiRepo := repository.NewReversiRepository(s.db)
 
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
@@ -834,12 +836,17 @@ func (s *Server) setupRoutes() {
 	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)
+	reversiPublisher := stream.NewReversiGamePublisher(streamPubSub)
 
 	// 4. 既存サービスへ publisher を注入する。これらはいずれも nil 安全な
 	//    setter で、未設定なら何もしない (テスト互換)。
 	timelineFanoutHook.SetStreamingPublisher(notePublisher)
 	notificationService.SetStreamingPublisher(notificationPublisher)
 	driveService.SetStreamingPublisher(drivePublisher)
+
+	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
+	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)
+	streamRegistry.Register("reversiGame", channels.NewReversiGameFactory(reversiService).New)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
@@ -1052,7 +1059,6 @@ func (s *Server) setupRoutes() {
 	api.POST("/sw/unregister", swHandler.Unregister)
 
 	// reversi/* — オセロゲーム (実データ)
-	reversiRepo := repository.NewReversiRepository(s.db)
 	reversiHandler := apireversi.NewHandler(reversiRepo, idGen)
 	api.POST("/reversi/games", reversiHandler.Games)
 	api.POST("/reversi/invitations", reversiHandler.Invitations, middleware.RequireAuth())
