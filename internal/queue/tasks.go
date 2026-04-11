@@ -19,6 +19,10 @@ const TaskTypeImport = "import"
 // TaskTypeWebPush is the asynq task type for Web Push delivery jobs.
 const TaskTypeWebPush = "webpush:notify"
 
+// TaskTypeImportCustomEmojis is the asynq task type for admin/emoji/import-zip
+// processing jobs. 本家 Misskey の importCustomEmojis queue job と同名。
+const TaskTypeImportCustomEmojis = "importCustomEmojis"
+
 // TaskTypeUserWebhook is the asynq task type for user webhook delivery jobs.
 const TaskTypeUserWebhook = "webhook:user"
 
@@ -96,6 +100,28 @@ func DecodeImportPayload(body []byte) (ImportPayload, error) {
 	var p ImportPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return ImportPayload{}, err
+	}
+	return p, nil
+}
+
+// ImportCustomEmojisPayload is the body of an emoji-zip import task.
+// UserID は import を発行した管理者 (= drive 上のアップロード所有者)。
+type ImportCustomEmojisPayload struct {
+	UserID string `json:"userId"`
+	FileID string `json:"fileId"`
+}
+
+// NewImportCustomEmojisTask creates an asynq.Task for emoji-zip imports.
+func NewImportCustomEmojisTask(payload ImportCustomEmojisPayload) *asynq.Task {
+	body, _ := json.Marshal(payload)
+	return asynq.NewTask(TaskTypeImportCustomEmojis, body)
+}
+
+// DecodeImportCustomEmojisPayload extracts an ImportCustomEmojisPayload.
+func DecodeImportCustomEmojisPayload(body []byte) (ImportCustomEmojisPayload, error) {
+	var p ImportCustomEmojisPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ImportCustomEmojisPayload{}, err
 	}
 	return p, nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -331,12 +332,41 @@ func (h *Handler) EmojiDeleteBulk(c echo.Context) error {
 }
 
 // EmojiImportZip handles POST /api/admin/emoji/import-zip.
-// ZIPファイルから絵文字を一括インポートする。
+// fileId で Drive にアップロード済みの ZIP を指定し、非同期ジョブで展開して
+// ローカルカスタム絵文字として登録する。本家 Misskey 互換
+// (`QueueService.createImportCustomEmojisJob` 相当)。
 func (h *Handler) EmojiImportZip(c echo.Context) error {
-	// ZIP解析+絵文字登録の完全実装は大規模なため、
-	// リクエストを受け付けて204を返す形にする。
-	// 将来的にはmultipartでZIPを受信し、展開して各画像をDriveに保存、
-	// EmojiRepositoryに登録する処理を実装する。
+	var req struct {
+		FileID string `json:"fileId"`
+	}
+	if err := c.Bind(&req); err != nil || req.FileID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{
+			"error": map[string]any{
+				"message": "fileId is required.",
+				"code":    "INVALID_PARAM",
+				"id":      "5f4c9d8a-7c39-4bfa-9dcb-09f17e0f7a25",
+			},
+		})
+	}
+	if h.emojiEnqueuer == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	user := middleware.GetUser(c)
+	if user == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiEnqueuer.EnqueueImportCustomEmojis(queue.ImportCustomEmojisPayload{
+		UserID: user.ID,
+		FileID: req.FileID,
+	}); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{
+				"message": "Failed to enqueue emoji import.",
+				"code":    "INTERNAL_ERROR",
+				"id":      "89a6d9fd-0fe6-4c3c-9daa-7c6b1f29f1a4",
+			},
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

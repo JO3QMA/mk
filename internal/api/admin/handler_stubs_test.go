@@ -5,11 +5,33 @@ import (
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
 var adminUser = &model.User{ID: "admin1"}
+
+// stubEmojiImportEnqueuer records the last payload and optionally returns err.
+type stubEmojiImportEnqueuer struct {
+	lastUserID string
+	lastFileID string
+	err        error
+}
+
+func (s *stubEmojiImportEnqueuer) EnqueueImportCustomEmojis(p queue.ImportCustomEmojisPayload) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.lastUserID = p.UserID
+	s.lastFileID = p.FileID
+	return nil
+}
+
+// assertError is a trivial error used to exercise the enqueue-failure branch.
+type assertError struct{}
+
+func (assertError) Error() string { return "stub enqueue failure" }
 
 func TestSetDriveFileRepo(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
@@ -206,9 +228,44 @@ func TestEmojiDeleteBulk(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiDeleteBulk, `{}`, adminUser).Code)
 }
-func TestEmojiImportZip(t *testing.T) {
+func TestEmojiImportZip_NoFileID(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiImportZip, `{}`, adminUser).Code)
+	// fileId missing → 400 InvalidParam
+	assert.Equal(t, http.StatusBadRequest, doPost(h.EmojiImportZip, `{}`, adminUser).Code)
+}
+
+func TestEmojiImportZip_MalformedJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.EmojiImportZip, `not-json`, adminUser).Code)
+}
+
+func TestEmojiImportZip_NoEnqueuer(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// enqueuer not set → 204 (no-op fallback so tests without worker still pass)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiImportZip, `{"fileId":"f1"}`, adminUser).Code)
+}
+
+func TestEmojiImportZip_NilUser(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiImportEnqueuer(&stubEmojiImportEnqueuer{})
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiImportZip, `{"fileId":"f1"}`, nil).Code)
+}
+
+func TestEmojiImportZip_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubEmojiImportEnqueuer{}
+	h.SetEmojiImportEnqueuer(stub)
+	rec := doPost(h.EmojiImportZip, `{"fileId":"f1"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "f1", stub.lastFileID)
+	assert.Equal(t, "admin1", stub.lastUserID)
+}
+
+func TestEmojiImportZip_EnqueueFailure(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiImportEnqueuer(&stubEmojiImportEnqueuer{err: assertError{}})
+	rec := doPost(h.EmojiImportZip, `{"fileId":"f1"}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 func TestEmojiListRemote(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
