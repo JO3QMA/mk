@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -105,18 +106,24 @@ type Source struct {
 
 // Config represents the resolved application configuration.
 type Config struct {
-	Version  string
-	URL      string
-	Port     int
-	Socket   string
-	Host     string
-	Hostname string
-	Scheme   string
-	WsScheme string
-	WsURL    string
-	APIURL   string
-	AuthURL  string
-	DriveURL string
+	Version string
+	URL     string
+	Port    int
+	// Socket, if non-empty, is a path to a UNIX domain socket that the HTTP
+	// server listens on instead of the TCP port.
+	Socket string
+	// ChmodSocket is the mode (as a string like "770") applied to the UNIX
+	// domain socket file after bind. Ignored when Socket is empty or when
+	// the value cannot be parsed as octal.
+	ChmodSocket string
+	Host        string
+	Hostname    string
+	Scheme      string
+	WsScheme    string
+	WsURL       string
+	APIURL      string
+	AuthURL     string
+	DriveURL    string
 
 	DisableHSTS       bool
 	EnableIPRateLimit bool
@@ -261,18 +268,19 @@ func resolve(src *Source) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Version:  "2026.3.2", // Misskeyバージョンと合わせる
-		URL:      parsedURL.Scheme + "://" + parsedURL.Host,
-		Port:     src.Port,
-		Socket:   src.Socket,
-		Host:     host,
-		Hostname: hostname,
-		Scheme:   scheme,
-		WsScheme: wsScheme,
-		WsURL:    fmt.Sprintf("%s://%s", wsScheme, host),
-		APIURL:   fmt.Sprintf("%s://%s/api", scheme, host),
-		AuthURL:  fmt.Sprintf("%s://%s/auth", scheme, host),
-		DriveURL: fmt.Sprintf("%s://%s/files", scheme, host),
+		Version:     "2026.3.2", // Misskeyバージョンと合わせる
+		URL:         parsedURL.Scheme + "://" + parsedURL.Host,
+		Port:        src.Port,
+		Socket:      src.Socket,
+		ChmodSocket: src.ChmodSocket,
+		Host:        host,
+		Hostname:    hostname,
+		Scheme:      scheme,
+		WsScheme:    wsScheme,
+		WsURL:       fmt.Sprintf("%s://%s", wsScheme, host),
+		APIURL:      fmt.Sprintf("%s://%s/api", scheme, host),
+		AuthURL:     fmt.Sprintf("%s://%s/auth", scheme, host),
+		DriveURL:    fmt.Sprintf("%s://%s/files", scheme, host),
 
 		DisableHSTS:       src.DisableHSTS,
 		EnableIPRateLimit: enableIPRateLimit,
@@ -322,6 +330,13 @@ func resolve(src *Source) (*Config, error) {
 		Logging:                      src.Logging,
 	}
 
+	// HTTP socket と TCP port は両立しない。両方設定されていた場合は
+	// socket を優先する旨警告ログを出し、運用者に気付けるようにする。
+	if cfg.Socket != "" && cfg.Port != 0 {
+		slog.Warn("config: both socket and port are set; socket takes precedence and port will be ignored",
+			"socket", cfg.Socket, "port", cfg.Port)
+	}
+
 	return cfg, nil
 }
 
@@ -340,7 +355,18 @@ func resolveRedisOrDefault(opts *RedisOptions, fallback RedisOptions, host strin
 }
 
 // DSN returns the PostgreSQL connection string.
+//
+// Host が "/" で始まる場合は UNIX domain socket 接続とみなす。libpq / pgx の
+// 慣例に従い、host にソケットディレクトリのパスを、port に対応する PG ポート番号
+// (socket 名 .s.PGSQL.<port> の末尾数字) を渡す。UDS では TLS を張れないので
+// sslmode は強制的に disable になる。
 func (c *Config) DSN() string {
+	if IsUnixSocketPath(c.DB.Host) {
+		return fmt.Sprintf(
+			"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+			c.DB.Host, c.DB.Port, c.DB.User, c.DB.Pass, c.DB.DB,
+		)
+	}
 	sslMode := "disable"
 	if v, ok := c.DB.Extra["ssl"]; ok && v == "true" {
 		sslMode = "require"
@@ -349,4 +375,15 @@ func (c *Config) DSN() string {
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		c.DB.Host, c.DB.Port, c.DB.User, c.DB.Pass, c.DB.DB, sslMode,
 	)
+}
+
+// IsUnixSocketPath reports whether the given host string points to a UNIX
+// domain socket path. The convention is that any absolute path (starts with
+// "/") is treated as a socket. Empty strings and TCP hostnames return false.
+//
+// This helper is shared between the DB DSN builder, the Redis client factory
+// and the HTTP server startup path so that all three sub-systems agree on
+// what counts as a UDS address.
+func IsUnixSocketPath(host string) bool {
+	return strings.HasPrefix(host, "/")
 }

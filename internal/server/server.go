@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -56,12 +57,10 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	e.Use(auth.Authenticate())
 
 	// asynq セットアップ: redisForJobQueue にぶら下げる。
-	redisOpt := asynq.RedisClientOpt{
-		Addr:     fmt.Sprintf("%s:%d", cfg.RedisForJobQueue.Host, cfg.RedisForJobQueue.Port),
-		Password: cfg.RedisForJobQueue.Pass,
-		DB:       cfg.RedisForJobQueue.DB,
-		Username: cfg.RedisForJobQueue.Username,
-	}
+	// Host が UNIX domain socket パス ("/" 始まり) なら Network を "unix" に
+	// 切り替える。asynq.RedisClientOpt はそのまま go-redis v9 に渡されるので
+	// cache 側の buildRedisOptions と同じ判定ルールで十分。
+	redisOpt := buildAsynqRedisOpt(cfg.RedisForJobQueue)
 	concurrency := 16
 	if cfg.DeliverJobConcurrency != nil && *cfg.DeliverJobConcurrency > 0 {
 		concurrency = *cfg.DeliverJobConcurrency
@@ -86,7 +85,12 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	return s
 }
 
-// Start begins listening on the configured port and launches the asynq worker.
+// Start begins listening on the configured port (or UNIX domain socket) and
+// launches the asynq worker.
+//
+// If s.config.Socket is non-empty the HTTP server binds to that path instead
+// of a TCP port. This matches Misskey 本家 YAML の `socket` / `chmodSocket`
+// 設定と同じ運用感覚で使える。
 func (s *Server) Start() error {
 	if err := s.queueServer.Start(); err != nil {
 		return fmt.Errorf("start queue worker: %w", err)
@@ -96,6 +100,23 @@ func (s *Server) Start() error {
 			slog.Warn("chart management service start failed", "err", err)
 		}
 	}
+
+	if s.config.Socket != "" {
+		ln, err := config.ListenUnixSocket(s.config.Socket, s.config.ChmodSocket)
+		if err != nil {
+			return err
+		}
+		s.echo.Listener = ln
+		slog.Info("starting Misskey server",
+			"socket", s.config.Socket, "url", s.config.URL)
+		// Echo.Start は内部で net.Listen してしまうので、ここでは Start では
+		// なく Serve を使って既に張った listener を使う。
+		if err := s.echo.Server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
+
 	addr := fmt.Sprintf(":%d", s.config.Port)
 	slog.Info("starting Misskey server", "addr", addr, "url", s.config.URL)
 	return s.echo.Start(addr)
@@ -111,7 +132,35 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.queueClient.Close(); err != nil {
 		slog.Warn("queue client close failed", "err", err)
 	}
-	return s.echo.Shutdown(ctx)
+	err := s.echo.Shutdown(ctx)
+	// UDS listen していた場合、Shutdown で net.Listener.Close() は呼ばれる
+	// が、ソケットファイル自体は残るので明示的に unlink しておく。
+	if rmErr := config.RemoveUnixSocket(s.config.Socket); rmErr != nil {
+		slog.Warn("failed to remove socket file", "socket", s.config.Socket, "err", rmErr)
+	}
+	return err
+}
+
+// buildAsynqRedisOpt constructs an asynq.RedisClientOpt that understands UNIX
+// domain socket paths. When the host string looks like an absolute path the
+// Network field is set to "unix" so that go-redis (via asynq) dials the socket
+// directly; otherwise the classic host:port TCP form is used.
+func buildAsynqRedisOpt(opts config.RedisOptions) asynq.RedisClientOpt {
+	if config.IsUnixSocketPath(opts.Host) {
+		return asynq.RedisClientOpt{
+			Network:  "unix",
+			Addr:     opts.Host,
+			Password: opts.Pass,
+			DB:       opts.DB,
+			Username: opts.Username,
+		}
+	}
+	return asynq.RedisClientOpt{
+		Addr:     fmt.Sprintf("%s:%d", opts.Host, opts.Port),
+		Password: opts.Pass,
+		DB:       opts.DB,
+		Username: opts.Username,
+	}
 }
 
 // setChartManagement registers the chart management service so its
