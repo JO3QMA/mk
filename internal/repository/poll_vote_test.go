@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
@@ -48,7 +47,7 @@ func TestPollVoteRepository_CreateAndFind(t *testing.T) {
 	defer cleanupNote(t, "n_pv_1")
 
 	v := &model.PollVote{
-		ID: "pv_1", UserID: user.ID, NoteID: "n_pv_1", Choice: 1, CreatedAt: time.Now(),
+		ID: "pv_1", UserID: user.ID, NoteID: "n_pv_1", Choice: 1,
 	}
 	require.NoError(t, repo.Create(v))
 	defer cleanupPollVote(t, v.ID)
