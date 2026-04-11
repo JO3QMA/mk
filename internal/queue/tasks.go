@@ -16,6 +16,9 @@ const TaskTypeExport = "export"
 // TaskTypeImport is the asynq task type for data import jobs.
 const TaskTypeImport = "import"
 
+// TaskTypeWebPush is the asynq task type for Web Push delivery jobs.
+const TaskTypeWebPush = "webpush:notify"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {
@@ -87,6 +90,30 @@ func DecodeImportPayload(body []byte) (ImportPayload, error) {
 	var p ImportPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return ImportPayload{}, err
+	}
+	return p, nil
+}
+
+// WebPushPayload is the body of a Web Push delivery task. The Body field holds
+// the already-truncated notification payload; the processor does not inspect
+// it and simply forwards it to subscribers.
+type WebPushPayload struct {
+	UserID string          `json:"userId"`
+	Type   string          `json:"type"`
+	Body   json.RawMessage `json:"body,omitempty"`
+}
+
+// NewWebPushTask serializes the payload into an asynq.Task ready to enqueue.
+func NewWebPushTask(payload WebPushPayload) *asynq.Task {
+	body, _ := json.Marshal(payload)
+	return asynq.NewTask(TaskTypeWebPush, body)
+}
+
+// DecodeWebPushPayload extracts a WebPushPayload from a task body.
+func DecodeWebPushPayload(body []byte) (WebPushPayload, error) {
+	var p WebPushPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return WebPushPayload{}, err
 	}
 	return p, nil
 }

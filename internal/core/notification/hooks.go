@@ -14,6 +14,25 @@ type MuteChecker interface {
 	IsMuted(muterID, muteeID string) (bool, error)
 }
 
+// WebPushPublisher enqueues a Web Push notification job for a user. パッケージ
+// 間の循環依存を避けるため interface で受け取る (実装は core/webpush.Service)。
+type WebPushPublisher interface {
+	PushNotification(userID string, body map[string]any)
+}
+
+// NotePacker packs a note ID into a JSON-serializable representation matching
+// the Misskey-packed note shape. Used for composing Web Push payloads without
+// creating a cycle on the entity package.
+type NotePacker interface {
+	PackNoteByID(noteID string) (map[string]any, bool)
+}
+
+// UserPacker packs a user ID into a JSON-serializable representation matching
+// the Misskey-packed user shape.
+type UserPacker interface {
+	PackUserByID(userID string) (map[string]any, bool)
+}
+
 // Hook implements the various NotificationHook interfaces exposed by other
 // services. Single struct in order to share the underlying Service and
 // userRepo dependencies.
@@ -21,6 +40,9 @@ type Hook struct {
 	svc         *Service
 	userRepo    repository.UserRepository
 	muteChecker MuteChecker
+	webpush     WebPushPublisher
+	notePacker  NotePacker
+	userPacker  UserPacker
 }
 
 // NewHook constructs a Hook bound to a NotificationService and userRepo.
@@ -34,6 +56,19 @@ func NewHook(svc *Service, userRepo repository.UserRepository) *Hook {
 // 場合は通知をスキップする (Misskey本家の挙動)。
 func (h *Hook) SetMuteChecker(c MuteChecker) {
 	h.muteChecker = c
+}
+
+// SetWebPushPublisher attaches a WebPushPublisher. 通知作成後にWeb Push
+// 配信キューへenqueueするために使う。
+func (h *Hook) SetWebPushPublisher(p WebPushPublisher) {
+	h.webpush = p
+}
+
+// SetPackers attaches user/note packers used when composing Web Push payloads.
+// Either or both may be nil; payload fields will be omitted accordingly.
+func (h *Hook) SetPackers(u UserPacker, n NotePacker) {
+	h.userPacker = u
+	h.notePacker = n
 }
 
 // OnNoteCreated is called by note.CreateService after persisting a new note.
@@ -167,9 +202,51 @@ func (h *Hook) notifyLocalUser(ctx context.Context, notifieeID string, in Create
 			return
 		}
 	}
-	if _, err := h.svc.Create(ctx, in); err != nil {
+	n, err := h.svc.Create(ctx, in)
+	if err != nil {
 		slog.Warn("notification create failed", "type", in.Type, "notifiee", notifieeID, "err", err)
+		return
 	}
+	// 通知の永続化に成功したらWeb Push配信キューへ投入する。
+	// packerが未設定でもtype/id/userIdは最低限埋まるので、sw.js側の24h
+	// 破棄チェックとユーザー判定は成立する。
+	if h.webpush != nil && n != nil {
+		h.webpush.PushNotification(notifieeID, h.buildPushBody(n))
+	}
+}
+
+// buildPushBody converts a persisted Notification into a map matching
+// the Misskey `Packed<'Notification'>` shape. Missing fields are omitted so
+// that sw.js gracefully falls back to defaults.
+func (h *Hook) buildPushBody(n *Notification) map[string]any {
+	body := map[string]any{
+		"id":        n.ID,
+		"createdAt": n.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+		"type":      string(n.Type),
+	}
+	if n.NotifierID != "" {
+		body["userId"] = n.NotifierID
+		if h.userPacker != nil {
+			if packed, ok := h.userPacker.PackUserByID(n.NotifierID); ok {
+				body["user"] = packed
+			}
+		}
+	}
+	if n.NoteID != "" {
+		body["noteId"] = n.NoteID
+		if h.notePacker != nil {
+			if packed, ok := h.notePacker.PackNoteByID(n.NoteID); ok {
+				body["note"] = packed
+			}
+		}
+	}
+	if n.Reaction != "" {
+		body["reaction"] = n.Reaction
+	}
+	if n.Choice != nil {
+		body["choice"] = *n.Choice
+	}
+	return body
 }
 
 // isQuote reports whether the note is a quote renote (renote with text/cw/files/poll).
