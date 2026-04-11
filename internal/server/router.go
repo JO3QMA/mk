@@ -42,6 +42,7 @@ import (
 	apisignin "github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/api/streaming"
 	apisw "github.com/shiroha-a/mk/internal/api/sw"
+	apitest "github.com/shiroha-a/mk/internal/api/test"
 	apiuserlists "github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/api/users"
 	apiwebhooks "github.com/shiroha-a/mk/internal/api/webhooks"
@@ -64,6 +65,7 @@ import (
 	corepage "github.com/shiroha-a/mk/internal/core/page"
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
+	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	corerole "github.com/shiroha-a/mk/internal/core/role"
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
@@ -130,6 +132,7 @@ func (s *Server) setupRoutes() {
 	userListRepo := repository.NewUserListRepository(s.db)
 	webhookRepo := repository.NewWebhookRepository(s.db)
 	systemWebhookRepo := repository.NewSystemWebhookRepository(s.db)
+	reversiRepo := repository.NewReversiRepository(s.db)
 
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
@@ -350,6 +353,15 @@ func (s *Server) setupRoutes() {
 	metaHandler := meta.NewHandler(s.config, metaRepo)
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
+
+	// Test-only endpoints — TestMode=true のときだけ公開する。
+	// Cypress の resetState コマンドが依存する /api/reset-db はここで登録する。
+	// 本番で絶対に有効化してはならない (config.go 側で起動時 warning を出す)。
+	if s.config.TestMode {
+		testHandler := apitest.NewHandler(s.db, s.redis.Default, true)
+		api.POST("/reset-db", testHandler.ResetDB)
+		slog.Warn("test mode: /api/reset-db endpoint is registered", "url", s.config.URL)
+	}
 
 	// Stats endpoint (public) — チャートの集計済み値から取得
 	notesChart := chartCharts.Notes
@@ -824,12 +836,17 @@ func (s *Server) setupRoutes() {
 	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)
+	reversiPublisher := stream.NewReversiGamePublisher(streamPubSub)
 
 	// 4. 既存サービスへ publisher を注入する。これらはいずれも nil 安全な
 	//    setter で、未設定なら何もしない (テスト互換)。
 	timelineFanoutHook.SetStreamingPublisher(notePublisher)
 	notificationService.SetStreamingPublisher(notificationPublisher)
 	driveService.SetStreamingPublisher(drivePublisher)
+
+	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
+	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)
+	streamRegistry.Register("reversiGame", channels.NewReversiGameFactory(reversiService).New)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
@@ -1042,7 +1059,6 @@ func (s *Server) setupRoutes() {
 	api.POST("/sw/unregister", swHandler.Unregister)
 
 	// reversi/* — オセロゲーム (実データ)
-	reversiRepo := repository.NewReversiRepository(s.db)
 	reversiHandler := apireversi.NewHandler(reversiRepo, idGen)
 	api.POST("/reversi/games", reversiHandler.Games)
 	api.POST("/reversi/invitations", reversiHandler.Invitations, middleware.RequireAuth())

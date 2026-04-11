@@ -1,6 +1,7 @@
 .PHONY: build run dev clean tidy test fmt lint migrate-up migrate-down migrate-create \
 	federation-misskey-build federation-misskey-up federation-misskey-test \
-	federation-misskey-down federation-misskey-logs
+	federation-misskey-down federation-misskey-logs \
+	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open
 
 # Binary output
 BINARY=misskey
@@ -74,3 +75,47 @@ federation-misskey-down:
 
 federation-misskey-logs:
 	docker compose -f $(FEDERATION_MISSKEY_COMPOSE) logs -f
+
+# Cypress e2e ― Misskey 本家の cypress spec を mk-go に向けて実行する。
+#
+# ライセンス境界のため、本家コードはすべて third_party/misskey/ の git submodule
+# 参照で扱う。mk-go のリポジトリには 1 行もコピーしない。
+#
+# CLAUDE.md の規約で「パッケージはホストに直接入れずコンテナ経由で動かす」と
+# 決まっているため、pnpm / cypress はすべて docker run で実行する。
+E2E_NODE_IMAGE=node:20-bookworm
+E2E_CYPRESS_IMAGE=cypress/included:15.11.0
+E2E_WORKDIR=/work
+
+# submodule を初期化し、Misskey 本家の cypress 資産とフロントエンドソースを取得する。
+e2e-submodule-init:
+	git submodule update --init --recursive third_party/misskey
+
+# 本家フロントエンドを Docker 内でビルドする。数分〜10 分程度かかる。
+# 成果物は third_party/misskey/packages/frontend/... 配下に出力される。
+e2e-frontend-build:
+	docker run --rm -v $(PWD):$(E2E_WORKDIR) -w $(E2E_WORKDIR)/third_party/misskey \
+		$(E2E_NODE_IMAGE) \
+		bash -lc "corepack enable && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile && pnpm build"
+
+# Cypress ラッパーの依存を Docker 内で解決する。
+e2e-deps:
+	docker run --rm -v $(PWD):$(E2E_WORKDIR) -w $(E2E_WORKDIR)/e2e/cypress \
+		$(E2E_NODE_IMAGE) \
+		bash -lc "corepack enable && corepack prepare pnpm@latest --activate && pnpm install"
+
+# ヘッドレスで cypress run を実行する。
+# host network で動かして mk-go (localhost:3000) に直接届かせる。
+e2e-run:
+	docker run --rm --network=host -v $(PWD):$(E2E_WORKDIR) -w $(E2E_WORKDIR)/e2e/cypress \
+		-e E2E_BASE_URL=$${E2E_BASE_URL:-http://localhost:3000} \
+		$(E2E_CYPRESS_IMAGE) \
+		cypress run --e2e --browser electron --config-file cypress.config.ts
+
+# 開発者向けに cypress open を起動する (X11 forward が必要なので CI では使わない)。
+e2e-open:
+	docker run --rm --network=host -v $(PWD):$(E2E_WORKDIR) -w $(E2E_WORKDIR)/e2e/cypress \
+		-e DISPLAY=$$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+		-e E2E_BASE_URL=$${E2E_BASE_URL:-http://localhost:3000} \
+		$(E2E_CYPRESS_IMAGE) \
+		cypress open --e2e --browser electron --config-file cypress.config.ts

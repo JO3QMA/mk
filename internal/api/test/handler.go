@@ -1,0 +1,135 @@
+// Package test exposes test-only HTTP endpoints used by Cypress e2e against mk-go.
+//
+// Every endpoint in this package is guarded by config.Config.TestMode. In
+// production (TestMode=false) the routes are not registered at all, and any
+// request to them returns the default Echo 404.
+package test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+)
+
+// preservedTables are tables that must not be truncated during ResetDB.
+//
+// schema_migrations is managed by golang-migrate; wiping it would force the
+// migrator to re-run every migration on the next boot and in the worst case
+// corrupt the migration state. Misskey 本家は TypeORM migrations テーブル
+// (`migrations`) を使っていないのでこの exclusion は mk-go 独自の配慮。
+var preservedTables = map[string]struct{}{
+	"schema_migrations": {},
+}
+
+// resetDBMaxRetries mirrors Misskey 本家 (`packages/backend/src/misc/reset-db.ts`)
+// which retries the CASCADE DELETE loop up to 3 times.
+const resetDBMaxRetries = 3
+
+// Handler is the HTTP handler for test-only endpoints.
+type Handler struct {
+	db       *gorm.DB
+	redis    *redis.Client
+	testMode bool
+}
+
+// NewHandler constructs a new test Handler.
+//
+// db and redis are both required when testMode is true. They are accepted
+// regardless so that test code that spins up a zero-value Handler cannot
+// accidentally pass a nil dependency without it being caught by the runtime.
+func NewHandler(db *gorm.DB, redisClient *redis.Client, testMode bool) *Handler {
+	return &Handler{
+		db:       db,
+		redis:    redisClient,
+		testMode: testMode,
+	}
+}
+
+// ResetDB wipes all user-visible tables and flushes Redis.
+//
+// This mirrors Misskey 本家の `/api/reset-db` エンドポイントで、
+// Cypress の `resetState` カスタムコマンドが必須依存している。
+// TestMode=false の場合は 404 を返して存在しないように振る舞う。
+func (h *Handler) ResetDB(c echo.Context) error {
+	if !h.testMode {
+		return echo.NewHTTPError(http.StatusNotFound)
+	}
+
+	ctx := c.Request().Context()
+
+	if h.redis != nil {
+		if err := h.redis.FlushDB(ctx).Err(); err != nil {
+			slog.Error("reset-db: redis FLUSHDB failed", "err", err)
+			return echo.NewHTTPError(http.StatusInternalServerError, "redis flush failed")
+		}
+	}
+
+	if h.db != nil {
+		if err := resetTables(ctx, h.db); err != nil {
+			slog.Error("reset-db: table reset failed", "err", err)
+			return echo.NewHTTPError(http.StatusInternalServerError, "db reset failed")
+		}
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// resetTables collects user tables via pg_class/pg_namespace and truncates
+// each one with DELETE ... CASCADE. The retry loop exists because under
+// CASCADE FK clauses, PostgreSQL may transiently complain about ordering.
+func resetTables(ctx context.Context, db *gorm.DB) error {
+	var lastErr error
+	for attempt := 1; attempt <= resetDBMaxRetries; attempt++ {
+		tables, err := listUserTables(ctx, db)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		allOK := true
+		for _, t := range tables {
+			if _, skip := preservedTables[t]; skip {
+				continue
+			}
+			// Identifier は pg_class から取得した安全な値に限定される。
+			// それでも念のためクォートしてから DELETE する。
+			stmt := fmt.Sprintf(`DELETE FROM %q CASCADE`, t)
+			if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
+				lastErr = fmt.Errorf("delete %s: %w", t, err)
+				allOK = false
+			}
+		}
+		if allOK {
+			return nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("reset-db: exceeded max retries without a concrete error")
+	}
+	return lastErr
+}
+
+// listUserTables returns the non-system, non-TOAST ordinary tables in the
+// current PostgreSQL database. The query mirrors Misskey 本家の
+// packages/backend/src/misc/reset-db.ts.
+func listUserTables(ctx context.Context, db *gorm.DB) ([]string, error) {
+	const query = `
+		SELECT relname AS table_name
+		FROM pg_class C
+		LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
+		WHERE nspname NOT IN ('pg_catalog', 'information_schema')
+			AND C.relkind = 'r'
+			AND nspname !~ '^pg_toast'
+	`
+	var names []string
+	if err := db.WithContext(ctx).Raw(query).Scan(&names).Error; err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	return names, nil
+}

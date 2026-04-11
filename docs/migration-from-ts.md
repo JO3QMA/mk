@@ -208,3 +208,7 @@ Misskey-TSに戻す場合の手順:
 
 - 認証ミドルウェアが `multipart/form-data` リクエストを正しく処理できているか確認する
 - サーバーログで認証エラーを確認する
+
+## 関連ドキュメント
+
+- [docs/e2e.md](./e2e.md) — `third_party/misskey` submodule 経由で Misskey 本家の Cypress e2e スイートを mk-go に向けて実行する手順
