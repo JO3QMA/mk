@@ -1,0 +1,71 @@
+package notes
+
+import (
+	"testing"
+
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+)
+
+// resolveFiles は内部ヘルパーで package 内テストから直接叩けるので、
+// 各分岐を個別にカバーする:
+//  1. driveFileRepo == nil → 早期 return
+//  2. ノート群に fileIDs が無い → 早期 return
+//  3. 正常経路: DriveFile が見つかって packed に入る
+func TestResolveFiles_NilRepo(t *testing.T) {
+	h, _ := newTestHandler(t)
+	notes := []entity.NoteEntity{
+		{FileIDs: pq.StringArray{"f1"}},
+	}
+	h.resolveFiles(notes)
+	// driveFileRepo 未設定なので Files は埋まらない
+	assert.Nil(t, notes[0].Files)
+}
+
+func TestResolveFiles_NoFileIDs(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.SetDriveFileRepo(testutil.NewMockDriveFileRepository())
+	notes := []entity.NoteEntity{
+		{FileIDs: pq.StringArray{}},
+	}
+	h.resolveFiles(notes)
+	assert.Nil(t, notes[0].Files)
+}
+
+func TestResolveFiles_Populates(t *testing.T) {
+	h, _ := newTestHandler(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	alice := "alice"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &alice, Name: "hello.png", Type: "image/png", URL: "https://example.com/f1"}
+	fileRepo.Files["f2"] = &model.DriveFile{ID: "f2", UserID: &alice, Name: "world.png", Type: "image/png", URL: "https://example.com/f2"}
+	h.SetDriveFileRepo(fileRepo)
+
+	notes := []entity.NoteEntity{
+		{FileIDs: pq.StringArray{"f1", "f2"}},
+		{FileIDs: pq.StringArray{"f1"}},
+	}
+	h.resolveFiles(notes)
+
+	// 1 本目は 2 ファイルパックされているはず
+	require := assert.New(t)
+	require.Len(notes[0].Files, 2)
+	require.Len(notes[1].Files, 1)
+}
+
+// 未知の fileID が含まれる場合は無視される (map lookup miss 経路)。
+func TestResolveFiles_UnknownFileIDsIgnored(t *testing.T) {
+	h, _ := newTestHandler(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	alice := "alice"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &alice, Name: "hello.png", Type: "image/png", URL: "https://example.com/f1"}
+	h.SetDriveFileRepo(fileRepo)
+
+	notes := []entity.NoteEntity{
+		{FileIDs: pq.StringArray{"f1", "missing"}},
+	}
+	h.resolveFiles(notes)
+	assert.Len(t, notes[0].Files, 1)
+}
