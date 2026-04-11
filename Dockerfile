@@ -1,7 +1,9 @@
 # Stage 1: Build Go binary
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
-RUN apk add --no-cache git
+# build-base は chai2010/webp などの cgo 依存をリンクするのに必要。
+# git は go mod download 時の private module fetch に使う。
+RUN apk add --no-cache git build-base
 
 WORKDIR /app
 
