@@ -97,6 +97,97 @@ type Meta struct {
 	ProxyRemoteFiles               bool `gorm:"column:proxyRemoteFiles;default:true" json:"proxyRemoteFiles"`
 	SignToActivityPubGet           bool `gorm:"column:signToActivityPubGet;default:true" json:"signToActivityPubGet"`
 
+	// -----------------------------------------------------------------
+	// 本家 Misskey 互換のために追加したフィールド群 (issue #21)。
+	// DB スキーマレベルでの互換性確保が主目的で、Go 側の機能実装は
+	// 一部を除き後続 issue。GORM タグだけ合わせておけば /admin/update-meta
+	// の generic map update 経路で admin から読み書きできる。
+	// -----------------------------------------------------------------
+
+	// Branding / assets (8)
+	MascotImageURL      *string `gorm:"column:mascotImageUrl;type:varchar(1024)" json:"mascotImageUrl"`
+	App192IconURL       *string `gorm:"column:app192IconUrl;type:varchar(1024)" json:"app192IconUrl"`
+	App512IconURL       *string `gorm:"column:app512IconUrl;type:varchar(1024)" json:"app512IconUrl"`
+	ServerErrorImageURL *string `gorm:"column:serverErrorImageUrl;type:varchar(1024)" json:"serverErrorImageUrl"`
+	NotFoundImageURL    *string `gorm:"column:notFoundImageUrl;type:varchar(1024)" json:"notFoundImageUrl"`
+	InfoImageURL        *string `gorm:"column:infoImageUrl;type:varchar(1024)" json:"infoImageUrl"`
+	DefaultLightTheme   *string `gorm:"column:defaultLightTheme;type:varchar(8192)" json:"defaultLightTheme"`
+	DefaultDarkTheme    *string `gorm:"column:defaultDarkTheme;type:varchar(8192)" json:"defaultDarkTheme"`
+
+	// CAPTCHA / email validation (11)
+	EnableMcaptcha              bool    `gorm:"column:enableMcaptcha;default:false" json:"enableMcaptcha"`
+	McaptchaSiteKey             *string `gorm:"column:mcaptchaSitekey;type:varchar(1024)" json:"mcaptchaSitekey"`
+	McaptchaSecretKey           *string `gorm:"column:mcaptchaSecretKey;type:varchar(1024)" json:"mcaptchaSecretKey"`
+	McaptchaInstanceURL         *string `gorm:"column:mcaptchaInstanceUrl;type:varchar(1024)" json:"mcaptchaInstanceUrl"`
+	EnableTestcaptcha           bool    `gorm:"column:enableTestcaptcha;default:false" json:"enableTestcaptcha"`
+	EnableActiveEmailValidation bool    `gorm:"column:enableActiveEmailValidation;default:true" json:"enableActiveEmailValidation"`
+	EnableVerifymailAPI         bool    `gorm:"column:enableVerifymailApi;default:false" json:"enableVerifymailApi"`
+	VerifymailAuthKey           *string `gorm:"column:verifymailAuthKey;type:varchar(1024)" json:"verifymailAuthKey"`
+	EnableTruemailAPI           bool    `gorm:"column:enableTruemailApi;default:false" json:"enableTruemailApi"`
+	TruemailInstance            *string `gorm:"column:truemailInstance;type:varchar(1024)" json:"truemailInstance"`
+	TruemailAuthKey             *string `gorm:"column:truemailAuthKey;type:varchar(1024)" json:"truemailAuthKey"`
+
+	// Sensitive media detection (5)
+	// sensitiveMediaDetection / sensitiveMediaDetectionSensitivity は
+	// 本家では enum 型だが、Go 側は varchar(128) に寄せて型制約を動的にする。
+	SensitiveMediaDetection                string         `gorm:"column:sensitiveMediaDetection;type:varchar(128);default:'none'" json:"sensitiveMediaDetection"`
+	SensitiveMediaDetectionSensitivity     string         `gorm:"column:sensitiveMediaDetectionSensitivity;type:varchar(128);default:'medium'" json:"sensitiveMediaDetectionSensitivity"`
+	SetSensitiveFlagAutomatically          bool           `gorm:"column:setSensitiveFlagAutomatically;default:false" json:"setSensitiveFlagAutomatically"`
+	EnableSensitiveMediaDetectionForVideos bool           `gorm:"column:enableSensitiveMediaDetectionForVideos;default:false" json:"enableSensitiveMediaDetectionForVideos"`
+	MediaSilencedHosts                     pq.StringArray `gorm:"column:mediaSilencedHosts;type:varchar(1024)[];default:'{}'" json:"mediaSilencedHosts"`
+
+	// URL preview (7)
+	URLPreviewEnabled              bool    `gorm:"column:urlPreviewEnabled;default:true" json:"urlPreviewEnabled"`
+	URLPreviewAllowRedirect        bool    `gorm:"column:urlPreviewAllowRedirect;default:true" json:"urlPreviewAllowRedirect"`
+	URLPreviewTimeout              int     `gorm:"column:urlPreviewTimeout;default:10000" json:"urlPreviewTimeout"`
+	URLPreviewMaximumContentLength int64   `gorm:"column:urlPreviewMaximumContentLength;default:10485760" json:"urlPreviewMaximumContentLength"`
+	URLPreviewRequireContentLength bool    `gorm:"column:urlPreviewRequireContentLength;default:false" json:"urlPreviewRequireContentLength"`
+	URLPreviewSummaryProxyURL      *string `gorm:"column:urlPreviewSummaryProxyUrl;type:varchar(1024)" json:"urlPreviewSummaryProxyUrl"`
+	URLPreviewUserAgent            *string `gorm:"column:urlPreviewUserAgent;type:varchar(1024)" json:"urlPreviewUserAgent"`
+
+	// Cache tuning (4)
+	PerLocalUserUserTimelineCacheMax  int `gorm:"column:perLocalUserUserTimelineCacheMax;default:300" json:"perLocalUserUserTimelineCacheMax"`
+	PerRemoteUserUserTimelineCacheMax int `gorm:"column:perRemoteUserUserTimelineCacheMax;default:100" json:"perRemoteUserUserTimelineCacheMax"`
+	PerUserHomeTimelineCacheMax       int `gorm:"column:perUserHomeTimelineCacheMax;default:300" json:"perUserHomeTimelineCacheMax"`
+	PerUserListTimelineCacheMax       int `gorm:"column:perUserListTimelineCacheMax;default:300" json:"perUserListTimelineCacheMax"`
+
+	// Ads / usernames / emails (5)
+	NotesPerOneAd        int            `gorm:"column:notesPerOneAd;default:0" json:"notesPerOneAd"`
+	ManifestJSONOverride string         `gorm:"column:manifestJsonOverride;type:varchar(8192);default:'{}'" json:"manifestJsonOverride"`
+	BannedEmailDomains   pq.StringArray `gorm:"column:bannedEmailDomains;type:varchar(1024)[];default:'{}'" json:"bannedEmailDomains"`
+	// デフォルト値は SQL 側の 43 要素プリセット。Go タグで書くと重いので
+	// default:(-) で「DB 側のデフォルトに任せる」ことを GORM に指示する。
+	PreservedUsernames           pq.StringArray `gorm:"column:preservedUsernames;type:varchar(1024)[];default:(-)" json:"preservedUsernames"`
+	ProhibitedWordsForNameOfUser pq.StringArray `gorm:"column:prohibitedWordsForNameOfUser;type:varchar(1024)[];default:'{}'" json:"prohibitedWordsForNameOfUser"`
+
+	// DeepL (2)
+	DeeplAuthKey *string `gorm:"column:deeplAuthKey;type:varchar(1024)" json:"deeplAuthKey"`
+	DeeplIsPro   bool    `gorm:"column:deeplIsPro;default:false" json:"deeplIsPro"`
+
+	// Indexing / stats / machine (7)
+	EnableIdenticonGeneration         bool `gorm:"column:enableIdenticonGeneration;default:true" json:"enableIdenticonGeneration"`
+	EnableIPLogging                   bool `gorm:"column:enableIpLogging;default:false" json:"enableIpLogging"`
+	EnableChartsForRemoteUser         bool `gorm:"column:enableChartsForRemoteUser;default:true" json:"enableChartsForRemoteUser"`
+	EnableChartsForFederatedInstances bool `gorm:"column:enableChartsForFederatedInstances;default:true" json:"enableChartsForFederatedInstances"`
+	EnableStatsForFederatedInstances  bool `gorm:"column:enableStatsForFederatedInstances;default:true" json:"enableStatsForFederatedInstances"`
+	EnableServerMachineStats          bool `gorm:"column:enableServerMachineStats;default:false" json:"enableServerMachineStats"`
+	ShowRoleBadgesOfRemoteUsers       bool `gorm:"column:showRoleBadgesOfRemoteUsers;default:false" json:"showRoleBadgesOfRemoteUsers"`
+
+	// Reactions / cleaning (5)
+	EnableReactionsBuffering                          bool `gorm:"column:enableReactionsBuffering;default:false" json:"enableReactionsBuffering"`
+	AllowExternalApRedirect                           bool `gorm:"column:allowExternalApRedirect;default:true" json:"allowExternalApRedirect"`
+	EnableRemoteNotesCleaning                         bool `gorm:"column:enableRemoteNotesCleaning;default:false" json:"enableRemoteNotesCleaning"`
+	RemoteNotesCleaningMaxProcessingDurationInMinutes int  `gorm:"column:remoteNotesCleaningMaxProcessingDurationInMinutes;default:60" json:"remoteNotesCleaningMaxProcessingDurationInMinutes"`
+	RemoteNotesCleaningExpiryDaysForEachNotes         int  `gorm:"column:remoteNotesCleaningExpiryDaysForEachNotes;default:90" json:"remoteNotesCleaningExpiryDaysForEachNotes"`
+
+	// System / instance (7)
+	SingleUserMode               bool           `gorm:"column:singleUserMode;default:false" json:"singleUserMode"`
+	GoogleAnalyticsMeasurementID *string        `gorm:"column:googleAnalyticsMeasurementId;type:varchar(64)" json:"googleAnalyticsMeasurementId"`
+	InquiryURL                   *string        `gorm:"column:inquiryUrl;type:varchar(1024)" json:"inquiryUrl"`
+	UgcVisibilityForVisitor      string         `gorm:"column:ugcVisibilityForVisitor;type:varchar(128);default:'local'" json:"ugcVisibilityForVisitor"`
+	ClientOptions                datatypes.JSON `gorm:"column:clientOptions;type:jsonb;default:'{}'" json:"clientOptions"`
+	DeliverSuspendedSoftware     datatypes.JSON `gorm:"column:deliverSuspendedSoftware;type:jsonb;default:'[]'" json:"deliverSuspendedSoftware"`
+
 	// Relations
 	RootUser *User `gorm:"foreignKey:RootUserID" json:"rootUser,omitempty"`
 }

@@ -113,11 +113,10 @@ func (s *Service) Vote(user *model.User, noteID string, choice int) error {
 	}
 
 	v := &model.PollVote{
-		ID:        s.idGen.Generate(s.nowFn()),
-		UserID:    user.ID,
-		NoteID:    target.ID,
-		Choice:    choice,
-		CreatedAt: s.nowFn(),
+		ID:     s.idGen.Generate(s.nowFn()),
+		UserID: user.ID,
+		NoteID: target.ID,
+		Choice: choice,
 	}
 	if err := s.pollVoteRepo.Create(v); err != nil {
 		return err

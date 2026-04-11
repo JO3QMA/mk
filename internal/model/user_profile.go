@@ -34,6 +34,7 @@ type UserProfile struct {
 	FollowersVisibility       FollowingVisibility `gorm:"column:followersVisibility;type:followers_visibility_enum;default:'public'" json:"followersVisibility"`
 	TwoFactorTempSecret       *string             `gorm:"column:twoFactorTempSecret;type:varchar(128)" json:"-"`
 	TwoFactorSecret           *string             `gorm:"column:twoFactorSecret;type:varchar(128)" json:"-"`
+	TwoFactorBackupSecret     pq.StringArray      `gorm:"column:twoFactorBackupSecret;type:varchar[]" json:"-"`
 	TwoFactorEnabled          bool                `gorm:"column:twoFactorEnabled;default:false" json:"twoFactorEnabled"`
 	SecurityKeysAvailable     bool                `gorm:"column:securityKeysAvailable;default:false" json:"securityKeysAvailable"`
 	UsePasswordLessLogin      bool                `gorm:"column:usePasswordLessLogin;default:false" json:"usePasswordLessLogin"`
@@ -55,7 +56,10 @@ type UserProfile struct {
 	NotificationRecieveConfig datatypes.JSON      `gorm:"column:notificationRecieveConfig;type:jsonb;default:'{}'" json:"notificationRecieveConfig"`
 	LoggedInDates             pq.StringArray      `gorm:"column:loggedInDates;type:varchar(32)[];default:'{}'" json:"loggedInDates"`
 	Achievements              datatypes.JSON      `gorm:"column:achievements;type:jsonb;default:'[]'" json:"achievements"`
-	UserHost                  *string             `gorm:"column:userHost;type:varchar(128)" json:"userHost"`
+	// 本家 Misskey 互換のため保持する。Go 側で読み書きする機能は未実装 (後続 issue)。
+	ClientData datatypes.JSON `gorm:"column:clientData;type:jsonb;default:'{}'" json:"clientData"`
+	Room       datatypes.JSON `gorm:"column:room;type:jsonb;default:'{}'" json:"room"`
+	UserHost   *string        `gorm:"column:userHost;type:varchar(128)" json:"userHost"`
 
 	// Relations
 	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
