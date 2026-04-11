@@ -67,6 +67,7 @@ import (
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
+	coretransfer "github.com/shiroha-a/mk/internal/core/transfer"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -117,6 +118,8 @@ func (s *Server) setupRoutes() {
 	roleRepo := repository.NewRoleRepository(s.db)
 	roleAssignmentRepo := repository.NewRoleAssignmentRepository(s.db)
 	swSubRepo := repository.NewSwSubscriptionRepository(s.db)
+	noteFavoriteRepo := repository.NewNoteFavoriteRepository(s.db)
+	userListRepo := repository.NewUserListRepository(s.db)
 
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
@@ -197,6 +200,41 @@ func (s *Server) setupRoutes() {
 	imgProcessor := coredrive.NewDefaultImageProcessor()
 	driveService.SetImageProcessor(imgProcessor)
 	driveService.SetVideoProcessor(coredrive.NewFFmpegVideoProcessor(imgProcessor, nil))
+
+	// Export / Import workers (Phase 9.4): drive に保存するエクスポートと
+	// drive から読み出すインポートを asynq 経由で非同期処理する。
+	exporter := coretransfer.NewExporter(coretransfer.ExporterDeps{
+		UserRepo:         userRepo,
+		NoteRepo:         noteRepo,
+		PollRepo:         pollRepo,
+		FollowingRepo:    followingRepo,
+		BlockingRepo:     blockingRepo,
+		MutingRepo:       mutingRepo,
+		NoteFavoriteRepo: noteFavoriteRepo,
+		AntennaRepo:      antennaRepo,
+		ClipRepo:         clipRepo,
+		ClipNoteRepo:     clipNoteRepo,
+		UserListRepo:     userListRepo,
+		Drive:            driveService,
+		Notifier:         notificationService,
+	})
+	driveReader := coretransfer.NewRepoBackedDriveReader(driveFileRepo, driveStorage)
+	importer := coretransfer.NewImporter(coretransfer.ImporterDeps{
+		UserRepo:     userRepo,
+		UserListRepo: userListRepo,
+		AntennaRepo:  antennaRepo,
+		Drive:        driveReader,
+		Following:    coretransfer.NewFollowingServiceAdapter(followingService),
+		Blocking:     blockingService,
+		Muting:       mutingService,
+		Notifier:     notificationService,
+		IDGen:        idGen,
+		SelfHost:     s.config.Host,
+	})
+	exportProcessor := processors.NewExportProcessor(exporter)
+	importProcessor := processors.NewImportProcessor(importer)
+	s.queueServer.Handle(queue.TaskTypeExport, exportProcessor.Handle)
+	s.queueServer.Handle(queue.TaskTypeImport, importProcessor.Handle)
 
 	// Search (Phase 4.6)
 	// 設定に従って provider を選択する。Meilisearch が設定されていれば
@@ -407,7 +445,6 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/reactions/delete", notesHandler.ReactionsDelete, middleware.RequireAuth())
 	api.POST("/notes/polls/vote", notesHandler.PollsVote, middleware.RequireAuth())
 	// Notes extra endpoints (Phase 6)
-	noteFavoriteRepo := repository.NewNoteFavoriteRepository(s.db)
 	notesHandler.SetFavoriteRepo(noteFavoriteRepo)
 	api.POST("/notes/favorites/create", notesHandler.FavoritesCreate, middleware.RequireAuth())
 	api.POST("/notes/favorites/delete", notesHandler.FavoritesDelete, middleware.RequireAuth())
@@ -482,6 +519,22 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/favorites", iHandler.Favorites, middleware.RequireAuth())
 	api.POST("/i/regenerate-token", iHandler.RegenerateToken, middleware.RequireAuth())
 	iHandler.SetFavoriteRepo(noteFavoriteRepo)
+
+	// i/export-* and i/import-* (Phase 9.4)
+	iHandler.SetTransferEnqueuer(s.queueClient)
+	api.POST("/i/export-notes", iHandler.ExportNotes, middleware.RequireAuth())
+	api.POST("/i/export-following", iHandler.ExportFollowing, middleware.RequireAuth())
+	api.POST("/i/export-blocking", iHandler.ExportBlocking, middleware.RequireAuth())
+	api.POST("/i/export-mute", iHandler.ExportMute, middleware.RequireAuth())
+	api.POST("/i/export-favorites", iHandler.ExportFavorites, middleware.RequireAuth())
+	api.POST("/i/export-user-lists", iHandler.ExportUserLists, middleware.RequireAuth())
+	api.POST("/i/export-antennas", iHandler.ExportAntennas, middleware.RequireAuth())
+	api.POST("/i/export-clips", iHandler.ExportClips, middleware.RequireAuth())
+	api.POST("/i/import-following", iHandler.ImportFollowing, middleware.RequireAuth())
+	api.POST("/i/import-blocking", iHandler.ImportBlocking, middleware.RequireAuth())
+	api.POST("/i/import-muting", iHandler.ImportMuting, middleware.RequireAuth())
+	api.POST("/i/import-user-lists", iHandler.ImportUserLists, middleware.RequireAuth())
+	api.POST("/i/import-antennas", iHandler.ImportAntennas, middleware.RequireAuth())
 
 	// i/webhooks/* — Webhook管理 (実データ)
 	webhookRepo := repository.NewWebhookRepository(s.db)
@@ -805,7 +858,6 @@ func (s *Server) setupRoutes() {
 	api.POST("/roles/users", rolesHandler.Users)
 
 	// User lists (Phase 6)
-	userListRepo := repository.NewUserListRepository(s.db)
 	userListHandler := apiuserlists.NewHandler(userListRepo, idGen)
 	api.POST("/users/lists/list", userListHandler.List, middleware.RequireAuth())
 	api.POST("/users/lists/create", userListHandler.Create, middleware.RequireAuth())

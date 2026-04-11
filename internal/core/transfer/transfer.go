@@ -1,0 +1,179 @@
+// Package transfer implements user data export/import in Misskey-compatible
+// formats. Export types produce JSON or CSV blobs saved as DriveFiles; import
+// types read DriveFile content and apply operations via the matching core
+// services.
+//
+// フォーマットは本家Misskey (packages/backend/src/queue/processors/Export*Service.ts
+// および Import*Service.ts) と一致させる。CSV 行終端は LF、JSON はインデント
+// なしの UTF-8。ファイル名は `{type}-{YYYY-MM-DD-HH-mm-ss}.{ext}`。
+package transfer
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/shiroha-a/mk/internal/core/drive"
+	"github.com/shiroha-a/mk/internal/core/notification"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
+)
+
+// Export types supported by Exporter.Export.
+const (
+	ExportNotes     = "notes"
+	ExportFollowing = "following"
+	ExportBlocking  = "blocking"
+	ExportMuting    = "mute"
+	ExportFavorites = "favorites"
+	ExportUserLists = "user-lists"
+	ExportAntennas  = "antennas"
+	ExportClips     = "clips"
+)
+
+// Import types supported by Importer.Import.
+const (
+	ImportFollowing = "following"
+	ImportBlocking  = "blocking"
+	ImportMuting    = "muting"
+	ImportUserLists = "user-lists"
+	ImportAntennas  = "antennas"
+)
+
+// DriveSaver writes a byte buffer as a DriveFile for a given user. Implemented
+// by *drive.Service in production.
+type DriveSaver interface {
+	Upload(in drive.UploadInput) (*model.DriveFile, error)
+}
+
+// DriveReader fetches a previously-uploaded DriveFile and streams its stored
+// content back. Used by imports to pick up the user-provided JSON/CSV.
+type DriveReader interface {
+	Fetch(fileID string) (*model.DriveFile, []byte, error)
+}
+
+// NotificationDispatcher creates a notification on a user's stream.
+// Implemented by *notification.Service.
+type NotificationDispatcher interface {
+	Create(ctx context.Context, in notification.CreateInput) (*notification.Notification, error)
+}
+
+// ErrUnsupportedType signals that the requested export/import type is not
+// understood by the package.
+var ErrUnsupportedType = fmt.Errorf("unsupported transfer type")
+
+// timestampedName produces a Misskey-compatible filename of the form
+// `{base}-{YYYY-MM-DD-HH-mm-ss}.{ext}` in UTC.
+// 本家 is local-time based but UTC is deterministic and harmless for users.
+func timestampedName(base, ext string) string {
+	return fmt.Sprintf("%s-%s.%s", base, time.Now().UTC().Format("2006-01-02-15-04-05"), ext)
+}
+
+// acct formats a user as `username` (for local) or `username@host`
+// (for remote), following Misskey's Acct.toString behaviour.
+func acct(u *model.User) string {
+	if u == nil {
+		return ""
+	}
+	if u.Host == nil || *u.Host == "" {
+		return u.Username
+	}
+	return u.Username + "@" + *u.Host
+}
+
+// ExporterDeps bundles the repositories and services an Exporter needs.
+// 明示的な struct にすることで NewExporter の引数列が膨らみすぎるのを避ける。
+type ExporterDeps struct {
+	UserRepo         repository.UserRepository
+	NoteRepo         repository.NoteRepository
+	PollRepo         repository.PollRepository
+	FollowingRepo    repository.FollowingRepository
+	BlockingRepo     repository.BlockingRepository
+	MutingRepo       repository.MutingRepository
+	NoteFavoriteRepo repository.NoteFavoriteRepository
+	AntennaRepo      repository.AntennaRepository
+	ClipRepo         repository.ClipRepository
+	ClipNoteRepo     repository.ClipNoteRepository
+	UserListRepo     repository.UserListRepository
+	Drive            DriveSaver
+	Notifier         NotificationDispatcher
+}
+
+// Exporter produces Misskey-compatible export files and saves them as
+// DriveFiles owned by the requesting user.
+type Exporter struct {
+	deps ExporterDeps
+}
+
+// NewExporter constructs an Exporter from the given dependencies.
+func NewExporter(deps ExporterDeps) *Exporter {
+	return &Exporter{deps: deps}
+}
+
+// Export runs the export pipeline for a single (userID, exportType) pair.
+// On success the user is notified via NotificationDispatcher.Create with
+// Extra={exportedEntity, fileId}. Errors bubble out to the asynq processor.
+func (e *Exporter) Export(ctx context.Context, userID, exportType string) (*model.DriveFile, error) {
+	user, err := e.deps.UserRepo.FindByID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("find user: %w", err)
+	}
+
+	var (
+		body []byte
+		name string
+	)
+	switch exportType {
+	case ExportNotes:
+		body, err = e.exportNotes(user.ID)
+		name = timestampedName("notes", "json")
+	case ExportFollowing:
+		body, err = e.exportFollowing(user.ID)
+		name = timestampedName("following", "csv")
+	case ExportBlocking:
+		body, err = e.exportBlocking(user.ID)
+		name = timestampedName("blocking", "csv")
+	case ExportMuting:
+		body, err = e.exportMuting(user.ID)
+		name = timestampedName("mute", "csv")
+	case ExportFavorites:
+		body, err = e.exportFavorites(user.ID)
+		name = timestampedName("favorites", "json")
+	case ExportUserLists:
+		body, err = e.exportUserLists(user.ID)
+		name = timestampedName("user-lists", "csv")
+	case ExportAntennas:
+		body, err = e.exportAntennas(user.ID)
+		name = timestampedName("antennas", "json")
+	case ExportClips:
+		body, err = e.exportClips(user.ID)
+		name = timestampedName("clips", "json")
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedType, exportType)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("export %s: %w", exportType, err)
+	}
+
+	file, err := e.deps.Drive.Upload(drive.UploadInput{
+		User:  user,
+		Body:  body,
+		Name:  name,
+		Force: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("upload drive file: %w", err)
+	}
+
+	if e.deps.Notifier != nil {
+		_, _ = e.deps.Notifier.Create(ctx, notification.CreateInput{
+			NotifieeID: user.ID,
+			Type:       notification.TypeExportCompleted,
+			Extra: map[string]any{
+				"exportedEntity": exportType,
+				"fileId":         file.ID,
+			},
+		})
+	}
+	return file, nil
+}
