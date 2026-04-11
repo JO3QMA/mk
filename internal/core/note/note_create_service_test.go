@@ -178,6 +178,31 @@ func TestCreateService_MentionExtraction(t *testing.T) {
 	assert.Equal(t, []string{"alice", "bob"}, []string(created.Mentions))
 }
 
+func TestCreateService_MentionResolution_WithUserRepo(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	userRepo := testutil.NewMockUserRepository()
+	remoteHost := "remote.example"
+	userRepo.Users["uA"] = &model.User{
+		ID:            "uA",
+		Username:      "alice",
+		UsernameLower: "alice",
+	}
+	userRepo.Users["uB"] = &model.User{
+		ID:            "uB",
+		Username:      "bob",
+		UsernameLower: "bob",
+		Host:          &remoteHost,
+	}
+	svc.SetUserRepo(userRepo)
+
+	author := &model.User{ID: "author1"}
+	text := "hi @alice and @bob@remote.example and @ghost"
+	created, err := svc.Create(note.CreateInput{User: author, Text: &text})
+	require.NoError(t, err)
+	// Resolved IDs only; unknown @ghost is skipped.
+	assert.ElementsMatch(t, []string{"uA", "uB"}, []string(created.Mentions))
+}
+
 func TestCreateService_NoteRepoCreateError(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	noteRepo := &failingNoteRepoCreate{MockNoteRepository: testutil.NewMockNoteRepository()}

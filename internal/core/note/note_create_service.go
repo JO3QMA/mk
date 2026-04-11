@@ -269,19 +269,30 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		note.VisibleUserIDs = in.VisibleUserIDs
 	}
 
-	// メンションの抽出。ユーザー名をユーザーIDに解決する。
+	// メンションの抽出。ユーザー名+ホストをユーザーIDに解決する。
+	// ローカル (host="") は host IS NULL で、リモート (host!="") は
+	// host 列の等価比較で lookup する。未知のユーザーは単にスキップする
+	// (remote webfinger 解決は pre-lookup されている前提)。
+	// userRepo が未設定のときは後方互換のため username 文字列をそのまま格納する。
 	if in.Text != nil {
-		usernames := ExtractMentions(*in.Text)
-		if s.userRepo != nil && len(usernames) > 0 {
-			var ids []string
-			for _, name := range usernames {
-				if u, err := s.userRepo.FindByUsernameLower(name, nil); err == nil {
-					ids = append(ids, u.ID)
+		if s.userRepo != nil {
+			mentions := ExtractMentionStructs(*in.Text)
+			if len(mentions) > 0 {
+				ids := make([]string, 0, len(mentions))
+				for _, m := range mentions {
+					var host *string
+					if m.Host != "" {
+						h := m.Host
+						host = &h
+					}
+					if u, err := s.userRepo.FindByUsernameLower(m.Username, host); err == nil {
+						ids = append(ids, u.ID)
+					}
 				}
+				note.Mentions = ids
 			}
-			note.Mentions = ids
 		} else {
-			note.Mentions = usernames
+			note.Mentions = ExtractMentions(*in.Text)
 		}
 	}
 

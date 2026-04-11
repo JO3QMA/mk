@@ -68,14 +68,32 @@ func (b *URLBuilder) FollowURI(followerID, followeeID string) string {
 	return b.baseURL + "/follows/" + followerID + "/" + followeeID
 }
 
+// MentionResolver resolves a note.Mentions entry (user ID) into the data
+// required to build an AS Mention tag. 実装は server/router.go 側で
+// UserRepository を wrap する形で提供される。解決に失敗したら ok=false を
+// 返す (例: ユーザー削除済み、ID 不整合など)。
+//
+// uri はローカルユーザーなら urls.UserURI(user.ID)、リモートユーザーなら
+// user.URI を返す。name は Misskey 互換で "@username" / "@username@host"。
+type MentionResolver interface {
+	ResolveMention(userID string) (name, uri string, ok bool)
+}
+
 // Renderer converts model entities into AS objects.
 type Renderer struct {
-	urls *URLBuilder
+	urls            *URLBuilder
+	mentionResolver MentionResolver
 }
 
 // NewRenderer constructs a Renderer.
 func NewRenderer(urls *URLBuilder) *Renderer {
 	return &Renderer{urls: urls}
+}
+
+// SetMentionResolver attaches a MentionResolver used by RenderNote to populate
+// the `tag` field and additional `to` audience entries. nil で無効化できる。
+func (r *Renderer) SetMentionResolver(mr MentionResolver) {
+	r.mentionResolver = mr
 }
 
 // RenderPerson packs a local user into a Person actor object.
@@ -130,6 +148,28 @@ func (r *Renderer) RenderNote(n *model.Note, idGen id.Generator) *Note {
 	}
 
 	to, cc := r.addressing(n)
+
+	// Resolve mentions into Tag entries and add mentioned user URIs to `to`
+	// so receiving instances (特に Misskey) が mention 通知を作成できる。
+	// mentionResolver 未設定なら tag は付けない (テスト互換)。
+	if r.mentionResolver != nil && len(n.Mentions) > 0 {
+		seenTo := make(map[string]struct{}, len(to))
+		for _, v := range to {
+			seenTo[v] = struct{}{}
+		}
+		for _, uid := range n.Mentions {
+			name, uri, ok := r.mentionResolver.ResolveMention(uid)
+			if !ok || uri == "" {
+				continue
+			}
+			out.Tag = append(out.Tag, Mention{Type: "Mention", Href: uri, Name: name})
+			if _, dup := seenTo[uri]; !dup {
+				to = append(to, uri)
+				seenTo[uri] = struct{}{}
+			}
+		}
+	}
+
 	out.To = to
 	out.CC = cc
 

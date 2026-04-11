@@ -130,6 +130,73 @@ func TestRenderer_RenderNote_Specified(t *testing.T) {
 	assert.Contains(t, out.To, "https://example.com/users/u3")
 }
 
+// stubMentionResolver returns fixed data keyed by userID.
+type stubMentionResolver struct {
+	entries map[string]struct{ name, uri string }
+}
+
+func (s *stubMentionResolver) ResolveMention(userID string) (name, uri string, ok bool) {
+	e, exists := s.entries[userID]
+	if !exists {
+		return "", "", false
+	}
+	return e.name, e.uri, true
+}
+
+func TestRenderer_RenderNote_WithMentions(t *testing.T) {
+	r := newRenderer()
+	r.SetMentionResolver(&stubMentionResolver{entries: map[string]struct{ name, uri string }{
+		"uA": {name: "@alice", uri: "https://example.com/users/uA"},
+		"uB": {name: "@bob@remote.example", uri: "https://remote.example/users/bob"},
+	}})
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+		Mentions:   pq.StringArray{"uA", "uB", "unknown"},
+	}
+	out := r.RenderNote(n, idGen)
+
+	require.Len(t, out.Tag, 2)
+	// unknown user is skipped; both known users end up in tag and to.
+	tagged := map[string]string{}
+	for _, t := range out.Tag {
+		m := t.(Mention)
+		tagged[m.Href] = m.Name
+	}
+	assert.Equal(t, "@alice", tagged["https://example.com/users/uA"])
+	assert.Equal(t, "@bob@remote.example", tagged["https://remote.example/users/bob"])
+	assert.Contains(t, out.To, "https://example.com/users/uA")
+	assert.Contains(t, out.To, "https://remote.example/users/bob")
+}
+
+func TestRenderer_RenderNote_WithMentions_DuplicateTo(t *testing.T) {
+	// When a mention URI is already in `to` (e.g., Specified visibility with the
+	// same user targeted), we must not duplicate it.
+	r := newRenderer()
+	r.SetMentionResolver(&stubMentionResolver{entries: map[string]struct{ name, uri string }{
+		"u2": {name: "@bob", uri: "https://example.com/users/u2"},
+	}})
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:             idGen.Generate(time.Now()),
+		UserID:         "author",
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: pq.StringArray{"u2"},
+		Mentions:       pq.StringArray{"u2"},
+	}
+	out := r.RenderNote(n, idGen)
+	// u2 URI appears only once.
+	count := 0
+	for _, v := range out.To {
+		if v == "https://example.com/users/u2" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count)
+}
+
 func TestRenderer_RenderNote_Reply(t *testing.T) {
 	r := newRenderer()
 	idGen := newIDGen(t)
