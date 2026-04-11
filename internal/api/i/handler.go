@@ -26,11 +26,12 @@ type RoleProvider interface {
 
 // Handler handles account-related API endpoints.
 type Handler struct {
-	userService  *user.Service
-	idGen        id.Generator
-	roleProvider RoleProvider
-	registryRepo repository.RegistryRepository
-	favoriteRepo repository.NoteFavoriteRepository
+	userService      *user.Service
+	idGen            id.Generator
+	roleProvider     RoleProvider
+	registryRepo     repository.RegistryRepository
+	favoriteRepo     repository.NoteFavoriteRepository
+	transferEnqueuer TransferEnqueuer
 }
 
 // SetFavoriteRepo attaches a NoteFavoriteRepository for i/favorites.

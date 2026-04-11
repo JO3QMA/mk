@@ -27,6 +27,8 @@ const (
 	TypePollVote            Type = "pollVote"
 	TypeReceiveFollowReq    Type = "receiveFollowRequest"
 	TypeFollowRequestAccept Type = "followRequestAccepted"
+	TypeExportCompleted     Type = "exportCompleted"
+	TypeImportCompleted     Type = "importCompleted"
 )
 
 // MaxPerUser caps how many notifications are kept per user in the Redis stream.
