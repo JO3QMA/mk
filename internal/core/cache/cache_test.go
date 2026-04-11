@@ -63,6 +63,38 @@ func TestNewRedisClients_ConnectionFail(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestBuildRedisOptions_TCP(t *testing.T) {
+	opts := buildRedisOptions(config.RedisOptions{
+		Host:     "redis.example.com",
+		Port:     6380,
+		Pass:     "secret",
+		DB:       3,
+		Username: "alice",
+	})
+
+	assert.Equal(t, "", opts.Network) // デフォルト (tcp) を示す空文字列
+	assert.Equal(t, "redis.example.com:6380", opts.Addr)
+	assert.Equal(t, "secret", opts.Password)
+	assert.Equal(t, 3, opts.DB)
+	assert.Equal(t, "alice", opts.Username)
+}
+
+func TestBuildRedisOptions_UnixSocket(t *testing.T) {
+	opts := buildRedisOptions(config.RedisOptions{
+		Host:     "/var/run/redis/redis.sock",
+		Port:     6379, // UDS なので Port は無視されるはず
+		Pass:     "secret",
+		DB:       1,
+		Username: "bob",
+	})
+
+	assert.Equal(t, "unix", opts.Network)
+	assert.Equal(t, "/var/run/redis/redis.sock", opts.Addr)
+	assert.Equal(t, "secret", opts.Password)
+	assert.Equal(t, 1, opts.DB)
+	assert.Equal(t, "bob", opts.Username)
+}
+
 func TestKeyPrefix(t *testing.T) {
 	cfg := &config.Config{
 		Redis: config.RedisOptions{Prefix: "myhost"},

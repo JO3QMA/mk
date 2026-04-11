@@ -192,6 +192,72 @@ func TestDSN(t *testing.T) {
 	assert.Contains(t, dsn, "sslmode=disable")
 }
 
+func TestDSN_UnixSocket(t *testing.T) {
+	cfg := &Config{
+		DB: DBOptions{
+			Host: "/var/run/postgresql",
+			Port: 5432,
+			DB:   "misskey",
+			User: "postgres",
+			Pass: "secret",
+			// UDS では TLS を張れないので、Extra に ssl=true があっても
+			// 強制的に sslmode=disable になることを確認する。
+			Extra: map[string]string{"ssl": "true"},
+		},
+	}
+
+	dsn := cfg.DSN()
+	assert.Contains(t, dsn, "host=/var/run/postgresql")
+	assert.Contains(t, dsn, "port=5432")
+	assert.Contains(t, dsn, "sslmode=disable")
+	assert.NotContains(t, dsn, "sslmode=require")
+}
+
+func TestIsUnixSocketPath(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{name: "absolute path", host: "/var/run/postgresql", want: true},
+		{name: "socket file", host: "/tmp/mk.sock", want: true},
+		{name: "hostname", host: "localhost", want: false},
+		{name: "ipv4", host: "127.0.0.1", want: false},
+		{name: "ipv6", host: "::1", want: false},
+		{name: "empty", host: "", want: false},
+		{name: "relative path", host: "./mk.sock", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsUnixSocketPath(tt.host))
+		})
+	}
+}
+
+func TestLoad_SocketAndChmod(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+socket: /run/mk/mk.sock
+chmodSocket: "770"
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/run/mk/mk.sock", cfg.Socket)
+	assert.Equal(t, "770", cfg.ChmodSocket)
+}
+
 func TestDSN_SSLEnabled(t *testing.T) {
 	cfg := &Config{
 		DB: DBOptions{

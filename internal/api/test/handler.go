@@ -81,7 +81,7 @@ func (h *Handler) ResetDB(c echo.Context) error {
 }
 
 // resetTables collects user tables via pg_class/pg_namespace and truncates
-// each one with DELETE ... CASCADE. The retry loop exists because under
+// each one with TRUNCATE ... CASCADE. The retry loop exists because under
 // CASCADE FK clauses, PostgreSQL may transiently complain about ordering.
 func resetTables(ctx context.Context, db *gorm.DB) error {
 	var lastErr error
@@ -98,10 +98,12 @@ func resetTables(ctx context.Context, db *gorm.DB) error {
 				continue
 			}
 			// Identifier は pg_class から取得した安全な値に限定される。
-			// それでも念のためクォートしてから DELETE する。
-			stmt := fmt.Sprintf(`DELETE FROM %q CASCADE`, t)
+			// それでも念のためクォートしてから TRUNCATE する。
+			// DELETE ... CASCADE は PostgreSQL では構文エラーになるので使えない。
+			// CASCADE 節が許されるのは TRUNCATE と DROP TABLE のみ。
+			stmt := fmt.Sprintf(`TRUNCATE %q CASCADE`, t)
 			if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
-				lastErr = fmt.Errorf("delete %s: %w", t, err)
+				lastErr = fmt.Errorf("truncate %s: %w", t, err)
 				allOK = false
 			}
 		}
