@@ -1,0 +1,576 @@
+package reversi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+)
+
+// --- in-memory repository ---
+
+type fakeRepo struct {
+	mu        sync.Mutex
+	games     map[string]*model.ReversiGame
+	findErr   error
+	updateErr error
+}
+
+func newFakeRepo() *fakeRepo {
+	return &fakeRepo{games: make(map[string]*model.ReversiGame)}
+}
+
+func (r *fakeRepo) Create(g *model.ReversiGame) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	clone := *g
+	r.games[g.ID] = &clone
+	return nil
+}
+
+func (r *fakeRepo) FindByID(id string) (*model.ReversiGame, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.findErr != nil {
+		return nil, r.findErr
+	}
+	if g, ok := r.games[id]; ok {
+		clone := *g
+		return &clone, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (r *fakeRepo) Update(g *model.ReversiGame) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.updateErr != nil {
+		return r.updateErr
+	}
+	clone := *g
+	r.games[g.ID] = &clone
+	return nil
+}
+
+func (r *fakeRepo) ListByUser(userID string, limit int) ([]*model.ReversiGame, error) {
+	_ = userID
+	_ = limit
+	return nil, nil
+}
+
+func (r *fakeRepo) ListActive() ([]*model.ReversiGame, error) {
+	return nil, nil
+}
+
+func (r *fakeRepo) Delete(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.games, id)
+	return nil
+}
+
+// --- capture publisher ---
+
+type capturePublisher struct {
+	mu     sync.Mutex
+	events []capturedEvent
+}
+
+type capturedEvent struct {
+	gameID string
+	kind   string
+	body   any
+}
+
+func (p *capturePublisher) PublishGameEvent(gameID, eventType string, body any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, capturedEvent{gameID, eventType, body})
+}
+
+func (p *capturePublisher) types() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, len(p.events))
+	for i, e := range p.events {
+		out[i] = e.kind
+	}
+	return out
+}
+
+func (p *capturePublisher) latestBody() any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.events) == 0 {
+		return nil
+	}
+	return p.events[len(p.events)-1].body
+}
+
+// --- helpers ---
+
+func newPendingGame(t *testing.T) (*model.ReversiGame, *fakeRepo, *capturePublisher, *Service) {
+	t.Helper()
+	repo := newFakeRepo()
+	pub := &capturePublisher{}
+	svc := NewService(repo, pub, nil)
+	game := &model.ReversiGame{
+		ID:                   "g1",
+		User1ID:              "alice",
+		User2ID:              "bob",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "1",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+	}
+	require.NoError(t, repo.Create(game))
+	return game, repo, pub, svc
+}
+
+// --- Ready / Start ---
+
+func TestService_UpdateReady_Both_TriggersStart(t *testing.T) {
+	game, repo, pub, svc := newPendingGame(t)
+	ctx := context.Background()
+
+	require.NoError(t, svc.UpdateReady(ctx, game.ID, "alice", true))
+	require.NoError(t, svc.UpdateReady(ctx, game.ID, "bob", true))
+
+	got, err := repo.FindByID(game.ID)
+	require.NoError(t, err)
+	assert.True(t, got.IsStarted)
+	assert.NotNil(t, got.StartedAt)
+	assert.NotNil(t, got.Black)
+
+	// ready → ready → changeReadyStates, changeReadyStates, started
+	kinds := pub.types()
+	assert.Contains(t, kinds, "changeReadyStates")
+	assert.Contains(t, kinds, "started")
+}
+
+func TestService_UpdateReady_NotPlayer(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.UpdateReady(context.Background(), game.ID, "carol", true)
+	assert.ErrorIs(t, err, ErrNotPlayer)
+}
+
+func TestService_UpdateReady_GameNotFound(t *testing.T) {
+	_, _, _, svc := newPendingGame(t)
+	err := svc.UpdateReady(context.Background(), "ghost", "alice", true)
+	assert.ErrorIs(t, err, ErrGameNotFound)
+}
+
+func TestService_UpdateReady_AlreadyStarted(t *testing.T) {
+	game, repo, _, svc := newPendingGame(t)
+	game.IsStarted = true
+	_ = repo.Update(game)
+	err := svc.UpdateReady(context.Background(), game.ID, "alice", true)
+	assert.ErrorIs(t, err, ErrAlreadyStarted)
+}
+
+func TestService_UpdateReady_AlreadyEnded(t *testing.T) {
+	game, repo, _, svc := newPendingGame(t)
+	game.IsEnded = true
+	_ = repo.Update(game)
+	err := svc.UpdateReady(context.Background(), game.ID, "alice", true)
+	assert.ErrorIs(t, err, ErrAlreadyEnded)
+}
+
+// --- Settings ---
+
+func TestService_UpdateSettings_ChangesMapResetsReady(t *testing.T) {
+	game, repo, pub, svc := newPendingGame(t)
+	game.User1Ready = true
+	_ = repo.Update(game)
+
+	raw, _ := json.Marshal([]string{"bw", "wb"})
+	err := svc.UpdateSettings(context.Background(), game.ID, "alice", "map", raw)
+	require.NoError(t, err)
+
+	got, _ := repo.FindByID(game.ID)
+	assert.Equal(t, []string{"bw", "wb"}, []string(got.Map))
+	assert.False(t, got.User1Ready)
+	assert.Contains(t, pub.types(), "updateSettings")
+	assert.Contains(t, pub.types(), "changeReadyStates")
+}
+
+func TestService_UpdateSettings_InvalidKey(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.UpdateSettings(context.Background(), game.ID, "alice", "bogus", json.RawMessage(`null`))
+	assert.ErrorIs(t, err, ErrInvalidSetting)
+}
+
+func TestService_UpdateSettings_NotPlayer(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.UpdateSettings(context.Background(), game.ID, "carol", "isLlotheo", json.RawMessage(`true`))
+	assert.ErrorIs(t, err, ErrNotPlayer)
+}
+
+func TestService_UpdateSettings_AlreadyStarted(t *testing.T) {
+	game, repo, _, svc := newPendingGame(t)
+	game.IsStarted = true
+	_ = repo.Update(game)
+	err := svc.UpdateSettings(context.Background(), game.ID, "alice", "isLlotheo", json.RawMessage(`true`))
+	assert.ErrorIs(t, err, ErrAlreadyStarted)
+}
+
+func TestService_UpdateSettings_TypedKeys(t *testing.T) {
+	game, repo, _, svc := newPendingGame(t)
+	cases := []struct {
+		key string
+		val string
+	}{
+		{"bw", `"2"`},
+		{"isLlotheo", `true`},
+		{"canPutEverywhere", `true`},
+		{"loopedBoard", `true`},
+		{"timeLimitForEachTurn", `60`},
+		{"noIrregularRules", `true`},
+	}
+	for _, tc := range cases {
+		err := svc.UpdateSettings(context.Background(), game.ID, "alice", tc.key, json.RawMessage(tc.val))
+		require.NoError(t, err, tc.key)
+	}
+	got, _ := repo.FindByID(game.ID)
+	assert.Equal(t, "2", got.BW)
+	assert.True(t, got.IsLlotheo)
+	assert.True(t, got.CanPutEverywhere)
+	assert.True(t, got.LoopedBoard)
+	assert.Equal(t, 60, got.TimeLimitForEachTurn)
+	assert.True(t, got.NoIrregularRules)
+}
+
+func TestService_UpdateSettings_BadJSON(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.UpdateSettings(context.Background(), game.ID, "alice", "isLlotheo", json.RawMessage(`"not-bool"`))
+	assert.ErrorIs(t, err, ErrInvalidSetting)
+}
+
+func TestService_UpdateSettings_NegativeTimeLimit(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.UpdateSettings(context.Background(), game.ID, "alice", "timeLimitForEachTurn", json.RawMessage(`-1`))
+	assert.ErrorIs(t, err, ErrInvalidSetting)
+}
+
+// --- Cancel ---
+
+func TestService_CancelGame(t *testing.T) {
+	game, repo, pub, svc := newPendingGame(t)
+	require.NoError(t, svc.CancelGame(context.Background(), game.ID, "alice"))
+	_, err := repo.FindByID(game.ID)
+	assert.Error(t, err)
+	assert.Contains(t, pub.types(), "canceled")
+}
+
+func TestService_CancelGame_NotPlayer(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.CancelGame(context.Background(), game.ID, "carol")
+	assert.ErrorIs(t, err, ErrNotPlayer)
+}
+
+func TestService_CancelGame_AlreadyStarted(t *testing.T) {
+	game, repo, _, svc := newPendingGame(t)
+	game.IsStarted = true
+	_ = repo.Update(game)
+	err := svc.CancelGame(context.Background(), game.ID, "alice")
+	assert.ErrorIs(t, err, ErrAlreadyStarted)
+}
+
+// --- PutStone ---
+
+func startedGame(t *testing.T) (*model.ReversiGame, *fakeRepo, *capturePublisher, *Service) {
+	t.Helper()
+	game, repo, pub, svc := newPendingGame(t)
+	require.NoError(t, svc.UpdateReady(context.Background(), game.ID, "alice", true))
+	require.NoError(t, svc.UpdateReady(context.Background(), game.ID, "bob", true))
+	fresh, _ := repo.FindByID(game.ID)
+	return fresh, repo, pub, svc
+}
+
+func TestService_PutStone_Valid(t *testing.T) {
+	game, repo, pub, svc := startedGame(t)
+
+	// alice is black (BW="1")
+	// 8x8 default board: valid black moves include pos 19 (3,2), 26 (2,3), 37 (5,4), 44 (4,5)
+	require.NoError(t, svc.PutStone(context.Background(), game.ID, "alice", 19))
+
+	got, _ := repo.FindByID(game.ID)
+	var logs [][]int
+	_ = json.Unmarshal(got.Logs, &logs)
+	require.Len(t, logs, 1)
+	assert.Equal(t, 19, logs[0][0])
+
+	// log event published
+	types := pub.types()
+	assert.Contains(t, types, "log")
+}
+
+func TestService_PutStone_NotYourTurn(t *testing.T) {
+	game, _, _, svc := startedGame(t)
+	// bob is white; black moves first
+	err := svc.PutStone(context.Background(), game.ID, "bob", 19)
+	assert.ErrorIs(t, err, ErrNotYourTurn)
+}
+
+func TestService_PutStone_InvalidMove(t *testing.T) {
+	game, _, _, svc := startedGame(t)
+	err := svc.PutStone(context.Background(), game.ID, "alice", 0) // corner, not valid opening
+	assert.ErrorIs(t, err, ErrInvalidMove)
+}
+
+func TestService_PutStone_NotStarted(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.PutStone(context.Background(), game.ID, "alice", 19)
+	assert.ErrorIs(t, err, ErrNotStarted)
+}
+
+func TestService_PutStone_AlreadyEnded(t *testing.T) {
+	game, repo, _, svc := startedGame(t)
+	game.IsEnded = true
+	_ = repo.Update(game)
+	err := svc.PutStone(context.Background(), game.ID, "alice", 19)
+	assert.ErrorIs(t, err, ErrAlreadyEnded)
+}
+
+func TestService_PutStone_NotPlayer(t *testing.T) {
+	game, _, _, svc := startedGame(t)
+	err := svc.PutStone(context.Background(), game.ID, "carol", 19)
+	assert.ErrorIs(t, err, ErrNotPlayer)
+}
+
+// --- Surrender ---
+
+func TestService_Surrender_SetsOpponentAsWinner(t *testing.T) {
+	game, repo, pub, svc := startedGame(t)
+	require.NoError(t, svc.Surrender(context.Background(), game.ID, "alice"))
+
+	got, _ := repo.FindByID(game.ID)
+	assert.True(t, got.IsEnded)
+	require.NotNil(t, got.WinnerID)
+	assert.Equal(t, "bob", *got.WinnerID)
+	require.NotNil(t, got.SurrenderedUserID)
+	assert.Equal(t, "alice", *got.SurrenderedUserID)
+	assert.Contains(t, pub.types(), "ended")
+}
+
+func TestService_Surrender_NotPlayer(t *testing.T) {
+	game, _, _, svc := startedGame(t)
+	err := svc.Surrender(context.Background(), game.ID, "carol")
+	assert.ErrorIs(t, err, ErrNotPlayer)
+}
+
+func TestService_Surrender_AlreadyEnded(t *testing.T) {
+	game, repo, _, svc := startedGame(t)
+	game.IsEnded = true
+	_ = repo.Update(game)
+	err := svc.Surrender(context.Background(), game.ID, "alice")
+	assert.ErrorIs(t, err, ErrAlreadyEnded)
+}
+
+// --- CheckTimeout (nil Redis skips the effective check) ---
+
+func TestService_CheckTimeout_NilRedisIsNoop(t *testing.T) {
+	// svc.redis is nil; turnTimerExists returns true → CheckTimeout returns nil
+	game, _, _, svc := startedGame(t)
+	err := svc.CheckTimeout(context.Background(), game.ID)
+	assert.NoError(t, err)
+}
+
+func TestService_CheckTimeout_PendingGameNoop(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	err := svc.CheckTimeout(context.Background(), game.ID)
+	assert.NoError(t, err)
+}
+
+func TestService_CheckTimeout_GameNotFound(t *testing.T) {
+	_, _, _, svc := newPendingGame(t)
+	err := svc.CheckTimeout(context.Background(), "ghost")
+	assert.ErrorIs(t, err, ErrGameNotFound)
+}
+
+// --- helpers ---
+
+func TestPickBlack_Explicit(t *testing.T) {
+	assert.Equal(t, 1, pickBlack("1"))
+	assert.Equal(t, 2, pickBlack("2"))
+	// random mode returns 1 or 2
+	for range 5 {
+		v := pickBlack("random")
+		assert.True(t, v == 1 || v == 2)
+	}
+}
+
+func TestPlayerColor(t *testing.T) {
+	b1 := 1
+	g := &model.ReversiGame{User1ID: "a", User2ID: "b", Black: &b1}
+	c, err := playerColor(g, "a")
+	require.NoError(t, err)
+	assert.Equal(t, Black, c)
+	c, err = playerColor(g, "b")
+	require.NoError(t, err)
+	assert.Equal(t, White, c)
+	b2 := 2
+	g.Black = &b2
+	c, _ = playerColor(g, "a")
+	assert.Equal(t, White, c)
+	c, _ = playerColor(g, "b")
+	assert.Equal(t, Black, c)
+}
+
+func TestPlayerColor_BlackNil(t *testing.T) {
+	g := &model.ReversiGame{User1ID: "a", User2ID: "b"}
+	_, err := playerColor(g, "a")
+	assert.Error(t, err)
+}
+
+func TestPlayerColor_NotPlayer(t *testing.T) {
+	b1 := 1
+	g := &model.ReversiGame{User1ID: "a", User2ID: "b", Black: &b1}
+	_, err := playerColor(g, "c")
+	assert.ErrorIs(t, err, ErrNotPlayer)
+}
+
+func TestPlayerIDForColor(t *testing.T) {
+	b1 := 1
+	g := &model.ReversiGame{User1ID: "a", User2ID: "b", Black: &b1}
+	assert.Equal(t, "a", playerIDForColor(g, Black))
+	assert.Equal(t, "b", playerIDForColor(g, White))
+	b2 := 2
+	g.Black = &b2
+	assert.Equal(t, "b", playerIDForColor(g, Black))
+	assert.Equal(t, "a", playerIDForColor(g, White))
+	g.Black = nil
+	assert.Equal(t, "", playerIDForColor(g, Black))
+}
+
+func TestIsPlayerOpponent(t *testing.T) {
+	g := &model.ReversiGame{User1ID: "a", User2ID: "b"}
+	assert.True(t, isPlayer(g, "a"))
+	assert.True(t, isPlayer(g, "b"))
+	assert.False(t, isPlayer(g, "c"))
+	assert.Equal(t, "b", opponent(g, "a"))
+	assert.Equal(t, "a", opponent(g, "b"))
+}
+
+func TestEngineFromGame_ReplaysLogs(t *testing.T) {
+	game := &model.ReversiGame{
+		Map:  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		Logs: datatypes.JSON(`[[19,1]]`),
+	}
+	engine, err := EngineFromGame(game)
+	require.NoError(t, err)
+	// alice put at pos 19; engine should now be at white's turn
+	require.NotNil(t, engine.Turn)
+	assert.Equal(t, White, *engine.Turn)
+}
+
+func TestEngineFromGame_BadLogs(t *testing.T) {
+	game := &model.ReversiGame{
+		Map:  pq.StringArray{"--------"},
+		Logs: datatypes.JSON(`not-json`),
+	}
+	_, err := EngineFromGame(game)
+	assert.Error(t, err)
+}
+
+func TestService_Nil_NoPanic(t *testing.T) {
+	s := NewService(newFakeRepo(), nil, nil)
+	s.publish("g1", "t", nil) // no publisher → no-op
+	s.setTurnTimer(context.Background(), "g1", 0, 90)
+
+	_, err := s.turnTimerExists(context.Background(), "g1", 0)
+	assert.NoError(t, err)
+
+	// nil service is nil-safe where relevant
+	assert.NotPanics(t, func() {
+		s.SetFederationCache(NewFederationIDCache(nil))
+	})
+}
+
+func TestApplySetting_AllCases(t *testing.T) {
+	g := &model.ReversiGame{}
+	// each branch already exercised via UpdateSettings; here we call directly
+	// for the unknown-key path
+	err := applySetting(g, "unknown", json.RawMessage(`null`))
+	assert.ErrorIs(t, err, ErrInvalidSetting)
+}
+
+func TestService_PutStone_RestoresFromLogs(t *testing.T) {
+	// Two moves: ensure the second move sees the board state from the first
+	game, _, _, svc := startedGame(t)
+	ctx := context.Background()
+	require.NoError(t, svc.PutStone(ctx, game.ID, "alice", 19)) // black
+	// after black at 19, white's valid moves include 18 (2,2) among others
+	// alice is black here so bob is white
+	require.NoError(t, svc.PutStone(ctx, game.ID, "bob", 18))
+}
+
+// capture UpdateError path
+func TestService_UpdateReady_UpdateError(t *testing.T) {
+	game, repo, _, svc := newPendingGame(t)
+	repo.updateErr = errors.New("db boom")
+	err := svc.UpdateReady(context.Background(), game.ID, "alice", true)
+	assert.Error(t, err)
+}
+
+func TestService_CancelGame_GameNotFound(t *testing.T) {
+	_, _, _, svc := newPendingGame(t)
+	err := svc.CancelGame(context.Background(), "ghost", "alice")
+	assert.ErrorIs(t, err, ErrGameNotFound)
+}
+
+func TestService_Surrender_GameNotFound(t *testing.T) {
+	_, _, _, svc := newPendingGame(t)
+	err := svc.Surrender(context.Background(), "ghost", "alice")
+	assert.ErrorIs(t, err, ErrGameNotFound)
+}
+
+func TestService_PutStone_GameNotFound(t *testing.T) {
+	_, _, _, svc := newPendingGame(t)
+	err := svc.PutStone(context.Background(), "ghost", "alice", 19)
+	assert.ErrorIs(t, err, ErrGameNotFound)
+}
+
+// TestStartGame_AlreadyEnded ensures StartGame rejects terminal games.
+func TestService_StartGame_AlreadyEnded(t *testing.T) {
+	game, _, _, svc := newPendingGame(t)
+	game.IsEnded = true
+	err := svc.StartGame(context.Background(), game)
+	assert.ErrorIs(t, err, ErrAlreadyEnded)
+}
+
+// ensure the SetFederationCache setter stores the passed cache
+func TestSetFederationCache(t *testing.T) {
+	s := NewService(newFakeRepo(), nil, nil)
+	c := NewFederationIDCache(nil)
+	s.SetFederationCache(c)
+	assert.Same(t, c, s.fedCache)
+}
+
+// make sure time.Time zero-value is not stored for winnerID (no panic)
+func TestService_Finalize_NoWinnerDraw(t *testing.T) {
+	// craft a game whose engine.Winner() returns nil (draw)
+	game, _, _, svc := newPendingGame(t)
+	game.IsStarted = true
+	b := 1
+	game.Black = &b
+	engine := NewGame([]string(game.Map), Options{})
+	engine.Turn = nil
+	require.NoError(t, svc.finalizeGame(context.Background(), game, engine))
+	// IsEnded set, no winner
+	assert.True(t, game.IsEnded)
+	assert.NotNil(t, game.EndedAt)
+	// Winner ID unset for draw
+	assert.Nil(t, game.WinnerID)
+	// Sanity on generated CRC32
+	require.NotNil(t, game.CRC32)
+	_ = time.Now
+}
