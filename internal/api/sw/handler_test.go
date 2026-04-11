@@ -88,6 +88,7 @@ func (m *mockMetaRepo) Fetch() (*model.Meta, error) {
 	return nil, errMock
 }
 func (m *mockMetaRepo) Update(_ map[string]any) error { return nil }
+func (m *mockMetaRepo) EnsureInitial(_ string) error  { return nil }
 
 func newTestHandler() (*Handler, *mockSwRepo) {
 	repo := newMockSwRepo()

@@ -167,6 +167,121 @@ func TestNoteDeliveryHook_Specified_DeliverError_DoesNotPanic(t *testing.T) {
 	assert.Empty(t, enq.calls) // signer key 不在で enqueue 失敗
 }
 
+func TestNoteDeliveryHook_MentionedRemoteUser_Delivered(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	host := "remote.example"
+	inbox := "https://remote.example/users/bob/inbox"
+	userRepo.Users["bob"] = &model.User{
+		ID:            "bob",
+		Username:      "bob",
+		UsernameLower: "bob",
+		Host:          &host,
+		Inbox:         &inbox,
+	}
+	// Also cache a local mention that must NOT trigger remote delivery.
+	userRepo.Users["charlie"] = &model.User{
+		ID:            "charlie",
+		Username:      "charlie",
+		UsernameLower: "charlie",
+	}
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	text := "hi @bob@remote.example and @charlie"
+	note.Text = &text
+	hook.OnNoteCreated(note, author)
+
+	// No followers exist — only the mention delivery enqueues (1 call).
+	require.Len(t, enq.calls, 1)
+	assert.Equal(t, inbox, enq.calls[0].Inbox)
+}
+
+func TestNoteDeliveryHook_MentionedRemoteUser_UnknownSkipped(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	text := "hi @ghost@unknown.example"
+	note.Text = &text
+	hook.OnNoteCreated(note, author)
+
+	// Unknown user resolution fails — no enqueue.
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeliveryHook_MentionedRemoteUser_Duplicate(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	host := "remote.example"
+	inbox := "https://remote.example/users/bob/inbox"
+	bob := &model.User{
+		ID:            "bob",
+		Username:      "bob",
+		UsernameLower: "bob",
+		Host:          &host,
+		Inbox:         &inbox,
+	}
+	userRepo.Users["bob"] = bob
+	// Two distinct @-tokens resolve to the same user ID (username alias case),
+	// so the mention delivery must dedup by user ID (not by mention token).
+	userRepo.FindByUsernameLowerFn = func(_ string, _ *string) (*model.User, error) {
+		return bob, nil
+	}
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	text := "@bob@remote.example hi @bobalias@remote.example"
+	note.Text = &text
+	hook.OnNoteCreated(note, author)
+
+	// Deduped by user ID: only one enqueue.
+	require.Len(t, enq.calls, 1)
+}
+
+func TestNoteDeliveryHook_MentionedRemoteUser_DeliverError_DoesNotPanic(t *testing.T) {
+	hook, enq, userRepo, _, _, _ := newNoteDeliveryHook(t)
+	// author has no keypair → signer lookup fails → DeliverToUser returns error.
+	author := &model.User{ID: "alice", Username: "alice"}
+	userRepo.Users["alice"] = author
+
+	host := "remote.example"
+	inbox := "https://remote.example/users/bob/inbox"
+	userRepo.Users["bob"] = &model.User{
+		ID:            "bob",
+		Username:      "bob",
+		UsernameLower: "bob",
+		Host:          &host,
+		Inbox:         &inbox,
+	}
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	text := "hi @bob@remote.example"
+	note.Text = &text
+	hook.OnNoteCreated(note, author) // panic しないこと
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeliveryHook_MentionedRemoteUser_NoText(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	// No text at all; mention delivery should simply return.
+	hook.OnNoteCreated(note, author)
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeliveryHook_MentionedRemoteUser_NoMentions(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	text := "plain text with no mentions"
+	note.Text = &text
+	hook.OnNoteCreated(note, author)
+	assert.Empty(t, enq.calls)
+}
+
 func TestNoteDeliveryHook_PureRenote_LocalTarget_EmitsAnnounce(t *testing.T) {
 	hook, enq, userRepo, followingRepo, keypairRepo, noteRepo := newNoteDeliveryHook(t)
 	author := makeLocalAuthor(t, userRepo, keypairRepo)

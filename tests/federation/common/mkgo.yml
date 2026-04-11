@@ -1,0 +1,15 @@
+url: https://mkgo/
+port: 3000
+
+db:
+  host: postgres-mkgo
+  port: 5432
+  db: misskey
+  user: misskey
+  pass: testpass
+
+redis:
+  host: redis-mkgo
+  port: 6379
+
+id: aidx

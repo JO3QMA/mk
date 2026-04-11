@@ -1,0 +1,33 @@
+# Dockerfile used only by docker-compose.federation.*.yml to run mk-go
+# inside federation tests. Unlike the main Dockerfile it also builds the
+# migrate binary and runs migrations before starting the server.
+#
+# Build context must be the repository root.
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git build-base
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey \
+ && go build -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
+
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata wget
+
+WORKDIR /app
+
+COPY --from=builder /app/built/misskey /app/misskey
+COPY --from=builder /app/built/migrate /app/migrate
+COPY --from=builder /app/migration /app/migration
+COPY tests/federation/common/mkgo-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 3000
+
+ENTRYPOINT ["/entrypoint.sh"]

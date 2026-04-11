@@ -157,6 +157,33 @@ func (m *MockUserRepository) ListUsers(filter model.UserListFilter) ([]*model.Us
 	return result[offset:end], nil
 }
 
+// ListRemoteInboxes returns dedup'd inbox URLs for every remote user in the
+// mock store. sharedInbox を優先。
+func (m *MockUserRepository) ListRemoteInboxes() ([]string, error) {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, u := range m.Users {
+		if u.Host == nil {
+			continue
+		}
+		var inbox string
+		if u.SharedInbox != nil && *u.SharedInbox != "" {
+			inbox = *u.SharedInbox
+		} else if u.Inbox != nil && *u.Inbox != "" {
+			inbox = *u.Inbox
+		}
+		if inbox == "" {
+			continue
+		}
+		if _, dup := seen[inbox]; dup {
+			continue
+		}
+		seen[inbox] = struct{}{}
+		out = append(out, inbox)
+	}
+	return out, nil
+}
+
 func (m *MockUserRepository) UpdateProfile(userID string, fields map[string]any) error {
 	p, ok := m.Profiles[userID]
 	if !ok {
@@ -835,6 +862,13 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 		if s, ok := v.(string); ok {
 			m.Meta.RootUserID = &s
 		}
+	}
+	return nil
+}
+
+func (m *MockMetaRepository) EnsureInitial(id string) error {
+	if m.Meta == nil {
+		m.Meta = &model.Meta{ID: id}
 	}
 	return nil
 }

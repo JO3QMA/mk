@@ -373,3 +373,83 @@ func TestUserRepository_ListUsers_LimitCap(t *testing.T) {
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(users), 100)
 }
+
+func TestUserRepository_ListRemoteInboxes(t *testing.T) {
+	repo := NewUserRepository(testDB)
+
+	// ローカルユーザー (inbox なし) は含まれない。
+	local := insertTestUser(t, "lri_local", "lri_local")
+	defer cleanupUser(t, local.ID)
+
+	// リモートユーザー A: sharedInbox あり → sharedInbox が使われる。
+	hostA := "remote-a.example"
+	inboxA := "https://remote-a.example/users/a/inbox"
+	sharedA := "https://remote-a.example/inbox"
+	a := &model.User{
+		ID:                "lri_a",
+		Username:          "lri_a",
+		UsernameLower:     "lri_a",
+		Host:              &hostA,
+		Inbox:             &inboxA,
+		SharedInbox:       &sharedA,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, repo.Create(a))
+	defer cleanupUser(t, a.ID)
+
+	// リモートユーザー B: sharedInbox なし → inbox が使われる。
+	hostB := "remote-b.example"
+	inboxB := "https://remote-b.example/users/b/inbox"
+	b := &model.User{
+		ID:                "lri_b",
+		Username:          "lri_b",
+		UsernameLower:     "lri_b",
+		Host:              &hostB,
+		Inbox:             &inboxB,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, repo.Create(b))
+	defer cleanupUser(t, b.ID)
+
+	// リモートユーザー C: A と同じ sharedInbox → dedup される。
+	c := &model.User{
+		ID:                "lri_c",
+		Username:          "lri_c",
+		UsernameLower:     "lri_c",
+		Host:              &hostA,
+		SharedInbox:       &sharedA,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, repo.Create(c))
+	defer cleanupUser(t, c.ID)
+
+	// リモートユーザー D: inbox も sharedInbox も空 → スキップされる。
+	hostD := "remote-d.example"
+	d := &model.User{
+		ID:                "lri_d",
+		Username:          "lri_d",
+		UsernameLower:     "lri_d",
+		Host:              &hostD,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, repo.Create(d))
+	defer cleanupUser(t, d.ID)
+
+	inboxes, err := repo.ListRemoteInboxes()
+	require.NoError(t, err)
+
+	// sharedA と inboxB が含まれる (localは host=NULL で除外、D は空でスキップ、
+	// C は A と同じ sharedInbox なので dedup)。
+	assert.Contains(t, inboxes, sharedA)
+	assert.Contains(t, inboxes, inboxB)
+	// inboxA は shared が優先されるので出ない。
+	assert.NotContains(t, inboxes, inboxA)
+	// dedup 確認: sharedA は 1 回だけ。
+	seen := 0
+	for _, ib := range inboxes {
+		if ib == sharedA {
+			seen++
+		}
+	}
+	assert.Equal(t, 1, seen)
+}

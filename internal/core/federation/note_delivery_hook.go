@@ -83,6 +83,45 @@ func (h *NoteDeliveryHook) OnNoteCreated(note *model.Note, author *model.User) {
 	case model.NoteVisibilitySpecified:
 		h.deliverToSpecified(author, note, body)
 	}
+
+	// メンションされたリモートユーザーにも直接配信する。フォロワー配信だけでは
+	// 相手にノートが届かないため、メンション通知が発生しない。
+	h.deliverToMentionedRemotes(author, note, body)
+}
+
+// deliverToMentionedRemotes finds remote users mentioned in the note text and
+// ships the Create activity directly to each one's inbox.
+// ローカル DB にキャッシュ済みのリモートユーザーのみ対象 (それ以外は解決しない)。
+func (h *NoteDeliveryHook) deliverToMentionedRemotes(author *model.User, note *model.Note, body []byte) {
+	if note == nil || note.Text == nil || *note.Text == "" {
+		return
+	}
+	mentions := corenote.ExtractMentionStructs(*note.Text)
+	if len(mentions) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(mentions))
+	for _, m := range mentions {
+		if m.Host == "" {
+			// ローカルメンション: 連合配信不要
+			continue
+		}
+		host := m.Host
+		user, err := h.userRepo.FindByUsernameLower(m.Username, &host)
+		if err != nil {
+			// 未知のリモートユーザー: webfinger 経由で事前に解決されていない
+			// ため配信先を得られない。スキップ。
+			continue
+		}
+		if _, dup := seen[user.ID]; dup {
+			continue
+		}
+		seen[user.ID] = struct{}{}
+		if err := h.deliver.DeliverToUser(author.ID, user, body); err != nil {
+			slog.Warn("mention delivery: deliver to user failed",
+				"noteId", note.ID, "userId", user.ID, "err", err)
+		}
+	}
 }
 
 // deliverAnnounce renders an Announce activity for a pure renote and ships it

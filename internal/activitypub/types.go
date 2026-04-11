@@ -72,6 +72,17 @@ type Note struct {
 	InReplyTo    string   `json:"inReplyTo,omitempty"`
 	Summary      string   `json:"summary,omitempty"`
 	Sensitive    bool     `json:"sensitive,omitempty"`
+	Tag          []any    `json:"tag,omitempty"`
+}
+
+// Mention is an ActivityStreams Mention tag used inside Note.tag to inform
+// receiving instances which actors are mentioned in the note content.
+// href は actor URI (ローカルなら urls.UserURI, リモートなら user.URI)、
+// name は Misskey 互換の "@username" / "@username@host" 形式。
+type Mention struct {
+	Type string `json:"type"` // "Mention"
+	Href string `json:"href"`
+	Name string `json:"name,omitempty"`
 }
 
 // Source represents the original markup of a note (Markdown / MFM).

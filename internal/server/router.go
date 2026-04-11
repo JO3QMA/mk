@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
@@ -92,6 +93,12 @@ func (s *Server) setupRoutes() {
 	userRepo := repository.NewUserRepository(s.db)
 	noteRepo := repository.NewNoteRepository(s.db)
 	metaRepo := repository.NewMetaRepository(s.db)
+	// Seed the singleton meta row on first boot so that fresh installs
+	// can run /api/admin/accounts/create (initial setup) without tripping
+	// over a missing meta row.
+	if err := metaRepo.EnsureInitial(idGen.Generate(time.Now())); err != nil {
+		slog.Error("failed to ensure initial meta row", "err", err)
+	}
 	pollRepo := repository.NewPollRepository(s.db)
 	followingRepo := repository.NewFollowingRepository(s.db)
 	followRequestRepo := repository.NewFollowRequestRepository(s.db)
@@ -124,6 +131,8 @@ func (s *Server) setupRoutes() {
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
 	signupService := coresignup.NewService(userRepo, metaRepo, idGen)
+	// ActivityPub 配信のためにローカルユーザーは RSA 鍵対を必要とする。
+	signupService.SetKeypairRepo(keypairRepo)
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
 	noteDeleteService := corenote.NewDeleteService(noteRepo)
 	noteQueryService := corenote.NewQueryService(noteRepo, followingRepo)
@@ -246,6 +255,8 @@ func (s *Server) setupRoutes() {
 	// ActivityPub
 	apURLs := activitypub.NewURLBuilder(s.config.URL)
 	apRenderer := activitypub.NewRenderer(apURLs)
+	// Mention tag を AP Note に埋め込むための resolver。
+	apRenderer.SetMentionResolver(corefederation.NewUserMentionResolver(userRepo, apURLs))
 	apClient := activitypub.NewClient(nil, "misskey-go/"+s.config.Version)
 	apFetcher := corefederation.NewAPFetcher(apClient)
 	federationResolver := corefederation.NewResolver(userRepo, noteRepo, apURLs, apFetcher, idGen)
@@ -263,7 +274,9 @@ func (s *Server) setupRoutes() {
 	noteCreateService.SetFederationHook(corefederation.NewNoteDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo, noteRepo))
 	followingService.SetFederationHook(corefederation.NewFollowingDeliveryHook(deliverService, apRenderer, apURLs))
 	reactionService.SetFederationHook(corefederation.NewReactionDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo))
-	noteDeleteService.SetFederationHook(corefederation.NewNoteDeleteDeliveryHook(deliverService, apRenderer, apURLs))
+	noteDeleteHook := corefederation.NewNoteDeleteDeliveryHook(deliverService, apRenderer, apURLs)
+	noteDeleteHook.SetUserRepo(userRepo)
+	noteDeleteService.SetFederationHook(noteDeleteHook)
 	deliverProcessor := processors.NewDeliverProcessor(apClient)
 	// 配信結果に応じて instance.isNotResponding を更新する
 	deliverProcessor.SetResponseHook(instanceService)
@@ -693,6 +706,10 @@ func (s *Server) setupRoutes() {
 	apHandler.SetRemote(apFetcher, federationResolver)
 	s.echo.GET("/users/:id", apHandler.User)
 	s.echo.GET("/notes/:id", apHandler.Note)
+	// Content-negotiated actor endpoint: /@username (and /@username@host).
+	// When the caller asks for application/activity+json we return the
+	// Person document; otherwise the catch-all serves the HTML frontend.
+	s.echo.GET("/@:acct", apHandler.UserByAcct)
 
 	// Discovery endpoints
 	wellknownHandler := wellknown.NewHandler(apURLs, userService, s.config.Host)
