@@ -33,7 +33,6 @@ type ReversiGame struct {
 	Form1                datatypes.JSON `gorm:"column:form1;type:jsonb" json:"form1"`
 	Form2                datatypes.JSON `gorm:"column:form2;type:jsonb" json:"form2"`
 	CRC32                *string        `gorm:"column:crc32;type:varchar(32)" json:"crc32"`
-	FederationID         *string        `gorm:"column:federationId;type:varchar(256)" json:"federationId"`
 
 	User1 *User `gorm:"foreignKey:User1ID" json:"user1,omitempty"`
 	User2 *User `gorm:"foreignKey:User2ID" json:"user2,omitempty"`

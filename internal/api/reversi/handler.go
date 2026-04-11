@@ -2,7 +2,9 @@ package reversi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -17,9 +19,9 @@ import (
 )
 
 // FederationDeliverer delivers AP activities to remote users.
-// 循環依存を避けるため interface で定義。
+// 循環依存を避けるため interface で定義。実装は core/federation.DeliverService。
 type FederationDeliverer interface {
-	DeliverToUser(activity any, localUserID string, remoteUserURI string) error
+	DeliverToUser(signerUserID string, recipient *model.User, body []byte) error
 }
 
 // Handler handles reversi/* endpoints.
@@ -100,6 +102,30 @@ var defaultMap = pq.StringArray{
 	"--------",
 }
 
+// resolveAcct converts an acct form (`@user` or `@user@host`) into a local
+// user id by looking up the UserRepository. Remote users must already exist
+// locally — webfinger-based discovery is intentionally out of scope.
+func (h *Handler) resolveAcct(acct string) (string, error) {
+	trimmed := strings.TrimPrefix(acct, "@")
+	if trimmed == "" {
+		return "", errors.New("empty acct")
+	}
+	username := trimmed
+	var hostPtr *string
+	if at := strings.IndexByte(trimmed, '@'); at >= 0 {
+		username = trimmed[:at]
+		host := strings.ToLower(trimmed[at+1:])
+		if host != "" {
+			hostPtr = &host
+		}
+	}
+	u, err := h.userRepo.FindByUsernameLower(strings.ToLower(username), hostPtr)
+	if err != nil {
+		return "", err
+	}
+	return u.ID, nil
+}
+
 // Games handles POST /api/reversi/games — list games.
 func (h *Handler) Games(c echo.Context) error {
 	var req struct {
@@ -155,12 +181,25 @@ func (h *Handler) ShowGame(c echo.Context) error {
 }
 
 // Match handles POST /api/reversi/match — create or join a game.
+// userId は本家互換で local user id を受け付けるが、CherryPick 拡張として
+// `@user` / `@user@host` 形式 (acct) も受け入れる。これは vanilla Misskey
+// フロントエンドが「対戦相手選択画面」を持たず、リモートユーザーを選択で
+// きない制約を緩和するための backend-side workaround。
 func (h *Handler) Match(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req struct {
 		UserID string `json:"userId"`
 	}
 	_ = c.Bind(&req)
+
+	// acct 形式 (@user / @user@host) を local user id に解決する
+	if strings.HasPrefix(req.UserID, "@") && h.userRepo != nil {
+		resolved, err := h.resolveAcct(req.UserID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, apiError("NO_SUCH_USER", "No such user.", "6cc579cc-885d-43d8-95c2-b8c7fc963280"))
+		}
+		req.UserID = resolved
+	}
 
 	now := time.Now()
 	game := &model.ReversiGame{
@@ -176,27 +215,23 @@ func (h *Handler) Match(c echo.Context) error {
 		// ランダムマッチ — user2IDを空にしてマッチ待ち
 		game.User2ID = user.ID // 自分vs自分 (仮置き、実際はマッチング待ち)
 	}
-	// リモートユーザーへの対戦の場合、federationIdを生成
-	if req.UserID != "" && h.userRepo != nil && h.deliverer != nil {
-		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.Host != nil {
-			sessionID := h.idGen.Generate(now) + "-fed"
-			game.FederationID = &sessionID
-			if h.fedCache != nil {
-				h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
-			}
-		}
-	}
 
 	if err := h.repo.Create(game); err != nil {
 		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	// リモートユーザーにInvite送信
-	if game.FederationID != nil && h.deliverer != nil && h.userRepo != nil {
-		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.URI != nil {
-			invite := corereversi.RenderInvite(h.baseURL, *game.FederationID,
+	// リモートユーザーの場合、federation session を Redis に保存 + Invite 送信。
+	// DB スキーマは本家互換を保つため、session id はカラムに持たせず Redis のみに
+	// 保持する (internal/core/reversi.FederationIDCache)。
+	if req.UserID != "" && h.userRepo != nil && h.deliverer != nil && h.fedCache != nil {
+		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.Host != nil && targetUser.URI != nil {
+			sessionID := h.idGen.Generate(now) + "-fed"
+			h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
+			invite := corereversi.RenderInvite(h.baseURL, sessionID,
 				h.baseURL+"/users/"+user.ID, *targetUser.URI, now.UTC().Format(time.RFC3339))
-			_ = h.deliverer.DeliverToUser(invite, user.ID, *targetUser.URI)
+			if body, jerr := json.Marshal(invite); jerr == nil {
+				_ = h.deliverer.DeliverToUser(user.ID, targetUser, body)
+			}
 		}
 	}
 
@@ -247,12 +282,18 @@ func (h *Handler) Surrender(c echo.Context) error {
 	game.SurrenderedUserID = &user.ID
 	_ = h.repo.Update(game)
 
-	// リモート相手にLeave送信
-	if game.FederationID != nil && h.deliverer != nil && h.userRepo != nil {
-		remoteID := winnerID // 相手
-		if remoteUser, err := h.userRepo.FindByID(remoteID); err == nil && remoteUser.Host != nil && remoteUser.URI != nil {
-			leave := corereversi.RenderLeave(h.baseURL+"/users/"+user.ID, *remoteUser.URI, *game.FederationID)
-			_ = h.deliverer.DeliverToUser(leave, user.ID, *remoteUser.URI)
+	// リモート相手に Leave 送信。federation session は Redis 側にある。
+	if h.fedCache != nil && h.deliverer != nil && h.userRepo != nil {
+		if sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), game.ID); ok {
+			remoteID := winnerID // 相手
+			if remoteUser, err := h.userRepo.FindByID(remoteID); err == nil && remoteUser.Host != nil && remoteUser.URI != nil {
+				leave := corereversi.RenderLeave(h.baseURL+"/users/"+user.ID, *remoteUser.URI, sessionID)
+				if body, jerr := json.Marshal(leave); jerr == nil {
+					_ = h.deliverer.DeliverToUser(user.ID, remoteUser, body)
+				}
+			}
+			// ゲーム終了時に mapping を明示削除
+			h.fedCache.Delete(c.Request().Context(), sessionID, game.ID)
 		}
 	}
 

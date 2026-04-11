@@ -11,6 +11,8 @@ import (
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
+	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
@@ -33,6 +35,13 @@ type Processor struct {
 	noteDeleteSvc    *corenote.DeleteService
 	userRepo         repository.UserRepository
 	noteRepo         repository.NoteRepository
+
+	// Reversi federation hooks (Phase 9.7). All four are set via
+	// SetReversi; if nil, reversi inbox types are treated as unsupported.
+	reversiSvc      *corereversi.Service
+	reversiRepo     repository.ReversiRepository
+	reversiIDGen    id.Generator
+	reversiFedCache *corereversi.FederationIDCache
 }
 
 // NewProcessor constructs a Processor. reactionService / noteDeleteSvc は省略
@@ -62,6 +71,9 @@ type genericActivity struct {
 	Actor  string          `json:"actor"`
 	Object json.RawMessage `json:"object"`
 	ID     string          `json:"id"`
+	// To は reversi Invite の配送先を読むために保持する。string と []string
+	// 両方を受け入れるため RawMessage で保持し、必要な時点で解釈する。
+	To json.RawMessage `json:"to"`
 }
 
 // Process consumes a JSON activity body received in an inbox. Returns nil if
@@ -107,8 +119,29 @@ func (p *Processor) Process(body []byte) error {
 		return p.handleUpdate(act)
 	case "reject":
 		return p.handleReject(act)
+	case "invite":
+		return p.handleReversiInvite(act)
+	case "join":
+		return p.handleReversiJoin(act)
+	case "leave":
+		return p.handleReversiLeave(act)
 	}
 	return ErrUnsupportedActivity
+}
+
+// SetReversi wires the reversi federation dependencies. When any of the
+// arguments is nil, reversi inbox activities fall through as unsupported
+// (useful for tests that do not care about reversi).
+func (p *Processor) SetReversi(
+	svc *corereversi.Service,
+	repo repository.ReversiRepository,
+	idGen id.Generator,
+	fedCache *corereversi.FederationIDCache,
+) {
+	p.reversiSvc = svc
+	p.reversiRepo = repo
+	p.reversiIDGen = idGen
+	p.reversiFedCache = fedCache
 }
 
 // handleFollow processes an inbound Follow activity.
@@ -365,9 +398,23 @@ func (p *Processor) handleDelete(act genericActivity) error {
 // Misskey 本家にはノート編集 API が無いが、Mastodon 系の Update Note は受信
 // するだけ受信して反映する (`Resolver.UpdateRemoteNote` 経由)。それ以外の
 // type (Question / Article 等) は no-op。
+// Reversi Game 型の Update (CherryPick 拡張) はこの中で分岐する。
 func (p *Processor) handleUpdate(act genericActivity) error {
-	// 先に object の type を覗いて Note / Person の判定を行う。
+	// 先に object の type を覗いて Note / Person / Game の判定を行う。
 	objectType := peekObjectType(act.Object)
+	if strings.EqualFold(objectType, "game") {
+		// Game オブジェクトは reversi 拡張専用。未ワイヤなら skip。
+		if !p.reversiReady() {
+			return nil
+		}
+		if err := p.handleReversiUpdate(act); err != nil {
+			if errors.Is(err, ErrNotReversiGame) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
 	if strings.EqualFold(objectType, "note") {
 		_, err := p.resolver.UpdateRemoteNote(act.Object)
 		// ErrInvalidNote は受信側の不備として skip 扱い (200 を返す)。

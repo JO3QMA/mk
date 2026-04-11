@@ -847,6 +847,12 @@ func (s *Server) setupRoutes() {
 	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
 	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)
 	streamRegistry.Register("reversiGame", channels.NewReversiGameFactory(reversiService).New)
+	// Phase 9.7: federation processor / reversi handler に reversi 依存を注入。
+	// FederationIDCache は本家 Misskey DB スキーマ互換のため DB カラムを持たず
+	// Redis のみで session↔gameID の双方向 mapping を保持する。api handler と
+	// federation inbox で同じインスタンスを共有する。
+	reversiFedCache := corereversi.NewFederationIDCache(s.redis.Default)
+	federationProcessor.SetReversi(reversiService, reversiRepo, idGen, reversiFedCache)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
@@ -1060,6 +1066,7 @@ func (s *Server) setupRoutes() {
 
 	// reversi/* — オセロゲーム (実データ)
 	reversiHandler := apireversi.NewHandler(reversiRepo, idGen)
+	reversiHandler.SetFederation(s.config.URL, deliverService, reversiFedCache, userRepo)
 	api.POST("/reversi/games", reversiHandler.Games)
 	api.POST("/reversi/invitations", reversiHandler.Invitations, middleware.RequireAuth())
 	api.POST("/reversi/show-game", reversiHandler.ShowGame)

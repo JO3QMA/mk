@@ -1,0 +1,517 @@
+package federation_test
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"os"
+	"sync"
+	"testing"
+
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/activitypub"
+	"github.com/shiroha-a/mk/internal/core/federation"
+	corefollowing "github.com/shiroha-a/mk/internal/core/following"
+	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+)
+
+// --- Redis for FederationIDCache ---
+
+var fedTestRedis *testutil.TestRedis
+
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+	tr, err := testutil.SetupRedis(ctx)
+	if err != nil {
+		log.Fatalf("federation reversi test: redis setup failed: %v", err)
+	}
+	fedTestRedis = tr
+	code := m.Run()
+	fedTestRedis.Teardown(ctx)
+	os.Exit(code)
+}
+
+// --- in-memory reversi repository ---
+
+type fedFakeReversiRepo struct {
+	mu    sync.Mutex
+	games map[string]*model.ReversiGame
+}
+
+func newFedFakeReversiRepo() *fedFakeReversiRepo {
+	return &fedFakeReversiRepo{games: make(map[string]*model.ReversiGame)}
+}
+
+func (r *fedFakeReversiRepo) Create(g *model.ReversiGame) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	clone := *g
+	r.games[g.ID] = &clone
+	return nil
+}
+
+func (r *fedFakeReversiRepo) FindByID(id string) (*model.ReversiGame, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if g, ok := r.games[id]; ok {
+		clone := *g
+		return &clone, nil
+	}
+	return nil, assertError
+}
+
+func (r *fedFakeReversiRepo) Update(g *model.ReversiGame) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	clone := *g
+	r.games[g.ID] = &clone
+	return nil
+}
+
+func (r *fedFakeReversiRepo) ListByUser(_ string, _ int) ([]*model.ReversiGame, error) {
+	return nil, nil
+}
+func (r *fedFakeReversiRepo) ListActive() ([]*model.ReversiGame, error) { return nil, nil }
+func (r *fedFakeReversiRepo) Delete(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.games, id)
+	return nil
+}
+
+// game-by-session via Redis cache + in-memory map traversal helper.
+func (r *fedFakeReversiRepo) findGameBySession(t *testing.T, cache *corereversi.FederationIDCache, sessionID string) *model.ReversiGame {
+	t.Helper()
+	gid, err := cache.Get(context.Background(), sessionID)
+	if err != nil || gid == "" {
+		return nil
+	}
+	g, err := r.FindByID(gid)
+	if err != nil {
+		return nil
+	}
+	return g
+}
+
+var assertError = assertErrSentinel("not found")
+
+type assertErrSentinel string
+
+func (e assertErrSentinel) Error() string { return string(e) }
+
+// --- bundle helper ---
+
+type reversiFedBundle struct {
+	processor  *federation.Processor
+	userRepo   *testutil.MockUserRepository
+	gameRepo   *fedFakeReversiRepo
+	reversiSvc *corereversi.Service
+	fedCache   *corereversi.FederationIDCache
+	idGen      id.Generator
+}
+
+func newReversiProcessor(t *testing.T) *reversiFedBundle {
+	t.Helper()
+	fedTestRedis.FlushAll(context.Background())
+
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(aliceActor)}, idGen)
+	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
+	processor := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
+
+	fedCache := corereversi.NewFederationIDCache(fedTestRedis.Client)
+	gameRepo := newFedFakeReversiRepo()
+	reversiSvc := corereversi.NewService(gameRepo, nil, fedTestRedis.Client)
+	processor.SetReversi(reversiSvc, gameRepo, idGen, fedCache)
+
+	return &reversiFedBundle{
+		processor:  processor,
+		userRepo:   repo,
+		gameRepo:   gameRepo,
+		reversiSvc: reversiSvc,
+		fedCache:   fedCache,
+		idGen:      idGen,
+	}
+}
+
+func registerLocalBob(t *testing.T, repo *testutil.MockUserRepository) {
+	t.Helper()
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{
+		ID: "bob", Username: "bob", UsernameLower: "bob", URI: &bobURI,
+	}
+}
+
+func registerRemoteAlice(t *testing.T, repo *testutil.MockUserRepository) {
+	t.Helper()
+	aliceURI := "https://remote.example/users/alice"
+	host := "remote.example"
+	repo.Users["alice"] = &model.User{
+		ID: "alice", Username: "alice", UsernameLower: "alice",
+		Host: &host, URI: &aliceURI,
+	}
+}
+
+// seedFederatedGame creates an in-memory game row and registers its federation
+// session id in Redis via FederationIDCache. The resulting game has user1=bob
+// (local), user2=alice (remote), mirroring the "local player invited a remote
+// opponent" flow.
+func seedFederatedGame(t *testing.T, b *reversiFedBundle, sessionID string, started bool) *model.ReversiGame {
+	t.Helper()
+	bw := 1
+	game := &model.ReversiGame{
+		ID:                   "fedg-" + sessionID,
+		User1ID:              "bob",
+		User2ID:              "alice",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "1",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+		IsStarted:            started,
+	}
+	if started {
+		game.Black = &bw
+	}
+	require.NoError(t, b.gameRepo.Create(game))
+	b.fedCache.Set(context.Background(), sessionID, game.ID)
+	return game
+}
+
+// --- Invite ---
+
+func TestReversiInbox_Invite_CreatesGame(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerLocalBob(t, b.userRepo)
+
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"to": "https://example.com/users/bob",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-001"}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-001")
+	require.NotNil(t, g)
+	assert.NotEmpty(t, g.User1ID)
+	assert.Equal(t, "bob", g.User2ID)
+}
+
+func TestReversiInbox_Invite_IdempotentOnResend(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerLocalBob(t, b.userRepo)
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"to": "https://example.com/users/bob",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-dup"}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+	require.NoError(t, b.processor.Process(body))
+	assert.Len(t, b.gameRepo.games, 1)
+}
+
+func TestReversiInbox_Invite_MissingRecipient(t *testing.T) {
+	b := newReversiProcessor(t)
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "s"}
+		}
+	}`)
+	assert.Error(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_Invite_RecipientNotLocal(t *testing.T) {
+	b := newReversiProcessor(t)
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"to": "https://example.com/users/ghost",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "s"}
+		}
+	}`)
+	assert.Error(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_Invite_NotReversiGame(t *testing.T) {
+	b := newReversiProcessor(t)
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"to": "https://example.com/users/bob",
+		"object": {"type": "Other"}
+	}`)
+	assert.Error(t, b.processor.Process(body))
+}
+
+// --- Join ---
+
+func TestReversiInbox_Join_KnownSession(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-join-1", false)
+
+	body := []byte(`{
+		"type": "Join",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-join-1"}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_Join_UnknownSession(t *testing.T) {
+	b := newReversiProcessor(t)
+	body := []byte(`{
+		"type": "Join",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "ghost"}
+		}
+	}`)
+	assert.Error(t, b.processor.Process(body))
+}
+
+// --- Leave ---
+
+func TestReversiInbox_Leave_PreStartCancels(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-leave-pre", false)
+
+	body := []byte(`{
+		"type": "Leave",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-leave-pre"}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	assert.Nil(t, b.gameRepo.findGameBySession(t, b.fedCache, "sess-leave-pre"))
+}
+
+func TestReversiInbox_Leave_StartedSurrenders(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-leave-started", true)
+
+	body := []byte(`{
+		"type": "Leave",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-leave-started"}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-leave-started")
+	require.NotNil(t, g)
+	assert.True(t, g.IsEnded)
+	require.NotNil(t, g.WinnerID)
+	assert.Equal(t, "bob", *g.WinnerID)
+}
+
+func TestReversiInbox_Leave_UnknownSession(t *testing.T) {
+	b := newReversiProcessor(t)
+	body := []byte(`{
+		"type": "Leave",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "ghost"}
+		}
+	}`)
+	assert.Error(t, b.processor.Process(body))
+}
+
+// --- Update (reversi variant) ---
+
+func TestReversiInbox_Update_ReadyStates(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-ready", false)
+
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {
+				"game_session_id": "sess-ready",
+				"type": "ready_states",
+				"ready": true
+			}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-ready")
+	require.NotNil(t, g)
+	// alice is user2; her ready flag should be true
+	assert.True(t, g.User2Ready)
+}
+
+func TestReversiInbox_Update_Settings(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-settings", false)
+
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {
+				"game_session_id": "sess-settings",
+				"type": "settings",
+				"key": "isLlotheo",
+				"value": true
+			}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-settings")
+	require.NotNil(t, g)
+	assert.True(t, g.IsLlotheo)
+}
+
+func TestReversiInbox_Update_PutStone(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-put", false)
+
+	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-put")
+	require.NotNil(t, g)
+	require.NoError(t, b.reversiSvc.StartGame(context.Background(), g))
+	_ = b.gameRepo.Update(g)
+
+	// bob (local, black) moves first, then alice (remote, white) via Update
+	require.NoError(t, b.reversiSvc.PutStone(context.Background(), g.ID, "bob", 19))
+
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {
+				"game_session_id": "sess-put",
+				"type": "putstone",
+				"pos": 18
+			}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	fresh := b.gameRepo.findGameBySession(t, b.fedCache, "sess-put")
+	require.NotNil(t, fresh)
+	var logs [][]int
+	_ = json.Unmarshal(fresh.Logs, &logs)
+	assert.Len(t, logs, 2)
+}
+
+func TestReversiInbox_Update_UnknownGameStateType(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-u", false)
+
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {
+				"game_session_id": "sess-u",
+				"type": "bogus"
+			}
+		}
+	}`)
+	assert.Error(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_Update_MissingReadyField(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-r", false)
+
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-r", "type": "ready_states"}
+		}
+	}`)
+	assert.Error(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_Update_NotReversiGame(t *testing.T) {
+	b := newReversiProcessor(t)
+	body := []byte(`{
+		"type": "Update",
+		"actor": "https://remote.example/users/alice",
+		"object": {"type": "Note", "id": "https://remote.example/notes/x"}
+	}`)
+	err := b.processor.Process(body)
+	assert.NoError(t, err)
+}
+
+// --- Unwired processor ---
+
+func TestReversiInbox_Unwired_Unsupported(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(aliceActor)}, idGen)
+	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
+	p := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
+
+	for _, typ := range []string{"Invite", "Join", "Leave"} {
+		body := []byte(`{"type":"` + typ + `","actor":"https://remote.example/users/alice","object":{}}`)
+		err := p.Process(body)
+		assert.ErrorIs(t, err, federation.ErrUnsupportedActivity)
+	}
+}
