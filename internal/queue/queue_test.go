@@ -208,6 +208,21 @@ func TestDecodeImportPayload_Invalid(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestNewImportCustomEmojisTask_RoundTrip(t *testing.T) {
+	payload := queue.ImportCustomEmojisPayload{UserID: "admin1", FileID: "f1"}
+	task := queue.NewImportCustomEmojisTask(payload)
+	assert.Equal(t, queue.TaskTypeImportCustomEmojis, task.Type())
+
+	decoded, err := queue.DecodeImportCustomEmojisPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload, decoded)
+}
+
+func TestDecodeImportCustomEmojisPayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeImportCustomEmojisPayload([]byte(`{bad`))
+	assert.Error(t, err)
+}
+
 func TestClient_EnqueueExport(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
@@ -242,6 +257,24 @@ func TestClient_EnqueueImport(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tasks, 1)
 	assert.Equal(t, queue.TaskTypeImport, tasks[0].Type)
+}
+
+func TestClient_EnqueueImportCustomEmojis(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueImportCustomEmojis(queue.ImportCustomEmojisPayload{UserID: "admin1", FileID: "f1"}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.ExportQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, queue.TaskTypeImportCustomEmojis, tasks[0].Type)
 }
 
 func TestInspector_QueuesAndInfo(t *testing.T) {

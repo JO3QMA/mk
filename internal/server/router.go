@@ -55,6 +55,7 @@ import (
 	corechat "github.com/shiroha-a/mk/internal/core/chat"
 	coreclip "github.com/shiroha-a/mk/internal/core/clip"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
+	coreemojiimport "github.com/shiroha-a/mk/internal/core/emojiimport"
 	"github.com/shiroha-a/mk/internal/core/event"
 	corefederation "github.com/shiroha-a/mk/internal/core/federation"
 	coreflash "github.com/shiroha-a/mk/internal/core/flash"
@@ -262,6 +263,18 @@ func (s *Server) setupRoutes() {
 	importProcessor := processors.NewImportProcessor(importer)
 	s.queueServer.Handle(queue.TaskTypeExport, exportProcessor.Handle)
 	s.queueServer.Handle(queue.TaskTypeImport, importProcessor.Handle)
+
+	// Phase 9.9: admin/emoji/import-zip を非同期で処理するワーカー。
+	// driveReader と driveService を再利用し ZIP 展開→Drive 保存→emoji 行作成。
+	emojiImporter := coreemojiimport.NewImporter(coreemojiimport.Deps{
+		UserRepo:  userRepo,
+		EmojiRepo: emojiRepo,
+		Drive:     driveReader,
+		Uploader:  driveService,
+		IDGen:     idGen,
+	})
+	emojiImportProcessor := processors.NewImportCustomEmojisProcessor(emojiImporter)
+	s.queueServer.Handle(queue.TaskTypeImportCustomEmojis, emojiImportProcessor.Handle)
 
 	// Search (Phase 4.6)
 	// 設定に従って provider を選択する。Meilisearch が設定されていれば
@@ -943,6 +956,7 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
 	adminHandler.SetAdminDB(s.db)
+	adminHandler.SetEmojiImportEnqueuer(s.queueClient)
 	if s.queueInspector != nil {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
 	}

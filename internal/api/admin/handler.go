@@ -10,6 +10,7 @@ import (
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"gorm.io/gorm"
@@ -27,7 +28,21 @@ type Handler struct {
 	driveFileRepo  repository.DriveFileRepository
 	adminDB        *gorm.DB
 	queueInspector QueueInspector
+	emojiEnqueuer  EmojiImportEnqueuer
 	idGen          id.Generator
+}
+
+// EmojiImportEnqueuer is the subset of queue.Enqueuer needed to schedule
+// admin/emoji/import-zip jobs. 小さいインターフェースにすることで handler の
+// テストが容易になる。
+type EmojiImportEnqueuer interface {
+	EnqueueImportCustomEmojis(payload queue.ImportCustomEmojisPayload) error
+}
+
+// SetEmojiImportEnqueuer attaches an EmojiImportEnqueuer for the admin/emoji/
+// import-zip endpoint.
+func (h *Handler) SetEmojiImportEnqueuer(e EmojiImportEnqueuer) {
+	h.emojiEnqueuer = e
 }
 
 // QueueInspector abstracts asynq.Inspector for queue management endpoints.
