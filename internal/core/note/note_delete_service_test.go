@@ -21,6 +21,35 @@ func TestDeleteService_Success(t *testing.T) {
 	assert.Empty(t, noteRepo.Notes)
 }
 
+// 返信を削除すると親ノートの repliesCount が減ることを確認する。
+// 本家 Misskey の NoteDeleteService と同じ振る舞い。
+func TestDeleteService_DecrementsParentRepliesCount(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	parentID := "parent1"
+	noteRepo.Notes[parentID] = &model.Note{ID: parentID, UserID: "owner", RepliesCount: 3}
+	replyID := "reply1"
+	parent := parentID
+	noteRepo.Notes[replyID] = &model.Note{ID: replyID, UserID: "replier", ReplyID: &parent}
+
+	svc := note.NewDeleteService(noteRepo)
+	require.NoError(t, svc.Delete(&model.User{ID: "replier"}, replyID))
+
+	// 親のカウンタが 2 になっているはず
+	assert.Equal(t, int16(2), noteRepo.Notes[parentID].RepliesCount)
+}
+
+// ReplyID が無い通常ノートを削除しても余計な IncrementCount は走らず、
+// 既存ロジックを壊していないことを回帰テストする。
+func TestDeleteService_NoParentNoDecrement(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	other := "other"
+	noteRepo.Notes[other] = &model.Note{ID: other, UserID: "owner", RepliesCount: 5}
+	noteRepo.Notes["standalone"] = &model.Note{ID: "standalone", UserID: "u"}
+	svc := note.NewDeleteService(noteRepo)
+	require.NoError(t, svc.Delete(&model.User{ID: "u"}, "standalone"))
+	assert.Equal(t, int16(5), noteRepo.Notes[other].RepliesCount)
+}
+
 func TestDeleteService_NotFound(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
 	svc := note.NewDeleteService(noteRepo)

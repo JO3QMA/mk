@@ -133,34 +133,18 @@ func (r *userRepository) CreateProfile(profile *model.UserProfile) error {
 // ListRemoteInboxes returns a deduplicated list of inbox URLs belonging to
 // every known remote user. sharedInbox を優先し、無ければ個別 inbox を採用
 // する。Public なアクティビティ (Delete 等) の broadcast に使う。
+//
+// SELECT DISTINCT で PostgreSQL 側 dedup させるのでリモートユーザー数が
+// 数十万規模でも Go 側でマップを持たずに済む。空文字は NULLIF で NULL 化して
+// WHERE inbox IS NOT NULL で除外している。
 func (r *userRepository) ListRemoteInboxes() ([]string, error) {
-	var rows []struct {
-		Inbox       *string `gorm:"column:inbox"`
-		SharedInbox *string `gorm:"column:sharedInbox"`
-	}
-	if err := r.db.Model(&model.User{}).
-		Where("host IS NOT NULL").
-		Select("inbox, \"sharedInbox\"").
-		Find(&rows).Error; err != nil {
+	const query = `SELECT DISTINCT COALESCE(NULLIF("sharedInbox", ''), inbox) AS inbox
+FROM "user"
+WHERE host IS NOT NULL
+  AND (COALESCE(NULLIF("sharedInbox", ''), inbox)) IS NOT NULL`
+	var out []string
+	if err := r.db.Raw(query).Scan(&out).Error; err != nil {
 		return nil, err
-	}
-	seen := make(map[string]struct{}, len(rows))
-	out := make([]string, 0, len(rows))
-	for _, row := range rows {
-		var inbox string
-		if row.SharedInbox != nil && *row.SharedInbox != "" {
-			inbox = *row.SharedInbox
-		} else if row.Inbox != nil && *row.Inbox != "" {
-			inbox = *row.Inbox
-		}
-		if inbox == "" {
-			continue
-		}
-		if _, dup := seen[inbox]; dup {
-			continue
-		}
-		seen[inbox] = struct{}{}
-		out = append(out, inbox)
 	}
 	return out, nil
 }

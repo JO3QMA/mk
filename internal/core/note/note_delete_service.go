@@ -79,6 +79,13 @@ func (s *DeleteService) Delete(user *model.User, noteID string) error {
 	if err := s.noteRepo.Delete(note); err != nil {
 		return err
 	}
+	// 返信を削除するときは親ノートの repliesCount を減算する。本家 Misskey の
+	// NoteDeleteService と同じく親の local/remote を問わず一律に減算する。
+	// DeleteService は local/remote どちらの削除経路でも共通で呼ばれるため、
+	// ここに置くと federation 側でも同じ動作になる。失敗はベストエフォート。
+	if note.ReplyID != nil {
+		_ = s.noteRepo.IncrementCount(*note.ReplyID, "repliesCount", -1)
+	}
 	if s.federationHook != nil {
 		s.federationHook.OnNoteDeleted(user, note)
 	}
