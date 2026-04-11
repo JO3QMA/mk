@@ -1,0 +1,134 @@
+# docker compose -f compose.uds.yaml up -d
+#
+# UNIX domain socket only 構成。Phase 12-1 で mk-go に入った UDS listen 経路
+# (HTTP / PostgreSQL / Valkey) を end-to-end で使う production-like な参照デプロイ。
+#
+# 前提: ホスト側で `make uds-frontend-build` を実行済みで、
+#   third_party/misskey/built/_frontend_vite_/ と
+#   third_party/misskey/built/_frontend_dist_/ が存在すること。
+#
+# 構成:
+#   host:80 → nginx → (mkgo_sock) → mk-go → (pg_sock)     → postgres
+#                                            (valkey_sock) → valkey
+#
+# 注意: どのサービスにも `ports:` を切らない。ホストから到達できるのは
+# nginx の 80 番だけ。`ss -tlnp | grep -E ':(5432|6379|3000)'` が空なら
+# TCP を閉じきれている証拠になる。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mkgo
+      POSTGRES_USER: mkgo
+      POSTGRES_PASSWORD: mkgo_dev_pass
+      # postgres 16 の alpine image はデフォルトで /var/run/postgresql/.s.PGSQL.5432
+      # に socket を作るので、そのまま共有ボリュームに流し込むだけで良い。
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - pg_sock:/var/run/postgresql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h /var/run/postgresql -U mkgo -d mkgo
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mkgo-uds
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "/etc/valkey/valkey.conf"]
+    volumes:
+      - ./deploy/uds/valkey/valkey.conf:/etc/valkey/valkey.conf:ro
+      - valkey_data:/data
+      - valkey_sock:/run/valkey
+    healthcheck:
+      # port 0 で TCP を切っているので、valkey-cli も必ず UDS 経由で叩く。
+      test:
+        - CMD-SHELL
+        - valkey-cli -s /run/valkey/valkey.sock ping | grep -q PONG
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mkgo-uds
+    restart: unless-stopped
+
+  mkgo:
+    build:
+      context: .
+      dockerfile: deploy/uds/Dockerfile.mkgo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Tokyo
+      # 本家 vite のビルド成果物を mk-go に食わせる (Phase 11-1 で入った env 経路)。
+      MISSKEY_FRONTEND_DIR: /frontend/_frontend_vite_
+      MISSKEY_FRONTEND_DIST_DIR: /frontend/_frontend_dist_
+      MISSKEY_CLIENT_ASSETS_DIR: /misskey/packages/frontend/assets
+    volumes:
+      - ./deploy/uds/config/default.yml:/app/.config/default.yml:ro
+      # 本家フロントの vite ビルド成果物。`make uds-frontend-build` で用意する。
+      - ./third_party/misskey/built:/frontend:ro
+      # ClientAssetsDir が読む静的アセット (ゲーム用画像など)。
+      - ./third_party/misskey/packages/frontend/assets:/misskey/packages/frontend/assets:ro
+      # drive ファイルの保存先。
+      - mkgo_files:/app/files
+      # socket 共有用の named volume。
+      - pg_sock:/var/run/postgresql
+      - valkey_sock:/run/valkey
+      - mkgo_sock:/run/mkgo
+    healthcheck:
+      # UDS 経由なので curl --unix-socket を使う (wget は UDS 非対応)。
+      # /healthz は router.go で公開している health check エンドポイント。
+      test:
+        - CMD-SHELL
+        - curl --fail --silent --unix-socket /run/mkgo/mkgo.sock http://localhost/healthz || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - mkgo-uds
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      mkgo:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/uds/nginx/mkgo.conf:/etc/nginx/nginx.conf:ro
+      - mkgo_sock:/run/mkgo
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mkgo-uds
+    restart: unless-stopped
+
+networks:
+  mkgo-uds:
+    driver: bridge
+
+volumes:
+  pg_data:
+  valkey_data:
+  mkgo_files:
+  # socket 共有用の named volume。ファイルシステム実体は root 所有だが、
+  # 各プロセスが作る socket ファイル自体に適切な mode を付与することで
+  # non-root の consumer からも読める。
+  pg_sock:
+  valkey_sock:
+  mkgo_sock:

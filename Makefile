@@ -1,7 +1,8 @@
 .PHONY: build run dev clean tidy test fmt lint migrate-up migrate-down migrate-create \
 	federation-misskey-build federation-misskey-up federation-misskey-test \
 	federation-misskey-down federation-misskey-logs \
-	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open
+	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
+	uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps
 
 # Binary output
 BINARY=misskey
@@ -119,3 +120,31 @@ e2e-open:
 		-e E2E_BASE_URL=$${E2E_BASE_URL:-http://localhost:3000} \
 		$(E2E_CYPRESS_IMAGE) \
 		cypress open --e2e --browser electron --config-file cypress.config.ts
+
+# UDS-only compose stack (Phase 12-2)。Phase 12-1 で入った UNIX domain socket
+# 対応を使って nginx → mk-go → postgres / valkey をすべて UDS で繋ぐ。
+# 詳細は docs/docker-uds.md を参照。
+UDS_COMPOSE=compose.uds.yaml
+
+# 本家 vite フロントエンドを docker 内でビルドする。初回は 3〜10 分程度かかる。
+# 既存 e2e-frontend-build のエイリアス (成果物先が同じなので共有して OK)。
+uds-frontend-build: e2e-frontend-build
+
+uds-build:
+	docker compose -f $(UDS_COMPOSE) build
+
+uds-up:
+	docker compose -f $(UDS_COMPOSE) up -d --build
+
+uds-down:
+	docker compose -f $(UDS_COMPOSE) down
+
+# named volume も含めて完全削除する (DB データも全部消える)。
+uds-down-v:
+	docker compose -f $(UDS_COMPOSE) down -v
+
+uds-logs:
+	docker compose -f $(UDS_COMPOSE) logs -f
+
+uds-ps:
+	docker compose -f $(UDS_COMPOSE) ps
