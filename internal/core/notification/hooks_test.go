@@ -301,3 +301,98 @@ func TestIsQuote_Variants(t *testing.T) {
 }
 
 func ptrString(s string) *string { return &s }
+
+// --- Web Push publisher integration ---
+
+type stubWebPushPublisher struct {
+	calls []struct {
+		userID string
+		body   map[string]any
+	}
+}
+
+func (s *stubWebPushPublisher) PushNotification(userID string, body map[string]any) {
+	s.calls = append(s.calls, struct {
+		userID string
+		body   map[string]any
+	}{userID, body})
+}
+
+type stubUserPacker struct{ out map[string]any }
+
+func (s stubUserPacker) PackUserByID(_ string) (map[string]any, bool) {
+	if s.out == nil {
+		return nil, false
+	}
+	return s.out, true
+}
+
+type stubNotePacker struct{ out map[string]any }
+
+func (s stubNotePacker) PackNoteByID(_ string) (map[string]any, bool) {
+	if s.out == nil {
+		return nil, false
+	}
+	return s.out, true
+}
+
+func TestHook_WebPushPushedAfterCreate(t *testing.T) {
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+
+	pub := &stubWebPushPublisher{}
+	h.SetWebPushPublisher(pub)
+	h.SetPackers(
+		stubUserPacker{out: map[string]any{"id": "bob", "username": "bob"}},
+		stubNotePacker{out: map[string]any{"id": "n1", "text": "hi"}},
+	)
+
+	h.OnReactionCreated("alice", "bob", "n1", "\U0001F44D")
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	body := pub.calls[0].body
+	assert.Equal(t, "reaction", body["type"])
+	assert.Equal(t, "bob", body["userId"])
+	assert.Equal(t, "n1", body["noteId"])
+	assert.Equal(t, "\U0001F44D", body["reaction"])
+	assert.NotNil(t, body["user"])
+	assert.NotNil(t, body["note"])
+	assert.NotNil(t, body["createdAt"])
+}
+
+func TestHook_WebPushWithChoiceField(t *testing.T) {
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+
+	pub := &stubWebPushPublisher{}
+	h.SetWebPushPublisher(pub)
+	h.OnPollVote("alice", "bob", "n1", 3)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, 3, pub.calls[0].body["choice"])
+}
+
+func TestHook_WebPushWithoutPackers(t *testing.T) {
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	pub := &stubWebPushPublisher{}
+	h.SetWebPushPublisher(pub)
+	// packers not set -> user/note fields omitted but id/type/userId still present
+	h.OnFollowed("bob", "alice")
+	require.Len(t, pub.calls, 1)
+	body := pub.calls[0].body
+	assert.Equal(t, "follow", body["type"])
+	assert.Nil(t, body["user"])
+	assert.Nil(t, body["note"])
+}
+
+func TestHook_WebPushSkippedWhenCreateFails(t *testing.T) {
+	svc := NewService(closedClient(t), idGen)
+	repo := testutil.NewMockUserRepository()
+	addLocalUser(repo, "alice", "alice")
+	h := NewHook(svc, repo)
+	pub := &stubWebPushPublisher{}
+	h.SetWebPushPublisher(pub)
+	h.OnFollowed("bob", "alice")
+	assert.Empty(t, pub.calls, "push must not fire when Create fails")
+}

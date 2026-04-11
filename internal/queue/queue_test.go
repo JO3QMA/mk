@@ -277,5 +277,56 @@ func TestInspector_GetQueueInfo_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestNewWebPushTask_RoundTrip(t *testing.T) {
+	payload := queue.WebPushPayload{
+		UserID: "u1",
+		Type:   "notification",
+		Body:   []byte(`{"type":"mention"}`),
+	}
+	task := queue.NewWebPushTask(payload)
+	assert.Equal(t, queue.TaskTypeWebPush, task.Type())
+
+	decoded, err := queue.DecodeWebPushPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload.UserID, decoded.UserID)
+	assert.Equal(t, payload.Type, decoded.Type)
+	assert.JSONEq(t, string(payload.Body), string(decoded.Body))
+}
+
+func TestDecodeWebPushPayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeWebPushPayload([]byte(`{bad`))
+	assert.Error(t, err)
+}
+
+func TestClient_EnqueueWebPush(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueWebPush(context.Background(), queue.WebPushPayload{
+		UserID: "u1", Type: "notification", Body: []byte(`{"type":"mention"}`),
+	}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.PushQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, queue.TaskTypeWebPush, tasks[0].Type)
+}
+
+func TestClient_EnqueueWebPush_ClosedClientFails(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	require.NoError(t, c.Close())
+	err := c.EnqueueWebPush(context.Background(), queue.WebPushPayload{UserID: "u1", Type: "notification"})
+	assert.Error(t, err)
+}
+
 // ensure errors package referenced for completeness in CI builds.
 var _ = errors.New

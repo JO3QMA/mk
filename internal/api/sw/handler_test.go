@@ -37,6 +37,16 @@ func (m *mockSwRepo) FindByUserAndEndpoint(userID, endpoint string) (*model.SwSu
 	return nil, errMock
 }
 
+func (m *mockSwRepo) FindByUserID(userID string) ([]*model.SwSubscription, error) {
+	out := make([]*model.SwSubscription, 0)
+	for _, s := range m.subs {
+		if s.UserID == userID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (m *mockSwRepo) Create(sub *model.SwSubscription) error {
 	if m.createErr != nil {
 		return m.createErr

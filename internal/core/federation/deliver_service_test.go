@@ -1,6 +1,7 @@
 package federation_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -30,7 +31,10 @@ func (s *stubEnqueuer) EnqueueDeliver(payload queue.DeliverPayload, _ ...asynq.O
 
 func (s *stubEnqueuer) EnqueueExport(_ queue.ExportPayload) error { return nil }
 func (s *stubEnqueuer) EnqueueImport(_ queue.ImportPayload) error { return nil }
-func (s *stubEnqueuer) Close() error                              { return nil }
+func (s *stubEnqueuer) EnqueueWebPush(_ context.Context, _ queue.WebPushPayload) error {
+	return nil
+}
+func (s *stubEnqueuer) Close() error { return nil }
 
 func newDeliverService(t *testing.T) (*federation.DeliverService, *stubEnqueuer, *testutil.MockUserRepository, *testutil.MockFollowingRepository, *testutil.MockUserKeypairRepository) {
 	t.Helper()
