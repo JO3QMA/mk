@@ -201,3 +201,7 @@ The following features return valid responses but do not perform full processing
 ### File upload fails with CREDENTIAL_REQUIRED
 - Ensure the auth middleware is processing multipart/form-data requests correctly
 - Check server logs for authentication errors
+
+## See also
+
+- [docs/e2e.md](./e2e.md) — Running Misskey upstream's Cypress e2e suite against mk-go via the `third_party/misskey` submodule.

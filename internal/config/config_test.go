@@ -346,6 +346,47 @@ redis:
 	_ = err
 }
 
+func TestLoad_TestMode(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+testMode: true
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.TestMode)
+}
+
+func TestLoad_TestMode_DefaultFalse(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.TestMode)
+}
+
+func TestLoad_TestMode_EnvOverride(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+
+	t.Setenv("MK_TESTMODE", "true")
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.TestMode)
+}
+
 func TestLoad_MediaProxy(t *testing.T) {
 	yaml := `
 url: https://example.com

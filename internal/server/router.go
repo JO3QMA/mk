@@ -42,6 +42,7 @@ import (
 	apisignin "github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/api/streaming"
 	apisw "github.com/shiroha-a/mk/internal/api/sw"
+	apitest "github.com/shiroha-a/mk/internal/api/test"
 	apiuserlists "github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/api/users"
 	apiwebhooks "github.com/shiroha-a/mk/internal/api/webhooks"
@@ -337,6 +338,15 @@ func (s *Server) setupRoutes() {
 	metaHandler := meta.NewHandler(s.config, metaRepo)
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
+
+	// Test-only endpoints — TestMode=true のときだけ公開する。
+	// Cypress の resetState コマンドが依存する /api/reset-db はここで登録する。
+	// 本番で絶対に有効化してはならない (config.go 側で起動時 warning を出す)。
+	if s.config.TestMode {
+		testHandler := apitest.NewHandler(s.db, s.redis.Default, true)
+		api.POST("/reset-db", testHandler.ResetDB)
+		slog.Warn("test mode: /api/reset-db endpoint is registered", "url", s.config.URL)
+	}
 
 	// Stats endpoint (public) — チャートの集計済み値から取得
 	notesChart := chartCharts.Notes

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -101,6 +102,10 @@ type Source struct {
 	PerUserNotificationsMaxCount *int   `mapstructure:"perUserNotificationsMaxCount"`
 	DeactivateAntennaThreshold   *int   `mapstructure:"deactivateAntennaThreshold"`
 	PidFile                      string `mapstructure:"pidFile"`
+
+	// TestMode enables destructive test-only endpoints such as /api/reset-db.
+	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
+	TestMode bool `mapstructure:"testMode"`
 }
 
 // Config represents the resolved application configuration.
@@ -164,6 +169,10 @@ type Config struct {
 	DeactivateAntennaThreshold   int
 	PidFile                      string
 	Logging                      *LoggingOptions
+
+	// TestMode enables destructive test-only endpoints such as /api/reset-db.
+	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
+	TestMode bool
 }
 
 const defaultMaxFileSize int64 = 262144000
@@ -207,6 +216,7 @@ func bindEnvKeys(v *viper.Viper) {
 		"redisForTimelines.host", "redisForTimelines.port", "redisForTimelines.pass",
 		"redisForReactions.host", "redisForReactions.port", "redisForReactions.pass",
 		"id", "maxFileSize",
+		"testMode",
 	}
 	for _, k := range keys {
 		_ = v.BindEnv(k)
@@ -320,6 +330,15 @@ func resolve(src *Source) (*Config, error) {
 		DeactivateAntennaThreshold:   deactivateAntennaThreshold,
 		PidFile:                      src.PidFile,
 		Logging:                      src.Logging,
+
+		TestMode: src.TestMode,
+	}
+
+	if cfg.TestMode {
+		// TestMode は /api/reset-db のような破壊的エンドポイントを有効化する。
+		// 本番で誤って有効化されていないか気付けるよう、起動時に強く警告する。
+		slog.Warn("config: TestMode is enabled; destructive test endpoints (e.g. /api/reset-db) are active. DO NOT enable this in production.",
+			"url", cfg.URL)
 	}
 
 	return cfg, nil
