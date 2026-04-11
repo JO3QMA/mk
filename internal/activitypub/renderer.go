@@ -162,7 +162,7 @@ func (r *Renderer) RenderNote(n *model.Note, idGen id.Generator) *Note {
 			if !ok || uri == "" {
 				continue
 			}
-			out.Tag = append(out.Tag, Mention{Type: "Mention", Href: uri, Name: name})
+			out.Tag = append(out.Tag, NewMention(uri, name))
 			if _, dup := seenTo[uri]; !dup {
 				to = append(to, uri)
 				seenTo[uri] = struct{}{}

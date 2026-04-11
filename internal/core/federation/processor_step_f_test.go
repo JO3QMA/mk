@@ -266,6 +266,31 @@ func TestProcess_DeleteRemoteNote(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// Delete アクティビティで返信が消されたとき、親ノートの repliesCount が
+// デクリメントされることを end-to-end で確認する (issue #11, item 1)。
+func TestProcess_DeleteRemoteReply_DecrementsParent(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	parentID := "parent1"
+	env.noteRepo.Notes[parentID] = &model.Note{ID: parentID, UserID: "local-user", RepliesCount: 2}
+
+	replyURI := "https://remote.example/notes/reply1"
+	parent := parentID
+	env.noteRepo.Notes["reply1"] = &model.Note{
+		ID: "reply1", UserID: "alice-id", URI: &replyURI, ReplyID: &parent,
+	}
+	aliceURI := "https://remote.example/users/alice"
+	env.userRepo.Users["alice-id"] = &model.User{ID: "alice-id", Username: "alice", URI: &aliceURI}
+
+	body := []byte(`{
+		"type": "Delete",
+		"actor": "https://remote.example/users/alice",
+		"object": {"id": "https://remote.example/notes/reply1", "type": "Tombstone"}
+	}`)
+	require.NoError(t, env.processor.Process(body))
+
+	assert.Equal(t, int16(1), env.noteRepo.Notes[parentID].RepliesCount)
+}
+
 func TestProcess_DeleteUnknownNote(t *testing.T) {
 	env := newFullProcessor(t, aliceActor)
 	body := []byte(`{

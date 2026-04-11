@@ -75,3 +75,20 @@ func TestPersonMarshalsCleanly(t *testing.T) {
 	assert.Contains(t, string(b), "Person")
 	assert.Contains(t, string(b), ContextURL)
 }
+
+func TestNewMention(t *testing.T) {
+	m := NewMention("https://example.com/users/u1", "@u1")
+	assert.Equal(t, "Mention", m.Type)
+	assert.Equal(t, "https://example.com/users/u1", m.Href)
+	assert.Equal(t, "@u1", m.Name)
+
+	// name が空でも factory は Type を必ず埋める
+	m2 := NewMention("https://example.com/users/u2", "")
+	assert.Equal(t, "Mention", m2.Type)
+	assert.Empty(t, m2.Name)
+
+	// JSON 出力時も type フィールドが出ていること
+	b, err := json.Marshal(m)
+	assert.NoError(t, err)
+	assert.Contains(t, string(b), `"type":"Mention"`)
+}

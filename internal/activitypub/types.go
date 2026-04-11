@@ -85,6 +85,13 @@ type Mention struct {
 	Name string `json:"name,omitempty"`
 }
 
+// NewMention constructs a Mention with the fixed `Type` label pre-filled.
+// 呼び出し側で毎回 Type を書かなくて済むようにした factory。name は
+// 任意 (空文字でも許容される)。
+func NewMention(href, name string) Mention {
+	return Mention{Type: "Mention", Href: href, Name: name}
+}
+
 // Source represents the original markup of a note (Markdown / MFM).
 type Source struct {
 	Content   string `json:"content"`
