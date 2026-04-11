@@ -294,6 +294,24 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 			if s, ok := v.(string); ok {
 				p.Achievements = []byte(s)
 			}
+		case "twoFactorTempSecret":
+			switch val := v.(type) {
+			case string:
+				p.TwoFactorTempSecret = &val
+			case nil:
+				p.TwoFactorTempSecret = nil
+			}
+		case "twoFactorSecret":
+			switch val := v.(type) {
+			case string:
+				p.TwoFactorSecret = &val
+			case nil:
+				p.TwoFactorSecret = nil
+			}
+		case "twoFactorEnabled":
+			if b, ok := v.(bool); ok {
+				p.TwoFactorEnabled = b
+			}
 		}
 	}
 }
