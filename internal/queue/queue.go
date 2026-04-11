@@ -70,6 +70,14 @@ func (c *Client) EnqueueImport(payload ImportPayload) error {
 	return err
 }
 
+// EnqueueImportCustomEmojis puts an admin emoji-zip import task on the
+// export queue. Misskey 本家も同じ "dbQueue" (低優先) に積んでいる。
+func (c *Client) EnqueueImportCustomEmojis(payload ImportCustomEmojisPayload) error {
+	task := NewImportCustomEmojisTask(payload)
+	_, err := c.inner.Enqueue(task, asynq.Queue(ExportQueueName))
+	return err
+}
+
 // EnqueueWebPush puts a Web Push delivery task on the push queue.
 func (c *Client) EnqueueWebPush(ctx context.Context, payload WebPushPayload) error {
 	task := NewWebPushTask(payload)

@@ -1,0 +1,109 @@
+package channels
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+
+	corechat "github.com/shiroha-a/mk/internal/core/chat"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/stream"
+)
+
+// ChatRoomChannel forwards chat room events (message / edited / deleted /
+// read) to any connected client that is a member of the target room.
+// Init に失敗 (未参加、room 不明) した場合は topic を subscribe せず沈黙する
+// — 本家 Misskey ChatRoomChannel と同じ挙動。
+type ChatRoomChannel struct {
+	ctx    stream.ChannelContext
+	svc    *corechat.Service
+	roomID string
+	topic  string
+}
+
+// ChatRoomFactory holds the shared chat service so the registry can build
+// channel instances per connection.
+type ChatRoomFactory struct {
+	svc *corechat.Service
+}
+
+// NewChatRoomFactory constructs a ChatRoomFactory.
+func NewChatRoomFactory(svc *corechat.Service) *ChatRoomFactory {
+	return &ChatRoomFactory{svc: svc}
+}
+
+// New builds a new channel bound to ctx, usable directly as stream.ChannelFactory.
+func (f *ChatRoomFactory) New(ctx stream.ChannelContext) stream.Channel {
+	return &ChatRoomChannel{ctx: ctx, svc: f.svc}
+}
+
+// Init parses `roomId` from params, verifies the connected user is a member
+// of the room, then subscribes to the shared Redis topic.
+func (c *ChatRoomChannel) Init(params json.RawMessage) {
+	var p struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || p.RoomID == "" {
+		return
+	}
+	user, ok := c.ctx.User().(*model.User)
+	if !ok || user == nil {
+		return
+	}
+	if c.svc != nil {
+		member, err := c.svc.IsRoomMember(user.ID, p.RoomID)
+		if err != nil || !member {
+			return
+		}
+	}
+	c.roomID = p.RoomID
+	c.topic = "chatRoomStream:" + p.RoomID
+	c.ctx.Subscribe(c.topic)
+}
+
+// OnRedisEvent decodes a {type, body} envelope and forwards the body to the
+// client with the matching event type.
+func (c *ChatRoomChannel) OnRedisEvent(payload []byte) {
+	var env struct {
+		Type string          `json:"type"`
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil || env.Type == "" {
+		return
+	}
+	_ = c.ctx.Send(env.Type, env.Body)
+}
+
+// OnClientMessage handles the single supported client-side action: "read".
+// Clients send `{type: "read", body: {id: messageID}}` to mark a message as
+// read, which propagates to the service layer. Other message types are
+// silently ignored.
+func (c *ChatRoomChannel) OnClientMessage(msgType string, body json.RawMessage) {
+	if c.svc == nil || c.roomID == "" {
+		return
+	}
+	user, ok := c.ctx.User().(*model.User)
+	if !ok || user == nil {
+		return
+	}
+	switch msgType {
+	case "read":
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || req.ID == "" {
+			return
+		}
+		if err := c.svc.MarkReadByMessageID(context.Background(), user.ID, req.ID); err != nil {
+			slog.Info("chat room channel: read failed",
+				"user", user.ID, "room", c.roomID, "err", err)
+		}
+	}
+}
+
+// Dispose unsubscribes from the room topic.
+func (c *ChatRoomChannel) Dispose() {
+	if c.topic != "" {
+		c.ctx.Unsubscribe(c.topic)
+	}
+}
