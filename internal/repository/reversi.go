@@ -36,6 +36,19 @@ func (r *reversiRepository) FindByID(id string) (*model.ReversiGame, error) {
 	return &game, nil
 }
 
+// FindByFederationID resolves the reversi game row identified by a federation
+// session ID (populated when a match crosses an AP boundary). Used by the
+// inbox processor to route incoming Invite/Join/Update/Leave activities.
+func (r *reversiRepository) FindByFederationID(federationID string) (*model.ReversiGame, error) {
+	var game model.ReversiGame
+	if err := r.db.Preload("User1").Preload("User2").
+		Where(`"federationId" = ?`, federationID).
+		First(&game).Error; err != nil {
+		return nil, err
+	}
+	return &game, nil
+}
+
 func (r *reversiRepository) Update(game *model.ReversiGame) error {
 	return r.db.Save(game).Error
 }

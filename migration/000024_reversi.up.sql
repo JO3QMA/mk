@@ -22,8 +22,7 @@ CREATE TABLE IF NOT EXISTS "reversi_game" (
     "loopedBoard" boolean NOT NULL DEFAULT false,
     "form1" jsonb,
     "form2" jsonb,
-    "crc32" varchar(32),
-    "federationId" varchar(256)
+    "crc32" varchar(32)
 );
 CREATE INDEX IF NOT EXISTS "IDX_reversi_game_user1Id" ON "reversi_game" ("user1Id");
 CREATE INDEX IF NOT EXISTS "IDX_reversi_game_user2Id" ON "reversi_game" ("user2Id");

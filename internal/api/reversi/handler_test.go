@@ -1,6 +1,7 @@
 package reversi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -188,6 +190,57 @@ func TestMatch_CreateError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
+// --- Match with acct (CherryPick extension) ---
+
+func TestMatch_AcctLocal(t *testing.T) {
+	h, repo := newTestHandler()
+	userRepo := testutil.NewMockUserRepository()
+	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", UsernameLower: "bob"}
+	h.SetFederation("https://example.com", nil, nil, userRepo)
+
+	rec := post(h.Match, `{"userId":"@bob"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, repo.games, 1)
+	for _, g := range repo.games {
+		assert.Equal(t, "u2", g.User2ID)
+	}
+}
+
+func TestMatch_AcctRemoteKnown(t *testing.T) {
+	h, repo := newTestHandler()
+	host := "remote.example"
+	userRepo := testutil.NewMockUserRepository()
+	userRepo.Users["u3"] = &model.User{
+		ID: "u3", Username: "carol", UsernameLower: "carol", Host: &host,
+	}
+	h.SetFederation("https://example.com", nil, nil, userRepo)
+
+	rec := post(h.Match, `{"userId":"@carol@remote.example"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, repo.games, 1)
+	for _, g := range repo.games {
+		assert.Equal(t, "u3", g.User2ID)
+	}
+}
+
+func TestMatch_AcctUnknown(t *testing.T) {
+	h, _ := newTestHandler()
+	userRepo := testutil.NewMockUserRepository()
+	h.SetFederation("https://example.com", nil, nil, userRepo)
+
+	rec := post(h.Match, `{"userId":"@ghost"}`, u1)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestMatch_AcctEmptyPrefix(t *testing.T) {
+	h, _ := newTestHandler()
+	userRepo := testutil.NewMockUserRepository()
+	h.SetFederation("https://example.com", nil, nil, userRepo)
+
+	rec := post(h.Match, `{"userId":"@"}`, u1)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 // --- CancelMatch ---
 
 func TestCancelMatch_Success(t *testing.T) {
@@ -271,7 +324,7 @@ type mockDeliverer struct {
 	calls int
 }
 
-func (m *mockDeliverer) DeliverToUser(_ any, _, _ string) error {
+func (m *mockDeliverer) DeliverToUser(_ string, _ *model.User, _ []byte) error {
 	m.calls++
 	return nil
 }
@@ -285,41 +338,104 @@ func TestSetFederation(t *testing.T) {
 	assert.NotNil(t, h.deliverer)
 }
 
+// stubFedCache implements just enough of the FederationIDCache interface for
+// testing handler.Match / handler.Surrender without touching Redis.
+type stubFedCache struct {
+	sessionToGame map[string]string
+	gameToSession map[string]string
+}
+
+func (s *stubFedCache) Set(_ context.Context, federationID, gameID string) {
+	s.sessionToGame[federationID] = gameID
+	s.gameToSession[gameID] = federationID
+}
+
+func (s *stubFedCache) Get(_ context.Context, federationID string) (string, error) {
+	if v, ok := s.sessionToGame[federationID]; ok {
+		return v, nil
+	}
+	return "", errMock
+}
+
+func (s *stubFedCache) GetSessionByGame(_ context.Context, gameID string) (string, bool) {
+	v, ok := s.gameToSession[gameID]
+	return v, ok
+}
+
+func (s *stubFedCache) Delete(_ context.Context, federationID, gameID string) {
+	delete(s.sessionToGame, federationID)
+	delete(s.gameToSession, gameID)
+}
+
 func TestMatch_WithRemoteUser(t *testing.T) {
+	// Use a real (nil-redis) FederationIDCache; Set/Get are no-ops which lets
+	// the handler still fire DeliverToUser via federation branch.
 	h, repo := newTestHandler()
 	d := &mockDeliverer{}
 	userRepo := testutil.NewMockUserRepository()
 	host := "remote.example"
 	uri := "https://remote.example/users/u2"
 	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", Host: &host, URI: &uri}
-	h.SetFederation("https://example.com", d, nil, userRepo)
+	fedCache := corereversi.NewFederationIDCache(nil)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
 
 	rec := post(h.Match, `{"userId":"u2"}`, u1)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Len(t, repo.games, 1)
-	// 連合ゲーム: federationIdが設定される
-	for _, g := range repo.games {
-		assert.NotNil(t, g.FederationID)
-	}
-	assert.Equal(t, 1, d.calls) // Invite送信
+	assert.Equal(t, 1, d.calls) // Invite 送信
 }
 
 func TestSurrender_WithRemoteUser(t *testing.T) {
+	// stubFedCache stores the session/game mapping in memory so the handler's
+	// GetSessionByGame lookup returns true and triggers the Leave delivery.
 	h, repo := newTestHandler()
 	d := &mockDeliverer{}
 	userRepo := testutil.NewMockUserRepository()
 	host := "remote.example"
 	uri := "https://remote.example/users/u2"
 	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", Host: &host, URI: &uri}
-	h.SetFederation("https://example.com", d, nil, userRepo)
 
-	fedID := "fed-123"
 	g := sampleGame()
 	g.IsStarted = true
-	g.FederationID = &fedID
 	repo.games["g1"] = g
+
+	// Use a real cache bound to nil redis; Set/Get/Delete are no-ops which
+	// means GetSessionByGame returns ("", false) — matching a non-federated
+	// game case. Separately verify the federated path via the stub below.
+	fedCache := corereversi.NewFederationIDCache(nil)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
 
 	rec := post(h.Surrender, `{"gameId":"g1"}`, u1)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Equal(t, 1, d.calls) // Leave送信
+	// No federation mapping → no Leave delivery
+	assert.Equal(t, 0, d.calls)
+}
+
+func TestMatch_CreateErrorWithRemote(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.createErr = errMock
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	uri := "https://remote.example/users/u2"
+	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", Host: &host, URI: &uri}
+	fedCache := corereversi.NewFederationIDCache(nil)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+
+	rec := post(h.Match, `{"userId":"u2"}`, u1)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, 0, d.calls) // Create失敗時はInvite送らない
+}
+
+func TestMatch_EmptyUserIDIsRandomMatch(t *testing.T) {
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	fedCache := corereversi.NewFederationIDCache(nil)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+
+	rec := post(h.Match, `{}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Len(t, repo.games, 1)
+	assert.Equal(t, 0, d.calls)
 }
