@@ -329,6 +329,11 @@ func (s *Service) Surrender(ctx context.Context, gameID, userID string) error {
 	if err != nil {
 		return err
 	}
+	// PutStone 等と同じ順序でガードする。未スタートの対局に対する surrender は
+	// 「勝ち逃げ」と区別が付かなくなるので、開始前は拒否する。
+	if !game.IsStarted {
+		return ErrNotStarted
+	}
 	if game.IsEnded {
 		return ErrAlreadyEnded
 	}

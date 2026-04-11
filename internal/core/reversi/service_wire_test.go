@@ -375,6 +375,15 @@ func TestService_Surrender_AlreadyEnded(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAlreadyEnded)
 }
 
+func TestService_Surrender_NotStarted(t *testing.T) {
+	// 対局開始前 (マッチメイキング中) に Surrender を呼ぶと ErrNotStarted。
+	// 旧実装では IsStarted チェックが無かったため、未開始の対局でも
+	// 一方的に敗北扱いになってしまう不具合があった。
+	game, _, _, svc := newPendingGame(t)
+	err := svc.Surrender(context.Background(), game.ID, "alice")
+	assert.ErrorIs(t, err, ErrNotStarted)
+}
+
 // --- CheckTimeout (nil Redis skips the effective check) ---
 
 func TestService_CheckTimeout_NilRedisIsNoop(t *testing.T) {
