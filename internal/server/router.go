@@ -52,6 +52,7 @@ import (
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
 	"github.com/shiroha-a/mk/internal/core/chart"
 	"github.com/shiroha-a/mk/internal/core/chart/charthook"
+	corechat "github.com/shiroha-a/mk/internal/core/chat"
 	coreclip "github.com/shiroha-a/mk/internal/core/clip"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/core/event"
@@ -133,6 +134,7 @@ func (s *Server) setupRoutes() {
 	webhookRepo := repository.NewWebhookRepository(s.db)
 	systemWebhookRepo := repository.NewSystemWebhookRepository(s.db)
 	reversiRepo := repository.NewReversiRepository(s.db)
+	chatRepo := repository.NewChatRepository(s.db)
 
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
@@ -847,6 +849,13 @@ func (s *Server) setupRoutes() {
 	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
 	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)
 	streamRegistry.Register("reversiGame", channels.NewReversiGameFactory(reversiService).New)
+
+	// 6. Chat WebSocket channels (Phase 9.8): chatRoom と chatUser を登録する
+	chatPublisher := stream.NewChatPublisher(streamPubSub)
+	chatService := corechat.NewService(chatRepo, idGen)
+	chatService.SetStreamingPublisher(chatPublisher)
+	streamRegistry.Register("chatRoom", channels.NewChatRoomFactory(chatService).New)
+	streamRegistry.Register("chatUser", channels.NewChatUserFactory(chatService).New)
 	// Phase 9.7: federation processor / reversi handler に reversi 依存を注入。
 	// FederationIDCache は本家 Misskey DB スキーマ互換のため DB カラムを持たず
 	// Redis のみで session↔gameID の双方向 mapping を保持する。api handler と
@@ -1082,8 +1091,8 @@ func (s *Server) setupRoutes() {
 	api.POST("/bubble-game/ranking", bubbleGameHandler.Ranking)
 
 	// chat/* — Misskey v2026 チャット機能 (実データ)
-	chatRepo := repository.NewChatRepository(s.db)
 	chatHandler := apichat.NewHandler(chatRepo, idGen)
+	chatHandler.SetService(chatService)
 	api.POST("/chat/rooms/create", chatHandler.RoomsCreate, middleware.RequireAuth())
 	api.POST("/chat/rooms/show", chatHandler.RoomsShow, middleware.RequireAuth())
 	api.POST("/chat/rooms/update", chatHandler.RoomsUpdate, middleware.RequireAuth())

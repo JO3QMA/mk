@@ -1,25 +1,52 @@
 package chat
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	corechat "github.com/shiroha-a/mk/internal/core/chat"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
+// legacyNow is a tiny indirection so tests can override time in the handler's
+// legacy (non-service) path if needed. 現状は time.Now を直接返す。
+func legacyNow() time.Time { return time.Now() }
+
 // Handler handles chat/* endpoints.
 type Handler struct {
 	repo  repository.ChatRepository
 	idGen id.Generator
+	svc   *corechat.Service
 }
 
 // NewHandler creates a new chat handler.
 func NewHandler(repo repository.ChatRepository, idGen id.Generator) *Handler {
 	return &Handler{repo: repo, idGen: idGen}
+}
+
+// SetService wires a chat Service so that state-changing message endpoints
+// (create/update/delete/read) route through it and publish streaming events.
+// 未設定の場合は従来どおり repo 直操作にフォールバックする (既存テスト互換)。
+func (h *Handler) SetService(svc *corechat.Service) {
+	h.svc = svc
+}
+
+// mapChatErr maps a core/chat service error to an Echo response.
+func (h *Handler) mapChatErr(c echo.Context, err error) error {
+	switch {
+	case errors.Is(err, corechat.ErrNotFound):
+		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+	case errors.Is(err, corechat.ErrForbidden):
+		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+	case errors.Is(err, corechat.ErrInvalidTarget):
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "toUserId or toRoomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+	}
+	return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 }
 
 func apiError(code, message, errID string) map[string]any {
@@ -230,6 +257,7 @@ func (h *Handler) RoomsTransferOwnership(c echo.Context) error {
 // --- Messages ---
 
 // MessagesCreate handles POST /api/chat/messages/create.
+// service が wire されていれば streaming 配信も同時に行う。
 func (h *Handler) MessagesCreate(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req struct {
@@ -241,10 +269,44 @@ func (h *Handler) MessagesCreate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
+	if h.svc == nil {
+		// 未wire時のフォールバック (テスト互換)
+		return h.messagesCreateLegacy(c, user, req.Text, req.ToUserID, req.ToRoomID, req.FileID)
+	}
+	text := ""
+	if req.Text != nil {
+		text = *req.Text
+	}
+	fileID := ""
+	if req.FileID != nil {
+		fileID = *req.FileID
+	}
+	var (
+		msg *model.ChatMessage
+		err error
+	)
+	switch {
+	case req.ToRoomID != nil && *req.ToRoomID != "":
+		msg, err = h.svc.CreateMessageToRoom(c.Request().Context(), user.ID, *req.ToRoomID, text, fileID)
+	case req.ToUserID != nil && *req.ToUserID != "":
+		msg, err = h.svc.CreateMessageToUser(c.Request().Context(), user.ID, *req.ToUserID, text, fileID)
+	default:
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "toUserId or toRoomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+	}
+	if err != nil {
+		return h.mapChatErr(c, err)
+	}
+	return c.JSON(http.StatusOK, packMessage(msg))
+}
+
+// messagesCreateLegacy preserves pre-Phase-9.8 behaviour for callers that
+// construct a Handler without wiring the service. 既存の chat handler テスト
+// はこちらを通る。
+func (h *Handler) messagesCreateLegacy(c echo.Context, user *model.User, text, toUserID, toRoomID, fileID *string) error {
 	msg := &model.ChatMessage{
-		ID: h.idGen.Generate(time.Now()), FromUserID: user.ID,
-		ToUserID: req.ToUserID, ToRoomID: req.ToRoomID,
-		Text: req.Text, FileID: req.FileID,
+		ID: h.idGen.Generate(legacyNow()), FromUserID: user.ID,
+		ToUserID: toUserID, ToRoomID: toRoomID,
+		Text: text, FileID: fileID,
 	}
 	if err := h.repo.CreateMessage(msg); err != nil {
 		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
@@ -277,14 +339,25 @@ func (h *Handler) MessagesUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.MessageID == "" {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
-	msg, err := h.repo.FindMessageByID(req.MessageID)
-	if err != nil || msg.FromUserID != user.ID {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+	if h.svc == nil {
+		// legacy fallback
+		msg, err := h.repo.FindMessageByID(req.MessageID)
+		if err != nil || msg.FromUserID != user.ID {
+			return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+		}
+		if req.Text != nil {
+			msg.Text = req.Text
+			_ = h.repo.UpdateMessage(msg)
+		}
+		return c.NoContent(http.StatusNoContent)
 	}
+	text := ""
 	if req.Text != nil {
-		msg.Text = req.Text
+		text = *req.Text
 	}
-	// CreateMessageを使って更新 (Saveに相当)
+	if _, err := h.svc.UpdateMessage(c.Request().Context(), user.ID, req.MessageID, text); err != nil {
+		return h.mapChatErr(c, err)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -297,11 +370,17 @@ func (h *Handler) MessagesDelete(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.MessageID == "" {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
-	msg, err := h.repo.FindMessageByID(req.MessageID)
-	if err != nil || msg.FromUserID != user.ID {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+	if h.svc == nil {
+		msg, err := h.repo.FindMessageByID(req.MessageID)
+		if err != nil || msg.FromUserID != user.ID {
+			return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+		}
+		_ = h.repo.DeleteMessage(req.MessageID)
+		return c.NoContent(http.StatusNoContent)
 	}
-	_ = h.repo.DeleteMessage(req.MessageID)
+	if err := h.svc.DeleteMessage(c.Request().Context(), user.ID, req.MessageID); err != nil {
+		return h.mapChatErr(c, err)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -313,6 +392,12 @@ func (h *Handler) MessagesRead(c echo.Context) error {
 	}
 	if err := c.Bind(&req); err != nil || req.MessageID == "" {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+	}
+	if h.svc != nil {
+		if err := h.svc.MarkReadByMessageID(c.Request().Context(), user.ID, req.MessageID); err != nil {
+			return h.mapChatErr(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
 	}
 	_ = h.repo.MarkRead(user.ID, req.MessageID)
 	return c.NoContent(http.StatusNoContent)

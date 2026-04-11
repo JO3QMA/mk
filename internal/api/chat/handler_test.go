@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	corechat "github.com/shiroha-a/mk/internal/core/chat"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -74,6 +75,10 @@ func (m *mockChatRepo) FindMessageByID(id string) (*model.ChatMessage, error) {
 		return msg, nil
 	}
 	return nil, errMock
+}
+func (m *mockChatRepo) UpdateMessage(msg *model.ChatMessage) error {
+	m.messages[msg.ID] = msg
+	return nil
 }
 func (m *mockChatRepo) DeleteMessage(id string) error { delete(m.messages, id); return nil }
 func (m *mockChatRepo) ListMessagesByRoom(_ string, _ int) ([]*model.ChatMessage, error) {
@@ -505,6 +510,112 @@ func TestMessages_List(t *testing.T) {
 	h, _ := newTestHandler()
 	rec := post(h.Messages, `{"roomId":"r1"}`, u1)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Phase 9.8: service wiring tests ---
+
+func newHandlerWithService(t *testing.T) (*Handler, *mockChatRepo) {
+	t.Helper()
+	repo := newMock()
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(repo, idGen)
+	svc := corechat.NewService(repo, idGen)
+	h.SetService(svc)
+	return h, repo
+}
+
+func TestMessagesCreate_Service_ToUser(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	rec := post(h.MessagesCreate, `{"text":"hi","toUserId":"u2"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Len(t, repo.messages, 1)
+}
+
+func TestMessagesCreate_Service_ToRoom(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	repo.rooms["r1"] = &model.ChatRoom{ID: "r1", OwnerID: "u1"}
+	rec := post(h.MessagesCreate, `{"text":"hi","toRoomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Len(t, repo.messages, 1)
+}
+
+func TestMessagesCreate_Service_NoTarget(t *testing.T) {
+	h, _ := newHandlerWithService(t)
+	rec := post(h.MessagesCreate, `{"text":"hi"}`, u1)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestMessagesCreate_Service_RoomNotFound(t *testing.T) {
+	h, _ := newHandlerWithService(t)
+	rec := post(h.MessagesCreate, `{"text":"hi","toRoomId":"ghost"}`, u1)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestMessagesCreate_Service_RoomForbidden(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	repo.rooms["r1"] = &model.ChatRoom{ID: "r1", OwnerID: "otherUser"}
+	rec := post(h.MessagesCreate, `{"text":"hi","toRoomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestMessagesDelete_Service(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	toID := "u2"
+	repo.messages["m1"] = &model.ChatMessage{ID: "m1", FromUserID: "u1", ToUserID: &toID}
+	rec := post(h.MessagesDelete, `{"messageId":"m1"}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestMessagesDelete_Service_NotFound(t *testing.T) {
+	h, _ := newHandlerWithService(t)
+	rec := post(h.MessagesDelete, `{"messageId":"ghost"}`, u1)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestMessagesDelete_Service_Forbidden(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	toID := "u1"
+	repo.messages["m1"] = &model.ChatMessage{ID: "m1", FromUserID: "u2", ToUserID: &toID}
+	rec := post(h.MessagesDelete, `{"messageId":"m1"}`, u1)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestMessagesUpdate_Service(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	toID := "u2"
+	orig := "old"
+	repo.messages["m1"] = &model.ChatMessage{ID: "m1", FromUserID: "u1", ToUserID: &toID, Text: &orig}
+	rec := post(h.MessagesUpdate, `{"messageId":"m1","text":"new"}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestMessagesUpdate_Service_NotFound(t *testing.T) {
+	h, _ := newHandlerWithService(t)
+	rec := post(h.MessagesUpdate, `{"messageId":"ghost","text":"x"}`, u1)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestMessagesUpdate_Service_Forbidden(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	toID := "u1"
+	orig := "old"
+	repo.messages["m1"] = &model.ChatMessage{ID: "m1", FromUserID: "u2", ToUserID: &toID, Text: &orig}
+	rec := post(h.MessagesUpdate, `{"messageId":"m1","text":"new"}`, u1)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestMessagesRead_Service(t *testing.T) {
+	h, repo := newHandlerWithService(t)
+	toID := "u1"
+	repo.messages["m1"] = &model.ChatMessage{ID: "m1", FromUserID: "u2", ToUserID: &toID}
+	rec := post(h.MessagesRead, `{"messageId":"m1"}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestMessagesRead_Service_NotFound(t *testing.T) {
+	h, _ := newHandlerWithService(t)
+	rec := post(h.MessagesRead, `{"messageId":"ghost"}`, u1)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 type mockUserMsgRepo struct{ *mockChatRepo }
