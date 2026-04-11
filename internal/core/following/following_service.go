@@ -69,6 +69,15 @@ type ChartHook interface {
 	OnUnfollow(follower, followee *model.User)
 }
 
+// WebhookHook is invoked after a follow / unfollow / follow-accepted event so
+// that user webhooks subscribed to `follow` / `unfollow` / `followed` can fire.
+// 循環依存を避けるため interface で受け取る (実装は core/webhook)。
+type WebhookHook interface {
+	OnFollow(follower, followee *model.User)
+	OnUnfollow(follower, followee *model.User)
+	OnFollowed(follower, followee *model.User)
+}
+
 // Service manages following relationships and follow requests.
 type Service struct {
 	userRepo          repository.UserRepository
@@ -79,6 +88,7 @@ type Service struct {
 	blockingChecker   BlockingChecker
 	federationHook    FederationHook
 	chartHook         ChartHook
+	webhookHook       WebhookHook
 }
 
 // NewService creates a new following Service.
@@ -115,6 +125,12 @@ func (s *Service) SetFederationHook(h FederationHook) {
 // SetChartHook attaches a ChartHook invoked after follow / unfollow.
 func (s *Service) SetChartHook(h ChartHook) {
 	s.chartHook = h
+}
+
+// SetWebhookHook attaches a WebhookHook invoked after follow / unfollow /
+// follow-accepted events so user webhooks subscribed to follow events fire.
+func (s *Service) SetWebhookHook(h WebhookHook) {
+	s.webhookHook = h
 }
 
 // Follow creates a following relationship from follower to followee.
@@ -211,6 +227,11 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 	if s.chartHook != nil {
 		s.chartHook.OnFollow(follower, followee)
 	}
+	// Webhookはfollower側で `follow`、followee側で `followed` を発火する。
+	if s.webhookHook != nil {
+		s.webhookHook.OnFollow(follower, followee)
+		s.webhookHook.OnFollowed(follower, followee)
+	}
 
 	return &FollowResult{Following: f}, nil
 }
@@ -236,7 +257,7 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 	}
 	// hook 呼び出しに必要なユーザー情報を一度だけロードして使い回す。
 	// 失敗してもベストエフォートで continue する。
-	if s.federationHook != nil || s.chartHook != nil {
+	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil {
 		follower, ferr := s.userRepo.FindByID(followerID)
 		followee, eerr := s.userRepo.FindByID(followeeID)
 		if ferr == nil && eerr == nil {
@@ -245,6 +266,9 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 			}
 			if s.chartHook != nil {
 				s.chartHook.OnUnfollow(follower, followee)
+			}
+			if s.webhookHook != nil {
+				s.webhookHook.OnUnfollow(follower, followee)
 			}
 		}
 	}
@@ -280,7 +304,7 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 	if s.notificationHook != nil {
 		s.notificationHook.OnFollowAccepted(req.FollowerID, req.FolloweeID)
 	}
-	if s.federationHook != nil || s.chartHook != nil {
+	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil {
 		follower, ferr := s.userRepo.FindByID(req.FollowerID)
 		followee, eerr := s.userRepo.FindByID(req.FolloweeID)
 		if ferr == nil && eerr == nil {
@@ -289,6 +313,10 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 			}
 			if s.chartHook != nil {
 				s.chartHook.OnFollow(follower, followee)
+			}
+			if s.webhookHook != nil {
+				s.webhookHook.OnFollow(follower, followee)
+				s.webhookHook.OnFollowed(follower, followee)
 			}
 		}
 	}

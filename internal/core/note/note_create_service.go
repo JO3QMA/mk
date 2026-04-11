@@ -107,6 +107,14 @@ type ChartHook interface {
 	OnNoteCreated(note *model.Note)
 }
 
+// WebhookHook is invoked after a note has been persisted so that user
+// webhooks subscribed to `note` / `reply` / `renote` / `mention` events can
+// deliver the packed note to external endpoints. 循環依存を避けるため
+// interface で受け取る (実装は core/webhook)。
+type WebhookHook interface {
+	OnNoteCreated(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
 	noteRepo         repository.NoteRepository
@@ -120,6 +128,7 @@ type CreateService struct {
 	antennaHook      AntennaHook
 	indexHook        IndexHook
 	chartHook        ChartHook
+	webhookHook      WebhookHook
 	userRepo         repository.UserRepository
 }
 
@@ -185,6 +194,12 @@ func (s *CreateService) SetIndexHook(h IndexHook) {
 // chart subsystem can record the event in the relevant time series.
 func (s *CreateService) SetChartHook(h ChartHook) {
 	s.chartHook = h
+}
+
+// SetWebhookHook attaches a WebhookHook invoked after note creation so that
+// user webhooks subscribed to note / reply / renote / mention events can fire.
+func (s *CreateService) SetWebhookHook(h WebhookHook) {
+	s.webhookHook = h
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -369,6 +384,10 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// チャート集計もベストエフォート。失敗してもノート作成自体は成功扱い。
 	if s.chartHook != nil {
 		s.chartHook.OnNoteCreated(finalNote)
+	}
+	// Webhook配信もベストエフォート。
+	if s.webhookHook != nil {
+		s.webhookHook.OnNoteCreated(finalNote, in.User, replyTarget, renoteTarget)
 	}
 
 	// ユーザーのnotesCountをインクリメント (ベストエフォート)

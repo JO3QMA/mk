@@ -328,5 +328,101 @@ func TestClient_EnqueueWebPush_ClosedClientFails(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestNewUserWebhookTask_RoundTrip(t *testing.T) {
+	payload := queue.WebhookPayload{
+		WebhookID: "h1",
+		UserID:    "alice",
+		EventType: "note",
+		Body:      []byte(`{"type":"note"}`),
+	}
+	task := queue.NewUserWebhookTask(payload)
+	assert.Equal(t, queue.TaskTypeUserWebhook, task.Type())
+
+	decoded, err := queue.DecodeWebhookPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload.WebhookID, decoded.WebhookID)
+	assert.Equal(t, payload.UserID, decoded.UserID)
+	assert.Equal(t, payload.EventType, decoded.EventType)
+	assert.JSONEq(t, string(payload.Body), string(decoded.Body))
+}
+
+func TestNewSystemWebhookTask_RoundTrip(t *testing.T) {
+	payload := queue.WebhookPayload{
+		WebhookID: "sh1",
+		EventType: "userCreated",
+		Body:      []byte(`{"user":"bob"}`),
+	}
+	task := queue.NewSystemWebhookTask(payload)
+	assert.Equal(t, queue.TaskTypeSystemWebhook, task.Type())
+
+	decoded, err := queue.DecodeWebhookPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload.WebhookID, decoded.WebhookID)
+	assert.Empty(t, decoded.UserID)
+}
+
+func TestDecodeWebhookPayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeWebhookPayload([]byte(`{bad`))
+	assert.Error(t, err)
+}
+
+func TestClient_EnqueueUserWebhook(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueUserWebhook(context.Background(), queue.WebhookPayload{
+		WebhookID: "h1", UserID: "alice", EventType: "note", Body: []byte(`{}`),
+	}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.WebhookQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, queue.TaskTypeUserWebhook, tasks[0].Type)
+}
+
+func TestClient_EnqueueUserWebhook_ClosedClientFails(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+	c := queue.NewClient(redisOpt())
+	require.NoError(t, c.Close())
+	err := c.EnqueueUserWebhook(context.Background(), queue.WebhookPayload{WebhookID: "h1"})
+	assert.Error(t, err)
+}
+
+func TestClient_EnqueueSystemWebhook(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueSystemWebhook(context.Background(), queue.WebhookPayload{
+		WebhookID: "sh1", EventType: "userCreated", Body: []byte(`{}`),
+	}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.WebhookQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, queue.TaskTypeSystemWebhook, tasks[0].Type)
+}
+
+func TestClient_EnqueueSystemWebhook_ClosedClientFails(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+	c := queue.NewClient(redisOpt())
+	require.NoError(t, c.Close())
+	err := c.EnqueueSystemWebhook(context.Background(), queue.WebhookPayload{WebhookID: "sh1"})
+	assert.Error(t, err)
+}
+
 // ensure errors package referenced for completeness in CI builds.
 var _ = errors.New

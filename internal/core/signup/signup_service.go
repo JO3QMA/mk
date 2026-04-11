@@ -21,11 +21,19 @@ var (
 	ErrInvalidUsername = errors.New("invalid username")
 )
 
+// WebhookHook is invoked after a new local user has been created so that
+// system webhooks subscribed to `userCreated` can fire. 循環依存を避けるため
+// interface で受け取る (実装は core/webhook)。
+type WebhookHook interface {
+	OnUserCreated(user *model.User)
+}
+
 // Service handles user registration.
 type Service struct {
 	userRepo    repository.UserRepository
 	metaRepo    repository.MetaRepository
 	keypairRepo repository.UserKeypairRepository
+	webhookHook WebhookHook
 	idGen       id.Generator
 }
 
@@ -39,6 +47,12 @@ func NewService(userRepo repository.UserRepository, metaRepo repository.MetaRepo
 // required for ActivityPub federation (actor endpoints return publicKey).
 func (s *Service) SetKeypairRepo(r repository.UserKeypairRepository) {
 	s.keypairRepo = r
+}
+
+// SetWebhookHook attaches a WebhookHook invoked after user creation so that
+// system webhooks subscribed to `userCreated` can fire.
+func (s *Service) SetWebhookHook(h WebhookHook) {
+	s.webhookHook = h
 }
 
 // SignupResult holds the created user and their native token.
@@ -113,6 +127,11 @@ func (s *Service) Signup(username, password string, isInitialSetup bool) (*Signu
 	// 初回セットアップの場合は rootUserId を設定
 	if isInitialSetup {
 		_ = s.metaRepo.Update(map[string]any{"rootUserId": userID})
+	}
+
+	// システムWebhook発火（`userCreated` 相当）。ベストエフォート。
+	if s.webhookHook != nil {
+		s.webhookHook.OnUserCreated(user)
 	}
 
 	return &SignupResult{User: user, Token: token}, nil

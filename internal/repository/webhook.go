@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
@@ -11,7 +13,9 @@ type WebhookRepository interface {
 	FindByID(id string) (*model.Webhook, error)
 	FindByIDAndUserID(id, userID string) (*model.Webhook, error)
 	ListByUserID(userID string) ([]*model.Webhook, error)
+	ListActiveByUserID(userID string) ([]*model.Webhook, error)
 	Update(webhook *model.Webhook) error
+	UpdateLatestStatus(id string, sentAt time.Time, status int) error
 	Delete(id, userID string) error
 }
 
@@ -52,8 +56,27 @@ func (r *webhookRepository) ListByUserID(userID string) ([]*model.Webhook, error
 	return webhooks, nil
 }
 
+func (r *webhookRepository) ListActiveByUserID(userID string) ([]*model.Webhook, error) {
+	var webhooks []*model.Webhook
+	if err := r.db.Where(`"userId" = ? AND active = ?`, userID, true).Find(&webhooks).Error; err != nil {
+		return nil, err
+	}
+	return webhooks, nil
+}
+
 func (r *webhookRepository) Update(webhook *model.Webhook) error {
 	return r.db.Save(webhook).Error
+}
+
+// UpdateLatestStatus updates latestSentAt/latestStatus atomically for a single
+// webhook row without touching any other fields.
+func (r *webhookRepository) UpdateLatestStatus(id string, sentAt time.Time, status int) error {
+	return r.db.Model(&model.Webhook{}).
+		Where(`"id" = ?`, id).
+		Updates(map[string]any{
+			"latestSentAt": sentAt,
+			"latestStatus": status,
+		}).Error
 }
 
 func (r *webhookRepository) Delete(id, userID string) error {
