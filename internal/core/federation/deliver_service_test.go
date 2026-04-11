@@ -34,6 +34,12 @@ func (s *stubEnqueuer) EnqueueImport(_ queue.ImportPayload) error { return nil }
 func (s *stubEnqueuer) EnqueueWebPush(_ context.Context, _ queue.WebPushPayload) error {
 	return nil
 }
+func (s *stubEnqueuer) EnqueueUserWebhook(_ context.Context, _ queue.WebhookPayload) error {
+	return nil
+}
+func (s *stubEnqueuer) EnqueueSystemWebhook(_ context.Context, _ queue.WebhookPayload) error {
+	return nil
+}
 func (s *stubEnqueuer) Close() error { return nil }
 
 func newDeliverService(t *testing.T) (*federation.DeliverService, *stubEnqueuer, *testutil.MockUserRepository, *testutil.MockFollowingRepository, *testutil.MockUserKeypairRepository) {

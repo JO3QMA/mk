@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
@@ -61,11 +62,29 @@ func (m *mockWebhookRepo) ListByUserID(userID string) ([]*model.Webhook, error) 
 	return result, nil
 }
 
+func (m *mockWebhookRepo) ListActiveByUserID(userID string) ([]*model.Webhook, error) {
+	var result []*model.Webhook
+	for _, w := range m.webhooks {
+		if w.UserID == userID && w.Active {
+			result = append(result, w)
+		}
+	}
+	return result, nil
+}
+
 func (m *mockWebhookRepo) Update(w *model.Webhook) error {
 	if m.updateErr != nil {
 		return m.updateErr
 	}
 	m.webhooks[w.ID] = w
+	return nil
+}
+
+func (m *mockWebhookRepo) UpdateLatestStatus(id string, sentAt time.Time, status int) error {
+	if w, ok := m.webhooks[id]; ok {
+		w.LatestSentAt = &sentAt
+		w.LatestStatus = &status
+	}
 	return nil
 }
 
@@ -249,7 +268,47 @@ func TestDelete_Error(t *testing.T) {
 
 // --- Test ---
 
+// stubDispatcher captures DispatchUser invocations for assertions.
+type stubDispatcher struct {
+	calls []stubDispatchCall
+}
+
+type stubDispatchCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubDispatcher) DispatchUser(userID, eventType string, body any) {
+	s.calls = append(s.calls, stubDispatchCall{userID, eventType, body})
+}
+
 func TestTest_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1"}
+	disp := &stubDispatcher{}
+	h.SetDispatcher(disp)
+
+	rec := post(h.Test, `{"webhookId":"w1","type":"note"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.Len(t, disp.calls, 1)
+	assert.Equal(t, "u1", disp.calls[0].userID)
+	assert.Equal(t, "note", disp.calls[0].eventType)
+}
+
+func TestTest_DefaultTypeIsNote(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1"}
+	disp := &stubDispatcher{}
+	h.SetDispatcher(disp)
+
+	rec := post(h.Test, `{"webhookId":"w1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.Len(t, disp.calls, 1)
+	assert.Equal(t, "note", disp.calls[0].eventType)
+}
+
+func TestTest_NoDispatcherStillReturns204(t *testing.T) {
 	h, repo := newTestHandler()
 	repo.webhooks["w1"] = &model.Webhook{ID: "w1", UserID: "u1"}
 	rec := post(h.Test, `{"webhookId":"w1","type":"note"}`, &model.User{ID: "u1"})

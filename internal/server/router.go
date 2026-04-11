@@ -71,6 +71,7 @@ import (
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coretransfer "github.com/shiroha-a/mk/internal/core/transfer"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
+	corewebhook "github.com/shiroha-a/mk/internal/core/webhook"
 	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -128,6 +129,8 @@ func (s *Server) setupRoutes() {
 	swSubRepo := repository.NewSwSubscriptionRepository(s.db)
 	noteFavoriteRepo := repository.NewNoteFavoriteRepository(s.db)
 	userListRepo := repository.NewUserListRepository(s.db)
+	webhookRepo := repository.NewWebhookRepository(s.db)
+	systemWebhookRepo := repository.NewSystemWebhookRepository(s.db)
 
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
@@ -184,6 +187,16 @@ func (s *Server) setupRoutes() {
 		webPushCache, swSubRepo, metaRepo, nil, s.config.URL,
 	)
 	s.queueServer.Handle(queue.TaskTypeWebPush, webPushProcessor.Handle)
+
+	// Webhook (Phase 9.5): ユーザー/システムwebhookの配信を非同期処理する。
+	webhookService := corewebhook.NewService(s.queueClient, webhookRepo, systemWebhookRepo, s.config.URL)
+	noteCreateService.SetWebhookHook(corewebhook.NewNoteCreateHook(webhookService, idGen))
+	reactionService.SetWebhookHook(corewebhook.NewReactionCreateHook(webhookService, idGen))
+	followingService.SetWebhookHook(corewebhook.NewFollowingHook(webhookService))
+	signupService.SetWebhookHook(corewebhook.NewSignupHook(webhookService))
+	webhookProcessor := processors.NewWebhookProcessor(webhookRepo, systemWebhookRepo, nil, s.config.Host)
+	s.queueServer.Handle(queue.TaskTypeUserWebhook, webhookProcessor.HandleUser)
+	s.queueServer.Handle(queue.TaskTypeSystemWebhook, webhookProcessor.HandleSystem)
 
 	// Blocking & Muting
 	blockingService := coreblocking.NewService(userRepo, blockingRepo, followingRepo, idGen)
@@ -560,8 +573,8 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/import-antennas", iHandler.ImportAntennas, middleware.RequireAuth())
 
 	// i/webhooks/* — Webhook管理 (実データ)
-	webhookRepo := repository.NewWebhookRepository(s.db)
 	webhookHandler := apiwebhooks.NewHandler(webhookRepo, idGen)
+	webhookHandler.SetDispatcher(webhookService)
 	api.POST("/i/webhooks/create", webhookHandler.Create, middleware.RequireAuth())
 	api.POST("/i/webhooks/list", webhookHandler.List, middleware.RequireAuth())
 	api.POST("/i/webhooks/show", webhookHandler.Show, middleware.RequireAuth())

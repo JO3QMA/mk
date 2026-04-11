@@ -78,6 +78,13 @@ type ChartHook interface {
 	OnReactionCreated(reactor *model.User, note *model.Note)
 }
 
+// WebhookHook is invoked after a reaction has been created so that user
+// webhooks subscribed to the `reaction` event can fire. 循環依存を避けるため
+// interface で受け取る (実装は core/webhook)。
+type WebhookHook interface {
+	OnReactionCreated(note *model.Note, reactor *model.User, reaction string)
+}
+
 // Service manages note reactions.
 type Service struct {
 	noteRepo         repository.NoteRepository
@@ -89,6 +96,7 @@ type Service struct {
 	blockingChecker  BlockingChecker
 	federationHook   FederationHook
 	chartHook        ChartHook
+	webhookHook      WebhookHook
 }
 
 // NewService constructs a new ReactionService.
@@ -128,6 +136,12 @@ func (s *Service) SetFederationHook(h FederationHook) {
 // created so the chart subsystem can record the event.
 func (s *Service) SetChartHook(h ChartHook) {
 	s.chartHook = h
+}
+
+// SetWebhookHook attaches a WebhookHook invoked after a reaction has been
+// created so that user webhooks subscribed to the reaction event can fire.
+func (s *Service) SetWebhookHook(h WebhookHook) {
+	s.webhookHook = h
 }
 
 // Create attaches a reaction by user to the target note.
@@ -201,6 +215,10 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 	// チャート集計もベストエフォート。
 	if s.chartHook != nil {
 		s.chartHook.OnReactionCreated(user, target)
+	}
+	// Webhook配信もベストエフォート。
+	if s.webhookHook != nil {
+		s.webhookHook.OnReactionCreated(target, user, reaction)
 	}
 
 	return reaction, nil

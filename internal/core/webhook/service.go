@@ -1,0 +1,154 @@
+// Package webhook implements user and system webhook delivery dispatch.
+// The service fires on event-producing core services (note / reaction /
+// following / signup) via hook interfaces and enqueues HTTP delivery jobs to
+// the asynq queue. The actual HTTP POST is performed by the matching
+// processor (internal/queue/processors/webhook.go).
+//
+// 本家 Misskey の UserWebhookService / SystemWebhookService と等価。
+package webhook
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"slices"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/repository"
+)
+
+// Event types recognized by user webhooks, mirroring Misskey's
+// `Webhook['on']` enum.
+const (
+	EventNote     = "note"
+	EventReply    = "reply"
+	EventRenote   = "renote"
+	EventMention  = "mention"
+	EventReaction = "reaction"
+	EventFollow   = "follow"
+	EventUnfollow = "unfollow"
+	EventFollowed = "followed"
+)
+
+// Event types recognized by system webhooks.
+const (
+	SystemEventAbuseReport         = "abuseReport"
+	SystemEventAbuseReportResolved = "abuseReportResolved"
+	SystemEventUserCreated         = "userCreated"
+)
+
+// Service dispatches webhook delivery jobs. It holds reference to the queue
+// enqueuer plus the user/system webhook repositories needed to look up
+// subscribers per event.
+type Service struct {
+	enqueuer   queue.Enqueuer
+	userRepo   repository.WebhookRepository
+	systemRepo repository.SystemWebhookRepository
+	server     string // instance URL (config.URL), used as payload.server
+}
+
+// NewService constructs a webhook dispatcher.
+func NewService(
+	enqueuer queue.Enqueuer,
+	userRepo repository.WebhookRepository,
+	systemRepo repository.SystemWebhookRepository,
+	server string,
+) *Service {
+	return &Service{
+		enqueuer:   enqueuer,
+		userRepo:   userRepo,
+		systemRepo: systemRepo,
+		server:     server,
+	}
+}
+
+// Envelope matches the JSON structure the Misskey frontend expects at each
+// webhook endpoint. See UserWebhookDeliverProcessorService.ts in upstream for
+// the canonical shape.
+type Envelope struct {
+	Server    string `json:"server"`
+	HookID    string `json:"hookId"`
+	UserID    string `json:"userId,omitempty"`
+	EventID   string `json:"eventId"`
+	CreatedAt int64  `json:"createdAt"`
+	Type      string `json:"type"`
+	Body      any    `json:"body"`
+}
+
+// DispatchUser builds an Envelope per active user webhook subscribed to
+// eventType and enqueues a delivery job for each. 本家と同様に dispatch は
+// best-effort で、DB や enqueue のエラーはログに留めて返さない。
+func (s *Service) DispatchUser(userID, eventType string, body any) {
+	if s == nil || s.enqueuer == nil || s.userRepo == nil {
+		return
+	}
+	hooks, err := s.userRepo.ListActiveByUserID(userID)
+	if err != nil {
+		slog.Warn("webhook: list user webhooks failed",
+			"userId", userID, "event", eventType, "err", err)
+		return
+	}
+	now := time.Now().UnixMilli()
+	for _, h := range hooks {
+		if !slices.Contains([]string(h.On), eventType) {
+			continue
+		}
+		// Envelope は map/string/int のみを含むため json.Marshal は失敗しない。
+		raw, _ := json.Marshal(Envelope{
+			Server:    s.server,
+			HookID:    h.ID,
+			UserID:    userID,
+			EventID:   uuid.NewString(),
+			CreatedAt: now,
+			Type:      eventType,
+			Body:      body,
+		})
+		if err := s.enqueuer.EnqueueUserWebhook(context.Background(), queue.WebhookPayload{
+			WebhookID: h.ID,
+			UserID:    userID,
+			EventType: eventType,
+			Body:      raw,
+		}); err != nil {
+			slog.Warn("webhook: enqueue user webhook failed",
+				"hookId", h.ID, "event", eventType, "err", err)
+		}
+	}
+}
+
+// DispatchSystem mirrors DispatchUser for system webhooks (admin-level
+// events such as abuseReport / userCreated). 本家 SystemWebhookService.enqueueSystemWebhook 相当。
+func (s *Service) DispatchSystem(eventType string, body any) {
+	if s == nil || s.enqueuer == nil || s.systemRepo == nil {
+		return
+	}
+	hooks, err := s.systemRepo.ListActive()
+	if err != nil {
+		slog.Warn("webhook: list system webhooks failed",
+			"event", eventType, "err", err)
+		return
+	}
+	now := time.Now().UnixMilli()
+	for _, h := range hooks {
+		if !slices.Contains([]string(h.On), eventType) {
+			continue
+		}
+		raw, _ := json.Marshal(Envelope{
+			Server:    s.server,
+			HookID:    h.ID,
+			EventID:   uuid.NewString(),
+			CreatedAt: now,
+			Type:      eventType,
+			Body:      body,
+		})
+		if err := s.enqueuer.EnqueueSystemWebhook(context.Background(), queue.WebhookPayload{
+			WebhookID: h.ID,
+			EventType: eventType,
+			Body:      raw,
+		}); err != nil {
+			slog.Warn("webhook: enqueue system webhook failed",
+				"hookId", h.ID, "event", eventType, "err", err)
+		}
+	}
+}
