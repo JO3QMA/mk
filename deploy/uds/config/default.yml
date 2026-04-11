@@ -1,0 +1,33 @@
+# mk-go config for the UDS-only stack (compose.uds.yaml).
+#
+# HTTP / PostgreSQL / Redis すべて UNIX domain socket で接続する。
+# TCP を使わないので host から直接触れるのは nginx の 80 番だけ。
+
+# ブラウザに返す URL。nginx が 80 番でリッスンしている前提。
+url: http://localhost
+
+# HTTP listen を UNIX domain socket にする (Phase 12-1 で入った経路)。
+# nginx コンテナが同じ named volume (mkgo_sock) を /run/mkgo に mount して
+# この socket を upstream 先にする。
+socket: /run/mkgo/mkgo.sock
+# nginx (alpine image では uid 101, non-root) から読める必要があるので 666 にする。
+chmodSocket: "666"
+
+db:
+  # 絶対パス (/ で始まる) なので Phase 12-1 の IsUnixSocketPath で UDS と判定される。
+  # libpq / pgx は host=<dir> から <dir>/.s.PGSQL.<port> を組み立てるので、
+  # postgres 側が作る socket ファイル名と port を一致させる必要がある。
+  host: /var/run/postgresql
+  port: 5432
+  db: mkgo
+  user: mkgo
+  pass: mkgo_dev_pass
+
+redis:
+  # 同じく絶対パスなので go-redis の Network=unix 経路に入る (internal/core/cache/redis.go)。
+  host: /run/valkey/valkey.sock
+  # UDS 接続では port は無視されるが、viper の schema 上 int が期待されるので
+  # 6379 を書いておく (実通信では使われない)。
+  port: 6379
+
+id: aidx

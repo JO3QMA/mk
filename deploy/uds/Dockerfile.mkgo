@@ -1,0 +1,36 @@
+# Dockerfile used by compose.uds.yaml to run mk-go under the UDS-only stack.
+#
+# Unlike the main Dockerfile it also builds the migrate binary (so the
+# entrypoint can apply schema migrations before starting the server) and
+# installs curl into the runtime image so that the healthcheck can talk to
+# the mk-go UNIX socket with `curl --unix-socket`.
+#
+# Build context must be the repository root.
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git build-base
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey \
+ && go build -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
+
+FROM alpine:3.21
+
+# curl は healthcheck で `--unix-socket` を使って mk-go を叩くので必須。
+# wget は UDS をサポートしていないため不可。
+RUN apk add --no-cache ca-certificates tzdata curl
+
+WORKDIR /app
+
+COPY --from=builder /app/built/misskey /app/misskey
+COPY --from=builder /app/built/migrate /app/migrate
+COPY --from=builder /app/migration /app/migration
+COPY deploy/uds/mkgo-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
