@@ -79,8 +79,9 @@ services:
       - ./third_party/misskey/built:/frontend:ro
       # ClientAssetsDir が読む静的アセット (ゲーム用画像など)。
       - ./third_party/misskey/packages/frontend/assets:/misskey/packages/frontend/assets:ro
-      # drive ファイルの保存先。
-      - mkgo_files:/app/files
+      # drive ファイルの保存先。router.go がローカルストレージに ./drive-files を
+      # ハードコードしており、WORKDIR は /app なので /app/drive-files に書き込まれる。
+      - mkgo_files:/app/drive-files
       # socket 共有用の named volume。
       - pg_sock:/var/run/postgresql
       - valkey_sock:/run/valkey
