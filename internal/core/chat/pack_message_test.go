@@ -1,0 +1,42 @@
+package chat
+
+import (
+	"testing"
+
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+)
+
+// packMessage は exported ではないので同一パッケージのテストで exercise する。
+// 全ポインタ列 (Text / ToUserID / ToRoomID / FileID / URI) と配列列
+// (Reads / Reactions) を埋めて 100% カバレッジを狙う。
+func TestPackMessage_AllFieldsFilled(t *testing.T) {
+	text := "hello"
+	toUser := "bob"
+	toRoom := "room1"
+	fileID := "file1"
+	uri := "https://example.com/messages/m1"
+	msg := &model.ChatMessage{
+		ID:         "m1",
+		FromUserID: "alice",
+		Text:       &text,
+		ToUserID:   &toUser,
+		ToRoomID:   &toRoom,
+		FileID:     &fileID,
+		URI:        &uri,
+		Reads:      pq.StringArray{"bob"},
+		Reactions:  pq.StringArray{"bob:+1"},
+	}
+	out := packMessage(msg)
+
+	assert.Equal(t, "m1", out["id"])
+	assert.Equal(t, "alice", out["fromUserId"])
+	assert.Equal(t, "hello", out["text"])
+	assert.Equal(t, "bob", out["toUserId"])
+	assert.Equal(t, "room1", out["toRoomId"])
+	assert.Equal(t, "file1", out["fileId"])
+	assert.Equal(t, "https://example.com/messages/m1", out["uri"])
+	assert.Equal(t, []string{"bob"}, out["reads"])
+	assert.Equal(t, []string{"bob:+1"}, out["reactions"])
+}
