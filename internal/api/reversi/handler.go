@@ -27,6 +27,7 @@ type FederationDeliverer interface {
 // Handler handles reversi/* endpoints.
 type Handler struct {
 	repo      repository.ReversiRepository
+	svc       *corereversi.Service
 	idGen     id.Generator
 	baseURL   string
 	deliverer FederationDeliverer
@@ -37,6 +38,14 @@ type Handler struct {
 // NewHandler creates a new reversi handler.
 func NewHandler(repo repository.ReversiRepository, idGen id.Generator) *Handler {
 	return &Handler{repo: repo, idGen: idGen}
+}
+
+// SetService attaches the core reversi service. 必須ではないが設定されていれば
+// Surrender 等の player action が service 経由で動く (IsStarted バリデーション +
+// WebSocket 通知が効くようになる)。nil の場合は従来の repo 直接操作にフォール
+// バックするので既存テスト互換。
+func (h *Handler) SetService(svc *corereversi.Service) {
+	h.svc = svc
 }
 
 // SetFederation attaches federation support.
@@ -252,6 +261,9 @@ func (h *Handler) CancelMatch(c echo.Context) error {
 }
 
 // Surrender handles POST /api/reversi/surrender.
+// 対局中 (IsStarted かつ not IsEnded) のみ許可する。service.Surrender を経由
+// することで WebSocket チャネルに `ended` イベントを publish するので、両
+// プレイヤーのクライアントが即座に終局状態を検出できる。
 func (h *Handler) Surrender(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req struct {
@@ -260,6 +272,10 @@ func (h *Handler) Surrender(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.GameID == "" {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
+
+	// federation Leave を送るために winner (= 相手) を先に引いておく。
+	// service.Surrender は repo 越しに game を読むが、federation session の
+	// lookup は handler のタイミングで必要なので preload する。
 	game, err := h.repo.FindByID(req.GameID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
@@ -267,37 +283,59 @@ func (h *Handler) Surrender(c echo.Context) error {
 	if game.User1ID != user.ID && game.User2ID != user.ID {
 		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
 	}
-
-	// 相手が勝者
 	var winnerID string
 	if game.User1ID == user.ID {
 		winnerID = game.User2ID
 	} else {
 		winnerID = game.User1ID
 	}
-	now := time.Now()
-	game.IsEnded = true
-	game.EndedAt = &now
-	game.WinnerID = &winnerID
-	game.SurrenderedUserID = &user.ID
-	_ = h.repo.Update(game)
+
+	// service が注入されていればそちらを経由する (本来のパス)。
+	// フォールバックは従来の repo 直接操作 (service 未注入の古いテスト互換)。
+	if h.svc != nil {
+		if err := h.svc.Surrender(c.Request().Context(), req.GameID, user.ID); err != nil {
+			return surrenderErrorResponse(c, err)
+		}
+	} else {
+		now := time.Now()
+		game.IsEnded = true
+		game.EndedAt = &now
+		game.WinnerID = &winnerID
+		game.SurrenderedUserID = &user.ID
+		_ = h.repo.Update(game)
+	}
 
 	// リモート相手に Leave 送信。federation session は Redis 側にある。
 	if h.fedCache != nil && h.deliverer != nil && h.userRepo != nil {
-		if sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), game.ID); ok {
-			remoteID := winnerID // 相手
-			if remoteUser, err := h.userRepo.FindByID(remoteID); err == nil && remoteUser.Host != nil && remoteUser.URI != nil {
+		if sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), req.GameID); ok {
+			if remoteUser, err := h.userRepo.FindByID(winnerID); err == nil && remoteUser.Host != nil && remoteUser.URI != nil {
 				leave := corereversi.RenderLeave(h.baseURL+"/users/"+user.ID, *remoteUser.URI, sessionID)
 				if body, jerr := json.Marshal(leave); jerr == nil {
 					_ = h.deliverer.DeliverToUser(user.ID, remoteUser, body)
 				}
 			}
 			// ゲーム終了時に mapping を明示削除
-			h.fedCache.Delete(c.Request().Context(), sessionID, game.ID)
+			h.fedCache.Delete(c.Request().Context(), sessionID, req.GameID)
 		}
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// surrenderErrorResponse maps core/reversi service errors to Misskey-
+// compatible HTTP error bodies. Unknown errors fall back to 500.
+func surrenderErrorResponse(c echo.Context, err error) error {
+	switch {
+	case errors.Is(err, corereversi.ErrGameNotFound):
+		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
+	case errors.Is(err, corereversi.ErrNotPlayer):
+		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+	case errors.Is(err, corereversi.ErrAlreadyEnded):
+		return c.JSON(http.StatusBadRequest, apiError("ALREADY_ENDED", "Game has already ended.", "2a3a7f72-bc06-4f4e-9f7c-b7f8d4f6a09e"))
+	case errors.Is(err, corereversi.ErrNotStarted):
+		return c.JSON(http.StatusBadRequest, apiError("NOT_STARTED", "Game has not started yet.", "ac4bb45f-ea81-44d3-a5b3-fe5f30be2c8d"))
+	}
+	return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 }
 
 // Verify handles POST /api/reversi/verify — verify game integrity.
