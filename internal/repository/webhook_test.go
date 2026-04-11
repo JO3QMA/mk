@@ -2,6 +2,7 @@ package repository
 
 import (
 	"testing"
+	"time"
 
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
@@ -61,4 +62,54 @@ func TestWebhookRepository_Full(t *testing.T) {
 	require.NoError(t, repo.Delete("wh_1", user.ID))
 	_, err = repo.FindByID("wh_1")
 	assert.Error(t, err)
+}
+
+func TestWebhookRepository_ListActiveByUserID(t *testing.T) {
+	repo := NewWebhookRepository(testDB)
+	user := insertTestUser(t, "u_wh_2", "activeuser")
+	defer cleanupUser(t, user.ID)
+
+	active := &model.Webhook{
+		ID: "wh_act_1", UserID: user.ID, Name: "Active", URL: "https://a",
+		On: pq.StringArray{"note"}, Active: true,
+	}
+	inactive := &model.Webhook{
+		ID: "wh_act_2", UserID: user.ID, Name: "Inactive", URL: "https://b",
+		On: pq.StringArray{"note"}, Active: true,
+	}
+	require.NoError(t, repo.Create(active))
+	require.NoError(t, repo.Create(inactive))
+	defer testDB.Exec(`DELETE FROM "webhook" WHERE "userId" = ?`, user.ID)
+	// GORM のdefault:trueがzero値をそのまま落とすため、Createで false を
+	// 書き込めない。明示的に UPDATE で flip する。
+	require.NoError(t, testDB.Exec(`UPDATE "webhook" SET active = false WHERE id = ?`, "wh_act_2").Error)
+
+	list, err := repo.ListActiveByUserID(user.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "wh_act_1", list[0].ID)
+}
+
+func TestWebhookRepository_UpdateLatestStatus(t *testing.T) {
+	repo := NewWebhookRepository(testDB)
+	user := insertTestUser(t, "u_wh_3", "statususer")
+	defer cleanupUser(t, user.ID)
+
+	w := &model.Webhook{
+		ID: "wh_st_1", UserID: user.ID, Name: "Status Hook", URL: "https://a",
+		On: pq.StringArray{"note"}, Active: true,
+	}
+	require.NoError(t, repo.Create(w))
+	defer testDB.Exec(`DELETE FROM "webhook" WHERE id = ?`, w.ID)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, repo.UpdateLatestStatus("wh_st_1", now, 200))
+
+	got, err := repo.FindByID("wh_st_1")
+	require.NoError(t, err)
+	require.NotNil(t, got.LatestStatus)
+	assert.Equal(t, 200, *got.LatestStatus)
+	require.NotNil(t, got.LatestSentAt)
+	// Name etc. unchanged
+	assert.Equal(t, "Status Hook", got.Name)
 }

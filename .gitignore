@@ -41,3 +41,6 @@ Thumbs.db
 # Config (user-specific)
 .config/
 drive-files/
+
+# Claude Code local state
+.claude/

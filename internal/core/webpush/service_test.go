@@ -31,6 +31,12 @@ func (f *fakeEnqueuer) EnqueueWebPush(_ context.Context, payload queue.WebPushPa
 	f.calls = append(f.calls, payload)
 	return nil
 }
+func (f *fakeEnqueuer) EnqueueUserWebhook(_ context.Context, _ queue.WebhookPayload) error {
+	return nil
+}
+func (f *fakeEnqueuer) EnqueueSystemWebhook(_ context.Context, _ queue.WebhookPayload) error {
+	return nil
+}
 func (f *fakeEnqueuer) Close() error { return nil }
 
 func TestService_PushNotification_Enqueues(t *testing.T) {

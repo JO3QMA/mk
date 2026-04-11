@@ -19,6 +19,12 @@ const TaskTypeImport = "import"
 // TaskTypeWebPush is the asynq task type for Web Push delivery jobs.
 const TaskTypeWebPush = "webpush:notify"
 
+// TaskTypeUserWebhook is the asynq task type for user webhook delivery jobs.
+const TaskTypeUserWebhook = "webhook:user"
+
+// TaskTypeSystemWebhook is the asynq task type for system webhook delivery jobs.
+const TaskTypeSystemWebhook = "webhook:system"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {
@@ -114,6 +120,42 @@ func DecodeWebPushPayload(body []byte) (WebPushPayload, error) {
 	var p WebPushPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return WebPushPayload{}, err
+	}
+	return p, nil
+}
+
+// WebhookPayload carries a single webhook delivery job. Body is the
+// pre-marshalled event payload envelope (see core/webhook for the exact
+// Misskey-compatible structure); the processor forwards it to the endpoint
+// URL without further interpretation.
+type WebhookPayload struct {
+	WebhookID string          `json:"webhookId"`
+	UserID    string          `json:"userId,omitempty"` // user webhooks only
+	EventType string          `json:"eventType"`
+	Body      json.RawMessage `json:"body"`
+}
+
+// NewUserWebhookTask serializes the payload into an asynq.Task for user
+// webhook delivery.
+func NewUserWebhookTask(payload WebhookPayload) *asynq.Task {
+	body, _ := json.Marshal(payload)
+	return asynq.NewTask(TaskTypeUserWebhook, body)
+}
+
+// NewSystemWebhookTask serializes the payload into an asynq.Task for system
+// webhook delivery.
+func NewSystemWebhookTask(payload WebhookPayload) *asynq.Task {
+	body, _ := json.Marshal(payload)
+	return asynq.NewTask(TaskTypeSystemWebhook, body)
+}
+
+// DecodeWebhookPayload extracts a WebhookPayload from a task body. The same
+// encoder/decoder is reused for both user and system webhook tasks since the
+// wire format is identical.
+func DecodeWebhookPayload(body []byte) (WebhookPayload, error) {
+	var p WebhookPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return WebhookPayload{}, err
 	}
 	return p, nil
 }

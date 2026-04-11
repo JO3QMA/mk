@@ -1,2 +1,0 @@
-- [Branching policy](feedback_branching.md) — develop で直接作業しフィーチャーブランチは切らない
-- [Coverage target](feedback_coverage.md) — 全パッケージ90%以上維持、最終的にほぼ100%目標
