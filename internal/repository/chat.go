@@ -18,6 +18,7 @@ type ChatRepository interface {
 	// Message operations
 	CreateMessage(msg *model.ChatMessage) error
 	FindMessageByID(id string) (*model.ChatMessage, error)
+	UpdateMessage(msg *model.ChatMessage) error
 	DeleteMessage(id string) error
 	ListMessagesByRoom(roomID string, limit int) ([]*model.ChatMessage, error)
 	ListMessagesByUser(userID, otherUserID string, limit int) ([]*model.ChatMessage, error)
@@ -99,6 +100,10 @@ func (r *chatRepository) FindMessageByID(id string) (*model.ChatMessage, error) 
 		return nil, err
 	}
 	return &msg, nil
+}
+
+func (r *chatRepository) UpdateMessage(msg *model.ChatMessage) error {
+	return r.db.Save(msg).Error
 }
 
 func (r *chatRepository) DeleteMessage(id string) error {
