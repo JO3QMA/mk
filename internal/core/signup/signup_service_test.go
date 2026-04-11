@@ -121,3 +121,33 @@ func TestSignup_TokenIs16Chars(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, result.Token, 16) // 8 bytes hex = 16 chars
 }
+
+func TestSignup_WithKeypairRepo(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	keypairRepo := testutil.NewMockUserKeypairRepository()
+	svc.SetKeypairRepo(keypairRepo)
+
+	result, err := svc.Signup("alice", "pass", false)
+	require.NoError(t, err)
+
+	// Keypair created for the new user.
+	k, ok := keypairRepo.Keypairs[result.User.ID]
+	require.True(t, ok)
+	assert.NotEmpty(t, k.PublicKey)
+	assert.NotEmpty(t, k.PrivateKey)
+}
+
+type failingCreateKeypairRepo struct{}
+
+func (f *failingCreateKeypairRepo) Create(_ *model.UserKeypair) error { return assert.AnError }
+func (f *failingCreateKeypairRepo) FindByUserID(_ string) (*model.UserKeypair, error) {
+	return nil, assert.AnError
+}
+
+func TestSignup_KeypairCreateError(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	svc.SetKeypairRepo(&failingCreateKeypairRepo{})
+
+	_, err := svc.Signup("alice", "pass", false)
+	assert.Error(t, err)
+}

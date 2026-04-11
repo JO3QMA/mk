@@ -20,6 +20,7 @@ type UserRepository interface {
 	UpdateProfile(userID string, fields map[string]any) error
 	CreateProfile(profile *model.UserProfile) error
 	ListUsers(filter model.UserListFilter) ([]*model.User, error)
+	ListRemoteInboxes() ([]string, error)
 }
 
 type userRepository struct {
@@ -127,6 +128,41 @@ func (r *userRepository) UpdateProfile(userID string, fields map[string]any) err
 // CreateProfile inserts a new user_profile row.
 func (r *userRepository) CreateProfile(profile *model.UserProfile) error {
 	return r.db.Create(profile).Error
+}
+
+// ListRemoteInboxes returns a deduplicated list of inbox URLs belonging to
+// every known remote user. sharedInbox を優先し、無ければ個別 inbox を採用
+// する。Public なアクティビティ (Delete 等) の broadcast に使う。
+func (r *userRepository) ListRemoteInboxes() ([]string, error) {
+	var rows []struct {
+		Inbox       *string `gorm:"column:inbox"`
+		SharedInbox *string `gorm:"column:sharedInbox"`
+	}
+	if err := r.db.Model(&model.User{}).
+		Where("host IS NOT NULL").
+		Select("inbox, \"sharedInbox\"").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(rows))
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		var inbox string
+		if row.SharedInbox != nil && *row.SharedInbox != "" {
+			inbox = *row.SharedInbox
+		} else if row.Inbox != nil && *row.Inbox != "" {
+			inbox = *row.Inbox
+		}
+		if inbox == "" {
+			continue
+		}
+		if _, dup := seen[inbox]; dup {
+			continue
+		}
+		seen[inbox] = struct{}{}
+		out = append(out, inbox)
+	}
+	return out, nil
 }
 
 // ListUsers returns users matching the filter.

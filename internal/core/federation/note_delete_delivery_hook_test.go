@@ -105,3 +105,99 @@ func TestNoteDeleteHook_DeliverErrorDoesNotPanic(t *testing.T) {
 	note := &model.Note{ID: "n1", UserID: "alice"}
 	hook.OnNoteDeleted(author, note)
 }
+
+func TestNoteDeleteHook_BroadcastToRemoteInboxes(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo := newDeleteHook(t)
+	hook.SetUserRepo(userRepo)
+
+	author := &model.User{ID: "alice", Username: "alice"}
+	userRepo.Users["alice"] = author
+	keypairRepo.Keypairs["alice"] = &model.UserKeypair{UserID: "alice", PrivateKey: "PEM"}
+
+	// 既知のリモートインスタンスを 2 つ追加。片方は sharedInbox 優先、もう片方は inbox。
+	h := "remote1.example"
+	shared := "https://remote1.example/inbox"
+	userRepo.Users["r1"] = &model.User{ID: "r1", Host: &h, SharedInbox: &shared}
+	h2 := "remote2.example"
+	inbox := "https://remote2.example/users/bob/inbox"
+	userRepo.Users["r2"] = &model.User{ID: "r2", Host: &h2, Inbox: &inbox}
+
+	note := &model.Note{ID: "n1", UserID: "alice", Visibility: model.NoteVisibilityPublic}
+	hook.OnNoteDeleted(author, note)
+
+	// Followers への配信 0 件 + 全リモート 2 件 = 2 件 enqueued.
+	require.Len(t, enq.calls, 2)
+	inboxes := []string{enq.calls[0].Inbox, enq.calls[1].Inbox}
+	assert.Contains(t, inboxes, shared)
+	assert.Contains(t, inboxes, inbox)
+}
+
+func TestNoteDeleteHook_BroadcastSkippedForFollowersVisibility(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo := newDeleteHook(t)
+	hook.SetUserRepo(userRepo)
+
+	author := &model.User{ID: "alice"}
+	userRepo.Users["alice"] = author
+	keypairRepo.Keypairs["alice"] = &model.UserKeypair{UserID: "alice", PrivateKey: "PEM"}
+
+	h := "remote.example"
+	shared := "https://remote.example/inbox"
+	userRepo.Users["r1"] = &model.User{ID: "r1", Host: &h, SharedInbox: &shared}
+
+	note := &model.Note{ID: "n1", UserID: "alice", Visibility: model.NoteVisibilityFollowers}
+	hook.OnNoteDeleted(author, note)
+
+	// Followers 可視性では broadcast しないため、フォロワー 0 人分の 0 件。
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeleteHook_BroadcastEmptyInboxes(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo := newDeleteHook(t)
+	hook.SetUserRepo(userRepo)
+
+	author := &model.User{ID: "alice"}
+	userRepo.Users["alice"] = author
+	keypairRepo.Keypairs["alice"] = &model.UserKeypair{UserID: "alice", PrivateKey: "PEM"}
+
+	note := &model.Note{ID: "n1", UserID: "alice", Visibility: model.NoteVisibilityPublic}
+	hook.OnNoteDeleted(author, note)
+	// 既知リモート 0 件で broadcast はスキップされる。
+	assert.Empty(t, enq.calls)
+}
+
+// failingListInboxes makes ListRemoteInboxes return an error to exercise the
+// error-logging branch in the delete delivery hook.
+type failingListInboxes struct{ *testutil.MockUserRepository }
+
+func (f *failingListInboxes) ListRemoteInboxes() ([]string, error) {
+	return nil, assert.AnError
+}
+
+func TestNoteDeleteHook_BroadcastListError(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo := newDeleteHook(t)
+	hook.SetUserRepo(&failingListInboxes{MockUserRepository: userRepo})
+
+	author := &model.User{ID: "alice"}
+	userRepo.Users["alice"] = author
+	keypairRepo.Keypairs["alice"] = &model.UserKeypair{UserID: "alice", PrivateKey: "PEM"}
+
+	note := &model.Note{ID: "n1", UserID: "alice", Visibility: model.NoteVisibilityPublic}
+	hook.OnNoteDeleted(author, note)
+	// エラー時は broadcast されない。
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeleteHook_BroadcastDeliverError_DoesNotPanic(t *testing.T) {
+	hook, _, userRepo, _, _ := newDeleteHook(t)
+	hook.SetUserRepo(userRepo)
+
+	author := &model.User{ID: "alice"}
+	userRepo.Users["alice"] = author
+	// keypair なしで DeliverActivity 側が署名失敗 → panic しないこと。
+	h := "remote.example"
+	shared := "https://remote.example/inbox"
+	userRepo.Users["r1"] = &model.User{ID: "r1", Host: &h, SharedInbox: &shared}
+
+	note := &model.Note{ID: "n1", UserID: "alice", Visibility: model.NoteVisibilityPublic}
+	hook.OnNoteDeleted(author, note)
+}

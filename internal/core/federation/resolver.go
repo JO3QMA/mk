@@ -381,6 +381,12 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	if err := r.noteRepo.Create(note); err != nil {
 		return nil, err
 	}
+	// ローカルノートへの返信の場合、repliesCount を増やす。
+	// これにより timeline や API 上の「返信数」表示が federated reply も
+	// 含むようになる。失敗はベストエフォートで無視。
+	if note.ReplyID != nil {
+		_ = r.noteRepo.IncrementCount(*note.ReplyID, "repliesCount", 1)
+	}
 	return note, nil
 }
 

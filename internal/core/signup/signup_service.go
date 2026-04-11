@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -22,14 +23,22 @@ var (
 
 // Service handles user registration.
 type Service struct {
-	userRepo repository.UserRepository
-	metaRepo repository.MetaRepository
-	idGen    id.Generator
+	userRepo    repository.UserRepository
+	metaRepo    repository.MetaRepository
+	keypairRepo repository.UserKeypairRepository
+	idGen       id.Generator
 }
 
 // NewService creates a new SignupService.
 func NewService(userRepo repository.UserRepository, metaRepo repository.MetaRepository, idGen id.Generator) *Service {
 	return &Service{userRepo: userRepo, metaRepo: metaRepo, idGen: idGen}
+}
+
+// SetKeypairRepo wires the user keypair repository. When set, Signup will
+// generate a fresh RSA keypair for each newly created local user, which is
+// required for ActivityPub federation (actor endpoints return publicKey).
+func (s *Service) SetKeypairRepo(r repository.UserKeypairRepository) {
+	s.keypairRepo = r
 }
 
 // SignupResult holds the created user and their native token.
@@ -83,6 +92,22 @@ func (s *Service) Signup(username, password string, isInitialSetup bool) (*Signu
 	}
 	if err := s.userRepo.CreateProfile(profile); err != nil {
 		return nil, err
+	}
+
+	// RSA keypair (federation 用)。keypairRepo が未設定の場合はスキップする
+	// (従来の単体テストのため)。
+	if s.keypairRepo != nil {
+		privPEM, pubPEM, err := activitypub.GenerateRSAKeypair()
+		if err != nil {
+			return nil, err
+		}
+		if err := s.keypairRepo.Create(&model.UserKeypair{
+			UserID:     userID,
+			PublicKey:  pubPEM,
+			PrivateKey: privPEM,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	// 初回セットアップの場合は rootUserId を設定

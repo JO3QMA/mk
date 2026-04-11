@@ -4,6 +4,7 @@ package ap
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
@@ -19,9 +20,10 @@ type RemoteFetcher interface {
 	FetchObject(uri string) ([]byte, error)
 }
 
-// RemoteResolver resolves remote actors.
+// RemoteResolver resolves remote actors and notes.
 type RemoteResolver interface {
 	ResolveActor(uri string) (*model.User, error)
+	ResolveNote(uri string) (*model.Note, error)
 }
 
 // Handler handles ActivityPub resource endpoints.
@@ -78,7 +80,54 @@ func (h *Handler) User(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 	person := h.renderer.RenderPerson(bundle.User, keypair.PublicKey)
-	return c.JSONBlob(http.StatusOK, mustMarshal(person))
+	return writeActivityJSON(c, person)
+}
+
+// UserByAcct handles GET /@:acct with ActivityPub content negotiation.
+// When the Accept header prefers application/activity+json (which is how
+// other AP implementations resolve actors that they discovered via
+// WebFinger or a raw link), return the Person document. Otherwise fall
+// through to the HTML frontend by returning echo.ErrNotFound so the
+// catch-all route can handle it.
+func (h *Handler) UserByAcct(c echo.Context) error {
+	if !wantsActivityJSON(c.Request().Header.Get("Accept")) {
+		return echo.ErrNotFound
+	}
+	acct := c.Param("acct")
+	// /@alice or /@alice@host 形式。ローカルのみ扱う。
+	username := acct
+	if idx := strings.Index(acct, "@"); idx >= 0 {
+		username = acct[:idx]
+	}
+	bundle, err := h.userService.ShowByUsername(username, nil)
+	if err != nil {
+		return c.NoContent(http.StatusNotFound)
+	}
+	if bundle.User.Host != nil {
+		return c.NoContent(http.StatusNotFound)
+	}
+	keypair, err := h.keypairRepo.FindByUserID(bundle.User.ID)
+	if err != nil {
+		return c.NoContent(http.StatusInternalServerError)
+	}
+	person := h.renderer.RenderPerson(bundle.User, keypair.PublicKey)
+	return writeActivityJSON(c, person)
+}
+
+// writeActivityJSON serializes v and writes it with the ActivityPub
+// content type. Remote implementations (Misskey, Mastodon, ...) check
+// Content-Type before treating a response as an AP document, so a plain
+// application/json would cause them to reject it.
+func writeActivityJSON(c echo.Context, v any) error {
+	return c.Blob(http.StatusOK, `application/activity+json; charset=utf-8`, mustMarshal(v))
+}
+
+// wantsActivityJSON reports whether the caller prefers an AP document.
+// Any occurrence of application/activity+json or application/ld+json in
+// the Accept header is treated as a positive signal.
+func wantsActivityJSON(accept string) bool {
+	return strings.Contains(accept, "application/activity+json") ||
+		strings.Contains(accept, "application/ld+json")
 }
 
 // APIGet handles POST /api/ap/get — Admin専用。URIからActivityPubオブジェクトを取得。
@@ -141,28 +190,51 @@ func (h *Handler) APIShow(c echo.Context) error {
 		}
 	}
 
-	// リモートユーザー解決
+	// リモートオブジェクトをフェッチしてType判定
+	// Note の場合は ResolveNote でローカルDBに取り込み、local ID を返す。
+	// これにより後続の notes/reactions/create などが local note を見つけられる。
+	if h.remoteFetcher != nil {
+		if data, err := h.remoteFetcher.FetchObject(req.URI); err == nil {
+			var parsed map[string]any
+			if json.Unmarshal(data, &parsed) == nil {
+				t, _ := parsed["type"].(string)
+				switch t {
+				case "Note", "Article", "Question":
+					if h.remoteResolver != nil {
+						if remoteNote, err := h.remoteResolver.ResolveNote(req.URI); err == nil {
+							return c.JSON(http.StatusOK, map[string]any{
+								"type":   "Note",
+								"object": packNoteForAPI(remoteNote),
+							})
+						}
+					}
+					// Resolver 無し or ResolveNote 失敗時は raw AP JSON を返す
+					return c.JSON(http.StatusOK, map[string]any{
+						"type":   "Note",
+						"object": parsed,
+					})
+				case "Person", "Service", "Application", "Organization", "Group":
+					if h.remoteResolver != nil {
+						if remoteUser, err := h.remoteResolver.ResolveActor(req.URI); err == nil {
+							return c.JSON(http.StatusOK, map[string]any{
+								"type":   "User",
+								"object": packUserForAPI(remoteUser),
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// フェッチ失敗 or Type 不明の場合は ResolveActor を試す (webfinger 経由の
+	// /@user URL に対する fetch が失敗するケースがあるため)。
 	if h.remoteResolver != nil {
 		if remoteUser, err := h.remoteResolver.ResolveActor(req.URI); err == nil {
 			return c.JSON(http.StatusOK, map[string]any{
 				"type":   "User",
 				"object": packUserForAPI(remoteUser),
 			})
-		}
-	}
-
-	// リモートオブジェクトをフェッチしてNoteかどうか判定
-	if h.remoteFetcher != nil {
-		if data, err := h.remoteFetcher.FetchObject(req.URI); err == nil {
-			var parsed map[string]any
-			if json.Unmarshal(data, &parsed) == nil {
-				if t, ok := parsed["type"].(string); ok && (t == "Note" || t == "Article" || t == "Question") {
-					return c.JSON(http.StatusOK, map[string]any{
-						"type":   "Note",
-						"object": parsed,
-					})
-				}
-			}
 		}
 	}
 
@@ -264,5 +336,5 @@ func (h *Handler) Note(c echo.Context) error {
 		return c.NoContent(http.StatusNotFound)
 	}
 	note := h.renderer.RenderNote(n, h.idGen)
-	return c.JSONBlob(http.StatusOK, mustMarshal(note))
+	return writeActivityJSON(c, note)
 }
