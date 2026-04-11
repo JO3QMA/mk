@@ -8,6 +8,7 @@ import (
 // SwSubscriptionRepository handles sw_subscription persistence.
 type SwSubscriptionRepository interface {
 	FindByUserAndEndpoint(userID, endpoint string) (*model.SwSubscription, error)
+	FindByUserID(userID string) ([]*model.SwSubscription, error)
 	Create(sub *model.SwSubscription) error
 	Update(sub *model.SwSubscription) error
 	DeleteByEndpoint(endpoint string) error
@@ -29,6 +30,14 @@ func (r *swSubscriptionRepository) FindByUserAndEndpoint(userID, endpoint string
 		return nil, err
 	}
 	return &sub, nil
+}
+
+func (r *swSubscriptionRepository) FindByUserID(userID string) ([]*model.SwSubscription, error) {
+	var subs []*model.SwSubscription
+	if err := r.db.Where(`"userId" = ?`, userID).Find(&subs).Error; err != nil {
+		return nil, err
+	}
+	return subs, nil
 }
 
 func (r *swSubscriptionRepository) Create(sub *model.SwSubscription) error {

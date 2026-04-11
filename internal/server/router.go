@@ -69,6 +69,7 @@ import (
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
+	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -122,6 +123,7 @@ func (s *Server) setupRoutes() {
 	flashLikeRepo := repository.NewFlashLikeRepository(s.db)
 	roleRepo := repository.NewRoleRepository(s.db)
 	roleAssignmentRepo := repository.NewRoleAssignmentRepository(s.db)
+	swSubRepo := repository.NewSwSubscriptionRepository(s.db)
 
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
@@ -165,6 +167,19 @@ func (s *Server) setupRoutes() {
 	noteCreateService.SetUserRepo(userRepo)
 	followingService.SetNotificationHook(notificationHook)
 	reactionService.SetNotificationHook(notificationHook)
+
+	// Web Push (Phase 9.3): 通知作成後にサブスクライバーへpush配信する。
+	webPushService := corewebpush.NewService(s.queueClient)
+	notificationHook.SetWebPushPublisher(webPushService)
+	notificationHook.SetPackers(
+		corewebpush.NewUserRepoPacker(userRepo),
+		corewebpush.NewNoteRepoPacker(noteRepo, idGen),
+	)
+	webPushCache := corewebpush.NewSubscriptionCache(swSubRepo, s.redis.Default)
+	webPushProcessor := processors.NewWebPushProcessor(
+		webPushCache, swSubRepo, metaRepo, nil, s.config.URL,
+	)
+	s.queueServer.Handle(queue.TaskTypeWebPush, webPushProcessor.Handle)
 
 	// Blocking & Muting
 	blockingService := coreblocking.NewService(userRepo, blockingRepo, followingRepo, idGen)
@@ -955,7 +970,6 @@ func (s *Server) setupRoutes() {
 	api.POST("/ap/notes", apHandler.APNotes)
 
 	// sw/* — Service Worker push notifications (実データ)
-	swSubRepo := repository.NewSwSubscriptionRepository(s.db)
 	swHandler := apisw.NewHandler(swSubRepo, metaRepo, idGen)
 	api.POST("/sw/register", swHandler.Register, middleware.RequireAuth())
 	api.POST("/sw/show-registration", swHandler.ShowRegistration, middleware.RequireAuth())

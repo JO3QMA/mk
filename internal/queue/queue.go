@@ -4,6 +4,8 @@
 package queue
 
 import (
+	"context"
+
 	"github.com/hibiken/asynq"
 )
 
@@ -13,12 +15,16 @@ const QueueName = "deliver"
 // ExportQueueName is the asynq queue for export/import jobs.
 const ExportQueueName = "export"
 
+// PushQueueName is the asynq queue for Web Push delivery jobs.
+const PushQueueName = "push"
+
 // Enqueuer abstracts the asynq client for callers that only need to enqueue
 // tasks. テスト用にmock可能。
 type Enqueuer interface {
 	EnqueueDeliver(payload DeliverPayload, opts ...asynq.Option) error
 	EnqueueExport(payload ExportPayload) error
 	EnqueueImport(payload ImportPayload) error
+	EnqueueWebPush(ctx context.Context, payload WebPushPayload) error
 	Close() error
 }
 
@@ -59,6 +65,13 @@ func (c *Client) EnqueueImport(payload ImportPayload) error {
 	return err
 }
 
+// EnqueueWebPush puts a Web Push delivery task on the push queue.
+func (c *Client) EnqueueWebPush(ctx context.Context, payload WebPushPayload) error {
+	task := NewWebPushTask(payload)
+	_, err := c.inner.EnqueueContext(ctx, task, asynq.Queue(PushQueueName))
+	return err
+}
+
 // Close releases the underlying client connection.
 func (c *Client) Close() error {
 	return c.inner.Close()
@@ -86,7 +99,14 @@ func NewServer(redisOpt asynq.RedisClientOpt, cfg ServerConfig) *Server {
 	}
 	inner := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: concurrency,
-		Queues:      map[string]int{QueueName: 1},
+		// Queue priorities: deliver/push が同重み、export は低優先。
+		// map のキーが登録済み queue として扱われ、未登録の queue は
+		// processor を実行しないので新しい TaskType 追加時は忘れずに足す。
+		Queues: map[string]int{
+			QueueName:       1,
+			PushQueueName:   1,
+			ExportQueueName: 1,
+		},
 	})
 	return &Server{inner: inner, mux: asynq.NewServeMux()}
 }
