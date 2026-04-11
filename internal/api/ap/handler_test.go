@@ -289,12 +289,18 @@ func (m *mockFetcher) FetchObject(_ string) ([]byte, error) {
 }
 
 type mockResolver struct {
-	user *model.User
-	err  error
+	user    *model.User
+	err     error
+	note    *model.Note
+	noteErr error
 }
 
 func (m *mockResolver) ResolveActor(_ string) (*model.User, error) {
 	return m.user, m.err
+}
+
+func (m *mockResolver) ResolveNote(_ string) (*model.Note, error) {
+	return m.note, m.noteErr
 }
 
 func TestSetRemote(t *testing.T) {
@@ -335,13 +341,73 @@ func TestAPIShow_RemoteResolveActor(t *testing.T) {
 
 func TestAPIShow_RemoteFetchNote(t *testing.T) {
 	h, _, _, _ := newHandler(t)
+	// ResolveNote fails -> fall through to raw AP JSON echo.
 	h.SetRemote(
 		&mockFetcher{data: []byte(`{"type":"Note","content":"hello"}`)},
-		&mockResolver{err: assert.AnError},
+		&mockResolver{noteErr: assert.AnError},
 	)
 	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/notes/1"}`)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"type":"Note"`)
+}
+
+func TestAPIShow_RemoteFetchNote_ResolveNoteSuccess(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	// ResolveNote succeeds -> return the ingested local note object.
+	h.SetRemote(
+		&mockFetcher{data: []byte(`{"type":"Note","content":"hello"}`)},
+		&mockResolver{note: &model.Note{ID: "ln1", UserID: "u1", Visibility: model.NoteVisibilityPublic, User: &model.User{ID: "u1", Username: "alice"}}},
+	)
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/notes/1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"type":"Note"`)
+	assert.Contains(t, rec.Body.String(), `"id":"ln1"`)
+}
+
+func TestAPIShow_RemoteFetchArticle_NoResolver(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	// Fetcher returns an Article; no resolver wired -> raw AP JSON.
+	h.SetRemote(&mockFetcher{data: []byte(`{"type":"Article","content":"long form"}`)}, nil)
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/articles/1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"type":"Note"`)
+}
+
+func TestAPIShow_RemoteFetchPerson_ResolveActor(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	// Fetcher returns a Person; resolver succeeds -> return user object.
+	h.SetRemote(
+		&mockFetcher{data: []byte(`{"type":"Person","id":"https://remote.example/users/alice"}`)},
+		&mockResolver{user: &model.User{ID: "ru1", Username: "alice"}},
+	)
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/users/alice"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"type":"User"`)
+	assert.Contains(t, rec.Body.String(), `"ru1"`)
+}
+
+func TestAPIShow_RemoteFetchPerson_ResolveActorFails(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	// Fetcher returns a Person; resolver fails AND fallback also fails -> 404.
+	h.SetRemote(
+		&mockFetcher{data: []byte(`{"type":"Person","id":"https://remote.example/users/alice"}`)},
+		&mockResolver{err: assert.AnError},
+	)
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/users/alice"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAPIShow_RemoteFetchServiceType(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	// Coverage for actor subtypes: Service/Application/Organization/Group
+	// all take the same branch.
+	h.SetRemote(
+		&mockFetcher{data: []byte(`{"type":"Service"}`)},
+		&mockResolver{user: &model.User{ID: "svc1", Username: "svc"}},
+	)
+	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/users/svc"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"type":"User"`)
 }
 
 func TestAPIShow_RemoteNothing(t *testing.T) {
@@ -352,6 +418,93 @@ func TestAPIShow_RemoteNothing(t *testing.T) {
 	)
 	rec := postJSON(h.APIShow, `{"uri":"https://remote.example/unknown"}`)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// --- UserByAcct + Accept header negotiation ---
+
+func newAcctReq(t *testing.T, accept, acct string) (echo.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	if accept != "" {
+		req.Header.Set(echo.HeaderAccept, accept)
+	}
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("acct")
+	c.SetParamValues(acct)
+	return c, rec
+}
+
+func TestUserByAcct_Success(t *testing.T) {
+	h, userRepo, _, keypairRepo := newHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}
+	keypairRepo.items["u1"] = &model.UserKeypair{UserID: "u1", PublicKey: "PUB"}
+
+	c, rec := newAcctReq(t, "application/activity+json", "alice")
+	require.NoError(t, h.UserByAcct(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "alice")
+}
+
+func TestUserByAcct_HTMLFallsThrough(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, _ := newAcctReq(t, "text/html", "alice")
+	err := h.UserByAcct(c)
+	// Non-AP accept → return echo.ErrNotFound to let catch-all serve HTML.
+	assert.Equal(t, echo.ErrNotFound, err)
+}
+
+func TestUserByAcct_LDJSON(t *testing.T) {
+	h, userRepo, _, keypairRepo := newHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}
+	keypairRepo.items["u1"] = &model.UserKeypair{UserID: "u1", PublicKey: "PUB"}
+
+	c, rec := newAcctReq(t, "application/ld+json", "alice")
+	require.NoError(t, h.UserByAcct(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUserByAcct_WithHostSuffix(t *testing.T) {
+	h, userRepo, _, keypairRepo := newHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}
+	keypairRepo.items["u1"] = &model.UserKeypair{UserID: "u1", PublicKey: "PUB"}
+
+	// /@alice@example.com — local lookup should still work (host suffix is ignored).
+	c, rec := newAcctReq(t, "application/activity+json", "alice@example.com")
+	require.NoError(t, h.UserByAcct(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUserByAcct_UserNotFound(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	c, rec := newAcctReq(t, "application/activity+json", "ghost")
+	require.NoError(t, h.UserByAcct(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUserByAcct_RemoteUser(t *testing.T) {
+	h, userRepo, _, _ := newHandler(t)
+	host := "remote.example"
+	// The local FindByUsernameLower filter treats host=nil as "local only" so a
+	// remote user would normally be unreachable. We override the lookup here
+	// to force-return a user with Host != nil and exercise the defensive
+	// Host != nil guard in UserByAcct.
+	userRepo.FindByUsernameLowerFn = func(_ string, _ *string) (*model.User, error) {
+		return &model.User{ID: "u1", Username: "alice", UsernameLower: "alice", Host: &host}, nil
+	}
+	c, rec := newAcctReq(t, "application/activity+json", "alice")
+	require.NoError(t, h.UserByAcct(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestUserByAcct_KeypairError(t *testing.T) {
+	h, userRepo, _, keypairRepo := newHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}
+	keypairRepo.err = errors.New("db down")
+	c, rec := newAcctReq(t, "application/activity+json", "alice")
+	require.NoError(t, h.UserByAcct(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 func TestAPIGet_RemoteInvalidJSON(t *testing.T) {
