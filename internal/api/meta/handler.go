@@ -91,7 +91,7 @@ func (h *Handler) Meta(c echo.Context) error {
 		"mascotImageUrl":               mascotURL(m.MascotImageURL),
 		"translatorAvailable":          m.DeeplAuthKey != nil && *m.DeeplAuthKey != "",
 		"enableEmail":                  m.EnableEmail,
-		"enableUrlPreview":             false,
+		"enableUrlPreview":             m.URLPreviewEnabled,
 		"ads":                          h.serializeActiveAds(),
 		"notesPerOneAd":                m.NotesPerOneAd,
 		"mediaProxy":                   h.config.MediaProxy,

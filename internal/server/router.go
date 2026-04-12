@@ -44,6 +44,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/streaming"
 	apisw "github.com/shiroha-a/mk/internal/api/sw"
 	apitest "github.com/shiroha-a/mk/internal/api/test"
+	apiurl "github.com/shiroha-a/mk/internal/api/url"
 	apiuserlists "github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/api/users"
 	apiwebhooks "github.com/shiroha-a/mk/internal/api/webhooks"
@@ -78,6 +79,7 @@ import (
 	coretransfer "github.com/shiroha-a/mk/internal/core/transfer"
 	coretranslate "github.com/shiroha-a/mk/internal/core/translate"
 	coretwofactor "github.com/shiroha-a/mk/internal/core/twofactor"
+	coreurlpreview "github.com/shiroha-a/mk/internal/core/urlpreview"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	corewebhook "github.com/shiroha-a/mk/internal/core/webhook"
 	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
@@ -387,6 +389,26 @@ func (s *Server) setupRoutes() {
 	metaHandler.SetAdRepo(repository.NewAdRepository(s.db))
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
+
+	// URL preview endpoint
+	if previewMeta, err := metaRepo.Fetch(); err == nil {
+		previewCfg := coreurlpreview.Config{
+			Enabled:              previewMeta.URLPreviewEnabled,
+			AllowRedirect:        previewMeta.URLPreviewAllowRedirect,
+			TimeoutMs:            previewMeta.URLPreviewTimeout,
+			MaxContentLength:     previewMeta.URLPreviewMaximumContentLength,
+			RequireContentLength: previewMeta.URLPreviewRequireContentLength,
+		}
+		if previewMeta.URLPreviewUserAgent != nil {
+			previewCfg.UserAgent = *previewMeta.URLPreviewUserAgent
+		}
+		if previewMeta.URLPreviewSummaryProxyURL != nil {
+			previewCfg.SummaryProxyURL = *previewMeta.URLPreviewSummaryProxyURL
+		}
+		urlPreviewFetcher := coreurlpreview.NewFetcher(previewCfg, s.redis.Default)
+		urlHandler := apiurl.NewHandler(urlPreviewFetcher)
+		s.echo.GET("/url", urlHandler.Preview)
+	}
 
 	// Test-only endpoints — TestMode=true のときだけ公開する。
 	// Cypress の resetState コマンドが依存する /api/reset-db はここで登録する。
