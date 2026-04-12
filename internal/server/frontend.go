@@ -143,21 +143,23 @@ func ClientAssetsDir() string {
 }
 
 // TwemojiDir returns the path to twemoji SVG files.
-// 環境変数 MISSKEY_TWEMOJI_DIR で上書き可能。
+// 環境変数 MISSKEY_TWEMOJI_DIR で上書き可能。pnpm の hoisted node_modules は
+// packages/backend 配下に配置されるため、そちらを参照する。
 func TwemojiDir() string {
 	if v := os.Getenv("MISSKEY_TWEMOJI_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join(frontendBase, "node_modules", "@discordapp", "twemoji", "dist", "svg")
+	return filepath.Join(frontendBase, "packages", "backend", "node_modules", "@discordapp", "twemoji", "dist", "svg")
 }
 
 // StaticDir returns the path to static assets (icons, splash, favicon etc.).
-// 環境変数 MISSKEY_STATIC_DIR で上書き可能。
+// 環境変数 MISSKEY_STATIC_DIR で上書き可能。本家 TS では packages/backend/assets
+// が /static-assets として配信される。
 func StaticDir() string {
 	if v := os.Getenv("MISSKEY_STATIC_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join(frontendBase, "assets")
+	return filepath.Join(frontendBase, "packages", "backend", "assets")
 }
 
 // detectClientEntry reads the Vite manifest to find the entry script path.
