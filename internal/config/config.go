@@ -378,6 +378,8 @@ func deriveMediaProxySecret(src *Source) []byte {
 	if src.MediaProxySecret != "" {
 		return []byte(src.MediaProxySecret)
 	}
+	// URLは公開情報なのでsecretとしては弱い。運用者に設定を促す。
+	slog.Warn("config: mediaProxySecret is not set; using a URL-derived fallback. Set mediaProxySecret in config for stronger HMAC security.")
 	h := sha256.Sum256([]byte(src.URL + "|mediaproxy"))
 	return h[:]
 }
