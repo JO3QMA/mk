@@ -211,10 +211,10 @@ func TestClips_Success(t *testing.T) {
 
 // --- Translate ---
 
-func TestTranslate_Success(t *testing.T) {
+func TestTranslate_NoTranslator(t *testing.T) {
 	h, _, _ := newExtraHandler(t)
 	rec := postExtra(h.Translate, `{"noteId":"n1","targetLang":"en"}`, nil)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 func TestTranslate_InvalidParam(t *testing.T) {

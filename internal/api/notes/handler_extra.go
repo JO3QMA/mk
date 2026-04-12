@@ -191,11 +191,32 @@ func (h *Handler) Translate(c echo.Context) error {
 		NoteID     string `json:"noteId"`
 		TargetLang string `json:"targetLang"`
 	}
-	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	if err := c.Bind(&req); err != nil || req.NoteID == "" || req.TargetLang == "" {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId and targetLang are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	// 翻訳は未実装 (翻訳サービス未接続)
-	return c.JSON(http.StatusNoContent, nil)
+
+	if h.translator == nil {
+		return c.JSON(http.StatusServiceUnavailable, apiError("UNAVAILABLE", "Translator is not configured.", "bef6e895-c05f-4572-96ab-58f5ae1e2e28"))
+	}
+
+	n, err := h.noteRepo.FindByID(req.NoteID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_NOTE", "No such note.", "bea9b03f-36e0-49c5-a4db-369571c8c0d4"))
+	}
+
+	if n.Text == nil || *n.Text == "" {
+		return c.JSON(http.StatusBadRequest, apiError("CANNOT_TRANSLATE", "Nothing to translate.", "bef6e895-c05f-4572-96ab-58f5ae1e2e28"))
+	}
+
+	result, err := h.translator.Translate(c.Request().Context(), *n.Text, req.TargetLang)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Translation failed.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"sourceLang": result.SourceLang,
+		"text":       result.Text,
+	})
 }
 
 // ShowPartialBulk handles POST /api/notes/show-partial-bulk.
