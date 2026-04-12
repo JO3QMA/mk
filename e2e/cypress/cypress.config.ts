@@ -18,8 +18,11 @@ export default defineConfig({
   e2e: {
     baseUrl: process.env.E2E_BASE_URL ?? 'http://localhost:3000',
 
-    // Spec / support / fixtures はすべて submodule の現物を指す。
-    specPattern: path.join(misskeyCypress, 'e2e', '**', '*.cy.{js,jsx,ts,tsx}'),
+    // Spec は submodule の本家 spec + mk-go 独自 spec の両方を読む。
+    specPattern: [
+      path.join(misskeyCypress, 'e2e', '**', '*.cy.{js,jsx,ts,tsx}'),
+      path.join(__dirname, 'e2e', '**', '*.cy.{js,jsx,ts,tsx}'),
+    ],
     supportFile: path.join(misskeyCypress, 'support', 'e2e.ts'),
     fixturesFolder: path.join(misskeyCypress, 'fixtures'),
 

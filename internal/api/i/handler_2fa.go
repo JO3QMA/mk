@@ -238,9 +238,11 @@ func (h *Handler) TwoFAKeyDone(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Failed to persist key.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	// 1 つ以上の鍵が登録されたら user_profile.securityKeysAvailable を true にする。
+	// 1 つ以上の鍵が登録されたら user_profile.securityKeysAvailable +
+	// twoFactorEnabled を true にする。本家 Misskey と同じ挙動。
 	_ = h.userService.UpdateProfileFields(user.ID, map[string]any{
 		"securityKeysAvailable": true,
+		"twoFactorEnabled":      true,
 	})
 
 	return c.JSON(http.StatusOK, map[string]any{
