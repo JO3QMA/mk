@@ -5,12 +5,18 @@
 // Go 側の FinishLogin success path が実際のブラウザ WebAuthn API 経由で
 // 動作することを確認する (issue #55)。
 
+// base64url → Uint8Array
+const b64u = (s: string) =>
+  Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+
+// Uint8Array → base64 (standard, for sending back to server)
+const toB64 = (buf: ArrayBuffer) =>
+  btoa(String.fromCharCode(...new Uint8Array(buf)));
+
 describe('WebAuthn (Virtual Authenticator)', () => {
   const admin = { username: 'admin', password: 'adminpass' };
-  const user = { username: 'webauthnuser', password: 'pass123456' };
+  const user = { username: 'wanuser', password: 'pass123456' };
 
-  // CDP (Chrome DevTools Protocol) でvirtual authenticatorを有効化する。
-  // Cypress は Chromium ベースブラウザで CDP コマンドを直接送れる。
   let authenticatorId: string;
 
   function enableVirtualAuthenticator(): Cypress.Chainable {
@@ -53,10 +59,16 @@ describe('WebAuthn (Virtual Authenticator)', () => {
   }
 
   before(() => {
-    // 初期状態にリセットし admin + テストユーザーを作成する。
     cy.resetState();
     cy.registerUser(admin.username, admin.password, true);
-    cy.registerUser(user.username, user.password);
+    cy.get(`@${admin.username}`).then((res: any) => {
+      cy.request({
+        method: 'POST',
+        url: '/api/admin/accounts/create',
+        headers: { Authorization: `Bearer ${res.token}` },
+        body: { username: user.username, password: user.password },
+      });
+    });
   });
 
   afterEach(() => {
@@ -73,137 +85,127 @@ describe('WebAuthn (Virtual Authenticator)', () => {
     }).then((signinRes) => {
       expect(signinRes.body.finished).to.be.true;
       const token = signinRes.body.i;
+      const authHeader = { Authorization: `Bearer ${token}` };
 
-      // Step 2: 2FA を有効化 (TOTP 登録)
+      // Step 2: セキュリティキー登録 challenge 取得
+      // (2FA が有効でなくても register-key は呼べる — key 追加時に自動で有効化)
       cy.request({
         method: 'POST',
-        url: '/api/i/2fa/register',
-        headers: { Authorization: `Bearer ${token}` },
+        url: '/api/i/2fa/register-key',
+        headers: authHeader,
         body: { password: user.password },
-      }).then((tfaRes) => {
-        // TOTP secret を使って OTP を生成してdoneに渡す (簡易: backupコード経由)
-        // ここでは TOTP secret を直接使って検証コードを生成する代わりに、
-        // register → done の流れをAPI経由でテストする。
-        const secret = tfaRes.body.secret;
-        expect(secret).to.be.a('string');
+      }).then((regKeyRes) => {
+        expect(regKeyRes.status).to.eq(200);
+        const regSessionId = regKeyRes.body.sessionId;
+        const creationOpts = regKeyRes.body.creation.publicKey;
+        expect(creationOpts).to.have.property('rp');
+        expect(creationOpts).to.have.property('challenge');
 
-        // TOTP コードを生成 (テスト用に secret から計算)
-        // Cypress では Node.js の crypto を使えないため、
-        // テスト用のワンタイムパスワード生成はサーバーサイドで行う。
-        // 代替: バックアップコードを使わずに、register-key エンドポイントだけをテストする。
+        // Step 3: ブラウザの WebAuthn API で credential を作成
+        cy.window().then(async (win) => {
+          const publicKey = {
+            ...creationOpts,
+            challenge: b64u(creationOpts.challenge),
+            user: {
+              ...creationOpts.user,
+              id: b64u(creationOpts.user.id),
+            },
+            ...(creationOpts.excludeCredentials
+              ? {
+                  excludeCredentials: creationOpts.excludeCredentials.map((c: any) => ({
+                    ...c,
+                    id: b64u(c.id),
+                  })),
+                }
+              : {}),
+          };
 
-        // Step 3: セキュリティキー登録 (register-key → ブラウザ WebAuthn API → key-done)
-        cy.request({
-          method: 'POST',
-          url: '/api/i/2fa/register-key',
-          headers: { Authorization: `Bearer ${token}` },
-          body: { password: user.password },
-        }).then((regKeyRes) => {
-          // register-key は WebAuthn credential creation options を返す
-          const options = regKeyRes.body;
-          expect(options).to.have.property('rp');
-          expect(options).to.have.property('challenge');
+          const credential = (await win.navigator.credentials.create({
+            publicKey,
+          })) as PublicKeyCredential;
+          expect(credential).to.not.be.null;
 
-          // Step 4: ブラウザの WebAuthn API で credential を作成
-          // (Virtual Authenticator が自動応答する)
-          cy.window().then(async (win) => {
-            const publicKey = {
-              ...options,
-              challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
-              user: {
-                ...options.user,
-                id: Uint8Array.from(atob(options.user.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+          const attResp = credential.response as AuthenticatorAttestationResponse;
+
+          // Step 4: key-done に attestation を送信して登録完了
+          // handler は { password, name, sessionId, response } を期待する。
+          // response は go-webauthn が parse する credential creation data。
+          cy.request({
+            method: 'POST',
+            url: '/api/i/2fa/key-done',
+            headers: authHeader,
+            body: {
+              password: user.password,
+              name: 'virtual-key',
+              sessionId: regSessionId,
+              response: {
+                id: credential.id,
+                rawId: toB64(credential.rawId),
+                type: credential.type,
+                response: {
+                  clientDataJSON: toB64(attResp.clientDataJSON),
+                  attestationObject: toB64(attResp.attestationObject),
+                },
               },
-              ...(options.excludeCredentials ? {
-                excludeCredentials: options.excludeCredentials.map((c: any) => ({
-                  ...c,
-                  id: Uint8Array.from(atob(c.id.replace(/-/g, '+').replace(/_/g, '/')), c2 => c2.charCodeAt(0)),
-                })),
-              } : {}),
-            };
+            },
+          }).then((doneRes) => {
+            expect(doneRes.status).to.eq(200);
 
-            const credential = await win.navigator.credentials.create({ publicKey }) as PublicKeyCredential;
-            expect(credential).to.not.be.null;
+            // Step 5: signin-flow で password → 2FA step
+            cy.request('POST', '/api/signin-flow', {
+              username: user.username,
+              password: user.password,
+            }).then((step2Res) => {
+              expect(step2Res.body.finished).to.be.false;
+              expect(step2Res.body.next).to.eq('captcha-keys');
+              expect(step2Res.body).to.have.property('assertion');
+              expect(step2Res.body).to.have.property('sessionId');
 
-            const response = credential.response as AuthenticatorAttestationResponse;
-            const attestationObject = btoa(String.fromCharCode(...new Uint8Array(response.attestationObject)));
-            const clientDataJSON = btoa(String.fromCharCode(...new Uint8Array(response.clientDataJSON)));
-            const rawId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+              const assertion = step2Res.body.assertion;
+              const loginSessionId = step2Res.body.sessionId;
 
-            // Step 5: key-done に attestation を送信して登録完了
-            cy.request({
-              method: 'POST',
-              url: '/api/i/2fa/key-done',
-              headers: { Authorization: `Bearer ${token}` },
-              body: {
-                clientDataJSON,
-                attestationObject,
-                password: user.password,
-                name: 'test-key',
-              },
-            }).then((doneRes) => {
-              expect(doneRes.status).to.eq(200);
+              // Step 6: ブラウザの WebAuthn API で assertion を取得
+              cy.window().then(async (win2) => {
+                const getOpts: PublicKeyCredentialRequestOptions = {
+                  challenge: b64u(assertion.publicKey.challenge),
+                  rpId: assertion.publicKey.rpId,
+                  allowCredentials: (assertion.publicKey.allowCredentials || []).map(
+                    (c: any) => ({ ...c, id: b64u(c.id) })
+                  ),
+                  timeout: assertion.publicKey.timeout,
+                  userVerification: assertion.publicKey.userVerification,
+                };
 
-              // Step 6: FinishLogin テスト — セキュリティキーでログイン
-              // signin-flow で password を送ると 2FA step に入る
-              cy.request('POST', '/api/signin-flow', {
-                username: user.username,
-                password: user.password,
-              }).then((step2Res) => {
-                expect(step2Res.body.finished).to.be.false;
-                // セキュリティキーがあるので "captcha-keys" が返る
-                expect(step2Res.body.next).to.eq('captcha-keys');
-                expect(step2Res.body).to.have.property('assertion');
-                expect(step2Res.body).to.have.property('sessionId');
+                const assertCred = (await win2.navigator.credentials.get({
+                  publicKey: getOpts,
+                })) as PublicKeyCredential;
+                expect(assertCred).to.not.be.null;
 
-                const assertion = step2Res.body.assertion;
-                const sessionId = step2Res.body.sessionId;
+                const assertResp = assertCred.response as AuthenticatorAssertionResponse;
+                const credJSON = {
+                  id: assertCred.id,
+                  rawId: toB64(assertCred.rawId),
+                  type: assertCred.type,
+                  response: {
+                    authenticatorData: toB64(assertResp.authenticatorData),
+                    clientDataJSON: toB64(assertResp.clientDataJSON),
+                    signature: toB64(assertResp.signature),
+                    userHandle: assertResp.userHandle ? toB64(assertResp.userHandle) : null,
+                  },
+                };
 
-                // Step 7: ブラウザの WebAuthn API で assertion を取得
-                cy.window().then(async (win2) => {
-                  const getOptions: PublicKeyCredentialRequestOptions = {
-                    challenge: Uint8Array.from(atob(assertion.publicKey.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
-                    rpId: assertion.publicKey.rpId,
-                    allowCredentials: (assertion.publicKey.allowCredentials || []).map((c: any) => ({
-                      ...c,
-                      id: Uint8Array.from(atob(c.id.replace(/-/g, '+').replace(/_/g, '/')), c2 => c2.charCodeAt(0)),
-                    })),
-                    timeout: assertion.publicKey.timeout,
-                    userVerification: assertion.publicKey.userVerification,
-                  };
-
-                  const assertionCred = await win2.navigator.credentials.get({ publicKey: getOptions }) as PublicKeyCredential;
-                  expect(assertionCred).to.not.be.null;
-
-                  const assertionResponse = assertionCred.response as AuthenticatorAssertionResponse;
-
-                  const credJSON = {
-                    id: assertionCred.id,
-                    rawId: btoa(String.fromCharCode(...new Uint8Array(assertionCred.rawId))),
-                    type: assertionCred.type,
-                    response: {
-                      authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertionResponse.authenticatorData))),
-                      clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertionResponse.clientDataJSON))),
-                      signature: btoa(String.fromCharCode(...new Uint8Array(assertionResponse.signature))),
-                      userHandle: assertionResponse.userHandle
-                        ? btoa(String.fromCharCode(...new Uint8Array(assertionResponse.userHandle)))
-                        : null,
-                    },
-                  };
-
-                  // Step 8: signin-flow にcredentialを送ってログイン完了
-                  cy.request('POST', '/api/signin-flow', {
-                    username: user.username,
-                    password: user.password,
-                    credential: credJSON,
-                    sessionId,
-                  }).then((loginRes) => {
-                    // FinishLogin success path がここで検証される
-                    expect(loginRes.status).to.eq(200);
-                    expect(loginRes.body.finished).to.be.true;
-                    expect(loginRes.body).to.have.property('i');
-                    expect(loginRes.body.i).to.be.a('string').and.not.be.empty;
-                  });
+                // Step 7: signin-flow に credential を送ってログイン完了
+                // ここが FinishLogin success path の検証ポイント
+                cy.request('POST', '/api/signin-flow', {
+                  username: user.username,
+                  password: user.password,
+                  credential: credJSON,
+                  sessionId: loginSessionId,
+                }).then((loginRes) => {
+                  expect(loginRes.status).to.eq(200);
+                  expect(loginRes.body.finished).to.be.true;
+                  expect(loginRes.body).to.have.property('i');
+                  expect(loginRes.body.i).to.be.a('string').and.not.be.empty;
                 });
               });
             });
