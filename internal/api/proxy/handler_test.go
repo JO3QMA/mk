@@ -59,6 +59,9 @@ func (b *byteReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// testAllowedCIDRs はテストでhttptest (127.0.0.1) への接続を許可するCIDRリスト
+var testAllowedCIDRs = []string{"127.0.0.0/8", "::1/128"}
+
 // --- test helpers ---
 
 func makePNG() []byte {
@@ -108,6 +111,7 @@ func setupHandler(t *testing.T, allowedURLs map[string]bool) (*Handler, *echo.Ec
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: allowedURLs},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 
 	h := NewHandler(svc, cfg)
@@ -170,6 +174,7 @@ func TestHandle_AllowlistedURL(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{imgURL: true}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 	_ = h2
@@ -273,6 +278,7 @@ func TestHandle_EmojiMode(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{imgURL: true}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 
@@ -299,6 +305,7 @@ func TestHandle_ExternalProxyRedirect(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 
@@ -333,6 +340,7 @@ func TestHandle_ExternalProxyRedirect_SkippedWithOrigin(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{imgURL: true}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 
@@ -404,6 +412,7 @@ func TestHandle_PathBasedURL(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{"https://" + proxyURL: true}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 
@@ -448,6 +457,7 @@ func TestHandle_NotFound_NoFallback(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 	_ = handler.Handle(c)
@@ -478,6 +488,7 @@ func TestHandle_InternalError_WithFallback(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 
@@ -512,6 +523,7 @@ func TestHandle_InternalError_NoFallback(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		cfg.MediaProxySecret,
+		testAllowedCIDRs,
 	)
 	handler := NewHandler(svc, cfg)
 
@@ -543,6 +555,7 @@ func TestHandle_CacheHeaders(t *testing.T) {
 			&mockStorage{files: map[string][]byte{}},
 			&mockAllowlist{allowed: map[string]bool{imgURL: true}},
 			cfg.MediaProxySecret,
+			testAllowedCIDRs,
 		)
 		handler := NewHandler(svc, cfg)
 
@@ -562,6 +575,7 @@ func TestHandle_CacheHeaders(t *testing.T) {
 			&mockStorage{files: map[string][]byte{}},
 			&mockAllowlist{allowed: map[string]bool{}},
 			cfg.MediaProxySecret,
+			nil,
 		)
 		handler := NewHandler(svc, cfg)
 
@@ -574,4 +588,40 @@ func TestHandle_CacheHeaders(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, rec.Code)
 		assert.Contains(t, rec.Header().Get("Cache-Control"), "max-age=86400")
 	})
+}
+
+func TestHandle_TooLarge(t *testing.T) {
+	// Content-Lengthが超過するレスポンスを返すサーバー
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", "999999999")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	url := ts.URL + "/huge.png"
+	sig := mediaproxy.SignURL([]byte("test-secret"), url)
+
+	cfg := &config.Config{
+		URL:              "https://example.com",
+		MediaProxy:       "https://example.com/proxy",
+		MediaProxySecret: []byte("test-secret"),
+		UserAgent:        "Misskey/2026.3.2 (https://example.com)",
+	}
+	svc := mediaproxy.NewService(
+		cfg.URL, cfg.UserAgent,
+		&mockStorage{files: map[string][]byte{}},
+		&mockAllowlist{allowed: map[string]bool{}},
+		cfg.MediaProxySecret,
+		testAllowedCIDRs,
+	)
+	handler := NewHandler(svc, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/image.webp?url="+url+"&sig="+sig, nil)
+	req.Header.Set("User-Agent", "TestBrowser/1.0")
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+	_ = handler.Handle(c)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 }

@@ -83,6 +83,9 @@ func (h *Handler) Handle(c echo.Context) error {
 			c.Response().Header().Set("Cache-Control", "max-age=86400")
 			return c.NoContent(http.StatusNotFound)
 		}
+		if errors.Is(err, mediaproxy.ErrTooLarge) {
+			return c.NoContent(http.StatusRequestEntityTooLarge)
+		}
 		if c.QueryParam("fallback") != "" {
 			return h.serveFallback(c)
 		}

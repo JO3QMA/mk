@@ -60,6 +60,9 @@ func (b *byteReadCloser) Close() error { return nil }
 
 // --- test helpers ---
 
+// testAllowedCIDRs はテストでhttptest (127.0.0.1) への接続を許可するCIDRリスト
+var testAllowedCIDRs = []string{"127.0.0.0/8", "::1/128"}
+
 func testService(allowedURLs map[string]bool) *Service {
 	return NewService(
 		"https://example.com",
@@ -67,6 +70,7 @@ func testService(allowedURLs map[string]bool) *Service {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: allowedURLs},
 		[]byte("test-secret"),
+		testAllowedCIDRs,
 	)
 }
 
@@ -260,6 +264,7 @@ func TestFetch_LocalFile(t *testing.T) {
 		&mockStorage{files: map[string][]byte{"abc123": imgData}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		[]byte("test-secret"),
+		nil,
 	)
 
 	result, err := s.Fetch(context.Background(), "https://example.com/files/abc123", ModeDefault)
@@ -345,6 +350,7 @@ func TestFetch_LocalFile_NotFound(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		[]byte("test-secret"),
+		nil,
 	)
 
 	_, err := s.Fetch(context.Background(), "https://example.com/files/nonexistent", ModeDefault)
@@ -358,6 +364,7 @@ func TestFetch_LocalFile_EmptyAccessKey(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		[]byte("test-secret"),
+		nil,
 	)
 
 	_, err := s.Fetch(context.Background(), "https://example.com/files/", ModeDefault)
@@ -372,6 +379,7 @@ func TestFetch_LocalFile_WithPathSegments(t *testing.T) {
 		&mockStorage{files: map[string][]byte{"abc123": imgData}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		[]byte("test-secret"),
+		nil,
 	)
 
 	// /files/abc123/extra のようなパスでもabc123だけ使う
@@ -389,6 +397,7 @@ func TestFetch_LocalFile_Emoji(t *testing.T) {
 		&mockStorage{files: map[string][]byte{"emoji1": imgData}},
 		&mockAllowlist{allowed: map[string]bool{}},
 		[]byte("test-secret"),
+		nil,
 	)
 
 	result, err := s.Fetch(context.Background(), "https://example.com/files/emoji1", ModeEmoji)
@@ -549,6 +558,7 @@ func TestAuthorize_AllowlistError(t *testing.T) {
 		&mockStorage{files: map[string][]byte{}},
 		&errorAllowlist{},
 		[]byte("test-secret"),
+		nil,
 	)
 
 	err := s.Authorize(context.Background(), "https://example.com/img.png", "")
@@ -559,4 +569,52 @@ type errorAllowlist struct{}
 
 func (e *errorAllowlist) IsAllowedURL(_ context.Context, _ string) (bool, error) {
 	return false, fmt.Errorf("db connection failed")
+}
+
+func TestFetch_LocalFile_TooLarge(t *testing.T) {
+	// maxDownloadを超えるローカルファイル
+	bigData := make([]byte, maxDownload+100)
+	s := NewService(
+		"https://example.com",
+		"Misskey/2026.3.2 (https://example.com)",
+		&mockStorage{files: map[string][]byte{"big": bigData}},
+		&mockAllowlist{allowed: map[string]bool{}},
+		[]byte("test-secret"),
+		nil,
+	)
+
+	_, err := s.Fetch(context.Background(), "https://example.com/files/big", ModeDefault)
+	assert.ErrorIs(t, err, ErrTooLarge)
+}
+
+func TestFetch_Remote_ContentLengthExceedsMax(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Content-Lengthが maxDownload を超える値を設定
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", "999999999")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	s := testService(map[string]bool{ts.URL + "/huge.png": true})
+
+	_, err := s.Fetch(context.Background(), ts.URL+"/huge.png", ModeDefault)
+	assert.ErrorIs(t, err, ErrTooLarge)
+}
+
+func TestFetch_Remote_BodyExceedsMaxNoContentLength(t *testing.T) {
+	// Content-LengthなしでmaxDownloadを超えるボディを返す
+	// テストではmaxDownloadの実値(32MB)を使うと遅いので、
+	// 小さいサービスを作って検証する
+	bigBody := make([]byte, maxDownload+100)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(bigBody)
+	}))
+	defer ts.Close()
+
+	s := testService(map[string]bool{ts.URL + "/huge.png": true})
+
+	_, err := s.Fetch(context.Background(), ts.URL+"/huge.png", ModeDefault)
+	assert.ErrorIs(t, err, ErrTooLarge)
 }

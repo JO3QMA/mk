@@ -53,6 +53,7 @@ var (
 	ErrUnauthorized = errors.New("mediaproxy: unauthorized URL")
 	ErrNotFound     = errors.New("mediaproxy: resource not found")
 	ErrBadRequest   = errors.New("mediaproxy: bad request")
+	ErrTooLarge     = errors.New("mediaproxy: file too large")
 )
 
 // browsersafeMIMEs lists MIME types safe to serve inline in browsers.
@@ -104,14 +105,16 @@ type Service struct {
 }
 
 // NewService creates a new media proxy Service.
-func NewService(instanceURL, userAgent string, driveStorage coredrive.Storage, allowlist AllowlistChecker, hmacSecret []byte) *Service {
+// allowedPrivateNetworks は SSRF 保護で許可するプライベート CIDR リスト (config.AllowedPrivateNetworks)。
+func NewService(instanceURL, userAgent string, driveStorage coredrive.Storage, allowlist AllowlistChecker, hmacSecret []byte, allowedPrivateNetworks []string) *Service {
 	return &Service{
 		instanceURL:  instanceURL,
 		driveStorage: driveStorage,
 		allowlist:    allowlist,
 		hmacSecret:   hmacSecret,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: NewSSRFSafeTransport(allowedPrivateNetworks),
 		},
 		userAgent: userAgent,
 	}
@@ -172,10 +175,13 @@ func (s *Service) resolveLocal(rawURL, filesPrefix string, mode ProxyMode) (*Pro
 	}
 
 	// ローカルファイルの場合はMIME判定して画像処理
-	data, readErr := io.ReadAll(io.LimitReader(body, maxDownload))
+	data, readErr := io.ReadAll(io.LimitReader(body, maxDownload+1))
 	body.Close()
 	if readErr != nil {
 		return nil, fmt.Errorf("mediaproxy: read local file: %w", readErr)
+	}
+	if int64(len(data)) > maxDownload {
+		return nil, ErrTooLarge
 	}
 
 	contentType := http.DetectContentType(data)
@@ -204,9 +210,19 @@ func (s *Service) fetchRemote(ctx context.Context, rawURL string, mode ProxyMode
 		return nil, fmt.Errorf("mediaproxy: remote returned %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload))
+	// Content-Lengthが明示されていてmaxDownloadを超える場合は即拒否
+	if resp.ContentLength > maxDownload {
+		return nil, ErrTooLarge
+	}
+
+	// maxDownload+1バイト読み、実際にmaxDownloadを超えたらエラー
+	// Content-Lengthが嘘や未設定の場合でもサイレント切り捨てを防ぐ
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
 	if err != nil {
 		return nil, fmt.Errorf("mediaproxy: read remote: %w", err)
+	}
+	if int64(len(data)) > maxDownload {
+		return nil, ErrTooLarge
 	}
 
 	contentType := resp.Header.Get("Content-Type")
