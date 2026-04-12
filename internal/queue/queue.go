@@ -121,6 +121,17 @@ func (c *Client) EnqueueCleanRemoteNotes() error {
 	return err
 }
 
+// EnqueueReactionFlush puts a reaction flush task on the queue.
+func (c *Client) EnqueueReactionFlush() error {
+	task := asynq.NewTask(TaskTypeReactionFlush, nil)
+	_, err := c.inner.Enqueue(task,
+		asynq.Queue(QueueName),
+		asynq.MaxRetry(0),
+		asynq.Unique(25*time.Second),
+	)
+	return err
+}
+
 // Close releases the underlying client connection.
 func (c *Client) Close() error {
 	return c.inner.Close()
