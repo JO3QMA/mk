@@ -89,7 +89,7 @@ func (h *Handler) Meta(c echo.Context) error {
 		// mascotImageUrl: meta 値があればそれを返す。空または nil なら従来の
 		// /assets/ai.png にフォールバック (フロントエンドが no-image にならないため)。
 		"mascotImageUrl":               mascotURL(m.MascotImageURL),
-		"translatorAvailable":          false,
+		"translatorAvailable":          m.DeeplAuthKey != nil && *m.DeeplAuthKey != "",
 		"enableEmail":                  m.EnableEmail,
 		"enableUrlPreview":             false,
 		"ads":                          h.serializeActiveAds(),

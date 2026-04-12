@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/reaction"
 	"github.com/shiroha-a/mk/internal/core/search"
 	"github.com/shiroha-a/mk/internal/core/timeline"
+	"github.com/shiroha-a/mk/internal/core/translate"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -35,6 +36,12 @@ type Handler struct {
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
+	translator    *translate.DeepLClient
+}
+
+// SetTranslator attaches a DeepL translator for /api/notes/translate.
+func (h *Handler) SetTranslator(t *translate.DeepLClient) {
+	h.translator = t
 }
 
 // SetUGCVisibility sets the visitor content visibility policy from meta.

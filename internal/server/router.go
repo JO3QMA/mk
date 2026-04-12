@@ -74,6 +74,7 @@ import (
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coretransfer "github.com/shiroha-a/mk/internal/core/transfer"
+	coretranslate "github.com/shiroha-a/mk/internal/core/translate"
 	coretwofactor "github.com/shiroha-a/mk/internal/core/twofactor"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	corewebhook "github.com/shiroha-a/mk/internal/core/webhook"
@@ -524,6 +525,9 @@ func (s *Server) setupRoutes() {
 	notesHandler.SetDriveFileRepo(driveFileRepo)
 	if m, err := metaRepo.Fetch(); err == nil {
 		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
+		if m.DeeplAuthKey != nil && *m.DeeplAuthKey != "" {
+			notesHandler.SetTranslator(coretranslate.NewDeepL(*m.DeeplAuthKey, m.DeeplIsPro))
+		}
 	}
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
