@@ -94,6 +94,39 @@ func TestPing(t *testing.T) {
 	assert.Equal(t, true, resp["pong"])
 }
 
+// requireSetup は rootUserId が nil のとき true を返す。
+func TestMeta_RequireSetupWhenNoRootUser(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"} // RootUserID = nil
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["requireSetup"])
+}
+
+// requireSetup は rootUserId が設定済みのとき false を返す。
+func TestMeta_RequireSetupFalseWhenRootExists(t *testing.T) {
+	h, repo := newTestHandler()
+	rootID := "root123"
+	repo.Meta = &model.Meta{ID: "x", RootUserID: &rootID}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["requireSetup"])
+}
+
 // --- Branding / UI exposure (issue #50) ---
 
 // /api/meta が meta テーブルの新フィールド (mascot / app192/512 / themes /
