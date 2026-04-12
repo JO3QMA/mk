@@ -22,7 +22,7 @@ func newHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
 	idGen, _ := id.NewGenerator("aidx")
 	svc := user.NewService(userRepo, testutil.NewMockNoteRepository(), testutil.NewMockUserNotePiningRepository(), idGen)
 	urls := activitypub.NewURLBuilder("https://example.com")
-	return NewHandler(urls, svc, "example.com"), userRepo
+	return NewHandler(urls, svc, "example.com", "https://example.com"), userRepo
 }
 
 func newReq(t *testing.T, target string) (echo.Context, *httptest.ResponseRecorder) {
@@ -146,5 +146,72 @@ func TestNodeInfoDiscovery(t *testing.T) {
 	c, rec := newReq(t, "/.well-known/nodeinfo")
 	require.NoError(t, h.NodeInfoDiscovery(c))
 	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	links := resp["links"].([]any)
+	// TS本家と同じく2.1と2.0の両方を返す
+	assert.Len(t, links, 2)
 	assert.Contains(t, rec.Body.String(), "nodeinfo/2.1")
+	assert.Contains(t, rec.Body.String(), "nodeinfo/2.0")
+}
+
+func TestWebfinger_ResponseLinks(t *testing.T) {
+	h, repo := newHandler(t)
+	addUser(repo, "u1", "alice")
+
+	c, rec := newReq(t, "/.well-known/webfinger?resource=acct:alice@example.com")
+	require.NoError(t, h.Webfinger(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	links := resp["links"].([]any)
+	// self, profile-page, subscribe の3リンク
+	require.Len(t, links, 3)
+
+	self := links[0].(map[string]any)
+	assert.Equal(t, "self", self["rel"])
+	assert.Equal(t, "application/activity+json", self["type"])
+
+	profile := links[1].(map[string]any)
+	assert.Equal(t, "http://webfinger.net/rel/profile-page", profile["rel"])
+	assert.Equal(t, "https://example.com/@alice", profile["href"])
+
+	subscribe := links[2].(map[string]any)
+	assert.Equal(t, "http://ostatus.org/schema/1.0/subscribe", subscribe["rel"])
+	assert.Equal(t, "https://example.com/authorize-follow?acct={uri}", subscribe["template"])
+
+	// CORSヘッダー
+	assert.Equal(t, "Accept", rec.Header().Get("Vary"))
+	assert.Equal(t, "Vary", rec.Header().Get("Access-Control-Expose-Headers"))
+}
+
+func TestHostMetaJSON(t *testing.T) {
+	h, _ := newHandler(t)
+	c, rec := newReq(t, "/.well-known/host-meta.json")
+	require.NoError(t, h.HostMetaJSON(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	links := resp["links"].([]any)
+	require.Len(t, links, 1)
+	link := links[0].(map[string]any)
+	assert.Equal(t, "lrdd", link["rel"])
+	assert.Equal(t, "application/jrd+json", link["type"])
+	assert.Equal(t, "https://example.com/.well-known/webfinger?resource={uri}", link["template"])
+}
+
+func TestOAuthAuthorizationServer(t *testing.T) {
+	h, _ := newHandler(t)
+	c, rec := newReq(t, "/.well-known/oauth-authorization-server")
+	require.NoError(t, h.OAuthAuthorizationServer(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "https://example.com", resp["issuer"])
+	assert.Equal(t, "https://example.com/oauth/authorize", resp["authorization_endpoint"])
+	assert.Equal(t, "https://example.com/oauth/token", resp["token_endpoint"])
 }

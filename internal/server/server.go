@@ -85,6 +85,12 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	return s
 }
 
+// Handler returns the underlying http.Handler for use with httptest.
+// E2Eテスト等でサーバーを外部から起動する場合に使う���
+func (s *Server) Handler() http.Handler {
+	return s.echo
+}
+
 // Start begins listening on the configured port (or UNIX domain socket) and
 // launches the asynq worker.
 //
