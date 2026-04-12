@@ -4,42 +4,46 @@
 
 ## 前提条件
 
-- Go 1.24+
-- PostgreSQL 15+ (既存のMisskey-TSデータベース)
+- Go 1.25+
+- PostgreSQL 16+ (既存のMisskey-TSデータベース)
 - Redis 7+
-- Misskey-TSのソースコード (フロントエンド資産のビルドに必要)
 - git
 
 ## 1. クローンとビルド
 
 ```bash
-git clone https://github.com/shiroha-a/mk.git misskey-go
+git clone --recursive https://github.com/shiroha-a/mk.git misskey-go
 cd misskey-go
 go build -o built/misskey ./cmd/misskey
 ```
 
-## 2. フロントエンド資産のビルド
+`--recursive` でsubmodule (`third_party/misskey`) も取得される。
 
-Misskey-GoはMisskey-TSと同じフロントエンドを利用する。ビルド済みのフロントエンド資産を別途用意する必要がある。
+## 2. フロントエンド資産の準備
+
+Misskey-GoはMisskey-TSと同じフロントエンドを利用する。2つの方法がある。
+
+### 方法A: submoduleのフロントエンドをビルド (推奨)
 
 ```bash
-# Misskey-TSのクローン (未取得なら)
-git clone https://github.com/misskey-dev/misskey.git ../misskey
-cd ../misskey
+make e2e-frontend-build
+```
 
-# 依存インストールとビルド
-pnpm install
-pnpm build
+Docker内でフロントエンドがビルドされ、成果物は `third_party/misskey/built/` 配下に配置される。Misskey-Goはデフォルトでこのパスを参照するため、環境変数の設定は不要。
 
-# 成果物は以下に配置される:
-#   built/_frontend_vite_/  (JS/CSS バンドル)
-#   built/_frontend_dist_/  (locale・フォント)
-#   packages/frontend/assets/  (ゲーム画像・アイコン類)
+### 方法B: 既存のMisskey-TSのビルド済み資産を使う
+
+既にMisskey-TSが動作しているサーバーでは、そのビルド済み資産を環境変数で指定できる:
+
+```bash
+export MISSKEY_FRONTEND_DIR=/path/to/misskey/built/_frontend_vite_
+export MISSKEY_FRONTEND_DIST_DIR=/path/to/misskey/built/_frontend_dist_
+export MISSKEY_TWEMOJI_DIR=/path/to/misskey/packages/backend/node_modules/@discordapp/twemoji/dist/svg
+export MISSKEY_CLIENT_ASSETS_DIR=/path/to/misskey/packages/frontend/assets
+export MISSKEY_STATIC_DIR=/path/to/misskey/packages/backend/assets
 ```
 
 ## 3. 設定
-
-### 3.1 アプリケーション設定
 
 `.config/default.yml` を作成する:
 
@@ -62,27 +66,6 @@ id: aidx             # Misskey-TS側のID生成方式と一致させること
 ```
 
 > **重要:** `id` フィールドはMisskey-TSインスタンスで使われているID生成方式と必ず一致させること。Misskey-TS側の `.config/default.yml` を確認して正しい値を設定する。よく使われる値: `aidx`, `aid`, `meid`, `ulid`, `objectid`。
-
-### 3.2 環境変数
-
-`.env` を作成する:
-
-```bash
-# ビルド済みフロントエンドのパス (JS/CSSバンドル)
-MISSKEY_FRONTEND_DIR=/path/to/misskey/built/_frontend_vite_
-
-# フロントエンドdist資産のパス (locale・フォント)
-MISSKEY_FRONTEND_DIST_DIR=/path/to/misskey/built/_frontend_dist_
-
-# twemoji SVGファイルのパス
-MISSKEY_TWEMOJI_DIR=/path/to/misskey/node_modules/@discordapp/twemoji/dist/svg
-
-# クライアント資産 (ゲーム画像等) のパス
-MISSKEY_CLIENT_ASSETS_DIR=/path/to/misskey/packages/frontend/assets
-
-# 静的資産 (favicon、splash、アイコン等) のパス
-# MISSKEY_STATIC_DIR=assets
-```
 
 ## 4. データベースマイグレーション
 
@@ -112,26 +95,14 @@ docker compose stop web
 ## 6. Misskey-Goの起動
 
 ```bash
-# 環境変数を読み込む
-source .env
-
-# サーバー起動
 ./built/misskey -config .config/default.yml
 ```
 
-または環境変数を直接指定する場合:
-
-```bash
-MISSKEY_FRONTEND_DIR=/path/to/misskey/built/_frontend_vite_ \
-MISSKEY_FRONTEND_DIST_DIR=/path/to/misskey/built/_frontend_dist_ \
-MISSKEY_TWEMOJI_DIR=/path/to/misskey/node_modules/@discordapp/twemoji/dist/svg \
-MISSKEY_CLIENT_ASSETS_DIR=/path/to/misskey/packages/frontend/assets \
-./built/misskey -config .config/default.yml
-```
+方法Bで環境変数を使う場合は `source .env` してから起動する。
 
 ## 7. 動作確認
 
-1. ブラウザで `http://localhost:3000` を開く
+1. ブラウザで `https://your-instance.example.com` を開く
 2. エントランスページがスタイル付きで正しく表示されることを確認する
 3. 既存アカウントでログインする
 4. 以下を確認する:
@@ -141,7 +112,7 @@ MISSKEY_CLIENT_ASSETS_DIR=/path/to/misskey/packages/frontend/assets \
    - ファイルアップロードが動作する
    - リアクションが動作する
 
-## Docker Compose で新規構築する場合
+## Docker Composeで新規構築する場合
 
 新しいインスタンスをDocker Composeで立ち上げる場合は以下で起動できる:
 
@@ -162,42 +133,42 @@ Misskey-TSに戻す場合の手順:
 
 ## 既知の制限
 
-### スタブ実装
+### 未実装の機能
 
-以下の機能は正常なレスポンスを返すものの、完全な処理は未実装:
-
-- **2FA/WebAuthn** — 204を返すのみ (未実装)
-- **Export/Import** — ジョブはキューに積まれるがワーカーが未実装
+- **公開サインアップのメール認証フロー** — `emailRequiredForSignup` 有効時の pending user → メール確認フローは未実装
 - **Reversi** — ゲーム一覧は取得できるがリアルタイム対戦は未実装
-- **連合 (リモート)** — ローカルのActivityPubは動作するが、リモートオブジェクトの取得は限定的
+- **サーバーマシン統計** — `enableServerMachineStats` 有効時に CPU/メモリ/ディスク情報を返すが、gopsutil相当の詳細度はない
 
 ### Misskey-TSとの差異
 
 - **タイムライン** — Redisキャッシュが空の場合 (サーバー再起動直後等) はDBクエリにフォールバックする
 - **Identicon** — 生成される自動アバターの見た目が若干異なる
-- **通知** — WebSocketによるリアルタイム配信は未対応。ページ再読み込みで表示される
+- **通知** — WebSocketによるリアルタイム配信は対応しているが、一部のイベントタイプで差異がある可能性がある
 
 ## トラブルシューティング
 
 ### ページが「Loading...」のまま進まない
 
-- `MISSKEY_FRONTEND_DIR` が正しいビルド済みフロントエンドディレクトリを指しているか確認する
-- フロントエンドが正常にビルドされているか確認する (`ls $MISSKEY_FRONTEND_DIR/manifest.json`)
+- フロントエンド資産のパスが正しいか確認する
+- 方法Aの場合: `ls third_party/misskey/built/_frontend_vite_/manifest.json`
+- 方法Bの場合: `ls $MISSKEY_FRONTEND_DIR/manifest.json`
+
+### スタイル/CSSが崩れる
+
+- プロダクションビルドを使用していることを確認する (Viteのdevモードではない)
+- `manifest.json` のエントリにCSSファイルが含まれていることを確認する: `cat third_party/misskey/built/_frontend_vite_/manifest.json | grep css`
 
 ### 絵文字が表示されない
 
-- `MISSKEY_TWEMOJI_DIR` が正しいtwemoji SVGディレクトリを指しているか確認する
-- 確認コマンド: `ls $MISSKEY_TWEMOJI_DIR/1f44d.svg`
+- twemoji SVGファイルが配置されているか確認する
+- 方法A: `ls third_party/misskey/packages/backend/node_modules/@discordapp/twemoji/dist/svg/1f44d.svg`
+- 方法B: `ls $MISSKEY_TWEMOJI_DIR/1f44d.svg`
 
-### ゲーム画像が表示されない
+### favicon/アイコンが表示されない
 
-- `MISSKEY_CLIENT_ASSETS_DIR` が `packages/frontend/assets/` を指しているか確認する
-- 確認コマンド: `ls $MISSKEY_CLIENT_ASSETS_DIR/drop-and-fusion/`
-
-### CSS/スタイルが崩れる
-
-- プロダクションビルドを使用していることを確認する (Viteのdevモードではない)
-- `MISSKEY_FRONTEND_DIST_DIR` が設定されているか確認する (locale・フォント用)
+- static assets のパスを確認する
+- 方法A: `ls third_party/misskey/packages/backend/assets/icons/192.png`
+- 方法B: `ls $MISSKEY_STATIC_DIR/icons/192.png`
 
 ### 再起動後にタイムラインが空になる
 
