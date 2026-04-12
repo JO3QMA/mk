@@ -55,9 +55,15 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 		// CLIENT_ENTRYの設定
 		clientEntryJS := "null"
 		viteClientTag := `<script type="module" src="/vite/@vite/client"></script>`
-		if clientEntry != "" {
-			clientEntryJS = fmt.Sprintf("'%s'", clientEntry)
+		cssLinkTags := ""
+		if clientEntry.Script != "" {
+			clientEntryJS = fmt.Sprintf("'%s'", clientEntry.Script)
 			viteClientTag = "" // production ではVite clientは不要
+			// Vite manifest の CSS 依存を <link> タグとして挿入する。
+			// これがないとエントリの CSS (100KB+) が読み込まれずスタイル崩れになる。
+			for _, css := range clientEntry.CSS {
+				cssLinkTags += fmt.Sprintf(`<link rel="stylesheet" href="/vite/%s">`, css) + "\n"
+			}
 		}
 
 		html := fmt.Sprintf(`<!DOCTYPE html>
@@ -79,6 +85,7 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 <link rel="icon" href="%s">
 <link rel="manifest" href="/manifest.json">
 %s
+%s
 <link rel="stylesheet" href="/vite/loader/style.css">
 <script>const VERSION = '%s'; const CLIENT_ENTRY = %s; const LANGS = ["ja-JP","en-US"];</script>
 <script type="application/json" id="misskey_meta" data-generated-at="%d">%s</script>
@@ -92,7 +99,7 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 </div>
 </div>
 </body></html>`, instanceName, instanceName, instanceDesc, iconURL, cfg.URL,
-			themeColor, cfg.URL, instanceName, iconURL, viteClientTag,
+			themeColor, cfg.URL, instanceName, iconURL, viteClientTag, cssLinkTags,
 			cfg.Version, clientEntryJS,
 			time.Now().UnixMilli(), metaJSON, mascotURL)
 
@@ -162,25 +169,32 @@ func StaticDir() string {
 	return filepath.Join(frontendBase, "packages", "backend", "assets")
 }
 
-// detectClientEntry reads the Vite manifest to find the entry script path.
-// ビルド済みアセットが存在しない場合は空文字列を返す (dev mode)。
-func detectClientEntry() string {
+// clientEntryInfo holds the Vite entry point script and its CSS dependencies.
+type clientEntryInfo struct {
+	Script string
+	CSS    []string
+}
+
+// detectClientEntry reads the Vite manifest to find the entry script and CSS.
+// ビルド済みアセットが存在しない場合は空値を返す (dev mode)。
+func detectClientEntry() clientEntryInfo {
 	manifestPath := filepath.Join(FrontendDir(), "manifest.json")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return ""
+		return clientEntryInfo{}
 	}
 	var manifest map[string]struct {
-		File    string `json:"file"`
-		IsEntry bool   `json:"isEntry"`
+		File    string   `json:"file"`
+		IsEntry bool     `json:"isEntry"`
+		CSS     []string `json:"css"`
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return ""
+		return clientEntryInfo{}
 	}
 	if entry, ok := manifest["src/_boot_.ts"]; ok {
-		return entry.File
+		return clientEntryInfo{Script: entry.File, CSS: entry.CSS}
 	}
-	return ""
+	return clientEntryInfo{}
 }
 
 // buildMetaJSON constructs the /api/meta equivalent JSON for inline embedding.
