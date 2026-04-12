@@ -12,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm/clause"
 )
 
 // --- accounts ---
@@ -90,7 +91,27 @@ func (h *Handler) GetTableStats(c echo.Context) error {
 
 // GetUserIPs handles POST /api/admin/get-user-ips.
 func (h *Handler) GetUserIPs(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	if h.userIPRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var req struct {
+		UserID string `json:"userId"`
+	}
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	ips, err := h.userIPRepo.ListByUser(req.UserID, 30)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	result := make([]map[string]any, 0, len(ips))
+	for _, ip := range ips {
+		result = append(result, map[string]any{
+			"ip":        ip.IP,
+			"createdAt": ip.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+		})
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 // ResetPassword handles POST /api/admin/reset-password.
@@ -756,8 +777,28 @@ func (h *Handler) InviteList(c echo.Context) error {
 
 // PromoCreate handles POST /api/admin/promo/create.
 func (h *Handler) PromoCreate(c echo.Context) error {
-	// プロモノート作成 (ノートを広告として表示)
-	return c.NoContent(http.StatusNoContent) // 将来対応
+	if h.adminDB == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		NoteID    string `json:"noteId"`
+		ExpiresAt int64  `json:"expiresAt"`
+	}
+	if err := c.Bind(&req); err != nil || req.NoteID == "" {
+		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	u := middleware.GetUser(c)
+	userID := ""
+	if u != nil {
+		userID = u.ID
+	}
+	promo := &model.PromoNote{
+		NoteID:    req.NoteID,
+		ExpiresAt: time.Unix(req.ExpiresAt/1000, 0),
+		UserID:    userID,
+	}
+	h.adminDB.Clauses(clause.OnConflict{DoNothing: true}).Create(promo)
+	return c.NoContent(http.StatusNoContent)
 }
 
 // --- queue ---

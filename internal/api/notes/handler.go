@@ -32,6 +32,14 @@ type Handler struct {
 	favoriteRepo    repository.NoteFavoriteRepository
 	driveFileRepo   repository.DriveFileRepository
 	draftRepo       repository.NoteDraftRepository
+	// ugcVisibility controls what unauthenticated visitors can see.
+	// "all" (default), "local", "none"
+	ugcVisibility string
+}
+
+// SetUGCVisibility sets the visitor content visibility policy from meta.
+func (h *Handler) SetUGCVisibility(v string) {
+	h.ugcVisibility = v
 }
 
 // SetDriveFileRepo attaches a DriveFileRepository for file resolution.

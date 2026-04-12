@@ -16,12 +16,25 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// IPLogger records user IPs on successful authentication.
+type IPLogger interface {
+	Upsert(userID, ip string) error
+}
+
 // Handler handles signin-related API endpoints.
 type Handler struct {
 	userRepo        repository.UserRepository
 	webauthnSvc     *twofactor.WebAuthnService
 	securityKeyRepo repository.UserSecurityKeyRepository
 	captchaSvc      *captcha.Service
+	ipLogger        IPLogger
+	ipLoggingOn     bool
+}
+
+// SetIPLogger attaches an IPLogger and enables IP logging.
+func (h *Handler) SetIPLogger(logger IPLogger, enabled bool) {
+	h.ipLogger = logger
+	h.ipLoggingOn = enabled
 }
 
 // NewHandler creates a new signin Handler.
@@ -105,15 +118,7 @@ func (h *Handler) Signin(c echo.Context) error {
 	}
 
 	// 認証成功
-	token := ""
-	if user.Token != nil {
-		token = *user.Token
-	}
-	return c.JSON(http.StatusOK, map[string]any{
-		"finished": true,
-		"id":       user.ID,
-		"i":        token,
-	})
+	return h.ok(c, user)
 }
 
 // SigninFlow handles POST /api/signin-flow.
@@ -235,20 +240,20 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 			if h.securityKeyRepo != nil {
 				_ = h.securityKeyRepo.UpdateCounter(encodeCredID(cred.ID), int64(cred.Authenticator.SignCount))
 			}
-			return ok(c, user)
+			return h.ok(c, user)
 		}
 
 		// Step 3 (TOTP / Backup): token フィールドで 2FA を検証する。
 		if req.Token != nil && *req.Token != "" {
 			// まず TOTP を試す。失敗したらバックアップコードにフォールバック。
 			if profile.TwoFactorSecret != nil && twofactor.Validate(*req.Token, *profile.TwoFactorSecret) {
-				return ok(c, user)
+				return h.ok(c, user)
 			}
 			if remaining, berr := twofactor.ConsumeBackupCode([]string(profile.TwoFactorBackupSecret), *req.Token); berr == nil {
 				_ = h.userRepo.UpdateProfile(user.ID, map[string]any{
 					"twoFactorBackupSecret": pq.StringArray(remaining),
 				})
-				return ok(c, user)
+				return h.ok(c, user)
 			}
 			return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 		}
@@ -272,12 +277,15 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 	}
 
 	// 認証成功 — トークン返却
-	return ok(c, user)
+	return h.ok(c, user)
 }
 
 // ok returns the standard "logged in" response. 認証経路 (TOTP / WebAuthn /
 // pwd-only) すべてで同じ shape を返したいのでヘルパに切り出している。
-func ok(c echo.Context, user *model.User) error {
+func (h *Handler) ok(c echo.Context, user *model.User) error {
+	if h.ipLoggingOn && h.ipLogger != nil {
+		go h.ipLogger.Upsert(user.ID, c.RealIP())
+	}
 	token := ""
 	if user.Token != nil {
 		token = *user.Token

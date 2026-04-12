@@ -97,6 +97,7 @@ func (h *Handler) Meta(c echo.Context) error {
 		"mediaProxy":                   h.config.MediaProxy,
 		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
 		"requireSetup":                 false,
+		"singleUserMode":               m.SingleUserMode,
 		"providesTarball":              false,
 		"maxFileSize":                  h.config.MaxFileSize,
 		"proxyAccountName":             nil,

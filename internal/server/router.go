@@ -297,6 +297,10 @@ func (s *Server) setupRoutes() {
 	// Mention tag を AP Note に埋め込むための resolver。
 	apRenderer.SetMentionResolver(corefederation.NewUserMentionResolver(userRepo, apURLs))
 	apClient := activitypub.NewClient(nil, "misskey-go/"+s.config.Version)
+	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
+	if m, err := metaRepo.Fetch(); err == nil && !m.AllowExternalApRedirect {
+		apClient.DisableRedirect()
+	}
 	apFetcher := corefederation.NewAPFetcher(apClient)
 	federationResolver := corefederation.NewResolver(userRepo, noteRepo, apURLs, apFetcher, idGen)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
@@ -356,6 +360,11 @@ func (s *Server) setupRoutes() {
 		PerUserReaction:  chartCharts.PerUserReaction,
 		IDGen:            idGen,
 	})
+	// meta フラグでチャート生成を制御する。
+	if m, err := metaRepo.Fetch(); err == nil {
+		chartHooks.ChartsForRemoteUser = m.EnableChartsForRemoteUser
+		chartHooks.ChartsForFederatedInst = m.EnableChartsForFederatedInstances
+	}
 	// 各サービスへ chart hook を注入する。Set* は nil 安全なので順序は不問。
 	noteCreateService.SetChartHook(chartHooks)
 	noteDeleteService.SetChartHook(chartHooks)
@@ -485,9 +494,14 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Signin (Phase 6)
+	userIPRepo := repository.NewUserIPRepository(s.db)
 	signinHandler := apisignin.NewHandler(userRepo)
 	if captchaSvc != nil {
 		signinHandler.SetCaptcha(captchaSvc)
+	}
+	// IP logging: meta.enableIpLogging が true のときだけ記録する。
+	if serverMeta, err := metaRepo.Fetch(); err == nil && serverMeta.EnableIPLogging {
+		signinHandler.SetIPLogger(userIPRepo, true)
 	}
 	api.POST("/signin", signinHandler.Signin)
 	api.POST("/signin-flow", signinHandler.SigninFlow)
@@ -510,6 +524,9 @@ func (s *Server) setupRoutes() {
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
 	notesHandler.SetDriveFileRepo(driveFileRepo)
+	if m, err := metaRepo.Fetch(); err == nil {
+		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
+	}
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
 	api.POST("/notes/show", notesHandler.Show)
 	api.POST("/notes/delete", notesHandler.Delete, middleware.RequireAuth())
@@ -567,6 +584,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/search-by-username-and-host", usersHandler.SearchByUsernameAndHost)
 	api.POST("/users/update-memo", usersHandler.UpdateMemo, middleware.RequireAuth())
 	usersHandler.SetAbuseRepo(repository.NewAbuseReportRepository(s.db))
+	usersHandler.SetMemoRepo(repository.NewUserMemoRepository(s.db))
 	// Phase 7.3: users/* 完全化 (実データハンドラ)
 	api.POST("/users/achievements", usersHandler.Achievements)
 	api.POST("/users/clips", usersHandler.Clips)
@@ -1014,6 +1032,7 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
 	adminHandler.SetAdminDB(s.db)
+	adminHandler.SetUserIPRepo(userIPRepo)
 	adminHandler.SetEmojiImportEnqueuer(s.queueClient)
 	if s.queueInspector != nil {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})

@@ -29,6 +29,12 @@ type Handler struct {
 	chartHook        ChartHook
 	abuseRepo        repository.AbuseReportRepository
 	followingRepo    repository.FollowingRepository
+	memoRepo         repository.UserMemoRepository
+}
+
+// SetMemoRepo attaches a UserMemoRepository for users/update-memo.
+func (h *Handler) SetMemoRepo(r repository.UserMemoRepository) {
+	h.memoRepo = r
 }
 
 // SetFollowingRepo attaches a FollowingRepository for follow relation queries.

@@ -41,6 +41,11 @@ type Hooks struct {
 	// signup time from its id (matching `IdService.parse(user.id).date`
 	// upstream). Set to nil to disable activeUsers tracking.
 	IDGen id.Generator
+
+	// Meta flags — false のとき対応するチャート生成をスキップする。
+	// デフォルトは true (Misskey のデフォルトと一致)。
+	ChartsForRemoteUser    bool
+	ChartsForFederatedInst bool
 }
 
 // Config bundles every chart pointer alongside the id generator. The
@@ -72,7 +77,11 @@ func New(cfg Config) *Hooks {
 		}
 		return build(c)
 	}
-	h := &Hooks{IDGen: cfg.IDGen}
+	h := &Hooks{
+		IDGen:                  cfg.IDGen,
+		ChartsForRemoteUser:    true,
+		ChartsForFederatedInst: true,
+	}
 	if v := mk(cfg.Notes, func(c *chart.Chart) any { return charts.NewNotesChart(c) }); v != nil {
 		h.Notes = v.(*charts.NotesChart)
 	}
@@ -124,10 +133,11 @@ func (h *Hooks) OnNoteCreated(note *model.Note) {
 	if h.Notes != nil {
 		_ = h.Notes.Update(note, true)
 	}
-	if h.PerUserNotes != nil && note.UserID != "" {
+	noteIsRemote := note.UserHost != nil && *note.UserHost != ""
+	if h.PerUserNotes != nil && note.UserID != "" && (h.ChartsForRemoteUser || !noteIsRemote) {
 		_ = h.PerUserNotes.Update(note.UserID, note, true)
 	}
-	if h.Instance != nil && note.UserHost != nil && *note.UserHost != "" {
+	if h.Instance != nil && noteIsRemote && h.ChartsForFederatedInst {
 		_ = h.Instance.UpdateNote(*note.UserHost, note, true)
 	}
 	// 書き込みアクティブユーザー: ローカルユーザーのみカウントする。
@@ -146,10 +156,11 @@ func (h *Hooks) OnNoteDeleted(note *model.Note) {
 	if h.Notes != nil {
 		_ = h.Notes.Update(note, false)
 	}
-	if h.PerUserNotes != nil && note.UserID != "" {
+	noteIsRemote := note.UserHost != nil && *note.UserHost != ""
+	if h.PerUserNotes != nil && note.UserID != "" && (h.ChartsForRemoteUser || !noteIsRemote) {
 		_ = h.PerUserNotes.Update(note.UserID, note, false)
 	}
-	if h.Instance != nil && note.UserHost != nil && *note.UserHost != "" {
+	if h.Instance != nil && noteIsRemote && h.ChartsForFederatedInst {
 		_ = h.Instance.UpdateNote(*note.UserHost, note, false)
 	}
 }
@@ -172,14 +183,17 @@ func (h *Hooks) commitFollow(follower, followee *model.User, isFollow bool) {
 		return
 	}
 	if h.PerUserFollowing != nil {
-		_ = h.PerUserFollowing.Update(follower, followee, isFollow)
+		// リモートユーザーのチャートは ChartsForRemoteUser で制御
+		followerRemote := isRemote(follower)
+		followeeRemote := isRemote(followee)
+		if h.ChartsForRemoteUser || (!followerRemote && !followeeRemote) {
+			_ = h.PerUserFollowing.Update(follower, followee, isFollow)
+		}
 	}
-	if h.Instance != nil {
-		// follower が remote で followee が local: instance.followers
+	if h.Instance != nil && h.ChartsForFederatedInst {
 		if isRemote(follower) && !isRemote(followee) {
 			_ = h.Instance.UpdateFollowers(*follower.Host, isFollow)
 		}
-		// follower が local で followee が remote: instance.following
 		if !isRemote(follower) && isRemote(followee) {
 			_ = h.Instance.UpdateFollowing(*followee.Host, isFollow)
 		}
@@ -220,10 +234,11 @@ func (h *Hooks) commitDrive(file *model.DriveFile, isAdditional bool) {
 	if h.Drive != nil {
 		_ = h.Drive.Update(file, isAdditional)
 	}
-	if h.PerUserDrive != nil && file.UserID != nil && *file.UserID != "" {
+	fileIsRemote := file.UserHost != nil && *file.UserHost != ""
+	if h.PerUserDrive != nil && file.UserID != nil && *file.UserID != "" && (h.ChartsForRemoteUser || !fileIsRemote) {
 		_ = h.PerUserDrive.Update(file, isAdditional)
 	}
-	if h.Instance != nil && file.UserHost != nil && *file.UserHost != "" {
+	if h.Instance != nil && fileIsRemote && h.ChartsForFederatedInst {
 		_ = h.Instance.UpdateDrive(file, isAdditional)
 	}
 }
@@ -239,7 +254,7 @@ func (h *Hooks) OnRemoteUserCreated(user *model.User) {
 	if h.Users != nil {
 		_ = h.Users.Update(user, true)
 	}
-	if h.Instance != nil && user.Host != nil && *user.Host != "" {
+	if h.Instance != nil && user.Host != nil && *user.Host != "" && h.ChartsForFederatedInst {
 		_ = h.Instance.NewUser(*user.Host)
 	}
 }
