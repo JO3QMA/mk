@@ -96,7 +96,7 @@ func (h *Handler) Meta(c echo.Context) error {
 		"notesPerOneAd":                m.NotesPerOneAd,
 		"mediaProxy":                   h.config.MediaProxy,
 		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
-		"requireSetup":                 false,
+		"requireSetup":                 m.RootUserID == nil,
 		"singleUserMode":               m.SingleUserMode,
 		"providesTarball":              false,
 		"maxFileSize":                  h.config.MaxFileSize,
