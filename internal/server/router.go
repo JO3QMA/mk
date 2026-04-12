@@ -73,6 +73,7 @@ import (
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coretransfer "github.com/shiroha-a/mk/internal/core/transfer"
+	coretwofactor "github.com/shiroha-a/mk/internal/core/twofactor"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	corewebhook "github.com/shiroha-a/mk/internal/core/webhook"
 	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
@@ -473,6 +474,17 @@ func (s *Server) setupRoutes() {
 	api.POST("/signin", signinHandler.Signin)
 	api.POST("/signin-flow", signinHandler.SigninFlow)
 
+	// WebAuthn / 2FA (issue #42)
+	// userSecurityKeyRepo + WebAuthnService を構築して signin と /api/i に注入する。
+	// Redis セッションは redis.default を流用する (用途別分離は不要)。
+	userSecurityKeyRepo := repository.NewUserSecurityKeyRepository(s.db)
+	webauthnSvc, webauthnErr := coretwofactor.NewWebAuthnService(s.config.URL, "Misskey", s.redis.Default)
+	if webauthnErr != nil {
+		slog.Warn("webauthn service unavailable", "err", webauthnErr)
+	} else {
+		signinHandler.SetWebAuthn(webauthnSvc, userSecurityKeyRepo)
+	}
+
 	// Emojis endpoint (public, Phase 4.5i)
 	emojisHandler := apiemojis.NewHandler(emojiRepo)
 	api.POST("/emojis", emojisHandler.Emojis)
@@ -558,6 +570,9 @@ func (s *Server) setupRoutes() {
 	iHandler := i.NewHandler(userService, idGen)
 	iHandler.SetRoleProvider(roleService)
 	iHandler.SetRegistryRepo(registryRepo)
+	if webauthnSvc != nil {
+		iHandler.SetWebAuthn(webauthnSvc, userSecurityKeyRepo)
+	}
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
 	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
 	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())

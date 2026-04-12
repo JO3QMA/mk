@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
 )
 
@@ -311,6 +312,23 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 		case "twoFactorEnabled":
 			if b, ok := v.(bool); ok {
 				p.TwoFactorEnabled = b
+			}
+		case "twoFactorBackupSecret":
+			switch val := v.(type) {
+			case pq.StringArray:
+				p.TwoFactorBackupSecret = val
+			case []string:
+				p.TwoFactorBackupSecret = pq.StringArray(val)
+			case nil:
+				p.TwoFactorBackupSecret = nil
+			}
+		case "securityKeysAvailable":
+			if b, ok := v.(bool); ok {
+				p.SecurityKeysAvailable = b
+			}
+		case "usePasswordLessLogin":
+			if b, ok := v.(bool); ok {
+				p.UsePasswordLessLogin = b
 			}
 		}
 	}
