@@ -36,17 +36,29 @@ type ChartHook interface {
 	OnDelivered(host string, succeeded bool)
 }
 
+// SuspendedChecker reports whether delivery to a host should be skipped
+// based on meta.deliverSuspendedSoftware.
+type SuspendedChecker interface {
+	IsSuspended(host string) bool
+}
+
 // DeliverProcessor handles ap:deliver tasks by posting the activity body to
 // the recipient inbox with an HTTP signature.
 type DeliverProcessor struct {
-	signer       HTTPSigner
-	responseHook ResponseHook
-	chartHook    ChartHook
+	signer           HTTPSigner
+	responseHook     ResponseHook
+	chartHook        ChartHook
+	suspendedChecker SuspendedChecker
 }
 
 // NewDeliverProcessor constructs a DeliverProcessor.
 func NewDeliverProcessor(signer HTTPSigner) *DeliverProcessor {
 	return &DeliverProcessor{signer: signer}
+}
+
+// SetSuspendedChecker attaches a checker for deliverSuspendedSoftware.
+func (p *DeliverProcessor) SetSuspendedChecker(c SuspendedChecker) {
+	p.suspendedChecker = c
 }
 
 // SetResponseHook attaches a ResponseHook used to update instance health flags.
@@ -106,6 +118,15 @@ func (p *DeliverProcessor) Handle(_ context.Context, t *asynq.Task) error {
 	if err != nil {
 		// 鍵が壊れているジョブも同様にスキップする。
 		return fmt.Errorf("parse private key: %w: %w", err, asynq.SkipRetry)
+	}
+
+	// deliverSuspendedSoftware: 対象インスタンスの software がリストに該当すればスキップ
+	if p.suspendedChecker != nil {
+		host := hostFromInbox(payload.Inbox)
+		if host != "" && p.suspendedChecker.IsSuspended(host) {
+			slog.Info("ap deliver: skip (software suspended)", "inbox", payload.Inbox)
+			return nil
+		}
 	}
 
 	resp, err := p.signer.PostSigned(payload.Inbox, payload.Body, key)

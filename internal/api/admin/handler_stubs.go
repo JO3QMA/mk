@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/core/serverstats"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
@@ -156,13 +157,12 @@ func (h *Handler) SendEmail(c echo.Context) error {
 }
 
 // ServerInfo handles POST /api/admin/server-info.
+// meta.enableServerMachineStats が false ならゼロ値を返す。
 func (h *Handler) ServerInfo(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{
-		"machine": "misskey-go", "os": "linux", "node": "n/a",
-		"cpu": map[string]any{"model": "unknown", "cores": 0},
-		"mem": map[string]any{"total": 0},
-		"fs":  map[string]any{"total": 0, "used": 0},
-	})
+	if m, err := h.metaRepo.Fetch(); err == nil && m.EnableServerMachineStats {
+		return c.JSON(http.StatusOK, serverstats.Collect())
+	}
+	return c.JSON(http.StatusOK, serverstats.Empty())
 }
 
 // UnsetUserAvatar handles POST /api/admin/unset-user-avatar.
