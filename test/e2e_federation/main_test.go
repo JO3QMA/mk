@@ -1,0 +1,224 @@
+// Package e2e_federation runs federation end-to-end tests against two
+// mk-go servers communicating via ActivityPub over localhost.
+//
+// TestMain boots a single PostgreSQL container with two databases
+// (misskey_a, misskey_b), a single Redis container with two DB numbers
+// (0, 1), and starts two full Echo servers via server.New().
+package e2e_federation
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+
+	goredis "github.com/redis/go-redis/v9"
+	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/core/cache"
+	"github.com/shiroha-a/mk/internal/server"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
+
+// testServer はテスト用サーバーの接続情報を保持する。
+type testServer struct {
+	BaseURL string
+	Origin  string
+	Host    string
+}
+
+// テスト全体で共有するサーバー情報
+var (
+	serverA *testServer
+	serverB *testServer
+)
+
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+
+	// PostgreSQLコンテナ起動 (misskey_test = サーバーA用)
+	testDB, err := testutil.SetupPostgres(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e_federation: postgres setup failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer testDB.Teardown(ctx)
+
+	// サーバーB用のデータベースを同一コンテナ内に作成
+	dbB, err := createSecondDB(testDB.DB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e_federation: second db setup failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Redisコンテナ起動
+	testRedis, err := testutil.SetupRedis(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e_federation: redis setup failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer testRedis.Teardown(ctx)
+
+	// サーバーA: ポート事前確保 + config + httptest
+	lnA, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e_federation: listen A failed: %v\n", err)
+		os.Exit(1)
+	}
+	addrA := lnA.Addr().String()
+	serverA = &testServer{
+		BaseURL: "http://" + addrA,
+		Origin:  "http://" + addrA,
+		Host:    addrA,
+	}
+
+	lnB, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e_federation: listen B failed: %v\n", err)
+		os.Exit(1)
+	}
+	addrB := lnB.Addr().String()
+	serverB = &testServer{
+		BaseURL: "http://" + addrB,
+		Origin:  "http://" + addrB,
+		Host:    addrB,
+	}
+
+	redisAddr := fmt.Sprintf("%s:%d", testRedis.Host(), testRedis.Port())
+
+	// サーバーA: Redis DB 0
+	redisOptsA := config.RedisOptions{
+		Host: testRedis.Host(),
+		Port: testRedis.Port(),
+		DB:   0,
+	}
+	redisClientA := goredis.NewClient(&goredis.Options{Addr: redisAddr, DB: 0})
+	defer redisClientA.Close()
+	redisClientsA := &cache.RedisClients{
+		Default:   redisClientA,
+		Pubsub:    redisClientA,
+		JobQueue:  redisClientA,
+		Timelines: redisClientA,
+		Reactions: redisClientA,
+	}
+
+	cfgA := &config.Config{
+		URL:               serverA.BaseURL,
+		Port:              lnA.Addr().(*net.TCPAddr).Port,
+		Host:              addrA,
+		Hostname:          "127.0.0.1",
+		Scheme:            "http",
+		WsScheme:          "ws",
+		Version:           "2026.3.2",
+		TestMode:          true,
+		ID:                "aidx",
+		Redis:             redisOptsA,
+		RedisForPubsub:    redisOptsA,
+		RedisForJobQueue:  redisOptsA,
+		RedisForTimelines: redisOptsA,
+		RedisForReactions: redisOptsA,
+	}
+
+	srvA := server.New(cfgA, testDB.DB, redisClientsA)
+	tsA := &httptest.Server{
+		Listener: lnA,
+		Config:   &http.Server{Handler: srvA.Handler()},
+	}
+	tsA.Start()
+	defer tsA.Close()
+
+	// サーバーB: Redis DB 1
+	redisOptsB := config.RedisOptions{
+		Host: testRedis.Host(),
+		Port: testRedis.Port(),
+		DB:   1,
+	}
+	redisClientB := goredis.NewClient(&goredis.Options{Addr: redisAddr, DB: 1})
+	defer redisClientB.Close()
+	redisClientsB := &cache.RedisClients{
+		Default:   redisClientB,
+		Pubsub:    redisClientB,
+		JobQueue:  redisClientB,
+		Timelines: redisClientB,
+		Reactions: redisClientB,
+	}
+
+	cfgB := &config.Config{
+		URL:               serverB.BaseURL,
+		Port:              lnB.Addr().(*net.TCPAddr).Port,
+		Host:              addrB,
+		Hostname:          "127.0.0.1",
+		Scheme:            "http",
+		WsScheme:          "ws",
+		Version:           "2026.3.2",
+		TestMode:          true,
+		ID:                "aidx",
+		Redis:             redisOptsB,
+		RedisForPubsub:    redisOptsB,
+		RedisForJobQueue:  redisOptsB,
+		RedisForTimelines: redisOptsB,
+		RedisForReactions: redisOptsB,
+	}
+
+	srvB := server.New(cfgB, dbB, redisClientsB)
+	tsB := &httptest.Server{
+		Listener: lnB,
+		Config:   &http.Server{Handler: srvB.Handler()},
+	}
+	tsB.Start()
+	defer tsB.Close()
+
+	os.Exit(m.Run())
+}
+
+// createSecondDB は同一PostgreSQLコンテナ内に misskey_b データベースを作成し、
+// マイグレーションを適用した gorm.DB を返す。
+func createSecondDB(primaryDB *gorm.DB) (*gorm.DB, error) {
+	// primaryDB の underlying SQL connection で CREATE DATABASE
+	sqlDB, err := primaryDB.DB()
+	if err != nil {
+		return nil, fmt.Errorf("get sql.DB: %w", err)
+	}
+
+	// misskey_b が存在しなければ作成
+	var exists bool
+	row := sqlDB.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = 'misskey_b')")
+	if err := row.Scan(&exists); err != nil {
+		return nil, fmt.Errorf("check db exists: %w", err)
+	}
+	if !exists {
+		if _, err := sqlDB.Exec("CREATE DATABASE misskey_b"); err != nil {
+			return nil, fmt.Errorf("create misskey_b: %w", err)
+		}
+	}
+
+	// primaryDB の DSN から misskey_b 用の DSN を構築
+	// testcontainers の接続文字列はホスト名:ポートが動的なので、
+	// primaryDB の接続情報を流用して dbname だけ差し替える
+	var host, port string
+	sqlDB.QueryRow("SELECT inet_server_addr()").Scan(&host)
+	sqlDB.QueryRow("SELECT inet_server_port()").Scan(&port)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
+	dsn := fmt.Sprintf("host=%s port=%s user=test password=test dbname=misskey_b sslmode=disable",
+		host, port)
+
+	dbB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger:                   logger.Default.LogMode(logger.Silent),
+		DisableNestedTransaction: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("connect to misskey_b: %w", err)
+	}
+
+	testutil.ApplyMigrations(dbB)
+
+	return dbB, nil
+}
