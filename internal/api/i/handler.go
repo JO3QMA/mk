@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -32,6 +33,17 @@ type Handler struct {
 	registryRepo     repository.RegistryRepository
 	favoriteRepo     repository.NoteFavoriteRepository
 	transferEnqueuer TransferEnqueuer
+	webauthnSvc      *twofactor.WebAuthnService
+	securityKeyRepo  repository.UserSecurityKeyRepository
+}
+
+// SetWebAuthn attaches the WebAuthn service + security key repository.
+// Both are required to enable WebAuthn endpoints; if either is nil the
+// register/done/remove/update/passwordless handlers return a no-op 204 (so
+// existing test fixtures that don't wire the dependency keep passing).
+func (h *Handler) SetWebAuthn(svc *twofactor.WebAuthnService, repo repository.UserSecurityKeyRepository) {
+	h.webauthnSvc = svc
+	h.securityKeyRepo = repo
 }
 
 // SetFavoriteRepo attaches a NoteFavoriteRepository for i/favorites.

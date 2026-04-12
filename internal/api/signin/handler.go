@@ -1,21 +1,38 @@
 package signin
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/core/twofactor"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // Handler handles signin-related API endpoints.
 type Handler struct {
-	userRepo repository.UserRepository
+	userRepo        repository.UserRepository
+	webauthnSvc     *twofactor.WebAuthnService
+	securityKeyRepo repository.UserSecurityKeyRepository
 }
 
 // NewHandler creates a new signin Handler.
 func NewHandler(userRepo repository.UserRepository) *Handler {
 	return &Handler{userRepo: userRepo}
+}
+
+// SetWebAuthn attaches optional WebAuthn dependencies to enable 2FA login
+// via security keys. Without it the handler still supports TOTP and backup
+// codes (and falls back to single-factor when 2FA is disabled).
+func (h *Handler) SetWebAuthn(svc *twofactor.WebAuthnService, repo repository.UserSecurityKeyRepository) {
+	h.webauthnSvc = svc
+	h.securityKeyRepo = repo
 }
 
 // Signin handles POST /api/signin.
@@ -92,15 +109,22 @@ func (h *Handler) Signin(c echo.Context) error {
 }
 
 // SigninFlow handles POST /api/signin-flow.
-// TS本家の新しいmulti-stepログインフロー。
-// Step 1: username のみ → { finished: false, next: "password" }
-// Step 2: username + password → captcha検証 → { finished: true, id, i }
-// 2FA/WebAuthn は未実装 (将来対応)。
+// TS本家のmulti-step ログインフロー (Misskey 2026.x):
+//
+//	Step 1: { username }                           → { next: "password" }
+//	Step 2: { username, password }                 → 2FA 無し: { finished, id, i }
+//	                                               → TOTP / WebAuthn 有り: { next: "totp" / "captcha-keys" }
+//	Step 3 (TOTP):  { username, password, token }  → { finished, id, i }
+//	Step 3 (BU):    { username, password, token }  → backup code 検証
+//	Step 3 (Key):   { username, password, credential, ...session } → WebAuthn assertion 検証
 func (h *Handler) SigninFlow(c echo.Context) error {
 	var req struct {
 		Username string  `json:"username"`
 		Password *string `json:"password"`
 		Token    *string `json:"token"`
+		// SessionID + Credential はキー認証 step 3 で使う。
+		SessionID  *string         `json:"sessionId"`
+		Credential json.RawMessage `json:"credential"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" {
 		return c.JSON(http.StatusBadRequest, map[string]any{
@@ -154,7 +178,76 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 		})
 	}
 
+	// 2FA 経路: TwoFactorEnabled が立っていたら 2 要素を要求する。
+	if profile.TwoFactorEnabled {
+		// security key を持っていれば WebAuthn step を最初に提示する (assertion challenge)。
+		hasKeys := false
+		var keys []*model.UserSecurityKey
+		if h.webauthnSvc != nil && h.securityKeyRepo != nil {
+			ks, err := h.securityKeyRepo.ListByUser(user.ID)
+			if err == nil && len(ks) > 0 {
+				hasKeys = true
+				keys = ks
+			}
+		}
+
+		// Step 3 (Key): credential が来ていれば WebAuthn assertion を検証する。
+		if hasKeys && len(req.Credential) > 0 && req.SessionID != nil {
+			httpReq, werr := wrapWebAuthnRequest(c.Request(), req.Credential)
+			if werr != nil {
+				return c.JSON(http.StatusBadRequest, errBody("ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+			}
+			cred, werr := h.webauthnSvc.FinishLogin(c.Request().Context(), user, keys, *req.SessionID, httpReq)
+			if werr != nil {
+				return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+			}
+			// counter 更新
+			if h.securityKeyRepo != nil {
+				_ = h.securityKeyRepo.UpdateCounter(encodeCredID(cred.ID), int64(cred.Authenticator.SignCount))
+			}
+			return ok(c, user)
+		}
+
+		// Step 3 (TOTP / Backup): token フィールドで 2FA を検証する。
+		if req.Token != nil && *req.Token != "" {
+			// まず TOTP を試す。失敗したらバックアップコードにフォールバック。
+			if profile.TwoFactorSecret != nil && twofactor.Validate(*req.Token, *profile.TwoFactorSecret) {
+				return ok(c, user)
+			}
+			if remaining, berr := twofactor.ConsumeBackupCode([]string(profile.TwoFactorBackupSecret), *req.Token); berr == nil {
+				_ = h.userRepo.UpdateProfile(user.ID, map[string]any{
+					"twoFactorBackupSecret": pq.StringArray(remaining),
+				})
+				return ok(c, user)
+			}
+			return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+		}
+
+		// 2FA が必要だが何も渡されていない → 次のステップを指示する。
+		next := "totp"
+		respBody := map[string]any{
+			"finished": false,
+			"next":     next,
+		}
+		// security key 保有なら assertion challenge を発行する。
+		if hasKeys && h.webauthnSvc != nil {
+			assertion, sid, werr := h.webauthnSvc.BeginLogin(c.Request().Context(), user, keys)
+			if werr == nil {
+				respBody["next"] = "captcha-keys"
+				respBody["sessionId"] = sid
+				respBody["assertion"] = assertion
+			}
+		}
+		return c.JSON(http.StatusOK, respBody)
+	}
+
 	// 認証成功 — トークン返却
+	return ok(c, user)
+}
+
+// ok returns the standard "logged in" response. 認証経路 (TOTP / WebAuthn /
+// pwd-only) すべてで同じ shape を返したいのでヘルパに切り出している。
+func ok(c echo.Context, user *model.User) error {
 	token := ""
 	if user.Token != nil {
 		token = *user.Token
@@ -164,4 +257,32 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 		"id":       user.ID,
 		"i":        token,
 	})
+}
+
+func errBody(id string) map[string]any {
+	return map[string]any{
+		"error": map[string]any{"id": id},
+	}
+}
+
+// wrapWebAuthnRequest builds a fresh *http.Request whose body is the
+// browser-supplied attestation/assertion JSON. go-webauthn parses the body
+// directly off the request, so we cannot pass through the original Echo
+// request (its body has already been consumed by Bind()).
+func wrapWebAuthnRequest(orig *http.Request, body json.RawMessage) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(orig.Context(), http.MethodPost, orig.URL.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = orig.Header.Clone()
+	req.Header.Set("Content-Type", "application/json")
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	return req, nil
+}
+
+// encodeCredID returns the storage key (base64url) for a webauthn credential
+// id. Centralizing the encoding here avoids drift between handler_2fa.go's
+// CredentialToModel and signin's counter update path.
+func encodeCredID(raw []byte) string {
+	return base64.RawURLEncoding.EncodeToString(raw)
 }

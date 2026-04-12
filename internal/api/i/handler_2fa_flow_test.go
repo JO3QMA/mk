@@ -61,15 +61,20 @@ func TestTwoFADone_Success(t *testing.T) {
 	token, err := totp.GenerateCode(secret, time.Now())
 	require.NoError(t, err)
 
-	// done で有効化
+	// done で有効化。新しい挙動: 200 + body にバックアップコードを含む。
 	rec2 := postExtra(h.TwoFADone, `{"token":"`+token+`"}`, user)
-	require.Equal(t, http.StatusNoContent, rec2.Code)
+	require.Equal(t, http.StatusOK, rec2.Code)
+	var doneResp map[string]any
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &doneResp))
+	codes, _ := doneResp["backupCodes"].([]any)
+	require.Len(t, codes, 5, "TwoFADone should return 5 backup codes")
 
 	profile := repo.Profiles["u1"]
 	assert.True(t, profile.TwoFactorEnabled)
 	require.NotNil(t, profile.TwoFactorSecret)
 	assert.Equal(t, secret, *profile.TwoFactorSecret)
 	assert.Nil(t, profile.TwoFactorTempSecret)
+	assert.Len(t, profile.TwoFactorBackupSecret, 5)
 }
 
 func TestTwoFADone_NoTempSecret(t *testing.T) {
