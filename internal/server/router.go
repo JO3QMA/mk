@@ -36,6 +36,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/notes"
 	"github.com/shiroha-a/mk/internal/api/notifications"
 	"github.com/shiroha-a/mk/internal/api/pages"
+	apiproxy "github.com/shiroha-a/mk/internal/api/proxy"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
 	apireversi "github.com/shiroha-a/mk/internal/api/reversi"
 	apiroles "github.com/shiroha-a/mk/internal/api/roles"
@@ -62,6 +63,7 @@ import (
 	coreflash "github.com/shiroha-a/mk/internal/core/flash"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
+	coremediaproxy "github.com/shiroha-a/mk/internal/core/mediaproxy"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
@@ -787,6 +789,15 @@ func (s *Server) setupRoutes() {
 		mr := io.MultiReader(bytes.NewReader(buf[:n]), body)
 		return c.Stream(http.StatusOK, contentType, mr)
 	})
+
+	// Media proxy endpoint
+	proxyAllowlist := coremediaproxy.NewDBAllowlistChecker(s.db)
+	proxyService := coremediaproxy.NewService(
+		s.config.URL, s.config.UserAgent, driveStorage,
+		proxyAllowlist, s.config.MediaProxySecret,
+	)
+	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
+	s.echo.GET("/proxy/*", proxyHandler.Handle)
 
 	// ActivityPub resource endpoints
 	apHandler := ap.NewHandler(apRenderer, userService, noteQueryService, keypairRepo, idGen)
