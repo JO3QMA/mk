@@ -1,0 +1,48 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ..:/workspace:cached
+    command: sleep infinity
+    network_mode: host
+    environment:
+      # Go アプリ用 DB 接続
+      MK_DB_HOST: localhost
+      MK_DB_PORT: "5432"
+      MK_DB_DB: misskey
+      MK_DB_USER: misskey
+      MK_DB_PASS: misskey
+      MK_REDIS_HOST: localhost
+      MK_REDIS_PORT: "6379"
+      # テスト用 DB 接続 (CI と同じ形式)
+      TEST_DB_HOST: localhost
+      TEST_DB_PORT: "5432"
+      TEST_DB_NAME: misskey
+      TEST_DB_USER: misskey
+      TEST_DB_PASS: misskey
+      TEST_DB_SSLMODE: disable
+      TEST_REDIS_HOST: localhost
+      TEST_REDIS_PORT: "6379"
+      # マイグレーション用
+      DATABASE_URL: "postgres://misskey:misskey@localhost:5432/misskey?sslmode=disable"
+
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_DB: misskey
+      POSTGRES_USER: misskey
+      POSTGRES_PASSWORD: misskey
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    network_mode: host
+
+volumes:
+  pgdata:

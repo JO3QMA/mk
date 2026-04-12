@@ -1,13 +1,9 @@
 {
   "name": "misskey-go",
-  "image": "mcr.microsoft.com/devcontainers/go:1.25",
-  "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-      "moby": false
-    }
-  },
-  "runArgs": ["--network=host"],
-  "postCreateCommand": "go mod download",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
   "customizations": {
     "vscode": {
       "extensions": ["golang.go"]
