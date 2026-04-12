@@ -264,3 +264,8 @@ func (s *Service) UpdateUserFields(userID string, fields map[string]any) error {
 func (s *Service) UpdateProfileFields(userID string, fields map[string]any) error {
 	return s.userRepo.UpdateProfile(userID, fields)
 }
+
+// FindProfileByVerifyCode looks up a profile by emailVerifyCode.
+func (s *Service) FindProfileByVerifyCode(code string) (*model.UserProfile, error) {
+	return s.userRepo.FindProfileByVerifyCode(code)
+}

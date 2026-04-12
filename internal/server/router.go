@@ -80,6 +80,7 @@ import (
 	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/queue/processors"
@@ -586,6 +587,20 @@ func (s *Server) setupRoutes() {
 	iHandler.SetRoleProvider(roleService)
 	iHandler.SetRegistryRepo(registryRepo)
 	iHandler.SetMetaRepo(metaRepo)
+	iHandler.SetServerURL(s.config.URL)
+	// SMTP メール送信を i/update-email 用に注入する。meta の SMTP 設定に従う。
+	if smtpMeta, err := metaRepo.Fetch(); err == nil && smtpMeta.EnableEmail && smtpMeta.Email != nil && smtpMeta.SmtpHost != nil {
+		fromAddr := *smtpMeta.Email
+		host := *smtpMeta.SmtpHost
+		port := 587
+		if smtpMeta.SmtpPort != nil {
+			port = *smtpMeta.SmtpPort
+		}
+		smtpUser, smtpPass := smtpMeta.SmtpUser, smtpMeta.SmtpPass
+		iHandler.SetEmailSender(func(to, subject, body string) {
+			miscsmtp.Send(host, port, smtpUser, smtpPass, fromAddr, to, subject, body)
+		})
+	}
 	if webauthnSvc != nil {
 		iHandler.SetWebAuthn(webauthnSvc, userSecurityKeyRepo)
 	}
@@ -647,6 +662,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/signin-history", iHandler.SigninHistory, middleware.RequireAuth())
 	api.POST("/i/revoke-token", iHandler.RevokeToken, middleware.RequireAuth())
 	api.POST("/i/update-email", iHandler.UpdateEmail, middleware.RequireAuth())
+	api.POST("/verify-email", iHandler.VerifyEmail)
 	api.POST("/i/move", iHandler.Move, middleware.RequireAuth())
 	api.POST("/i/2fa/register", iHandler.TwoFARegister, middleware.RequireAuth())
 	api.POST("/i/2fa/done", iHandler.TwoFADone, middleware.RequireAuth())

@@ -26,6 +26,10 @@ type RoleProvider interface {
 	GetUserPolicies(userID string) map[string]any
 }
 
+// EmailSender sends an email (subject + plain text body). SMTP 設定は
+// 実装側が Meta から読み取る。テストではスタブを注入する。
+type EmailSender func(to, subject, body string)
+
 // Handler handles account-related API endpoints.
 type Handler struct {
 	userService      *user.Service
@@ -37,6 +41,18 @@ type Handler struct {
 	webauthnSvc      *twofactor.WebAuthnService
 	securityKeyRepo  repository.UserSecurityKeyRepository
 	metaRepo         repository.MetaRepository
+	emailSender      EmailSender
+	serverURL        string
+}
+
+// SetServerURL sets the base URL used for email verification links.
+func (h *Handler) SetServerURL(u string) {
+	h.serverURL = u
+}
+
+// SetEmailSender attaches an EmailSender for update-email verification.
+func (h *Handler) SetEmailSender(s EmailSender) {
+	h.emailSender = s
 }
 
 // SetMetaRepo attaches a MetaRepository. When set, i/update enforces

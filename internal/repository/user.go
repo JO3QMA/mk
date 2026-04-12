@@ -21,6 +21,7 @@ type UserRepository interface {
 	CreateProfile(profile *model.UserProfile) error
 	ListUsers(filter model.UserListFilter) ([]*model.User, error)
 	ListRemoteInboxes() ([]string, error)
+	FindProfileByVerifyCode(code string) (*model.UserProfile, error)
 }
 
 type userRepository struct {
@@ -128,6 +129,15 @@ func (r *userRepository) UpdateProfile(userID string, fields map[string]any) err
 // CreateProfile inserts a new user_profile row.
 func (r *userRepository) CreateProfile(profile *model.UserProfile) error {
 	return r.db.Create(profile).Error
+}
+
+// FindProfileByVerifyCode looks up a user_profile by emailVerifyCode.
+func (r *userRepository) FindProfileByVerifyCode(code string) (*model.UserProfile, error) {
+	var p model.UserProfile
+	if err := r.db.Where(`"emailVerifyCode" = ?`, code).First(&p).Error; err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // ListRemoteInboxes returns a deduplicated list of inbox URLs belonging to
