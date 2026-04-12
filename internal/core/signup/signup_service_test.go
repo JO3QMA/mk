@@ -81,6 +81,39 @@ func TestSignup_TooLongUsername(t *testing.T) {
 	assert.ErrorIs(t, err, signup.ErrInvalidUsername)
 }
 
+func TestSignup_PreservedUsernameRejected(t *testing.T) {
+	svc, _, metaRepo := newTestService(t)
+	// meta.preservedUsernames に "admin" が入っている想定。
+	metaRepo.Meta.PreservedUsernames = []string{"admin", "root", "System"}
+
+	_, err := svc.Signup("admin", "pass", false)
+	assert.ErrorIs(t, err, signup.ErrUsernameReserved)
+
+	// case-insensitive (slot "System" を大文字で登録、小文字で試行)
+	_, err = svc.Signup("SYSTEM", "pass", false)
+	assert.ErrorIs(t, err, signup.ErrUsernameReserved)
+}
+
+func TestSignup_PreservedUsernameBypassedOnInitialSetup(t *testing.T) {
+	// 初回セットアップ時は root / admin が予約ワードでも作成可能にする。
+	// そうでないと本家デフォルトで admin / root が永久に作成できなくなる。
+	svc, _, metaRepo := newTestService(t)
+	metaRepo.Meta.PreservedUsernames = []string{"admin"}
+
+	result, err := svc.Signup("admin", "pass", true)
+	require.NoError(t, err)
+	assert.NotNil(t, result)
+}
+
+func TestSignup_PreservedUsernameAllowsOthers(t *testing.T) {
+	svc, _, metaRepo := newTestService(t)
+	metaRepo.Meta.PreservedUsernames = []string{"admin"}
+
+	result, err := svc.Signup("alice", "pass", false)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", result.User.Username)
+}
+
 // --- Failing repo tests ---
 
 type failingCreateUserRepo struct {

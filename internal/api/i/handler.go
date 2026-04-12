@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -35,6 +36,14 @@ type Handler struct {
 	transferEnqueuer TransferEnqueuer
 	webauthnSvc      *twofactor.WebAuthnService
 	securityKeyRepo  repository.UserSecurityKeyRepository
+	metaRepo         repository.MetaRepository
+}
+
+// SetMetaRepo attaches a MetaRepository. When set, i/update enforces
+// meta.prohibitedWordsForNameOfUser against the display name. Tests that
+// don't need this validation can leave it unset.
+func (h *Handler) SetMetaRepo(r repository.MetaRepository) {
+	h.metaRepo = r
 }
 
 // SetWebAuthn attaches the WebAuthn service + security key repository.
@@ -365,6 +374,23 @@ func jsonbObject(raw []byte) any {
 	return out
 }
 
+// containsProhibitedWord reports whether name contains any entry from words
+// case-insensitively (substring match). Empty or whitespace-only entries are
+// skipped so a misconfigured empty element cannot ban every display name.
+func containsProhibitedWord(name string, words []string) bool {
+	lname := strings.ToLower(name)
+	for _, w := range words {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		if strings.Contains(lname, strings.ToLower(w)) {
+			return true
+		}
+	}
+	return false
+}
+
 // Update handles POST /api/i/update.
 func (h *Handler) Update(c echo.Context) error {
 	me := middleware.GetUser(c)
@@ -386,6 +412,14 @@ func (h *Handler) Update(c echo.Context) error {
 		PreventAiLearning: req.PreventAiLearning,
 	}
 	if req.Name != nil {
+		// 表示名の禁止ワードチェック。meta 未注入 / 未設定時は素通りする。
+		// 本家 Misskey と同様に部分一致 case-insensitive で、空文字 ("") の
+		// クリアリクエストは検査対象外 (ユーザー体験上必要)。
+		if h.metaRepo != nil && *req.Name != "" {
+			if m, err := h.metaRepo.Fetch(); err == nil && containsProhibitedWord(*req.Name, m.ProhibitedWordsForNameOfUser) {
+				return c.JSON(http.StatusBadRequest, errEnvelope("Your new name contains prohibited words.", "NAME_CONTAINS_PROHIBITED_WORDS", "0b3f9f6a-2e7d-4c2c-9d7a-8c6f9b2e1a44"))
+			}
+		}
 		in.Name = &req.Name
 	}
 	if req.Description != nil {

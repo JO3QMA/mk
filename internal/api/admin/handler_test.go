@@ -259,6 +259,27 @@ func TestAccountsCreate_WhitespaceOnlyUsername(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestAccountsCreate_PreservedUsername(t *testing.T) {
+	// rootUser 済み + admin ユーザーがリクエストしている前提 (初回セットアップ
+	// ではないので preservedUsernames チェックが有効)。
+	h, userRepo, metaRepo, _ := newTestHandler(t)
+	rootID := "root1"
+	userRepo.Users[rootID] = &model.User{ID: rootID, Username: "root", UsernameLower: "root"}
+	metaRepo.Meta = &model.Meta{
+		ID:                 "x",
+		RootUserID:         &rootID,
+		PreservedUsernames: []string{"admin", "support"},
+	}
+
+	rec := doPost(h.AccountsCreate, `{"username":"admin","password":"pass"}`, &model.User{ID: rootID})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "USED_USERNAME", errObj["code"])
+}
+
 func TestShowUsers_InvalidJSON(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	rec := doPost(h.ShowUsers, `invalid`, nil)

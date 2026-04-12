@@ -145,6 +145,9 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 		if err == signup.ErrInvalidUsername {
 			return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 		}
+		if err == signup.ErrUsernameReserved {
+			return c.JSON(http.StatusBadRequest, errResp("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
+		}
 		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
