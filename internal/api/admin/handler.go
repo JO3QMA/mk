@@ -355,8 +355,8 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 		"enableHcaptcha": m.EnableHcaptcha, "hcaptchaSiteKey": m.HcaptchaSiteKey, "hcaptchaSecretKey": m.HcaptchaSecretKey,
 		"enableRecaptcha": m.EnableRecaptcha, "recaptchaSiteKey": m.RecaptchaSiteKey, "recaptchaSecretKey": m.RecaptchaSecretKey,
 		"enableTurnstile": m.EnableTurnstile, "turnstileSiteKey": m.TurnstileSiteKey, "turnstileSecretKey": m.TurnstileSecretKey,
-		"enableMcaptcha": false, "mcaptchaSiteKey": nil, "mcaptchaSecretKey": nil, "mcaptchaInstanceUrl": nil,
-		"enableTestcaptcha": false,
+		"enableMcaptcha": m.EnableMcaptcha, "mcaptchaSiteKey": m.McaptchaSiteKey, "mcaptchaSecretKey": m.McaptchaSecretKey, "mcaptchaInstanceUrl": m.McaptchaInstanceURL,
+		"enableTestcaptcha": m.EnableTestcaptcha,
 		// Email
 		"enableEmail": m.EnableEmail, "email": m.Email,
 		"smtpHost": m.SmtpHost, "smtpPort": m.SmtpPort,

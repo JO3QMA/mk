@@ -49,6 +49,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
+	corecaptcha "github.com/shiroha-a/mk/internal/core/captcha"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
 	"github.com/shiroha-a/mk/internal/core/chart"
 	"github.com/shiroha-a/mk/internal/core/chart/charthook"
@@ -473,8 +474,18 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, result)
 	})
 
+	// CAPTCHA service — meta から有効な provider を選択して構築する。
+	// meta 取得失敗時は captcha 無効として動作する (ログイン不能を避けるため)。
+	var captchaSvc *corecaptcha.Service
+	if serverMeta, err := metaRepo.Fetch(); err == nil {
+		captchaSvc = corecaptcha.NewService(serverMeta)
+	}
+
 	// Signin (Phase 6)
 	signinHandler := apisignin.NewHandler(userRepo)
+	if captchaSvc != nil {
+		signinHandler.SetCaptcha(captchaSvc)
+	}
 	api.POST("/signin", signinHandler.Signin)
 	api.POST("/signin-flow", signinHandler.SigninFlow)
 

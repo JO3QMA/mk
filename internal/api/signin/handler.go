@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/core/captcha"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -20,11 +21,18 @@ type Handler struct {
 	userRepo        repository.UserRepository
 	webauthnSvc     *twofactor.WebAuthnService
 	securityKeyRepo repository.UserSecurityKeyRepository
+	captchaSvc      *captcha.Service
 }
 
 // NewHandler creates a new signin Handler.
 func NewHandler(userRepo repository.UserRepository) *Handler {
 	return &Handler{userRepo: userRepo}
+}
+
+// SetCaptcha attaches a CaptchaService. When set, signin-flow verifies
+// the captcha token on the password step (same as original Misskey).
+func (h *Handler) SetCaptcha(svc *captcha.Service) {
+	h.captchaSvc = svc
 }
 
 // SetWebAuthn attaches optional WebAuthn dependencies to enable 2FA login
@@ -125,6 +133,12 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 		// SessionID + Credential はキー認証 step 3 で使う。
 		SessionID  *string         `json:"sessionId"`
 		Credential json.RawMessage `json:"credential"`
+		// CAPTCHA tokens — フロントエンドは有効な provider の token だけ送る。
+		HcaptchaResponse    string `json:"hcaptcha-response"`
+		RecaptchaResponse   string `json:"g-recaptcha-response"`
+		TurnstileResponse   string `json:"turnstile-response"`
+		McaptchaResponse    string `json:"m-captcha-response"`
+		TestcaptchaResponse string `json:"testcaptcha-response"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" {
 		return c.JSON(http.StatusBadRequest, map[string]any{
@@ -176,6 +190,22 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 				"id": "932c904e-9460-45b7-9ce6-7ed33be7eb2c",
 			},
 		})
+	}
+
+	// CAPTCHA 検証 (password step 完了後、2FA 無しの場合のみ)。
+	// 本家 Misskey と同じく 2FA 有効なユーザーはキーデバイスが人間性を担保する
+	// ため CAPTCHA をスキップする。
+	if !profile.TwoFactorEnabled && h.captchaSvc != nil {
+		tokens := captcha.CaptchaTokens{
+			Hcaptcha:    req.HcaptchaResponse,
+			Recaptcha:   req.RecaptchaResponse,
+			Turnstile:   req.TurnstileResponse,
+			Mcaptcha:    req.McaptchaResponse,
+			Testcaptcha: req.TestcaptchaResponse,
+		}
+		if err := h.captchaSvc.Verify(c.Request().Context(), tokens); err != nil {
+			return c.JSON(http.StatusForbidden, errBody("e03a5f46-d309-4865-9b69-56282d94e1eb"))
+		}
 	}
 
 	// 2FA 経路: TwoFactorEnabled が立っていたら 2 要素を要求する。
