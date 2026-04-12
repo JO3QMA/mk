@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -590,6 +591,19 @@ func (s *Server) setupRoutes() {
 	signupHandler.SetTicketStore(&gormTicketStore{db: s.db})
 	signupHandler.SetTestMode(s.config.TestMode)
 	api.POST("/signup", signupHandler.Signup)
+
+	// Username availability check (フロントエンドの signup フォームが呼ぶ)
+	api.POST("/username/available", func(c echo.Context) error {
+		var req struct {
+			Username string `json:"username"`
+		}
+		if err := c.Bind(&req); err != nil || req.Username == "" {
+			return c.JSON(http.StatusOK, map[string]any{"available": false})
+		}
+		_, err := userRepo.FindByUsernameLower(strings.ToLower(req.Username), nil)
+		available := err != nil
+		return c.JSON(http.StatusOK, map[string]any{"available": available})
+	})
 
 	// Signin (Phase 6)
 	userIPRepo := repository.NewUserIPRepository(s.db)
