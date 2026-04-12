@@ -10,7 +10,14 @@ BUILD_DIR=./built
 
 # Go parameters
 GOFLAGS=-trimpath
-LDFLAGS=-s -w
+
+# バージョン情報: submodule の package.json があれば Misskey バージョンを自動取得
+MKGO_VERSION ?= 0.0.1
+MISSKEY_PKG_JSON = third_party/misskey/package.json
+MISSKEY_VERSION ?= $(shell [ -f $(MISSKEY_PKG_JSON) ] && grep -o '"version": *"[^"]*"' $(MISSKEY_PKG_JSON) | head -1 | grep -o '"[^"]*"$$' | tr -d '"' || echo "2026.3.2")
+LDFLAGS=-s -w \
+	-X github.com/shiroha-a/mk/internal/config.MkGoVersion=$(MKGO_VERSION) \
+	-X github.com/shiroha-a/mk/internal/config.MisskeyVersion=$(MISSKEY_VERSION)
 
 build:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/misskey
