@@ -79,6 +79,15 @@ func (m *MockUserRepository) FindProfileByUserID(userID string) (*model.UserProf
 	return p, nil
 }
 
+func (m *MockUserRepository) FindProfileByVerifyCode(code string) (*model.UserProfile, error) {
+	for _, p := range m.Profiles {
+		if p.EmailVerifyCode != nil && *p.EmailVerifyCode == code {
+			return p, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (m *MockUserRepository) IncrementFollowingCount(userID string, delta int) error {
 	if u, ok := m.Users[userID]; ok {
 		u.FollowingCount += delta
@@ -343,6 +352,28 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 				p.ClientData = []byte(val)
 			case []byte:
 				p.ClientData = val
+			}
+		case "email":
+			switch val := v.(type) {
+			case string:
+				p.Email = &val
+			case *string:
+				p.Email = val
+			case nil:
+				p.Email = nil
+			}
+		case "emailVerified":
+			if b, ok := v.(bool); ok {
+				p.EmailVerified = b
+			}
+		case "emailVerifyCode":
+			switch val := v.(type) {
+			case string:
+				p.EmailVerifyCode = &val
+			case *string:
+				p.EmailVerifyCode = val
+			case nil:
+				p.EmailVerifyCode = nil
 			}
 		}
 	}
