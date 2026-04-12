@@ -3,6 +3,9 @@ FROM mcr.microsoft.com/devcontainers/go:1.25
 # /go の所有権を vscode ユーザーに変更 (go mod download の権限エラー回避)
 RUN chown -R vscode:vscode /go
 
+# PostgreSQL client (pg_isready 等のユーティリティ)
+RUN apt-get update && apt-get install -y postgresql-client && rm -rf /var/lib/apt/lists/*
+
 # Node.js (フロントエンドビルド用)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
