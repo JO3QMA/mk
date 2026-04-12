@@ -100,13 +100,17 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 	}
 }
 
+// frontendBase は third_party/misskey を基点とするパスのプレフィックス。
+// 本家 Misskey のビルド成果物がここに配置される。
+const frontendBase = "third_party/misskey"
+
 // FrontendDir returns the path to built frontend assets.
-// 環境変数 MISSKEY_FRONTEND_DIR で上書き可能。デフォルトは built/_frontend_vite_。
+// 環境変数 MISSKEY_FRONTEND_DIR で上書き可能。
 func FrontendDir() string {
 	if v := os.Getenv("MISSKEY_FRONTEND_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join("built", "_frontend_vite_")
+	return filepath.Join(frontendBase, "built", "_frontend_vite_")
 }
 
 // FrontendDistDir returns the path to _frontend_dist_ assets (locales, fonts).
@@ -115,7 +119,7 @@ func FrontendDistDir() string {
 	if v := os.Getenv("MISSKEY_FRONTEND_DIST_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join("built", "_frontend_dist_")
+	return filepath.Join(frontendBase, "built", "_frontend_dist_")
 }
 
 // SwDistDir returns the path to _sw_dist_ assets (service worker sw.js).
@@ -135,7 +139,7 @@ func ClientAssetsDir() string {
 	if v := os.Getenv("MISSKEY_CLIENT_ASSETS_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join("packages", "frontend", "assets")
+	return filepath.Join(frontendBase, "packages", "frontend", "assets")
 }
 
 // TwemojiDir returns the path to twemoji SVG files.
@@ -144,7 +148,7 @@ func TwemojiDir() string {
 	if v := os.Getenv("MISSKEY_TWEMOJI_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join("node_modules", "@discordapp", "twemoji", "dist", "svg")
+	return filepath.Join(frontendBase, "node_modules", "@discordapp", "twemoji", "dist", "svg")
 }
 
 // StaticDir returns the path to static assets (icons, splash, favicon etc.).
@@ -153,7 +157,7 @@ func StaticDir() string {
 	if v := os.Getenv("MISSKEY_STATIC_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join("assets")
+	return filepath.Join(frontendBase, "assets")
 }
 
 // detectClientEntry reads the Vite manifest to find the entry script path.
