@@ -351,6 +351,12 @@ func (s *Server) setupRoutes() {
 	deliverProcessor := processors.NewDeliverProcessor(apClient)
 	// 配信結果に応じて instance.isNotResponding を更新する
 	deliverProcessor.SetResponseHook(instanceService)
+	// deliverSuspendedSoftware: 対象インスタンスへの配送をスキップする
+	if suspMeta, err := metaRepo.Fetch(); err == nil && len(suspMeta.DeliverSuspendedSoftware) > 0 {
+		deliverProcessor.SetSuspendedChecker(
+			corefederation.NewSuspendedChecker(suspMeta.DeliverSuspendedSoftware, instanceRepo),
+		)
+	}
 	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 
 	// Remote notes cleaning (issue #46)

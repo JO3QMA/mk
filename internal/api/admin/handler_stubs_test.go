@@ -184,11 +184,12 @@ func TestSendEmail(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.SendEmail, `{}`, adminUser).Code)
 }
-func TestServerInfo(t *testing.T) {
+func TestServerInfo_Disabled(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	rec := doPost(h.ServerInfo, `{}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "misskey-go")
+	// enableServerMachineStats = false (デフォルト) なので Empty() が返る
+	assert.Contains(t, rec.Body.String(), `"name":"?"`)
 }
 func TestUnsetUserAvatar(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
