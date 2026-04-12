@@ -110,6 +110,17 @@ func FrontendDistDir() string {
 	return filepath.Join("built", "_frontend_dist_")
 }
 
+// SwDistDir returns the path to _sw_dist_ assets (service worker sw.js).
+// 環境変数 MISSKEY_SW_DIST_DIR で上書き可能。Frontend build の
+// sibling ディレクトリに出力されるのでデフォルトは FrontendDir の親 +
+// "_sw_dist_"。
+func SwDistDir() string {
+	if v := os.Getenv("MISSKEY_SW_DIST_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(filepath.Dir(FrontendDir()), "_sw_dist_")
+}
+
 // ClientAssetsDir returns the path to frontend client assets (game images, etc.).
 // 環境変数 MISSKEY_CLIENT_ASSETS_DIR で上書き可能。
 func ClientAssetsDir() string {

@@ -75,6 +75,14 @@ func (h *Handler) ResetDB(c echo.Context) error {
 			slog.Error("reset-db: table reset failed", "err", err)
 			return echo.NewHTTPError(http.StatusInternalServerError, "db reset failed")
 		}
+		// meta テーブルは TRUNCATE で消えるが、初期セットアップフロー
+		// (/api/admin/accounts/create) が `SELECT * FROM meta` を前提にしているので
+		// 空行を 1 つ再挿入する。id は singleton なので値は何でも良い。
+		// 全カラムは DB 側 default を持っているのでこれだけで有効な行になる。
+		if err := h.db.WithContext(ctx).Exec(`INSERT INTO "meta" ("id") VALUES ('meta-singleton') ON CONFLICT DO NOTHING`).Error; err != nil {
+			slog.Error("reset-db: meta re-init failed", "err", err)
+			return echo.NewHTTPError(http.StatusInternalServerError, "db reset failed")
+		}
 	}
 
 	return c.NoContent(http.StatusNoContent)

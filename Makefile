@@ -84,7 +84,7 @@ federation-misskey-logs:
 #
 # CLAUDE.md の規約で「パッケージはホストに直接入れずコンテナ経由で動かす」と
 # 決まっているため、pnpm / cypress はすべて docker run で実行する。
-E2E_NODE_IMAGE=node:20-bookworm
+E2E_NODE_IMAGE=node:22-bookworm
 E2E_CYPRESS_IMAGE=cypress/included:15.11.0
 E2E_WORKDIR=/work
 

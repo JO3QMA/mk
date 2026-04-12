@@ -115,10 +115,42 @@ func TestResetDB_FlushesRedisAndTables(t *testing.T) {
 	val, err := testRedis.Client.Get(ctx, "reset-db:marker").Result()
 	assert.ErrorIs(t, err, redis.Nil, "got value=%q", val)
 
-	// meta 行が消えていること。
+	// meta テーブルは TRUNCATE されるが、reset-db は initial-setup フローを
+	// 維持するため空の singleton 行を即座に再 INSERT する。事前に入れた行は
+	// 消え、replacement 行 (id="meta-singleton") が 1 つだけ残るのが正しい。
 	var count int64
 	require.NoError(t, testPg.DB.Raw(`SELECT COUNT(*) FROM "meta"`).Scan(&count).Error)
-	assert.Equal(t, int64(0), count)
+	assert.Equal(t, int64(1), count)
+
+	var ids []string
+	require.NoError(t, testPg.DB.Raw(`SELECT id FROM "meta"`).Scan(&ids).Error)
+	assert.Equal(t, []string{"meta-singleton"}, ids)
+}
+
+// meta INSERT のエラー経路をカバーする。テスト前に meta テーブル自体を一時的に
+// rename することで「TRUNCATE は対象テーブル一覧から meta が消えるので no-op、
+// その後の INSERT INTO "meta" が relation not found で失敗する」状況を作る。
+// テスト後に元に戻す。
+func TestResetDB_MetaInsertError_Returns500(t *testing.T) {
+	requireContainers(t)
+
+	// meta を退避する。名前が重複しないよう一時テーブル名を使う。
+	require.NoError(t, testPg.DB.Exec(`ALTER TABLE "meta" RENAME TO "meta_test_backup"`).Error)
+	t.Cleanup(func() {
+		_ = testPg.DB.Exec(`DROP TABLE IF EXISTS "meta"`).Error
+		_ = testPg.DB.Exec(`ALTER TABLE "meta_test_backup" RENAME TO "meta"`).Error
+	})
+
+	h := NewHandler(testPg.DB, testRedis.Client, true)
+	c, rec := freshEchoContext()
+	err := h.ResetDB(c)
+
+	// meta テーブルが存在しないので INSERT が失敗し、500 が返る
+	require.Error(t, err)
+	var he *echo.HTTPError
+	require.True(t, errors.As(err, &he))
+	assert.Equal(t, http.StatusInternalServerError, he.Code)
+	_ = rec
 }
 
 func TestResetDB_PreservesSchemaMigrations(t *testing.T) {

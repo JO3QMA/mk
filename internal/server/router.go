@@ -1190,6 +1190,14 @@ func (s *Server) setupRoutes() {
 	// manifest.json — PWA用
 	s.echo.GET("/manifest.json", manifestJSON(s.config, metaRepo))
 
+	// Service Worker (sw.js) — Misskey frontend は GET /sw.js を登録しにくる。
+	// SPA catchall より前に登録しないと text/html にフォールバックしてしまい
+	// ブラウザが "unsupported MIME type" エラーで SW 登録を拒否する。
+	swDistDir := SwDistDir()
+	if _, err := os.Stat(filepath.Join(swDistDir, "sw.js")); err == nil {
+		s.echo.File("/sw.js", filepath.Join(swDistDir, "sw.js"))
+	}
+
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
 }
