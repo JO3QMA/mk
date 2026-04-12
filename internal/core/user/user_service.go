@@ -2,6 +2,7 @@
 package user
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -123,6 +124,9 @@ type UpdateInput struct {
 	AutoSensitive     *bool
 	NoCrawle          *bool
 	PreventAiLearning *bool
+	// Room は jsonb 列に書き込む生バイト列。nil の場合は更新しない。
+	// 呼び出し側で JSON として妥当であることを保証する必要がある。
+	Room *json.RawMessage
 }
 
 // UpdateProfile applies the non-nil fields to the user and user_profile rows.
@@ -175,6 +179,11 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 	}
 	if in.PreventAiLearning != nil {
 		profileFields["preventAiLearning"] = *in.PreventAiLearning
+	}
+	if in.Room != nil {
+		// GORM は map で渡された値を jsonb 列に直接書き込む。
+		// []byte を渡すと bytea 扱いされてしまうので string にキャストする。
+		profileFields["room"] = string(*in.Room)
 	}
 
 	if err := s.userRepo.UpdateUser(userID, userFields); err != nil {
