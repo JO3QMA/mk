@@ -152,8 +152,9 @@ type Update struct {
 // Like represents a Like (reaction) activity.
 type Like struct {
 	Activity
-	Object  string `json:"object"` // target note URI
-	Content string `json:"content,omitempty"`
+	Object          string `json:"object"`                      // target note URI
+	Content         string `json:"content,omitempty"`           // reaction emoji (standard)
+	MisskeyReaction string `json:"_misskey_reaction,omitempty"` // Misskey拡張: contentより優先
 }
 
 // Tombstone represents a deleted object placeholder used as the object of a

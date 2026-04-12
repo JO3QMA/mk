@@ -168,6 +168,58 @@ func TestProcess_LikeActorError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// --- Like content / _misskey_reaction (ported from nekonoverse handler_like) --
+
+func TestProcess_LikeWithContent(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+	body := []byte(`{
+		"type": "Like",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1",
+		"content": "⭐"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+	require.Len(t, env.reactionRepo.Reactions, 1)
+	for _, r := range env.reactionRepo.Reactions {
+		assert.Equal(t, "⭐", r.Reaction)
+	}
+}
+
+func TestProcess_LikeWithMisskeyReaction(t *testing.T) {
+	// _misskey_reaction は content より優先される
+	env := newFullProcessor(t, aliceActor)
+	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+	body := []byte(`{
+		"type": "Like",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1",
+		"content": "Like",
+		"_misskey_reaction": "😀"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+	require.Len(t, env.reactionRepo.Reactions, 1)
+	for _, r := range env.reactionRepo.Reactions {
+		assert.Equal(t, "😀", r.Reaction)
+	}
+}
+
+func TestProcess_LikeEmptyContent(t *testing.T) {
+	// content が無い場合は reaction service が FallbackReaction (❤) に正規化する
+	env := newFullProcessor(t, aliceActor)
+	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+	body := []byte(`{
+		"type": "Like",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+	require.Len(t, env.reactionRepo.Reactions, 1)
+	for _, r := range env.reactionRepo.Reactions {
+		assert.Equal(t, "\u2764", r.Reaction)
+	}
+}
+
 // --- Announce ----------------------------------------------------------------
 
 func TestProcess_AnnounceHappyPath(t *testing.T) {
@@ -242,6 +294,19 @@ func TestProcess_AnnounceBadObject(t *testing.T) {
 	}`)
 	err := env.processor.Process(body)
 	assert.Error(t, err)
+}
+
+func TestProcess_AnnounceIncrementsRenoteCount(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/announces/a2",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+	assert.Equal(t, int16(1), env.noteRepo.Notes["n1"].RenoteCount)
 }
 
 // --- Delete ------------------------------------------------------------------
