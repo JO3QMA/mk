@@ -325,7 +325,7 @@ func (s *Server) setupRoutes() {
 	apRenderer := activitypub.NewRenderer(apURLs)
 	// Mention tag を AP Note に埋め込むための resolver。
 	apRenderer.SetMentionResolver(corefederation.NewUserMentionResolver(userRepo, apURLs))
-	apClient := activitypub.NewClient(nil, "misskey-go/"+s.config.Version)
+	apClient := activitypub.NewClient(nil, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
 	if m, err := metaRepo.Fetch(); err == nil && !m.AllowExternalApRedirect {
 		apClient.DisableRedirect()

@@ -18,13 +18,18 @@ func NewHandler(cfg *config.Config) *Handler {
 	return &Handler{cfg: cfg}
 }
 
+// nodeinfoVersion builds the version string for NodeInfo.
+func nodeinfoVersion(mkgoVersion, misskeyVersion string) string {
+	return mkgoVersion + " (compatible: misskey " + misskeyVersion + ")"
+}
+
 // Version2_1 handles GET /nodeinfo/2.1.
 func (h *Handler) Version2_1(c echo.Context) error {
 	resp := map[string]any{
 		"version": "2.1",
 		"software": map[string]any{
 			"name":       "misskey-go",
-			"version":    h.cfg.Version,
+			"version":    nodeinfoVersion(config.MkGoVersion, h.cfg.Version),
 			"repository": "https://github.com/shiroha-a/mk",
 		},
 		"protocols": []string{"activitypub"},
