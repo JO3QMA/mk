@@ -457,5 +457,25 @@ func TestClient_EnqueueSystemWebhook_ClosedClientFails(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestClient_EnqueueCleanRemoteNotes(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueCleanRemoteNotes())
+}
+
+func TestClient_EnqueueReactionFlush(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueReactionFlush())
+}
+
 // ensure errors package referenced for completeness in CI builds.
 var _ = errors.New
