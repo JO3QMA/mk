@@ -257,6 +257,11 @@ func (h *Handler) Me(c echo.Context) error {
 		resp["hardMutedWords"] = profile.HardMutedWords
 		resp["mutedInstances"] = profile.MutedInstances
 		resp["publicReactions"] = profile.PublicReactions
+		// clientData / room は jsonb を生のまま返すと frontend (本家) が
+		// オブジェクトとして parse するため、空/不正時は空オブジェクトに
+		// 正規化する。user が手動でキーを書き換えるだけなので scheme は持たない。
+		resp["clientData"] = jsonbObject(profile.ClientData)
+		resp["room"] = jsonbObject(profile.Room)
 	}
 
 	// フロントエンド互換性フィールド (Phase 4.5c / Phase 5)
@@ -341,6 +346,23 @@ type UpdateRequest struct {
 	AutoSensitive     *bool   `json:"autoSensitive"`
 	NoCrawle          *bool   `json:"noCrawle"`
 	PreventAiLearning *bool   `json:"preventAiLearning"`
+	// Room は frontend の「部屋」機能用の任意スキーマ jsonb。
+	// 本家も object をそのまま受け取って上書き保存する (部分マージはしない)。
+	Room json.RawMessage `json:"room"`
+}
+
+// jsonbObject normalizes a raw jsonb byte slice into map[string]any for the
+// Me response. Empty or malformed payloads become an empty object so the
+// frontend always sees a stable shape.
+func jsonbObject(raw []byte) any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
 }
 
 // Update handles POST /api/i/update.
@@ -377,6 +399,12 @@ func (h *Handler) Update(c echo.Context) error {
 	}
 	if req.Lang != nil {
 		in.Lang = &req.Lang
+	}
+	if len(req.Room) > 0 {
+		// json.RawMessage は親の Unmarshal が構文チェック済みの
+		// バイト列を格納する。改変されないよう独自のスライスにコピーする。
+		room := append(json.RawMessage(nil), req.Room...)
+		in.Room = &room
 	}
 
 	bundle, err := h.userService.UpdateProfile(me.ID, in)

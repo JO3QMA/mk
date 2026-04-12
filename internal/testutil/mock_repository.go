@@ -330,6 +330,20 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 			if b, ok := v.(bool); ok {
 				p.UsePasswordLessLogin = b
 			}
+		case "room":
+			switch val := v.(type) {
+			case string:
+				p.Room = []byte(val)
+			case []byte:
+				p.Room = val
+			}
+		case "clientData":
+			switch val := v.(type) {
+			case string:
+				p.ClientData = []byte(val)
+			case []byte:
+				p.ClientData = val
+			}
 		}
 	}
 }

@@ -317,6 +317,85 @@ func TestMe_NoProfile(t *testing.T) {
 	assert.Equal(t, false, resp["hasUnreadNotification"])
 }
 
+func TestMe_ClientDataAndRoomExposed(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+
+	userRepo.Profiles["user1"] = &model.UserProfile{
+		UserID:     "user1",
+		ClientData: datatypes.JSON([]byte(`{"theme":"dark","sidebar":{"collapsed":true}}`)),
+		Room:       datatypes.JSON([]byte(`{"furnitures":[{"id":"chair1"}]}`)),
+		Fields:     datatypes.JSON([]byte("[]")),
+	}
+
+	user := &model.User{
+		ID:                "user1",
+		Username:          "cdroom",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), user)
+
+	require.NoError(t, h.Me(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	cd, ok := resp["clientData"].(map[string]any)
+	require.True(t, ok, "clientData should be an object, got %T", resp["clientData"])
+	assert.Equal(t, "dark", cd["theme"])
+	sidebar, ok := cd["sidebar"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, sidebar["collapsed"])
+
+	room, ok := resp["room"].(map[string]any)
+	require.True(t, ok, "room should be an object")
+	furnitures, ok := room["furnitures"].([]any)
+	require.True(t, ok)
+	require.Len(t, furnitures, 1)
+}
+
+func TestMe_ClientDataAndRoomEmptyNormalized(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+
+	// profile が存在するが jsonb が空/不正なケース。
+	// frontend に安定した空 object を返すことを保証する。
+	userRepo.Profiles["user1"] = &model.UserProfile{
+		UserID:     "user1",
+		ClientData: nil,
+		Room:       datatypes.JSON([]byte("null")),
+		Fields:     datatypes.JSON([]byte("[]")),
+	}
+
+	user := &model.User{
+		ID:                "user1",
+		Username:          "empty",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), user)
+
+	require.NoError(t, h.Me(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	cd, ok := resp["clientData"].(map[string]any)
+	require.True(t, ok, "clientData should normalize to {} when nil")
+	assert.Empty(t, cd)
+
+	room, ok := resp["room"].(map[string]any)
+	require.True(t, ok, "room should normalize to {} when payload is JSON null")
+	assert.Empty(t, room)
+}
+
 // --- Update ---
 
 func TestUpdate_Success(t *testing.T) {
@@ -351,6 +430,60 @@ func TestUpdate_InternalError(t *testing.T) {
 	user := &model.User{ID: "user1"}
 	rec := post(h.Update, `{"isLocked": true}`, user)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestUpdate_RoomAccepted(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+
+	rec := post(h.Update, `{"room":{"furnitures":[{"id":"bed1"}],"seed":42}}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// profile 側に反映されていること。
+	got := repo.Profiles["user1"]
+	require.NotNil(t, got)
+	assert.JSONEq(t, `{"furnitures":[{"id":"bed1"}],"seed":42}`, string(got.Room))
+}
+
+func TestUpdate_RoomMalformedOuterJSONRejected(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+
+	// 親 JSON が壊れていれば c.Bind が失敗するため 400。
+	rec := post(h.Update, `{"room":{"broken":`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_RoomOmittedLeavesUnchanged(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{
+		UserID: "user1",
+		Room:   datatypes.JSON([]byte(`{"keep":true}`)),
+		Fields: datatypes.JSON([]byte("[]")),
+	}
+
+	rec := post(h.Update, `{"name":"renamed"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	got := repo.Profiles["user1"]
+	assert.JSONEq(t, `{"keep":true}`, string(got.Room))
 }
 
 // --- Pin ---
