@@ -204,7 +204,7 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		"translatorAvailable": false, "enableEmail": m.EnableEmail,
 		"ads": []any{}, "notesPerOneAd": 0,
 		"cacheRemoteSensitiveFiles": m.CacheRemoteSensitiveFiles,
-		"requireSetup":              false,
+		"requireSetup":              m.RootUserID == nil,
 		"features": map[string]any{
 			"registration":           !m.DisableRegistration,
 			"emailRequiredForSignup": m.EmailRequiredForSignup,
