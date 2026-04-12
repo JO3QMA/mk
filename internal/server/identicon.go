@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/png"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/repository"
 )
 
 // Misskey TSのgen-identicon.tsと同じ仕様で生成する
@@ -63,11 +65,22 @@ func seedRand(seed string) *rand.Rand {
 }
 
 // identiconHandler generates an identicon PNG matching Misskey TS's gen-identicon.ts.
-func identiconHandler() echo.HandlerFunc {
+// metaRepo を渡すと meta.enableIdenticonGeneration フラグを参照する。フラグが
+// false なら 1x1 透明 PNG を返す (本家挙動と互換: avatar fallback の URL が
+// 404 にならず、空画像で済むのでフロントの onerror フローが乱れない)。
+// metaRepo が nil の場合は常に identicon を生成する (テストや初期セットアップ用)。
+func identiconHandler(metaRepo repository.MetaRepository) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		seed := c.Param("x")
 		if seed == "" {
 			seed = "default"
+		}
+
+		// meta フラグチェック (false なら無効化)
+		if metaRepo != nil {
+			if m, err := metaRepo.Fetch(); err == nil && !m.EnableIdenticonGeneration {
+				return serveTransparentPixel(c)
+			}
 		}
 
 		rng := seedRand(seed)
@@ -78,6 +91,22 @@ func identiconHandler() echo.HandlerFunc {
 		c.Response().WriteHeader(http.StatusOK)
 		return png.Encode(c.Response(), img)
 	}
+}
+
+// transparentPixel は事前生成した 1x1 完全透明 PNG。disabled identicon に使う。
+// init で 1 回だけ encode するので request 毎の cost は 0。
+var transparentPixel = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 0, G: 0, B: 0, A: 0})
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	return buf.Bytes()
+}()
+
+func serveTransparentPixel(c echo.Context) error {
+	c.Response().Header().Set("Content-Type", "image/png")
+	c.Response().Header().Set("Cache-Control", "public, max-age=86400")
+	return c.Blob(http.StatusOK, "image/png", transparentPixel)
 }
 
 func generateIdenticon(rng *rand.Rand) *image.RGBA {
