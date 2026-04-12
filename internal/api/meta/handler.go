@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -62,19 +63,23 @@ func (h *Handler) Meta(c echo.Context) error {
 		"maxNoteTextLength":      3000,
 
 		// フロントエンド互換性フィールド (Phase 4.5c)
-		"tosUrl":                       m.TermsOfServiceURL,
-		"repositoryUrl":                m.RepositoryURL,
-		"feedbackUrl":                  m.FeedbackURL,
-		"impressumUrl":                 m.ImpressumURL,
-		"privacyPolicyUrl":             m.PrivacyPolicyURL,
-		"inquiryUrl":                   nil,
-		"federation":                   m.Federation,
-		"defaultLightTheme":            nil,
-		"defaultDarkTheme":             nil,
-		"serverErrorImageUrl":          nil,
-		"notFoundImageUrl":             nil,
-		"infoImageUrl":                 nil,
-		"mascotImageUrl":               "/assets/ai.png",
+		"tosUrl":              m.TermsOfServiceURL,
+		"repositoryUrl":       m.RepositoryURL,
+		"feedbackUrl":         m.FeedbackURL,
+		"impressumUrl":        m.ImpressumURL,
+		"privacyPolicyUrl":    m.PrivacyPolicyURL,
+		"inquiryUrl":          m.InquiryURL,
+		"federation":          m.Federation,
+		"defaultLightTheme":   m.DefaultLightTheme,
+		"defaultDarkTheme":    m.DefaultDarkTheme,
+		"serverErrorImageUrl": m.ServerErrorImageURL,
+		"notFoundImageUrl":    m.NotFoundImageURL,
+		"infoImageUrl":        m.InfoImageURL,
+		"app192IconUrl":       m.App192IconURL,
+		"app512IconUrl":       m.App512IconURL,
+		// mascotImageUrl: meta 値があればそれを返す。空または nil なら従来の
+		// /assets/ai.png にフォールバック (フロントエンドが no-image にならないため)。
+		"mascotImageUrl":               mascotURL(m.MascotImageURL),
 		"translatorAvailable":          false,
 		"enableEmail":                  m.EnableEmail,
 		"enableUrlPreview":             false,
@@ -92,8 +97,10 @@ func (h *Handler) Meta(c echo.Context) error {
 		"mcaptchaInstanceUrl":          nil,
 		"enableTestcaptcha":            false,
 		"sentryForFrontend":            nil,
-		"googleAnalyticsMeasurementId": nil,
-		"clientOptions":                map[string]any{},
+		"googleAnalyticsMeasurementId": m.GoogleAnalyticsMeasurementID,
+		// clientOptions は jsonb なのでそのまま返す。空 jsonb なら frontend が
+		// デフォルト値を使う前提。
+		"clientOptions": clientOptionsJSON(m.ClientOptions),
 
 		"policies": defaultPolicies(),
 
@@ -162,4 +169,28 @@ func (h *Handler) Ping(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{
 		"pong": true,
 	})
+}
+
+// mascotURL applies the legacy fallback for the mascot. Misskey フロントエンドは
+// このフィールドが空文字 / 未設定でも特定の no-image を出すだけだが、本家挙動と
+// 互換にするため /assets/ai.png をフォールバックに使う。
+func mascotURL(v *string) string {
+	if v != nil && *v != "" {
+		return *v
+	}
+	return "/assets/ai.png"
+}
+
+// clientOptionsJSON returns m.ClientOptions as a generic any. JSON encoder の
+// raw bytes をそのまま返すと frontend が parse しないので、空の場合は空 map に
+// 正規化する (本家フロントエンドは object を期待する)。
+func clientOptionsJSON(raw []byte) any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
 }

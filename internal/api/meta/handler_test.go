@@ -92,3 +92,129 @@ func TestPing(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, true, resp["pong"])
 }
+
+// --- Branding / UI exposure (issue #50) ---
+
+// /api/meta が meta テーブルの新フィールド (mascot / app192/512 / themes /
+// inquiryUrl / clientOptions / ga) を返すことを確認する。
+func TestMeta_BrandingFieldsExposed(t *testing.T) {
+	h, repo := newTestHandler()
+	mascot := "https://example.com/mascot.png"
+	app192 := "https://example.com/app192.png"
+	app512 := "https://example.com/app512.png"
+	srvErr := "https://example.com/err.png"
+	notFound := "https://example.com/404.png"
+	info := "https://example.com/info.png"
+	dlt := "{\"name\":\"light\"}"
+	ddt := "{\"name\":\"dark\"}"
+	inquiry := "https://example.com/inquiry"
+	ga := "G-XXXXXX"
+	repo.Meta = &model.Meta{
+		ID:                           "x",
+		MascotImageURL:               &mascot,
+		App192IconURL:                &app192,
+		App512IconURL:                &app512,
+		ServerErrorImageURL:          &srvErr,
+		NotFoundImageURL:             &notFound,
+		InfoImageURL:                 &info,
+		DefaultLightTheme:            &dlt,
+		DefaultDarkTheme:             &ddt,
+		InquiryURL:                   &inquiry,
+		GoogleAnalyticsMeasurementID: &ga,
+		ClientOptions:                []byte(`{"entrancePageStyle":"simple","showTimelineForVisitor":true}`),
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Meta(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, mascot, resp["mascotImageUrl"])
+	assert.Equal(t, app192, resp["app192IconUrl"])
+	assert.Equal(t, app512, resp["app512IconUrl"])
+	assert.Equal(t, srvErr, resp["serverErrorImageUrl"])
+	assert.Equal(t, notFound, resp["notFoundImageUrl"])
+	assert.Equal(t, info, resp["infoImageUrl"])
+	assert.Equal(t, dlt, resp["defaultLightTheme"])
+	assert.Equal(t, ddt, resp["defaultDarkTheme"])
+	assert.Equal(t, inquiry, resp["inquiryUrl"])
+	assert.Equal(t, ga, resp["googleAnalyticsMeasurementId"])
+
+	co, _ := resp["clientOptions"].(map[string]any)
+	assert.Equal(t, "simple", co["entrancePageStyle"])
+	assert.Equal(t, true, co["showTimelineForVisitor"])
+}
+
+// mascotImageUrl 未設定時は legacy /assets/ai.png にフォールバック。
+func TestMeta_MascotFallback(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"} // mascot 未設定
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "/assets/ai.png", resp["mascotImageUrl"])
+}
+
+// 空文字 mascot もフォールバックされる。
+func TestMeta_MascotEmptyFallback(t *testing.T) {
+	h, repo := newTestHandler()
+	empty := ""
+	repo.Meta = &model.Meta{ID: "x", MascotImageURL: &empty}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "/assets/ai.png", resp["mascotImageUrl"])
+}
+
+// clientOptions が空 jsonb のとき、空 map にフォールバックする。
+func TestMeta_ClientOptionsEmpty(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"} // ClientOptions = nil
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	co, ok := resp["clientOptions"].(map[string]any)
+	assert.True(t, ok)
+	assert.Empty(t, co)
+}
+
+// clientOptions が壊れた jsonb のとき、空 map にフォールバックして 200 を返す。
+func TestMeta_ClientOptionsMalformed(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x", ClientOptions: []byte(`not json`)}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	co, ok := resp["clientOptions"].(map[string]any)
+	assert.True(t, ok)
+	assert.Empty(t, co)
+}

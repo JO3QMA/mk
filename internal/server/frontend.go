@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -28,6 +29,9 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 		instanceDesc := ""
 		iconURL := "/static-assets/icons/192.png"
 		themeColor := "#86b300"
+		// mascotImageUrl は splash 中央のローディング画像に使う。meta 値が
+		// あれば優先、なければ /assets/ai.png にフォールバック (本家挙動)。
+		mascotURL := "/assets/ai.png"
 		metaJSON := "{}"
 		if m, err := metaRepo.Fetch(); err == nil {
 			if m.Name != nil && *m.Name != "" {
@@ -41,6 +45,9 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 			}
 			if m.ThemeColor != nil && *m.ThemeColor != "" {
 				themeColor = *m.ThemeColor
+			}
+			if m.MascotImageURL != nil && *m.MascotImageURL != "" {
+				mascotURL = *m.MascotImageURL
 			}
 			metaJSON = buildMetaJSON(cfg, m)
 		}
@@ -80,13 +87,14 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 <noscript><p>Please turn on your JavaScript</p></noscript>
 <div id="splash">
 <div style="padding:64px;text-align:center">
+<img src="%s" alt="" style="max-width:160px;height:auto;display:block;margin:0 auto 16px"/>
 <p>Loading...</p>
 </div>
 </div>
 </body></html>`, instanceName, instanceName, instanceDesc, iconURL, cfg.URL,
 			themeColor, cfg.URL, instanceName, iconURL, viteClientTag,
 			cfg.Version, clientEntryJS,
-			time.Now().UnixMilli(), metaJSON)
+			time.Now().UnixMilli(), metaJSON, mascotURL)
 
 		return c.HTML(http.StatusOK, html)
 	}
@@ -213,7 +221,9 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 }
 
 // manifestJSON generates a PWA manifest.json response.
-// TSバックエンドの manifestHandler と同等。
+// TSバックエンドの manifestHandler と同等。meta.app192IconUrl /
+// app512IconUrl が設定されていれば PWA icons に反映し、
+// meta.manifestJsonOverride が valid JSON object なら最後に deep merge する。
 func manifestJSON(cfg *config.Config, metaRepo repository.MetaRepository) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		m, _ := metaRepo.Fetch()
@@ -233,6 +243,13 @@ func manifestJSON(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 			}
 			if m.ThemeColor != nil && *m.ThemeColor != "" {
 				themeColor = *m.ThemeColor
+			}
+			// meta の app icon URL が設定されていればそちらを優先
+			if m.App192IconURL != nil && *m.App192IconURL != "" {
+				icon192 = *m.App192IconURL
+			}
+			if m.App512IconURL != nil && *m.App512IconURL != "" {
+				icon512 = *m.App512IconURL
 			}
 		}
 		manifest := map[string]any{
@@ -258,8 +275,35 @@ func manifestJSON(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 				},
 			},
 		}
+		// manifestJsonOverride: meta テーブルに保存された JSON を最後に重ね書き。
+		// 不正な JSON は warn を出してスキップ ('{}' デフォルトはノーオペ)。
+		if m != nil && m.ManifestJSONOverride != "" && m.ManifestJSONOverride != "{}" {
+			var override map[string]any
+			if err := json.Unmarshal([]byte(m.ManifestJSONOverride), &override); err != nil {
+				slog.Warn("manifest.json override is not valid JSON, ignoring", "err", err)
+			} else {
+				deepMergeManifest(manifest, override)
+			}
+		}
 		c.Response().Header().Set("Cache-Control", "max-age=300")
 		return c.JSON(http.StatusOK, manifest)
+	}
+}
+
+// deepMergeManifest merges src on top of dst in-place.
+// マップは再帰的に merge し、それ以外 (配列・スカラー) は src で上書きする。
+// PWA manifest はネスト浅いので深さ無制限の単純実装で十分。
+func deepMergeManifest(dst, src map[string]any) {
+	for k, v := range src {
+		if existing, ok := dst[k]; ok {
+			if dstMap, ok1 := existing.(map[string]any); ok1 {
+				if srcMap, ok2 := v.(map[string]any); ok2 {
+					deepMergeManifest(dstMap, srcMap)
+					continue
+				}
+			}
+		}
+		dst[k] = v
 	}
 }
 
