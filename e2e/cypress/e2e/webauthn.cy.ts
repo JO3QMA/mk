@@ -9,9 +9,12 @@
 const b64u = (s: string) =>
   Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 
-// Uint8Array → base64 (standard, for sending back to server)
-const toB64 = (buf: ArrayBuffer) =>
-  btoa(String.fromCharCode(...new Uint8Array(buf)));
+// Uint8Array → base64url (go-webauthn の URLEncodedBase64 に合わせる)
+const toB64url = (buf: ArrayBuffer) =>
+  btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
 
 describe('WebAuthn (Virtual Authenticator)', () => {
   const admin = { username: 'admin', password: 'adminpass' };
@@ -140,11 +143,11 @@ describe('WebAuthn (Virtual Authenticator)', () => {
               sessionId: regSessionId,
               response: {
                 id: credential.id,
-                rawId: toB64(credential.rawId),
+                rawId: toB64url(credential.rawId),
                 type: credential.type,
                 response: {
-                  clientDataJSON: toB64(attResp.clientDataJSON),
-                  attestationObject: toB64(attResp.attestationObject),
+                  clientDataJSON: toB64url(attResp.clientDataJSON),
+                  attestationObject: toB64url(attResp.attestationObject),
                 },
               },
             },
@@ -184,13 +187,13 @@ describe('WebAuthn (Virtual Authenticator)', () => {
                 const assertResp = assertCred.response as AuthenticatorAssertionResponse;
                 const credJSON = {
                   id: assertCred.id,
-                  rawId: toB64(assertCred.rawId),
+                  rawId: toB64url(assertCred.rawId),
                   type: assertCred.type,
                   response: {
-                    authenticatorData: toB64(assertResp.authenticatorData),
-                    clientDataJSON: toB64(assertResp.clientDataJSON),
-                    signature: toB64(assertResp.signature),
-                    userHandle: assertResp.userHandle ? toB64(assertResp.userHandle) : null,
+                    authenticatorData: toB64url(assertResp.authenticatorData),
+                    clientDataJSON: toB64url(assertResp.clientDataJSON),
+                    signature: toB64url(assertResp.signature),
+                    userHandle: assertResp.userHandle ? toB64url(assertResp.userHandle) : null,
                   },
                 };
 
