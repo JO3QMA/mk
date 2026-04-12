@@ -27,4 +27,9 @@ func TestVersion2_1(t *testing.T) {
 	assert.Equal(t, "2.1", resp["version"])
 	sw := resp["software"].(map[string]any)
 	assert.Equal(t, "misskey-go", sw["name"])
+	assert.Contains(t, sw["version"], "compatible: misskey 0.0.0")
+}
+
+func TestNodeinfoVersion(t *testing.T) {
+	assert.Equal(t, "0.0.1 (compatible: misskey 2026.3.2)", nodeinfoVersion("0.0.1", "2026.3.2"))
 }

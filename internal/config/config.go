@@ -10,6 +10,16 @@ import (
 	"github.com/spf13/viper"
 )
 
+// MkGoVersion is the misskey-go version. Override at build time via:
+//
+//	go build -ldflags "-X github.com/shiroha-a/mk/internal/config.MkGoVersion=1.0.0"
+var MkGoVersion = "0.0.1"
+
+// MisskeyVersion is the compatible Misskey version. Override at build time via:
+//
+//	go build -ldflags "-X github.com/shiroha-a/mk/internal/config.MisskeyVersion=2026.3.2"
+var MisskeyVersion = "2026.3.2"
+
 // RedisOptions represents Redis connection configuration.
 type RedisOptions struct {
 	Host     string `mapstructure:"host"`
@@ -283,7 +293,7 @@ func resolve(src *Source) (*Config, error) {
 	mediaProxySecret := deriveMediaProxySecret(src)
 
 	cfg := &Config{
-		Version:     "2026.3.2", // Misskeyバージョンと合わせる
+		Version:     MisskeyVersion,
 		URL:         parsedURL.Scheme + "://" + parsedURL.Host,
 		Port:        src.Port,
 		Socket:      src.Socket,
@@ -338,7 +348,7 @@ func resolve(src *Source) (*Config, error) {
 		ExternalMediaProxyEnabled:    externalMediaProxyEnabled,
 		MediaProxySecret:             mediaProxySecret,
 		VideoThumbnailGenerator:      strings.TrimRight(src.VideoThumbnailGenerator, "/"),
-		UserAgent:                    fmt.Sprintf("Misskey/%s (%s)", "2026.3.2", src.URL),
+		UserAgent:                    fmt.Sprintf("Misskey-Go/%s (%s)", MkGoVersion, src.URL),
 		PerChannelMaxNoteCacheCount:  perChannelMaxNoteCacheCount,
 		PerUserNotificationsMaxCount: perUserNotificationsMaxCount,
 		DeactivateAntennaThreshold:   deactivateAntennaThreshold,
