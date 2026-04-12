@@ -25,12 +25,23 @@ FROM alpine:3.21
 # wget は UDS をサポートしていないため不可。
 RUN apk add --no-cache ca-certificates tzdata curl
 
+# 非 root 専用ユーザーを作る。uid/gid 65532 は GoogleContainerTools の
+# distroless `nonroot` と同じ慣例で、複数のコンテナ間で衝突しない値。
+RUN addgroup -g 65532 -S mkgo && adduser -u 65532 -S -G mkgo -H -D mkgo
+
 WORKDIR /app
 
-COPY --from=builder /app/built/misskey /app/misskey
-COPY --from=builder /app/built/migrate /app/migrate
-COPY --from=builder /app/migration /app/migration
-COPY deploy/uds/mkgo-entrypoint.sh /entrypoint.sh
+COPY --from=builder --chown=65532:65532 /app/built/misskey /app/misskey
+COPY --from=builder --chown=65532:65532 /app/built/migrate /app/migrate
+COPY --from=builder --chown=65532:65532 /app/migration /app/migration
+COPY --chown=65532:65532 deploy/uds/mkgo-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# drive-files を named volume として bind するときに、初回は本ディレクトリの
+# 所有権を docker が引き継ぐので mkgo:mkgo にしておく。compose.uds.yaml の
+# `mkgo_files:/app/drive-files` mount でこのオーナーが volume root に伝播する。
+RUN mkdir -p /app/drive-files && chown 65532:65532 /app/drive-files
+
+USER 65532:65532
 
 ENTRYPOINT ["/entrypoint.sh"]
