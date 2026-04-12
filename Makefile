@@ -92,9 +92,18 @@ E2E_WORKDIR=/work
 e2e-submodule-init:
 	git submodule update --init --recursive third_party/misskey
 
+# 本家フロントエンドの既知バグにパッチを当てる (ビルド前に実行)。
+# 本家リポジトリには直接コミットしない — mk-go 側でのみ適用する。
+e2e-patch-frontend:
+	@echo "Applying MkModal null guard patch..."
+	@cd third_party/misskey && \
+		sed -i '/const el = content\.value\.children\[0\];/{ n; /if (el == null) return;/!s/^/\t\tif (el == null) return;\n/ }' \
+		packages/frontend/src/components/MkModal.vue
+	@echo "Patch applied."
+
 # 本家フロントエンドを Docker 内でビルドする。数分〜10 分程度かかる。
 # 成果物は third_party/misskey/packages/frontend/... 配下に出力される。
-e2e-frontend-build:
+e2e-frontend-build: e2e-patch-frontend
 	docker run --rm -v $(PWD):$(E2E_WORKDIR) -w $(E2E_WORKDIR)/third_party/misskey \
 		$(E2E_NODE_IMAGE) \
 		bash -lc "corepack enable && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile && pnpm build"
