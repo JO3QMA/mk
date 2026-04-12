@@ -20,6 +20,8 @@ make migrate-up || echo "Migration failed (may already be applied)"
 
 echo "=== Frontend build ==="
 cd /workspace/third_party/misskey
+# Corepackがバージョン不一致時にダウンロード確認を求めないようにする
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 pnpm install --frozen-lockfile
 pnpm build
 
