@@ -817,6 +817,7 @@ func (s *Server) setupRoutes() {
 	proxyService := coremediaproxy.NewService(
 		s.config.URL, s.config.UserAgent, driveStorage,
 		proxyAllowlist, s.config.MediaProxySecret,
+		s.config.AllowedPrivateNetworks,
 	)
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)
