@@ -46,33 +46,48 @@ type Image struct {
 // Person represents a user actor.
 type Person struct {
 	Object
-	Inbox             string    `json:"inbox"`
-	Outbox            string    `json:"outbox"`
-	Followers         string    `json:"followers"`
-	Following         string    `json:"following"`
-	PreferredUsername string    `json:"preferredUsername"`
-	Summary           string    `json:"summary,omitempty"`
-	URL               string    `json:"url,omitempty"`
-	Endpoints         Endpoints `json:"endpoints,omitzero"`
-	PublicKey         PublicKey `json:"publicKey"`
-	Icon              *Image    `json:"icon,omitempty"`
-	ManuallyApproves  bool      `json:"manuallyApprovesFollowers,omitempty"`
-	Discoverable      bool      `json:"discoverable,omitempty"`
+	Inbox                  string    `json:"inbox"`
+	Outbox                 string    `json:"outbox"`
+	Followers              string    `json:"followers"`
+	Following              string    `json:"following"`
+	PreferredUsername      string    `json:"preferredUsername"`
+	Summary                string    `json:"summary,omitempty"`
+	URL                    string    `json:"url,omitempty"`
+	Endpoints              Endpoints `json:"endpoints,omitzero"`
+	PublicKey              PublicKey `json:"publicKey"`
+	Icon                   *Image    `json:"icon,omitempty"`
+	Image                  *Image    `json:"image,omitempty"`
+	Attachment             []any     `json:"attachment,omitempty"`
+	Tag                    []any     `json:"tag,omitempty"`
+	Featured               string    `json:"featured,omitempty"`
+	ManuallyApproves       bool      `json:"manuallyApprovesFollowers,omitempty"`
+	Discoverable           bool      `json:"discoverable,omitempty"`
+	IsCat                  bool      `json:"isCat,omitempty"`
+	VcardBday              string    `json:"vcard:bday,omitempty"`
+	VcardAddress           string    `json:"vcard:Address,omitempty"`
+	MisskeySummary         string    `json:"_misskey_summary,omitempty"`
+	MisskeyFollowedMessage string    `json:"_misskey_followedMessage,omitempty"`
+	MovedTo                string    `json:"movedTo,omitempty"`
+	AlsoKnownAs            []string  `json:"alsoKnownAs,omitempty"`
 }
 
 // Note represents a note object (microblog post).
 type Note struct {
 	Object
-	AttributedTo string   `json:"attributedTo"`
-	Content      string   `json:"content"`
-	Source       *Source  `json:"source,omitempty"`
-	Published    string   `json:"published"`
-	To           []string `json:"to"`
-	CC           []string `json:"cc,omitempty"`
-	InReplyTo    string   `json:"inReplyTo,omitempty"`
-	Summary      string   `json:"summary,omitempty"`
-	Sensitive    bool     `json:"sensitive,omitempty"`
-	Tag          []any    `json:"tag,omitempty"`
+	AttributedTo   string   `json:"attributedTo"`
+	Content        string   `json:"content"`
+	Source         *Source  `json:"source,omitempty"`
+	Published      string   `json:"published"`
+	To             []string `json:"to"`
+	CC             []string `json:"cc,omitempty"`
+	InReplyTo      string   `json:"inReplyTo,omitempty"`
+	Summary        string   `json:"summary,omitempty"`
+	Sensitive      bool     `json:"sensitive,omitempty"`
+	Tag            []any    `json:"tag,omitempty"`
+	Attachment     []any    `json:"attachment,omitempty"`
+	MisskeyContent string   `json:"_misskey_content,omitempty"`
+	MisskeyQuote   string   `json:"_misskey_quote,omitempty"`
+	QuoteURL       string   `json:"quoteUrl,omitempty"`
 }
 
 // Mention is an ActivityStreams Mention tag used inside Note.tag to inform
@@ -96,6 +111,38 @@ func NewMention(href, name string) Mention {
 type Source struct {
 	Content   string `json:"content"`
 	MediaType string `json:"mediaType"`
+}
+
+// Document represents an attached file (image/video/audio/...) in a Note.
+type Document struct {
+	Type      string `json:"type"` // "Document"
+	MediaType string `json:"mediaType"`
+	URL       string `json:"url"`
+	Name      string `json:"name,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
+}
+
+// PropertyValue represents a profile field (schema.org PropertyValue).
+type PropertyValue struct {
+	Type  string `json:"type"` // "PropertyValue"
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// Hashtag is an ActivityStreams Hashtag tag.
+type Hashtag struct {
+	Type string `json:"type"` // "Hashtag"
+	Href string `json:"href"`
+	Name string `json:"name"` // "#tag"
+}
+
+// EmojiTag represents a toot:Emoji tag for custom emoji.
+type EmojiTag struct {
+	Type    string `json:"type"` // "Emoji"
+	Name    string `json:"name"` // ":name:"
+	Icon    Image  `json:"icon"`
+	ID      string `json:"id,omitempty"`
+	Updated string `json:"updated,omitempty"`
 }
 
 // Activity is the base type embedded by all activity types.
@@ -170,34 +217,59 @@ type Announce struct {
 	Object string `json:"object"` // target note URI
 }
 
-// AddContext attaches the standard AS+security context to any object that
-// embeds Object. 配列で持つことで複数 vocabulary を表現する。
+// MisskeyContext は Misskey/Mastodon/schema.org 拡張語彙を含むコンテキストオブジェクト。
+// TS版 contexts.ts と同等。
+var MisskeyContext = map[string]any{
+	"misskey":                  "https://misskey-hub.net/ns#",
+	"toot":                     "http://joinmastodon.org/ns#",
+	"schema":                   "http://schema.org/",
+	"vcard":                    "http://www.w3.org/2006/vcard/ns#",
+	"Key":                      SecurityContextURL + "#Key",
+	"Hashtag":                  ContextURL + "#Hashtag",
+	"sensitive":                ContextURL + "#sensitive",
+	"quoteUrl":                 "https://misskey-hub.net/ns#quoteUrl",
+	"Emoji":                    "toot:Emoji",
+	"featured":                 "toot:featured",
+	"discoverable":             "toot:discoverable",
+	"PropertyValue":            "schema:PropertyValue",
+	"value":                    "schema:value",
+	"isCat":                    "misskey:isCat",
+	"_misskey_content":         "misskey:_misskey_content",
+	"_misskey_quote":           "misskey:_misskey_quote",
+	"_misskey_reaction":        "misskey:_misskey_reaction",
+	"_misskey_votes":           "misskey:_misskey_votes",
+	"_misskey_summary":         "misskey:_misskey_summary",
+	"_misskey_followedMessage": "misskey:_misskey_followedMessage",
+}
+
+// fullContext は全AP出力で使われる完全なJSON-LDコンテキスト。
+var fullContext = []any{ContextURL, SecurityContextURL, MisskeyContext}
+
+// AddContext attaches the standard AS+security+Misskey context to any object
+// that embeds Object. 配列で持つことで複数 vocabulary を表現する。
 func AddContext(o any) {
-	type ctxSetter interface {
-		setContext(any)
-	}
 	switch v := o.(type) {
 	case *Person:
-		v.Context = []any{ContextURL, SecurityContextURL}
+		v.Context = fullContext
 	case *Note:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Create:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Follow:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Accept:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Reject:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Undo:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Delete:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Update:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Like:
-		v.Context = ContextURL
+		v.Context = fullContext
 	case *Announce:
-		v.Context = ContextURL
+		v.Context = fullContext
 	}
 }

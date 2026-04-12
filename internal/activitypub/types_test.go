@@ -31,7 +31,7 @@ func TestAddContext_Variants(t *testing.T) {
 	}
 	for _, c := range cases {
 		AddContext(c)
-		// 全て single string context (Person 以外)
+		// 全型で fullContext (AS + Security + MisskeyContext) が設定される
 		var ctx any
 		switch v := c.(type) {
 		case *Note:
@@ -55,7 +55,10 @@ func TestAddContext_Variants(t *testing.T) {
 		case *Announce:
 			ctx = v.Context
 		}
-		assert.Equal(t, ContextURL, ctx)
+		arr, ok := ctx.([]any)
+		assert.True(t, ok)
+		assert.Contains(t, arr, ContextURL)
+		assert.Contains(t, arr, SecurityContextURL)
 	}
 }
 

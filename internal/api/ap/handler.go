@@ -79,7 +79,7 @@ func (h *Handler) User(c echo.Context) error {
 	if err != nil {
 		return c.NoContent(http.StatusInternalServerError)
 	}
-	person := h.renderer.RenderPerson(bundle.User, keypair.PublicKey)
+	person := h.renderer.RenderPerson(bundle.User, bundle.Profile, keypair.PublicKey)
 	return writeActivityJSON(c, person)
 }
 
@@ -110,7 +110,7 @@ func (h *Handler) UserByAcct(c echo.Context) error {
 	if err != nil {
 		return c.NoContent(http.StatusInternalServerError)
 	}
-	person := h.renderer.RenderPerson(bundle.User, keypair.PublicKey)
+	person := h.renderer.RenderPerson(bundle.User, bundle.Profile, keypair.PublicKey)
 	return writeActivityJSON(c, person)
 }
 
@@ -259,7 +259,7 @@ func (h *Handler) resolveLocal(uri string) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return h.renderer.RenderPerson(bundle.User, keypair.PublicKey), nil
+		return h.renderer.RenderPerson(bundle.User, bundle.Profile, keypair.PublicKey), nil
 	}
 	return nil, http.ErrNotSupported
 }
