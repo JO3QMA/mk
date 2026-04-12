@@ -12,6 +12,11 @@ import (
 
 var adminUser = &model.User{ID: "admin1"}
 
+type stubIPRepo struct{}
+
+func (s *stubIPRepo) Upsert(_, _ string) error                             { return nil }
+func (s *stubIPRepo) ListByUser(_ string, _ int) ([]*model.UserIP, error) { return nil, nil }
+
 // stubEmojiImportEnqueuer records the last payload and optionally returns err.
 type stubEmojiImportEnqueuer struct {
 	lastUserID string
@@ -146,9 +151,22 @@ func TestGetTableStats(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusOK, doPost(h.GetTableStats, `{}`, adminUser).Code)
 }
-func TestGetUserIPs(t *testing.T) {
+func TestGetUserIPs_NilRepo(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusOK, doPost(h.GetUserIPs, `{}`, adminUser).Code)
+}
+
+func TestGetUserIPs_InvalidParam(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetUserIPRepo(&stubIPRepo{})
+	assert.Equal(t, http.StatusBadRequest, doPost(h.GetUserIPs, `{}`, adminUser).Code)
+}
+
+func TestGetUserIPs_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetUserIPRepo(&stubIPRepo{})
+	rec := doPost(h.GetUserIPs, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 func TestResetPasswordAdmin_Empty(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)

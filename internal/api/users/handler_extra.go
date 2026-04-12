@@ -127,7 +127,9 @@ func (h *Handler) SearchByUsernameAndHost(c echo.Context) error {
 }
 
 // UpdateMemo handles POST /api/users/update-memo.
+// memo が null / 空文字なら削除、それ以外なら upsert する。
 func (h *Handler) UpdateMemo(c echo.Context) error {
+	me := middleware.GetUser(c)
 	var req struct {
 		UserID string  `json:"userId"`
 		Memo   *string `json:"memo"`
@@ -135,7 +137,24 @@ func (h *Handler) UpdateMemo(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	// メモ機能はユーザーごとのメモテーブルが必要 (未実装、スタブ)
+
+	if h.memoRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+
+	if req.Memo == nil || *req.Memo == "" {
+		_ = h.memoRepo.Delete(me.ID, req.UserID)
+	} else {
+		memo := &model.UserMemo{
+			ID:           h.idGen.Generate(time.Now()),
+			UserID:       me.ID,
+			TargetUserID: req.UserID,
+			Memo:         *req.Memo,
+		}
+		if err := h.memoRepo.CreateOrUpdate(memo); err != nil {
+			return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

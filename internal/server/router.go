@@ -483,9 +483,14 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Signin (Phase 6)
+	userIPRepo := repository.NewUserIPRepository(s.db)
 	signinHandler := apisignin.NewHandler(userRepo)
 	if captchaSvc != nil {
 		signinHandler.SetCaptcha(captchaSvc)
+	}
+	// IP logging: meta.enableIpLogging が true のときだけ記録する。
+	if serverMeta, err := metaRepo.Fetch(); err == nil && serverMeta.EnableIPLogging {
+		signinHandler.SetIPLogger(userIPRepo, true)
 	}
 	api.POST("/signin", signinHandler.Signin)
 	api.POST("/signin-flow", signinHandler.SigninFlow)
@@ -565,6 +570,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/search-by-username-and-host", usersHandler.SearchByUsernameAndHost)
 	api.POST("/users/update-memo", usersHandler.UpdateMemo, middleware.RequireAuth())
 	usersHandler.SetAbuseRepo(repository.NewAbuseReportRepository(s.db))
+	usersHandler.SetMemoRepo(repository.NewUserMemoRepository(s.db))
 	// Phase 7.3: users/* 完全化 (実データハンドラ)
 	api.POST("/users/achievements", usersHandler.Achievements)
 	api.POST("/users/clips", usersHandler.Clips)
@@ -1003,6 +1009,7 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
 	adminHandler.SetAdminDB(s.db)
+	adminHandler.SetUserIPRepo(userIPRepo)
 	adminHandler.SetEmojiImportEnqueuer(s.queueClient)
 	if s.queueInspector != nil {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
