@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/signin"
+	"github.com/shiroha-a/mk/internal/core/captcha"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -219,4 +220,59 @@ func TestSigninFlow_NilToken(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "", resp["i"])
+}
+
+// --- CAPTCHA integration ---
+
+func TestSigninFlow_CaptchaPassesWithCorrectToken(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "capuser", "pass")
+
+	captchaSvc := captcha.NewService(&model.Meta{EnableTestcaptcha: true})
+	h.SetCaptcha(captchaSvc)
+
+	rec := doPost(h.SigninFlow, `{"username":"capuser","password":"pass","testcaptcha-response":"testcaptcha-passed"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["finished"])
+}
+
+func TestSigninFlow_CaptchaBlocksMissingToken(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "capuser2", "pass")
+
+	captchaSvc := captcha.NewService(&model.Meta{EnableTestcaptcha: true})
+	h.SetCaptcha(captchaSvc)
+
+	// testcaptcha-response を送らないので CAPTCHA 検証失敗。
+	rec := doPost(h.SigninFlow, `{"username":"capuser2","password":"pass"}`)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestSigninFlow_CaptchaSkippedFor2FAUsers(t *testing.T) {
+	h, repo := newTestHandler(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hashStr := string(hash)
+	token := "tok"
+	repo.Users["u2fa"] = &model.User{
+		ID: "u2fa", Username: "tfa", UsernameLower: "tfa", Token: &token,
+	}
+	repo.Profiles["u2fa"] = &model.UserProfile{
+		UserID:           "u2fa",
+		Password:         &hashStr,
+		TwoFactorEnabled: true,
+	}
+
+	captchaSvc := captcha.NewService(&model.Meta{EnableTestcaptcha: true})
+	h.SetCaptcha(captchaSvc)
+
+	// 2FA 有効ユーザーは CAPTCHA をスキップして "totp" ステップへ進む。
+	rec := doPost(h.SigninFlow, `{"username":"tfa","password":"pass"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "totp", resp["next"])
 }
