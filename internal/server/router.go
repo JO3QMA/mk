@@ -41,6 +41,7 @@ import (
 	apireversi "github.com/shiroha-a/mk/internal/api/reversi"
 	apiroles "github.com/shiroha-a/mk/internal/api/roles"
 	apisignin "github.com/shiroha-a/mk/internal/api/signin"
+	apisignup "github.com/shiroha-a/mk/internal/api/signup"
 	"github.com/shiroha-a/mk/internal/api/streaming"
 	apisw "github.com/shiroha-a/mk/internal/api/sw"
 	apitest "github.com/shiroha-a/mk/internal/api/test"
@@ -93,6 +94,7 @@ import (
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/shiroha-a/mk/internal/stream/channels"
+	"gorm.io/gorm"
 	"log/slog"
 )
 
@@ -550,6 +552,14 @@ func (s *Server) setupRoutes() {
 	if serverMeta, err := metaRepo.Fetch(); err == nil {
 		captchaSvc = corecaptcha.NewService(serverMeta)
 	}
+
+	// Signup (public)
+	signupHandler := apisignup.NewHandler(signupService, metaRepo, idGen)
+	if captchaSvc != nil {
+		signupHandler.SetCaptcha(captchaSvc)
+	}
+	signupHandler.SetTicketStore(&gormTicketStore{db: s.db})
+	api.POST("/signup", signupHandler.Signup)
 
 	// Signin (Phase 6)
 	userIPRepo := repository.NewUserIPRepository(s.db)
@@ -1340,4 +1350,25 @@ func (s *Server) setupRoutes() {
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
+}
+
+// gormTicketStore implements apisignup.TicketStore using GORM.
+type gormTicketStore struct {
+	db *gorm.DB
+}
+
+func (s *gormTicketStore) FindByCode(code string) (*model.RegistrationTicket, error) {
+	var ticket model.RegistrationTicket
+	if err := s.db.Where(`"code" = ?`, code).First(&ticket).Error; err != nil {
+		return nil, err
+	}
+	return &ticket, nil
+}
+
+func (s *gormTicketStore) MarkUsed(ticketID, userID string) error {
+	now := time.Now()
+	return s.db.Model(&model.RegistrationTicket{}).Where(`"id" = ?`, ticketID).Updates(map[string]any{
+		"usedById": userID,
+		"usedAt":   now,
+	}).Error
 }
