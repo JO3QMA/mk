@@ -99,9 +99,39 @@ docker compose -f compose.uds.yaml logs -f nginx
 
 ## トラブルシューティング
 
+### `third_party/misskey` 自体が空 (submodule 未初期化)
+
+`compose.uds.yaml` は `./third_party/misskey/built` と `./third_party/misskey/packages/frontend/assets` を read-only で bind mount しています。submodule をまだ取得していない場合、このディレクトリが空になっていて mount source が存在せず `uds-up` がエラーで止まります。
+
+```sh
+git submodule update --init --recursive third_party/misskey
+make uds-frontend-build
+```
+
+submodule のチェックアウト先 (tag `2026.3.2`) は本リポジトリで pin 済みです。
+
 ### `third_party/misskey/built` が無い
 
 `make uds-frontend-build` を先に実行してください。bind mount の source が存在しないと `uds-up` が失敗します。
+
+### マイグレーションが失敗してコンテナが crash loop する
+
+`mkgo-entrypoint.sh` は `set -e` で migrate を実行してから mk-go server を起動します。migrate が失敗するとそのまま container exit し、`restart: unless-stopped` のため compose が再起動 → 同じエラーで再度 exit、というループに入ります。
+
+検出方法:
+
+```sh
+make uds-logs                                            # 全サービスのログを follow
+docker compose -f compose.uds.yaml logs mkgo | tail -50  # mkgo だけ、過去ログ含めて
+```
+
+`[mkgo-entrypoint] running migrations...` の直後に migrate がエラーを吐いていれば該当します。
+
+対応:
+
+- スキーマが壊れている場合は手動で `psql` で問題を解消する (`./built/migrate -direction down -steps 1` で直前の migration を巻き戻し、修正後に `up` し直す)
+- volume 自体がおかしい場合は `make uds-down-v` で named volume を消して綺麗な状態から再構築する (**DB データは全部消える**ので注意)
+- 開発中の migration 自体に問題があれば、まず `go run ./cmd/migrate -direction down -steps 1` で 1 段戻してから修正する
 
 ### `/healthz` が 404 になる
 
