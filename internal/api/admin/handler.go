@@ -27,6 +27,7 @@ type Handler struct {
 	emojiRepo      repository.EmojiRepository
 	driveFileRepo  repository.DriveFileRepository
 	adminDB        *gorm.DB
+	userIPRepo     repository.UserIPRepository
 	queueInspector QueueInspector
 	emojiEnqueuer  EmojiImportEnqueuer
 	idGen          id.Generator
@@ -74,6 +75,11 @@ func (h *Handler) SetDriveFileRepo(r repository.DriveFileRepository) {
 // SetAdminDB attaches a DB connection for ad/invite/relay operations.
 func (h *Handler) SetAdminDB(db *gorm.DB) {
 	h.adminDB = db
+}
+
+// SetUserIPRepo attaches a UserIPRepository for admin/get-user-ips.
+func (h *Handler) SetUserIPRepo(r repository.UserIPRepository) {
+	h.userIPRepo = r
 }
 
 // SetQueueInspector attaches a queue inspector for admin queue endpoints.
