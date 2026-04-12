@@ -1,7 +1,9 @@
 package federation_test
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -390,6 +392,92 @@ func TestIngestNote_SensitiveWithoutSummary(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got.CW)
 	assert.Equal(t, "", *got.CW)
+}
+
+// --- IngestNote visibility (ported from nekonoverse fetch_remote_note) --------
+
+// makeNoteJSON builds a minimal AP Note with the given to/cc audience.
+func makeNoteJSON(noteID string, to, cc []string) []byte {
+	toJSON, _ := json.Marshal(to)
+	ccJSON, _ := json.Marshal(cc)
+	return []byte(fmt.Sprintf(`{
+		"id": "https://remote.example/notes/%s",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "visibility test",
+		"to": %s,
+		"cc": %s
+	}`, noteID, toJSON, ccJSON))
+}
+
+func TestIngestNote_PublicVisibility(t *testing.T) {
+	// to=[Public], cc=[followers] → public
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := makeNoteJSON("vis-public", []string{"https://www.w3.org/ns/activitystreams#Public"}, []string{"https://remote.example/users/alice/followers"})
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, got.Visibility)
+}
+
+func TestIngestNote_HomeVisibility(t *testing.T) {
+	// to=[followers], cc=[Public] → home
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := makeNoteJSON("vis-home", []string{"https://remote.example/users/alice/followers"}, []string{"https://www.w3.org/ns/activitystreams#Public"})
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityHome, got.Visibility)
+}
+
+func TestIngestNote_FollowersVisibility(t *testing.T) {
+	// to=[followers], cc=[] → followers
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := makeNoteJSON("vis-followers", []string{"https://remote.example/users/alice/followers"}, []string{})
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityFollowers, got.Visibility)
+}
+
+func TestIngestNote_DirectVisibility(t *testing.T) {
+	// to=[specific user], cc=[] → specified
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := makeNoteJSON("vis-direct", []string{"https://remote.example/users/bob"}, []string{})
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilitySpecified, got.Visibility)
+}
+
+func TestIngestNote_EmptyAudienceVisibility(t *testing.T) {
+	// to=[], cc=[] → specified (fallback)
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := makeNoteJSON("vis-empty", []string{}, []string{})
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilitySpecified, got.Visibility)
 }
 
 // --- UpdateRemoteNote (Step J) -----------------------------------------------

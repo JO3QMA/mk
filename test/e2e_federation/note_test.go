@@ -81,6 +81,66 @@ func TestFederation_NoteVisibility(t *testing.T) {
 	})
 }
 
+func TestFederation_FollowersOnlyNoteNotResolvable(t *testing.T) {
+	resetDB(t, serverA)
+	resetDB(t, serverB)
+
+	alice := signup(t, serverA, "alice", nil)
+	bob := signup(t, serverB, "bob", nil)
+
+	noteResult := srvAPICall(t, serverA, "notes/create", map[string]any{
+		"i":          alice.Token,
+		"text":       "followers only",
+		"visibility": "followers",
+	})
+	createdNote := noteResult["createdNote"].(map[string]any)
+	noteID := createdNote["id"].(string)
+
+	// followers-only ノートはリモートから解決不可
+	uri := noteURI(serverA, noteID)
+	resp := srvAPIPost(t, serverB, "ap/show", map[string]any{
+		"i":   bob.Token,
+		"uri": uri,
+	})
+	defer resp.Body.Close()
+	// GET /notes/:id が 404 を返すため ap/show はエラーまたは Note 以外を返す
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		result := readJSON(t, resp)
+		// 万が一成功しても type が Note ではないことを確認
+		assert.NotEqual(t, "Note", result["type"],
+			"followers-only note should not be resolvable as Note from remote")
+	}
+}
+
+func TestFederation_SpecifiedNoteNotResolvable(t *testing.T) {
+	resetDB(t, serverA)
+	resetDB(t, serverB)
+
+	alice := signup(t, serverA, "alice", nil)
+	bob := signup(t, serverB, "bob", nil)
+
+	noteResult := srvAPICall(t, serverA, "notes/create", map[string]any{
+		"i":          alice.Token,
+		"text":       "DM content",
+		"visibility": "specified",
+	})
+	createdNote := noteResult["createdNote"].(map[string]any)
+	noteID := createdNote["id"].(string)
+
+	// specified (DM) ノートはリモートから解決不可
+	uri := noteURI(serverA, noteID)
+	resp := srvAPIPost(t, serverB, "ap/show", map[string]any{
+		"i":   bob.Token,
+		"uri": uri,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		result := readJSON(t, resp)
+		assert.NotEqual(t, "Note", result["type"],
+			"specified note should not be resolvable as Note from remote")
+	}
+}
+
 func TestFederation_NoteContentConsistency(t *testing.T) {
 	resetDB(t, serverA)
 	resetDB(t, serverB)

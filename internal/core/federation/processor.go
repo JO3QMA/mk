@@ -74,6 +74,10 @@ type genericActivity struct {
 	// To は reversi Invite の配送先を読むために保持する。string と []string
 	// 両方を受け入れるため RawMessage で保持し、必要な時点で解釈する。
 	To json.RawMessage `json:"to"`
+	// raw はアクテ���ビティ全体の生JSON。handleLike 等で content や
+	// _misskey_reaction な�� genericActivity に含まれないフィールドを
+	// 読むために保持する。
+	raw json.RawMessage
 }
 
 // Process consumes a JSON activity body received in an inbox. Returns nil if
@@ -96,6 +100,7 @@ func (p *Processor) Process(body []byte) error {
 	// Unmarshal は構文エラーで失敗しないことが保証される。
 	var act genericActivity
 	_ = json.Unmarshal(body, &act)
+	act.raw = body
 	if act.Actor == "" {
 		return errors.New("activity missing actor")
 	}
@@ -298,11 +303,13 @@ func (p *Processor) handleLike(act genericActivity) error {
 	if err != nil {
 		return err
 	}
+	// アクティビティ全体を Like として解釈し content/_misskey_reaction を取得する。
+	// object は URI 文字列の場合とネストされた Like オブジェクトの場合がある。
 	var like activitypub.Like
-	if err := json.Unmarshal(act.Object, &like); err == nil && like.Object != "" {
-		// 完全な Like オブジェクトを object として持つケース
-	} else {
-		// object が単なる URI 文字列のケース
+	_ = json.Unmarshal(act.raw, &like)
+	if like.Object == "" {
+		// object が文字列の場合: Activity.Object は json:"-" でスキップされるため
+		// act.Object (RawMessage) から直接読む
 		uri, rerr := readObjectString(act.Object)
 		if rerr != nil {
 			return rerr
@@ -314,6 +321,9 @@ func (p *Processor) handleLike(act genericActivity) error {
 		return err
 	}
 	reaction := like.Content
+	if like.MisskeyReaction != "" {
+		reaction = like.MisskeyReaction
+	}
 	if _, err := p.reactionService.Create(reactor, target.ID, reaction); err != nil {
 		if errors.Is(err, corereaction.ErrAlreadyReacted) {
 			return nil

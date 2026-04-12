@@ -238,8 +238,9 @@ func (r *Renderer) RenderLike(reactor *model.User, targetURI string, reaction st
 			},
 			Actor: r.urls.UserURI(reactor.ID),
 		},
-		Object:  targetURI,
-		Content: reaction,
+		Object:          targetURI,
+		Content:         reaction,
+		MisskeyReaction: reaction,
 	}
 	AddContext(l)
 	return l

@@ -265,7 +265,17 @@ func TestRenderer_RenderLike(t *testing.T) {
 	assert.Equal(t, "https://example.com/users/alice", l.Actor)
 	assert.Equal(t, "https://remote.example/notes/n1", l.Object)
 	assert.Equal(t, "🎉", l.Content)
+	assert.Equal(t, "🎉", l.MisskeyReaction)
 	assert.Equal(t, "https://example.com/likes/l1", l.ID)
+}
+
+func TestRenderer_RenderLike_MisskeyReactionField(t *testing.T) {
+	r := newRenderer()
+	reactor := &model.User{ID: "alice"}
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", "⭐", "https://example.com/likes/l2")
+	// content と _misskey_reaction が両方セットされること
+	assert.Equal(t, "⭐", l.Content)
+	assert.Equal(t, "⭐", l.MisskeyReaction)
 }
 
 func TestRenderer_RenderUndoLike(t *testing.T) {
