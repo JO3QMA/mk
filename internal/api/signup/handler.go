@@ -28,6 +28,12 @@ type Handler struct {
 	idGen         id.Generator
 	captchaSvc    *captcha.Service // optional
 	ticketStore   TicketStore      // optional, invitation code検証用
+	testMode      bool             // true のとき disableRegistration / captcha をバイパス (本家 TS と同じ)
+}
+
+// SetTestMode enables test-mode bypass (本家 `process.env.NODE_ENV !== 'test'` 相当).
+func (h *Handler) SetTestMode(v bool) {
+	h.testMode = v
 }
 
 // NewHandler creates a new signup Handler.
@@ -69,14 +75,14 @@ func (h *Handler) Signup(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	// メール認証フローは未実装
-	if meta.EmailRequiredForSignup {
+	// メール認証フローは未実装 (テストモードではスキップ)
+	if !h.testMode && meta.EmailRequiredForSignup {
 		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Email-required signup is not yet supported.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
-	// 登録無効時はinvitation code必須
+	// 登録無効時はinvitation code必須 (テストモードではバイパス — 本家 TS 互換)
 	var ticket *model.RegistrationTicket
-	if meta.DisableRegistration {
+	if !h.testMode && meta.DisableRegistration {
 		t, vErr := h.validateInvitationCode(req.InvitationCode)
 		if vErr != nil {
 			return c.JSON(http.StatusBadRequest, errResp("INVITATION_CODE_INVALID", "Invalid invitation code.", "11e71a03-43c4-4a99-92cf-bb7e2c581998"))
@@ -84,8 +90,8 @@ func (h *Handler) Signup(c echo.Context) error {
 		ticket = t
 	}
 
-	// CAPTCHA検証
-	if h.captchaSvc != nil {
+	// CAPTCHA検証 (テストモードではスキップ)
+	if !h.testMode && h.captchaSvc != nil {
 		tokens := captcha.CaptchaTokens{
 			Hcaptcha:    req.HcaptchaResponse,
 			Recaptcha:   req.RecaptchaResponse,
