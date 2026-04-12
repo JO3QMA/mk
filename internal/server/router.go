@@ -588,6 +588,7 @@ func (s *Server) setupRoutes() {
 		signupHandler.SetCaptcha(captchaSvc)
 	}
 	signupHandler.SetTicketStore(&gormTicketStore{db: s.db})
+	signupHandler.SetTestMode(s.config.TestMode)
 	api.POST("/signup", signupHandler.Signup)
 
 	// Signin (Phase 6)
