@@ -94,7 +94,7 @@ func (h *Handler) Meta(c echo.Context) error {
 		"enableUrlPreview":             false,
 		"ads":                          h.serializeActiveAds(),
 		"notesPerOneAd":                m.NotesPerOneAd,
-		"mediaProxy":                   "",
+		"mediaProxy":                   h.config.MediaProxy,
 		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
 		"requireSetup":                 false,
 		"singleUserMode":               m.SingleUserMode,

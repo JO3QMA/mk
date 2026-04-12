@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -95,6 +96,7 @@ type Source struct {
 	InboxJobMaxAttempts        *int `mapstructure:"inboxJobMaxAttempts"`
 
 	MediaProxy              string          `mapstructure:"mediaProxy"`
+	MediaProxySecret        string          `mapstructure:"mediaProxySecret"`
 	VideoThumbnailGenerator string          `mapstructure:"videoThumbnailGenerator"`
 	Logging                 *LoggingOptions `mapstructure:"logging"`
 
@@ -168,6 +170,7 @@ type Config struct {
 
 	MediaProxy                   string
 	ExternalMediaProxyEnabled    bool
+	MediaProxySecret             []byte
 	VideoThumbnailGenerator      string
 	UserAgent                    string
 	PerChannelMaxNoteCacheCount  int
@@ -222,6 +225,7 @@ func bindEnvKeys(v *viper.Viper) {
 		"redisForTimelines.host", "redisForTimelines.port", "redisForTimelines.pass",
 		"redisForReactions.host", "redisForReactions.port", "redisForReactions.pass",
 		"id", "maxFileSize",
+		"mediaProxySecret",
 		"testMode",
 	}
 	for _, k := range keys {
@@ -275,6 +279,8 @@ func resolve(src *Source) (*Config, error) {
 		}
 		mediaProxy = mp
 	}
+
+	mediaProxySecret := deriveMediaProxySecret(src)
 
 	cfg := &Config{
 		Version:     "2026.3.2", // Misskeyバージョンと合わせる
@@ -330,6 +336,7 @@ func resolve(src *Source) (*Config, error) {
 
 		MediaProxy:                   mediaProxy,
 		ExternalMediaProxyEnabled:    externalMediaProxyEnabled,
+		MediaProxySecret:             mediaProxySecret,
 		VideoThumbnailGenerator:      strings.TrimRight(src.VideoThumbnailGenerator, "/"),
 		UserAgent:                    fmt.Sprintf("Misskey/%s (%s)", "2026.3.2", src.URL),
 		PerChannelMaxNoteCacheCount:  perChannelMaxNoteCacheCount,
@@ -363,6 +370,16 @@ func resolveRedis(opts RedisOptions, host string) RedisOptions {
 		opts.Prefix = host
 	}
 	return opts
+}
+
+// deriveMediaProxySecret returns a secret for HMAC-signed media proxy URLs.
+// 設定にsecretがあればそれを使用、なければインスタンスURL固有のキーを自動生成する。
+func deriveMediaProxySecret(src *Source) []byte {
+	if src.MediaProxySecret != "" {
+		return []byte(src.MediaProxySecret)
+	}
+	h := sha256.Sum256([]byte(src.URL + "|mediaproxy"))
+	return h[:]
 }
 
 func resolveRedisOrDefault(opts *RedisOptions, fallback RedisOptions, host string) RedisOptions {
