@@ -5,6 +5,7 @@ package queue
 
 import (
 	"context"
+	"time"
 
 	"github.com/hibiken/asynq"
 )
@@ -104,6 +105,18 @@ func (c *Client) EnqueueSystemWebhook(ctx context.Context, payload WebhookPayloa
 	_, err := c.inner.EnqueueContext(ctx, task,
 		asynq.Queue(WebhookQueueName),
 		asynq.MaxRetry(4),
+	)
+	return err
+}
+
+// EnqueueCleanRemoteNotes puts a remote notes cleaning task on the queue.
+// ペイロードなし (processor が meta から設定を読む)。重複排除のため UniqueFor を設定。
+func (c *Client) EnqueueCleanRemoteNotes() error {
+	task := asynq.NewTask(TaskTypeCleanRemoteNotes, nil)
+	_, err := c.inner.Enqueue(task,
+		asynq.Queue(QueueName),
+		asynq.MaxRetry(0),
+		asynq.Unique(6*time.Hour),
 	)
 	return err
 }
