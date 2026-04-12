@@ -153,6 +153,9 @@ func (s *Server) setupRoutes() {
 	fanoutTimelineService := coretimeline.NewFanoutTimelineService(s.redis.Timelines, idGen)
 	timelineService := coretimeline.NewService(fanoutTimelineService, noteRepo, followingRepo)
 	timelineFanoutHook := coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo)
+	// Phase DB-compat (#51): meta から timeline cache cap を動的に読む。
+	// 4 つのカラム (perLocal / perRemote / perHome / perList) が反映される。
+	timelineFanoutHook.SetCacheLimitsProvider(coretimeline.NewMetaRepoCacheLimits(metaRepo))
 	noteCreateService.SetFanoutHook(timelineFanoutHook)
 
 	// Channels (Phase 4.2)
