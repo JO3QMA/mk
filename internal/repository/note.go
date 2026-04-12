@@ -32,6 +32,9 @@ type NoteRepository interface {
 	ListHomeTimeline(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
 	ListGlobalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
+	// DeleteExpiredRemoteNotes deletes remote notes older than expiryDays
+	// in batches of batchSize. Returns the total count of deleted notes.
+	DeleteExpiredRemoteNotes(expiryDays, batchSize int) (int64, error)
 }
 
 type noteRepository struct {
@@ -400,4 +403,31 @@ func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string) 
 		return nil, err
 	}
 	return notes, nil
+}
+
+// DeleteExpiredRemoteNotes はリモート���ート (userHost IS NOT NULL) のうち
+// expiryDays より前に作���されたものを batchSize 件ずつ削除する。
+// ON DELETE CASCADE が reactions / replies 等に効く前提。
+func (r *noteRepository) DeleteExpiredRemoteNotes(expiryDays, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	var total int64
+	for {
+		res := r.db.Exec(`
+			DELETE FROM "note" WHERE id IN (
+				SELECT id FROM "note"
+				WHERE "userHost" IS NOT NULL
+				  AND "createdAt" < NOW() - INTERVAL '1 day' * ?
+				LIMIT ?
+			)`, expiryDays, batchSize)
+		if res.Error != nil {
+			return total, res.Error
+		}
+		total += res.RowsAffected
+		if res.RowsAffected < int64(batchSize) {
+			break
+		}
+	}
+	return total, nil
 }

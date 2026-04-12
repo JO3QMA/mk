@@ -29,6 +29,10 @@ const TaskTypeUserWebhook = "webhook:user"
 // TaskTypeSystemWebhook is the asynq task type for system webhook delivery jobs.
 const TaskTypeSystemWebhook = "webhook:system"
 
+// TaskTypeCleanRemoteNotes is the asynq task type for the periodic remote
+// notes cleaning job. ペイロードなし (meta から設定を読む)。
+const TaskTypeCleanRemoteNotes = "maintenance:cleanRemoteNotes"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {

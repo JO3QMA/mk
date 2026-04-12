@@ -328,6 +328,28 @@ func (s *Server) setupRoutes() {
 	deliverProcessor.SetResponseHook(instanceService)
 	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 
+	// Remote notes cleaning (issue #46)
+	if cleanMeta, err := metaRepo.Fetch(); err == nil {
+		cleanCfg := processors.CleanRemoteNotesConfig{
+			Enabled:              cleanMeta.EnableRemoteNotesCleaning,
+			ExpiryDays:           cleanMeta.RemoteNotesCleaningExpiryDaysForEachNotes,
+			MaxProcessingMinutes: cleanMeta.RemoteNotesCleaningMaxProcessingDurationInMinutes,
+		}
+		cleanProcessor := processors.NewCleanRemoteNotesProcessor(noteRepo, cleanCfg)
+		s.queueServer.Handle(queue.TaskTypeCleanRemoteNotes, cleanProcessor.Handle)
+		// 6時間ごとに cleaning job をエンキューする。
+		if cleanCfg.Enabled {
+			go func() {
+				ticker := time.NewTicker(6 * time.Hour)
+				defer ticker.Stop()
+				_ = s.queueClient.EnqueueCleanRemoteNotes()
+				for range ticker.C {
+					_ = s.queueClient.EnqueueCleanRemoteNotes()
+				}
+			}()
+		}
+	}
+
 	// Charts (Phase 4 Step Q / 4.7) — 12 chart engines + management
 	// service + hook adapter. The hooks must be wired before any
 	// service that consumes them is invoked, so we construct the

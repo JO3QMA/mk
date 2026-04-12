@@ -483,6 +483,7 @@ func (f *failingNoteRepo) ListLocalTimeline(_ int, _, _ string) ([]*model.Note, 
 func (f *failingNoteRepo) ListGlobalTimeline(_ int, _, _ string) ([]*model.Note, error) {
 	return nil, nil
 }
+func (f *failingNoteRepo) DeleteExpiredRemoteNotes(_, _ int) (int64, error) { return 0, nil }
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct {

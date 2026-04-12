@@ -715,6 +715,10 @@ func (m *MockNoteRepository) ListGlobalTimeline(limit int, _, _ string) ([]*mode
 	return m.listPublic(limit)
 }
 
+func (m *MockNoteRepository) DeleteExpiredRemoteNotes(_, _ int) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockNoteRepository) listPublic(limit int) ([]*model.Note, error) {
 	var result []*model.Note
 	for _, n := range m.Notes {
