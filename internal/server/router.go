@@ -930,10 +930,12 @@ func (s *Server) setupRoutes() {
 	s.echo.GET("/@:acct", apHandler.UserByAcct)
 
 	// Discovery endpoints
-	wellknownHandler := wellknown.NewHandler(apURLs, userService, s.config.Host)
+	wellknownHandler := wellknown.NewHandler(apURLs, userService, s.config.Host, s.config.URL)
 	s.echo.GET("/.well-known/webfinger", wellknownHandler.Webfinger)
 	s.echo.GET("/.well-known/host-meta", wellknownHandler.HostMeta)
+	s.echo.GET("/.well-known/host-meta.json", wellknownHandler.HostMetaJSON)
 	s.echo.GET("/.well-known/nodeinfo", wellknownHandler.NodeInfoDiscovery)
+	s.echo.GET("/.well-known/oauth-authorization-server", wellknownHandler.OAuthAuthorizationServer)
 
 	nodeinfoHandler := nodeinfo.NewHandler(s.config)
 	s.echo.GET("/nodeinfo/2.1", nodeinfoHandler.Version2_1)
