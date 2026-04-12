@@ -182,39 +182,89 @@ func detectClientEntry() string {
 }
 
 // buildMetaJSON constructs the /api/meta equivalent JSON for inline embedding.
-// meta handler と同じフィールドを返す。フロントエンドはこのJSONを先に読んで
-// /api/meta の呼び出しを省略する。
+// /api/meta ハンドラ (meta/handler.go) と完全に同じフィールドを返す。
+// フロントエンドはこのJSONを先に読んで /api/meta の呼び出しを省略する。
 func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
+	// mascotImageUrl フォールバック
+	mascot := "/assets/ai.png"
+	if m.MascotImageURL != nil && *m.MascotImageURL != "" {
+		mascot = *m.MascotImageURL
+	}
+	// translatorAvailable
+	translatorAvailable := m.DeeplAuthKey != nil && *m.DeeplAuthKey != ""
+
 	resp := map[string]any{
-		"maintainerName": m.MaintainerName, "maintainerEmail": m.MaintainerEmail,
-		"version": cfg.Version, "name": m.Name, "shortName": m.ShortName,
-		"uri": cfg.URL, "description": m.Description, "langs": m.Langs,
-		"disableRegistration":    m.DisableRegistration,
-		"emailRequiredForSignup": m.EmailRequiredForSignup,
-		"enableHcaptcha":         m.EnableHcaptcha, "hcaptchaSiteKey": m.HcaptchaSiteKey,
-		"enableRecaptcha": m.EnableRecaptcha, "recaptchaSiteKey": m.RecaptchaSiteKey,
-		"enableTurnstile": m.EnableTurnstile, "turnstileSiteKey": m.TurnstileSiteKey,
-		"themeColor": m.ThemeColor, "bannerUrl": m.BannerURL,
-		"backgroundImageUrl": m.BackgroundImageURL,
-		"logoImageUrl":       m.LogoImageURL, "iconUrl": m.IconURL,
-		"cacheRemoteFiles":    m.CacheRemoteFiles,
-		"enableServiceWorker": m.EnableServiceWorker,
-		"swPublickey":         m.SwPublicKey, "serverRules": m.ServerRules,
-		"maxNoteTextLength": 3000,
-		"tosUrl":            m.TermsOfServiceURL, "repositoryUrl": m.RepositoryURL,
-		"feedbackUrl": m.FeedbackURL, "impressumUrl": m.ImpressumURL,
-		"privacyPolicyUrl":    m.PrivacyPolicyURL,
-		"federation":          m.Federation,
-		"translatorAvailable": false, "enableEmail": m.EnableEmail,
-		"ads": []any{}, "notesPerOneAd": 0,
-		"cacheRemoteSensitiveFiles": m.CacheRemoteSensitiveFiles,
-		"requireSetup":              m.RootUserID == nil,
+		"maintainerName":               m.MaintainerName,
+		"maintainerEmail":              m.MaintainerEmail,
+		"version":                      cfg.Version,
+		"name":                         m.Name,
+		"shortName":                    m.ShortName,
+		"uri":                          cfg.URL,
+		"description":                  m.Description,
+		"langs":                        m.Langs,
+		"disableRegistration":          m.DisableRegistration,
+		"emailRequiredForSignup":       m.EmailRequiredForSignup,
+		"enableHcaptcha":               m.EnableHcaptcha,
+		"hcaptchaSiteKey":              m.HcaptchaSiteKey,
+		"enableRecaptcha":              m.EnableRecaptcha,
+		"recaptchaSiteKey":             m.RecaptchaSiteKey,
+		"enableTurnstile":              m.EnableTurnstile,
+		"turnstileSiteKey":             m.TurnstileSiteKey,
+		"themeColor":                   m.ThemeColor,
+		"bannerUrl":                    m.BannerURL,
+		"backgroundImageUrl":           m.BackgroundImageURL,
+		"logoImageUrl":                 m.LogoImageURL,
+		"iconUrl":                      m.IconURL,
+		"cacheRemoteFiles":             m.CacheRemoteFiles,
+		"enableServiceWorker":          m.EnableServiceWorker,
+		"swPublickey":                  m.SwPublicKey,
+		"serverRules":                  m.ServerRules,
+		"maxNoteTextLength":            3000,
+		"tosUrl":                       m.TermsOfServiceURL,
+		"repositoryUrl":                m.RepositoryURL,
+		"feedbackUrl":                  m.FeedbackURL,
+		"impressumUrl":                 m.ImpressumURL,
+		"privacyPolicyUrl":             m.PrivacyPolicyURL,
+		"inquiryUrl":                   m.InquiryURL,
+		"federation":                   m.Federation,
+		"defaultLightTheme":            m.DefaultLightTheme,
+		"defaultDarkTheme":             m.DefaultDarkTheme,
+		"serverErrorImageUrl":          m.ServerErrorImageURL,
+		"notFoundImageUrl":             m.NotFoundImageURL,
+		"infoImageUrl":                 m.InfoImageURL,
+		"app192IconUrl":                m.App192IconURL,
+		"app512IconUrl":                m.App512IconURL,
+		"mascotImageUrl":               mascot,
+		"translatorAvailable":          translatorAvailable,
+		"enableEmail":                  m.EnableEmail,
+		"enableUrlPreview":             m.URLPreviewEnabled,
+		"ads":                          []any{},
+		"notesPerOneAd":                m.NotesPerOneAd,
+		"mediaProxy":                   cfg.MediaProxy,
+		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
+		"requireSetup":                 m.RootUserID == nil,
+		"singleUserMode":               m.SingleUserMode,
+		"providesTarball":              false,
+		"maxFileSize":                  cfg.MaxFileSize,
+		"proxyAccountName":             nil,
+		"noteSearchableScope":          "local",
+		"enableMcaptcha":               m.EnableMcaptcha,
+		"mcaptchaSiteKey":              m.McaptchaSiteKey,
+		"mcaptchaInstanceUrl":          m.McaptchaInstanceURL,
+		"enableTestcaptcha":            m.EnableTestcaptcha,
+		"sentryForFrontend":            nil,
+		"googleAnalyticsMeasurementId": m.GoogleAnalyticsMeasurementID,
+		"clientOptions":                clientOptionsJSON(m.ClientOptions),
+		"policies":                     defaultMetaPolicies(),
 		"features": map[string]any{
 			"registration":           !m.DisableRegistration,
 			"emailRequiredForSignup": m.EmailRequiredForSignup,
-			"hcaptcha":               m.EnableHcaptcha, "recaptcha": m.EnableRecaptcha,
-			"turnstile": m.EnableTurnstile, "objectStorage": m.UseObjectStorage,
-			"serviceWorker": m.EnableServiceWorker, "miauth": true,
+			"hcaptcha":               m.EnableHcaptcha,
+			"recaptcha":              m.EnableRecaptcha,
+			"turnstile":              m.EnableTurnstile,
+			"objectStorage":          m.UseObjectStorage,
+			"serviceWorker":          m.EnableServiceWorker,
+			"miauth":                 true,
 		},
 	}
 	data, err := json.Marshal(resp)
@@ -222,6 +272,39 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+// clientOptionsJSON normalizes a jsonb byte slice into map[string]any.
+func clientOptionsJSON(raw []byte) any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+// defaultMetaPolicies returns the Misskey default policies for the inline meta.
+func defaultMetaPolicies() map[string]any {
+	return map[string]any{
+		"gtlAvailable": true, "ltlAvailable": true,
+		"canPublicNote": true, "mentionLimit": 20,
+		"canInvite": false, "inviteLimit": 0, "inviteLimitCycle": 10080,
+		"inviteExpirationTime": 0, "canManageCustomEmojis": false,
+		"canManageAvatarDecorations": false, "canSearchNotes": false,
+		"canSearchUsers": true, "canUseTranslator": true,
+		"canHideAds": false, "driveCapacityMb": 100, "maxFileSizeMb": 30,
+		"alwaysMarkNsfw": false, "canUpdateBioMedia": true,
+		"pinLimit": 5, "antennaLimit": 5, "wordMuteLimit": 200,
+		"webhookLimit": 3, "clipLimit": 10, "noteEachClipsLimit": 200,
+		"userListLimit": 10, "userEachUserListsLimit": 50,
+		"rateLimitFactor": 1, "avatarDecorationLimit": 1,
+		"canImportAntennas": false, "canImportBlocking": false,
+		"canImportFollowing": false, "canImportMuting": false,
+		"canImportUserLists": false, "chatAvailability": "available",
+	}
 }
 
 // manifestJSON generates a PWA manifest.json response.
