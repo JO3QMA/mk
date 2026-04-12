@@ -97,6 +97,17 @@ type Service struct {
 	federationHook   FederationHook
 	chartHook        ChartHook
 	webhookHook      WebhookHook
+	countWriter      ReactionCountWriter
+}
+
+// SetCountWriter replaces the default direct writer with a buffered one.
+func (s *Service) SetCountWriter(w ReactionCountWriter) {
+	s.countWriter = w
+}
+
+// CountWriter returns the active ReactionCountWriter (for read merge).
+func (s *Service) CountWriter() ReactionCountWriter {
+	return s.countWriter
 }
 
 // NewService constructs a new ReactionService.
@@ -113,6 +124,7 @@ func NewService(
 		emojiRepo:     emojiRepo,
 		followingRepo: followingRepo,
 		idGen:         idGen,
+		countWriter:   NewDirectWriter(noteRepo),
 	}
 }
 
@@ -186,7 +198,7 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 			return "", err
 		}
 		// 集計列も古いリアクションを-1
-		_ = s.noteRepo.IncrementReaction(target.ID, existing.Reaction, -1)
+		_ = s.countWriter.Increment(target.ID, existing.Reaction, -1)
 		// 連合先には古いリアクションを Undo Like で送る
 		if s.federationHook != nil {
 			s.federationHook.OnReactionRemoved(user, target, existing.Reaction)
@@ -202,7 +214,7 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 	if err := s.reactionRepo.Create(rec); err != nil {
 		return "", err
 	}
-	_ = s.noteRepo.IncrementReaction(target.ID, reaction, 1)
+	_ = s.countWriter.Increment(target.ID, reaction, 1)
 
 	// 通知発行 (自分自身へのリアクションは内部で抑制される)
 	if s.notificationHook != nil && target.UserID != user.ID {
@@ -240,7 +252,7 @@ func (s *Service) Delete(user *model.User, noteID string) error {
 	if err := s.reactionRepo.Delete(existing); err != nil {
 		return err
 	}
-	_ = s.noteRepo.IncrementReaction(target.ID, existing.Reaction, -1)
+	_ = s.countWriter.Increment(target.ID, existing.Reaction, -1)
 	if s.federationHook != nil {
 		s.federationHook.OnReactionRemoved(user, target, existing.Reaction)
 	}

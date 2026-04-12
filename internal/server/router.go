@@ -185,6 +185,16 @@ func (s *Server) setupRoutes() {
 	// Reactions
 	reactionService := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
 
+	// Reactions buffering (issue #57): meta.enableReactionsBuffering が true なら
+	// Redis にバッファし、30秒ごとに DB へ flush する。
+	var reactionCountWriter corereaction.ReactionCountWriter
+	if bufMeta, err := metaRepo.Fetch(); err == nil && bufMeta.EnableReactionsBuffering {
+		reactionCountWriter = corereaction.NewBufferedWriter(s.redis.Default, noteRepo)
+		reactionService.SetCountWriter(reactionCountWriter)
+	} else {
+		reactionCountWriter = reactionService.CountWriter()
+	}
+
 	// Notifications (Redis Streams)
 	notificationService := corenotification.NewService(s.redis.Default, idGen)
 	notificationHook := corenotification.NewHook(notificationService, userRepo)
@@ -363,6 +373,19 @@ func (s *Server) setupRoutes() {
 				}
 			}()
 		}
+	}
+
+	// Reaction flush (issue #57): buffered writer 使用時は 30 秒ごとに flush。
+	flushProcessor := processors.NewReactionFlushProcessor(reactionCountWriter)
+	s.queueServer.Handle(queue.TaskTypeReactionFlush, flushProcessor.Handle)
+	if bufMeta, err := metaRepo.Fetch(); err == nil && bufMeta.EnableReactionsBuffering {
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				_ = s.queueClient.EnqueueReactionFlush()
+			}
+		}()
 	}
 
 	// Charts (Phase 4 Step Q / 4.7) — 12 chart engines + management

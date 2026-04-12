@@ -33,6 +33,10 @@ const TaskTypeSystemWebhook = "webhook:system"
 // notes cleaning job. ペイロードなし (meta から設定を読む)。
 const TaskTypeCleanRemoteNotes = "maintenance:cleanRemoteNotes"
 
+// TaskTypeReactionFlush is the asynq task type for flushing buffered
+// reaction counts from Redis to the database.
+const TaskTypeReactionFlush = "maintenance:reactionFlush"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {
