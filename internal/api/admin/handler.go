@@ -397,11 +397,11 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 		// Policies
 		"policies": m.Policies,
 		// Moderation
-		"sensitiveMediaDetection":                "none",
-		"sensitiveMediaDetectionSensitivity":     "medium",
-		"setSensitiveFlagAutomatically":          false,
-		"enableSensitiveMediaDetectionForVideos": false,
-		"enableIpLogging":                        false,
+		"sensitiveMediaDetection":                m.SensitiveMediaDetection,
+		"sensitiveMediaDetectionSensitivity":     m.SensitiveMediaDetectionSensitivity,
+		"setSensitiveFlagAutomatically":          m.SetSensitiveFlagAutomatically,
+		"enableSensitiveMediaDetectionForVideos": m.EnableSensitiveMediaDetectionForVideos,
+		"enableIpLogging":                        m.EnableIPLogging,
 		"enableActiveEmailValidation":            m.EnableActiveEmailValidation,
 		// Feature flags
 		"enableChartsForRemoteUser":         m.EnableChartsForRemoteUser,
@@ -427,7 +427,7 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 		"googleAnalyticsMeasurementId": nil,
 		"manifestJsonOverride":         "{}",
 		"bannedEmailDomains":           m.BannedEmailDomains,
-		"mediaSilencedHosts":           []string{},
+		"mediaSilencedHosts":           m.MediaSilencedHosts,
 		"preservedUsernames":           m.PreservedUsernames,
 		"prohibitedWordsForNameOfUser": m.ProhibitedWordsForNameOfUser,
 		"deliverSuspendedSoftware":     []string{},

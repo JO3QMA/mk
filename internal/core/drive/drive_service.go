@@ -2,6 +2,7 @@ package drive
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -55,6 +56,15 @@ type Service struct {
 	chartHook      ChartHook
 	imageProcessor ImageProcessor
 	videoProcessor VideoProcessor
+	// Sensitive media detection
+	sensitiveDetector SensitiveDetector
+	sensitiveCfg      SensitiveConfig
+}
+
+// SetSensitiveDetection attaches the sensitive media detector and config.
+func (s *Service) SetSensitiveDetection(detector SensitiveDetector, cfg SensitiveConfig) {
+	s.sensitiveDetector = detector
+	s.sensitiveCfg = cfg
 }
 
 // NewService constructs a DriveService.
@@ -217,6 +227,12 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		FolderID:           in.FolderID,
 		IsSensitive:        in.IsSensitive,
 	}
+
+	// Sensitive media detection フック
+	if !f.IsSensitive {
+		f.IsSensitive = s.detectSensitive(in.User, in.Body, info.MimeType)
+	}
+
 	if err := s.fileRepo.Create(f); err != nil {
 		// ロールバックとして storage を削除する
 		_ = s.storage.Delete(accessKey)
@@ -233,6 +249,39 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		s.chartHook.OnFileUploaded(f)
 	}
 	return f, nil
+}
+
+// detectSensitive runs sensitive media detection based on meta config.
+// ベストエフォート: detector 未設定やエラー時は false を返す。
+func (s *Service) detectSensitive(user *model.User, body []byte, mime string) bool {
+	cfg := s.sensitiveCfg
+
+	// mediaSilencedHosts: リモートユーザーのホストが silenced ならば無条件 sensitive
+	if user.Host != nil && IsSilencedHost(*user.Host, cfg.SilencedHosts) {
+		return true
+	}
+
+	if !cfg.SetFlagAutomatically || s.sensitiveDetector == nil {
+		return false
+	}
+
+	isLocal := user.Host == nil || *user.Host == ""
+	if !ShouldDetect(cfg, isLocal) {
+		return false
+	}
+
+	// 動画チェック: enableForVideos が false なら動画はスキップ
+	if IsVideoMIME(mime) && !cfg.EnableForVideos {
+		return false
+	}
+
+	score, err := s.sensitiveDetector.Detect(context.Background(), body, mime)
+	if err != nil {
+		return false
+	}
+
+	threshold := SensitivityThreshold(cfg.Sensitivity)
+	return score >= threshold
 }
 
 // generateAltsResult holds the results of image/video processing.
