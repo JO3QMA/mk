@@ -465,6 +465,74 @@ func TestUpdate_RoomMalformedOuterJSONRejected(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestUpdate_ProhibitedWordRejected(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", ProhibitedWordsForNameOfUser: []string{"Spam", "foo"}}
+	h.SetMetaRepo(metaRepo)
+
+	// "ContainsSpamString" は "Spam" を含むのでブロック (case-insensitive)。
+	rec := post(h.Update, `{"name":"ContainsSPAMString"}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_ProhibitedWordAllowsClear(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", ProhibitedWordsForNameOfUser: []string{"spam"}}
+	h.SetMetaRepo(metaRepo)
+
+	// 空文字 (クリア) は検査対象外 — ユーザーが表示名を外せなくなるのを避ける。
+	rec := post(h.Update, `{"name":""}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_ProhibitedWordNoMetaSkipped(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+
+	// metaRepo 未設定なら検査をスキップ。禁止ワードらしき値でも通る。
+	rec := post(h.Update, `{"name":"spammer"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_ProhibitedWordEmptyListSkipped(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+
+	metaRepo := testutil.NewMockMetaRepository()
+	// 空要素だけが入っているケース: 空文字比較で全 name がヒットしないことを検査する。
+	metaRepo.Meta = &model.Meta{ID: "x", ProhibitedWordsForNameOfUser: []string{"", "   "}}
+	h.SetMetaRepo(metaRepo)
+
+	rec := post(h.Update, `{"name":"anything"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestUpdate_RoomOmittedLeavesUnchanged(t *testing.T) {
 	h, repo, _, _ := newTestHandler(t)
 	user := &model.User{

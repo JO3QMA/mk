@@ -3,6 +3,7 @@ package meta
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/config"
@@ -13,11 +14,19 @@ import (
 type Handler struct {
 	config   *config.Config
 	metaRepo repository.MetaRepository
+	adRepo   repository.AdRepository
 }
 
 // NewHandler creates a new meta Handler.
 func NewHandler(cfg *config.Config, metaRepo repository.MetaRepository) *Handler {
 	return &Handler{config: cfg, metaRepo: metaRepo}
+}
+
+// SetAdRepo wires an AdRepository for the `ads` field on the /api/meta
+// response. When unset, ads is returned as an empty array so existing tests
+// without ad wiring keep passing.
+func (h *Handler) SetAdRepo(r repository.AdRepository) {
+	h.adRepo = r
 }
 
 // Meta returns server metadata.
@@ -83,8 +92,8 @@ func (h *Handler) Meta(c echo.Context) error {
 		"translatorAvailable":          false,
 		"enableEmail":                  m.EnableEmail,
 		"enableUrlPreview":             false,
-		"ads":                          []any{},
-		"notesPerOneAd":                0,
+		"ads":                          h.serializeActiveAds(),
+		"notesPerOneAd":                m.NotesPerOneAd,
 		"mediaProxy":                   "",
 		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
 		"requireSetup":                 false,
@@ -191,6 +200,32 @@ func clientOptionsJSON(raw []byte) any {
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
 		return map[string]any{}
+	}
+	return out
+}
+
+// serializeActiveAds fetches currently-active ads via adRepo and projects
+// them into the Misskey-compatible shape. Returns an empty slice when the
+// repo is unwired (tests) or fetch fails, keeping the response stable.
+// フロントエンドが notesPerOneAd と組み合わせて timeline に差し込む前提。
+func (h *Handler) serializeActiveAds() []map[string]any {
+	if h.adRepo == nil {
+		return []map[string]any{}
+	}
+	ads, err := h.adRepo.ListActive(time.Now())
+	if err != nil || len(ads) == 0 {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(ads))
+	for _, a := range ads {
+		out = append(out, map[string]any{
+			"id":        a.ID,
+			"url":       a.URL,
+			"place":     a.Place,
+			"ratio":     a.Ratio,
+			"imageUrl":  a.ImageURL,
+			"dayOfWeek": a.DayOfWeek,
+		})
 	}
 	return out
 }

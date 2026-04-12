@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/config"
@@ -217,4 +218,87 @@ func TestMeta_ClientOptionsMalformed(t *testing.T) {
 	co, ok := resp["clientOptions"].(map[string]any)
 	assert.True(t, ok)
 	assert.Empty(t, co)
+}
+
+// --- Ads / notesPerOneAd (issue #52) ---
+
+// stubAdRepo implements repository.AdRepository for tests without a real DB.
+type stubAdRepo struct {
+	ads []*model.Ad
+	err error
+}
+
+func (s *stubAdRepo) ListActive(_ time.Time) ([]*model.Ad, error) {
+	return s.ads, s.err
+}
+
+// /api/meta returns the active ads list from AdRepository and notesPerOneAd
+// from meta. Frontend reads these and handles injection.
+func TestMeta_AdsExposed(t *testing.T) {
+	h, metaRepo := newTestHandler()
+	metaRepo.Meta = &model.Meta{ID: "x", NotesPerOneAd: 5}
+	h.SetAdRepo(&stubAdRepo{ads: []*model.Ad{
+		{ID: "ad1", URL: "https://example.com", Place: "square", Ratio: 1, ImageURL: "https://example.com/i.png", DayOfWeek: 0},
+		{ID: "ad2", URL: "https://e2.example.com", Place: "horizontal", Ratio: 2, ImageURL: "https://e2.example.com/i.png", DayOfWeek: 3},
+	}})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	assert.Equal(t, float64(5), resp["notesPerOneAd"])
+
+	ads, ok := resp["ads"].([]any)
+	require.True(t, ok, "ads should be an array")
+	require.Len(t, ads, 2)
+	first := ads[0].(map[string]any)
+	assert.Equal(t, "ad1", first["id"])
+	assert.Equal(t, "square", first["place"])
+	assert.Equal(t, float64(1), first["ratio"])
+}
+
+// AdRepository が未設定の場合 (既存テスト互換) は空配列が返る。
+func TestMeta_AdsUnwiredReturnsEmpty(t *testing.T) {
+	h, metaRepo := newTestHandler()
+	metaRepo.Meta = &model.Meta{ID: "x", NotesPerOneAd: 0}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	ads, ok := resp["ads"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, ads)
+	assert.Equal(t, float64(0), resp["notesPerOneAd"])
+}
+
+// AdRepository がエラーを返したとき、meta エンドポイント全体は落とさずに
+// ads を空として継続する (DB 障害で /api/meta 全体が 500 になると起動ページ
+// がロードできない)。
+func TestMeta_AdsRepoErrorFallsBackToEmpty(t *testing.T) {
+	h, metaRepo := newTestHandler()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	h.SetAdRepo(&stubAdRepo{err: assert.AnError})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	ads, ok := resp["ads"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, ads)
 }

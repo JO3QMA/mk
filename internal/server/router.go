@@ -370,6 +370,7 @@ func (s *Server) setupRoutes() {
 
 	// Meta endpoint (public)
 	metaHandler := meta.NewHandler(s.config, metaRepo)
+	metaHandler.SetAdRepo(repository.NewAdRepository(s.db))
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
 
@@ -573,6 +574,7 @@ func (s *Server) setupRoutes() {
 	iHandler := i.NewHandler(userService, idGen)
 	iHandler.SetRoleProvider(roleService)
 	iHandler.SetRegistryRepo(registryRepo)
+	iHandler.SetMetaRepo(metaRepo)
 	if webauthnSvc != nil {
 		iHandler.SetWebAuthn(webauthnSvc, userSecurityKeyRepo)
 	}

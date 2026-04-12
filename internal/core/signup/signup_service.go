@@ -19,6 +19,10 @@ var (
 	ErrUsernameAlreadyExists = errors.New("username already exists")
 	// ErrInvalidUsername is returned when the username is invalid.
 	ErrInvalidUsername = errors.New("invalid username")
+	// ErrUsernameReserved is returned when the username matches an entry in
+	// meta.preservedUsernames (case-insensitive). 初回セットアップ時は root
+	// ユーザー作成を妨げないため、このチェックはスキップする。
+	ErrUsernameReserved = errors.New("username is reserved")
 )
 
 // WebhookHook is invoked after a new local user has been created so that
@@ -73,6 +77,15 @@ func (s *Service) Signup(username, password string, isInitialSetup bool) (*Signu
 	lower := strings.ToLower(username)
 	if _, err := s.userRepo.FindByUsernameLower(lower, nil); err == nil {
 		return nil, ErrUsernameAlreadyExists
+	}
+
+	// meta.preservedUsernames チェック。初回セットアップ (root ユーザー作成) は
+	// admin / root が予約ワードに含まれうるので除外する。meta fetch 失敗時は
+	// ベストエフォートで通過させる (オンライン性を優先)。
+	if !isInitialSetup {
+		if meta, err := s.metaRepo.Fetch(); err == nil && isReservedUsername(lower, meta.PreservedUsernames) {
+			return nil, ErrUsernameReserved
+		}
 	}
 
 	// パスワードハッシュ (bcrypt.DefaultCostで有効なパスワードに対して失敗しない)
@@ -143,4 +156,17 @@ func generateToken() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// isReservedUsername reports whether lower (already lowercased) matches any
+// entry in reserved case-insensitively. Entries in reserved are trimmed and
+// lowercased before comparison so DB-side whitespace noise does not defeat
+// the check.
+func isReservedUsername(lower string, reserved []string) bool {
+	for _, r := range reserved {
+		if strings.EqualFold(strings.TrimSpace(r), lower) {
+			return true
+		}
+	}
+	return false
 }
