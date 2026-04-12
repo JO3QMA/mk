@@ -240,6 +240,19 @@ func (s *Server) setupRoutes() {
 	driveService.SetImageProcessor(imgProcessor)
 	driveService.SetVideoProcessor(coredrive.NewFFmpegVideoProcessor(imgProcessor, nil))
 
+	// Sensitive media detection (issue #44)
+	if sensMeta, err := metaRepo.Fetch(); err == nil {
+		sensCfg := coredrive.SensitiveConfig{
+			Detection:            sensMeta.SensitiveMediaDetection,
+			Sensitivity:          sensMeta.SensitiveMediaDetectionSensitivity,
+			SetFlagAutomatically: sensMeta.SetSensitiveFlagAutomatically,
+			EnableForVideos:      sensMeta.EnableSensitiveMediaDetectionForVideos,
+			SilencedHosts:        sensMeta.MediaSilencedHosts,
+		}
+		// 外部 detection URL は config に追加可能 (未設定なら detector = nil で no-op)
+		driveService.SetSensitiveDetection(nil, sensCfg)
+	}
+
 	// Export / Import workers (Phase 9.4): drive に保存するエクスポートと
 	// drive から読み出すインポートを asynq 経由で非同期処理する。
 	exporter := coretransfer.NewExporter(coretransfer.ExporterDeps{
