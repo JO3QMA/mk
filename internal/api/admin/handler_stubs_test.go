@@ -14,7 +14,7 @@ var adminUser = &model.User{ID: "admin1"}
 
 type stubIPRepo struct{}
 
-func (s *stubIPRepo) Upsert(_, _ string) error                             { return nil }
+func (s *stubIPRepo) Upsert(_, _ string) error                            { return nil }
 func (s *stubIPRepo) ListByUser(_ string, _ int) ([]*model.UserIP, error) { return nil, nil }
 
 // stubEmojiImportEnqueuer records the last payload and optionally returns err.
