@@ -84,7 +84,7 @@ jobs:
             pkg = $2
             match($0, /[0-9.]+%/)
             cov = substr($0, RSTART, RLENGTH-1) + 0
-            threshold = (pkg ~ /\/admin$/) ? 60 : (pkg ~ /\/e2e$/) ? 0 : 90
+            threshold = (pkg ~ /\/admin$/) ? 60 : (pkg ~ /\/e2e/) ? 0 : 90
             if (cov < threshold) {
               printf "FAIL: %s coverage %.1f%% is below %d%%\n", pkg, cov, threshold
               fail = 1
