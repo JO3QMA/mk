@@ -1089,6 +1089,7 @@ func (s *Server) setupRoutes() {
 
 	// reversi/* — オセロゲーム (実データ)
 	reversiHandler := apireversi.NewHandler(reversiRepo, idGen)
+	reversiHandler.SetService(reversiService)
 	reversiHandler.SetFederation(s.config.URL, deliverService, reversiFedCache, userRepo)
 	api.POST("/reversi/games", reversiHandler.Games)
 	api.POST("/reversi/invitations", reversiHandler.Invitations, middleware.RequireAuth())
