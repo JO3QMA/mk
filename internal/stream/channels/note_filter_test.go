@@ -28,8 +28,8 @@ func TestParseNoteFilter_Override(t *testing.T) {
 
 func TestShouldEmit_PureRenoteFiltered(t *testing.T) {
 	f := noteFilter{WithRenotes: false, WithReplies: false, WithFiles: false}
-	// 純リノート: text=nil, renoteId!=nil
-	payload := []byte(`{"renoteId":"r1"}`)
+	// 純リノート: text=nil, renoteId!=nil, fileIds=[]
+	payload := []byte(`{"renoteId":"r1","fileIds":[]}`)
 	assert.False(t, f.shouldEmit(payload))
 }
 
@@ -37,6 +37,13 @@ func TestShouldEmit_QuoteRenoteAllowed(t *testing.T) {
 	f := noteFilter{WithRenotes: false, WithReplies: false, WithFiles: false}
 	// 引用リノート: text!=nil, renoteId!=nil → 通過
 	payload := []byte(`{"text":"hello","renoteId":"r1"}`)
+	assert.True(t, f.shouldEmit(payload))
+}
+
+func TestShouldEmit_RenoteWithFilesAllowed(t *testing.T) {
+	f := noteFilter{WithRenotes: false, WithReplies: false, WithFiles: false}
+	// ファイル添付付きリノート: text=nil, renoteId!=nil, fileIds非空 → 純リノートではない
+	payload := []byte(`{"renoteId":"r1","fileIds":["f1"]}`)
 	assert.True(t, f.shouldEmit(payload))
 }
 

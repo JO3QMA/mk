@@ -1099,7 +1099,7 @@ func (s *Server) setupRoutes() {
 	streamRegistry.Register("channel", channels.NewChannelTimeline)
 	streamRegistry.Register("userList", channels.NewUserList)
 	streamRegistry.Register("roleTimeline", channels.NewRoleTimeline)
-	streamRegistry.Register("admin", channels.NewAdmin)
+	streamRegistry.Register("admin", channels.NewAdminFactory(roleService).New)
 	streamRegistry.Register("serverStats", channels.NewServerStats)
 	streamRegistry.Register("queueStats", channels.NewQueueStats)
 

@@ -44,8 +44,9 @@ func (f *noteFilter) shouldEmit(payload []byte) bool {
 		return true
 	}
 
-	// 純リノート（テキストなし + renoteIdあり）をフィルタ
-	if !f.WithRenotes && note.Text == nil && note.RenoteID != nil {
+	// 純リノート（テキストなし + renoteIdあり + ファイルなし）をフィルタ
+	// timeline_filter.goのisPureRenoteと一致させる
+	if !f.WithRenotes && note.Text == nil && note.RenoteID != nil && len(note.FileIDs) == 0 {
 		return false
 	}
 

@@ -7,15 +7,31 @@ import (
 	"github.com/shiroha-a/mk/internal/stream"
 )
 
-// AdminChannel forwards admin-only events. Requires authenticated admin user.
-type AdminChannel struct {
-	ctx       stream.ChannelContext
-	connected bool
+// AdminRoleChecker checks whether a user has admin privileges.
+type AdminRoleChecker interface {
+	IsAdministrator(userID string) bool
 }
 
-// NewAdmin returns a channel factory for "admin".
-func NewAdmin(ctx stream.ChannelContext) stream.Channel {
-	return &AdminChannel{ctx: ctx}
+// AdminChannel forwards admin-only events. Requires authenticated admin user.
+type AdminChannel struct {
+	ctx         stream.ChannelContext
+	roleChecker AdminRoleChecker
+	connected   bool
+}
+
+// AdminFactory holds the role checker dependency for admin channel creation.
+type AdminFactory struct {
+	roleChecker AdminRoleChecker
+}
+
+// NewAdminFactory constructs an AdminFactory with the given role checker.
+func NewAdminFactory(roleChecker AdminRoleChecker) *AdminFactory {
+	return &AdminFactory{roleChecker: roleChecker}
+}
+
+// New builds a new AdminChannel. Usable as a stream.ChannelFactory.
+func (f *AdminFactory) New(ctx stream.ChannelContext) stream.Channel {
+	return &AdminChannel{ctx: ctx, roleChecker: f.roleChecker}
 }
 
 func (c *AdminChannel) Init(_ json.RawMessage) {
@@ -23,8 +39,10 @@ func (c *AdminChannel) Init(_ json.RawMessage) {
 	if !ok || user == nil {
 		return
 	}
-	// admin権限チェック: IsAdminフィールドまたはロールシステムで判定
-	// ここではtopic購読のみ行い、publish側でadminイベントのみ流す前提
+	// admin権限チェック
+	if c.roleChecker == nil || !c.roleChecker.IsAdministrator(user.ID) {
+		return
+	}
 	c.connected = true
 	c.ctx.Subscribe("adminStream")
 }

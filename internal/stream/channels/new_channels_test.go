@@ -10,6 +10,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mockRoleChecker is a test double for AdminRoleChecker.
+type mockRoleChecker struct {
+	admins map[string]bool
+}
+
+func (m *mockRoleChecker) IsAdministrator(userID string) bool {
+	return m.admins[userID]
+}
+
+func newAdminCh(ctx stream.ChannelContext, isAdmin bool) stream.Channel {
+	userID := ""
+	if u, ok := ctx.User().(*model.User); ok && u != nil {
+		userID = u.ID
+	}
+	checker := &mockRoleChecker{admins: map[string]bool{userID: isAdmin}}
+	return NewAdminFactory(checker).New(ctx)
+}
+
 // interface conformance checks
 var (
 	_ stream.Channel = (*HashtagChannel)(nil)
@@ -157,7 +175,7 @@ func TestRoleTimeline_MissingID(t *testing.T) {
 
 func TestAdmin_Lifecycle(t *testing.T) {
 	ctx := newCtx(&model.User{ID: "admin1"})
-	ch := NewAdmin(ctx)
+	ch := newAdminCh(ctx, true)
 	ch.Init(nil)
 	assert.Equal(t, []string{"adminStream"}, ctx.subs)
 
@@ -172,14 +190,21 @@ func TestAdmin_Lifecycle(t *testing.T) {
 
 func TestAdmin_NoAuth(t *testing.T) {
 	ctx := newCtx(nil)
-	ch := NewAdmin(ctx)
+	ch := newAdminCh(ctx, false)
+	ch.Init(nil)
+	assert.Empty(t, ctx.subs)
+}
+
+func TestAdmin_NotAdmin(t *testing.T) {
+	ctx := newCtx(&model.User{ID: "normaluser"})
+	ch := newAdminCh(ctx, false)
 	ch.Init(nil)
 	assert.Empty(t, ctx.subs)
 }
 
 func TestAdmin_RawPayload(t *testing.T) {
 	ctx := newCtx(&model.User{ID: "admin1"})
-	ch := NewAdmin(ctx)
+	ch := newAdminCh(ctx, true)
 	ch.Init(nil)
 	// エンベロープでないペイロード
 	ch.OnRedisEvent([]byte(`{"data":"raw"}`))
@@ -255,7 +280,7 @@ func TestNoOpClientMessages(t *testing.T) {
 		{"channelTimeline", NewChannelTimeline(newCtx(nil))},
 		{"userList", NewUserList(newCtx(&model.User{ID: "u1"}))},
 		{"roleTimeline", NewRoleTimeline(newCtx(nil))},
-		{"admin", NewAdmin(newCtx(&model.User{ID: "u1"}))},
+		{"admin", newAdminCh(newCtx(&model.User{ID: "u1"}), true)},
 		{"serverStats", NewServerStats(newCtx(nil))},
 		{"queueStats", NewQueueStats(newCtx(nil))},
 		{"reversi", NewReversi(newCtx(&model.User{ID: "u1"}))},
@@ -273,7 +298,7 @@ func TestHashtag_FilteredRenote(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewHashtag(ctx)
 	ch.Init(json.RawMessage(`{"q":[["go"]],"withRenotes":false}`))
-	ch.OnRedisEvent([]byte(`{"renoteId":"r1"}`))
+	ch.OnRedisEvent([]byte(`{"renoteId":"r1","fileIds":[]}`))
 	assert.Empty(t, ctx.sentType)
 }
 
@@ -289,7 +314,7 @@ func TestRoleTimeline_FilteredRenote(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewRoleTimeline(ctx)
 	ch.Init(json.RawMessage(`{"roleId":"r1","withRenotes":false}`))
-	ch.OnRedisEvent([]byte(`{"renoteId":"r1"}`))
+	ch.OnRedisEvent([]byte(`{"renoteId":"r1","fileIds":[]}`))
 	assert.Empty(t, ctx.sentType)
 }
 
@@ -326,7 +351,7 @@ func TestLocalTimeline_FilterPureRenote(t *testing.T) {
 	ch.Init(json.RawMessage(`{"withRenotes":false}`))
 
 	// 純リノートはフィルタされる
-	ch.OnRedisEvent([]byte(`{"renoteId":"r1"}`))
+	ch.OnRedisEvent([]byte(`{"renoteId":"r1","fileIds":[]}`))
 	assert.Empty(t, ctx.sentType)
 
 	// 通常ノートは通過
