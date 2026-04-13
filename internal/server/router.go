@@ -1094,6 +1094,14 @@ func (s *Server) setupRoutes() {
 	streamRegistry.Register("notifications", channels.NewNotifications)
 	streamRegistry.Register("main", channels.NewMain)
 	streamRegistry.Register("drive", channels.NewDrive)
+	streamRegistry.Register("hashtag", channels.NewHashtag)
+	streamRegistry.Register("antenna", channels.NewAntenna)
+	streamRegistry.Register("channel", channels.NewChannelTimeline)
+	streamRegistry.Register("userList", channels.NewUserList)
+	streamRegistry.Register("roleTimeline", channels.NewRoleTimeline)
+	streamRegistry.Register("admin", channels.NewAdmin)
+	streamRegistry.Register("serverStats", channels.NewServerStats)
+	streamRegistry.Register("queueStats", channels.NewQueueStats)
 
 	// 3. Connection manager + 各 publisher の生成
 	streamManager := stream.NewManager(streamRegistry, streamBus)
@@ -1111,6 +1119,7 @@ func (s *Server) setupRoutes() {
 	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
 	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)
 	streamRegistry.Register("reversiGame", channels.NewReversiGameFactory(reversiService).New)
+	streamRegistry.Register("reversi", channels.NewReversi)
 
 	// 6. Chat WebSocket channels (Phase 9.8): chatRoom と chatUser を登録する
 	chatPublisher := stream.NewChatPublisher(streamPubSub)
