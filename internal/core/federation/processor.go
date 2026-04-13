@@ -722,10 +722,10 @@ func (p *Processor) handleAdd(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	// ローカルノートならDBから検索、リモートならIngestNoteで取り込む
+	// ローカルノートならDBから検索、リモートならResolveNoteでフェッチ+取り込み
 	note, err := p.noteRepo.FindByURI(noteURI)
 	if err != nil {
-		note, err = p.resolver.IngestNote(act.Object)
+		note, err = p.resolver.ResolveNote(noteURI)
 		if err != nil {
 			return err
 		}
