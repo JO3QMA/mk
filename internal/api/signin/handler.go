@@ -184,10 +184,17 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 	}
 
 	// Step 1: パスワード未提供 → 次のステップを指示
+	// TSと同じ分岐: 2FA有効 → "password"、2FA無効+captcha有効 → "captcha"、それ以外 → "password"
 	if req.Password == nil {
+		next := "password"
+		if p, perr := h.userRepo.FindProfileByUserID(user.ID); perr == nil && p != nil {
+			if !p.TwoFactorEnabled && h.captchaSvc != nil && h.captchaSvc.IsEnabled() {
+				next = "captcha"
+			}
+		}
 		return c.JSON(http.StatusOK, map[string]any{
 			"finished": false,
-			"next":     "password",
+			"next":     next,
 		})
 	}
 

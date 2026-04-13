@@ -29,9 +29,9 @@ type NoteRepository interface {
 	SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	ListByFileID(fileID string) ([]*model.Note, error)
 	IncrementUserNotesCount(userID string, delta int) error
-	ListHomeTimeline(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
-	ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
-	ListGlobalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error)
+	ListHomeTimeline(userID string, limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
+	ListLocalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
+	ListGlobalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
 	// DeleteExpiredRemoteNotes deletes remote notes older than expiryDays
 	// in batches of batchSize. Returns the total count of deleted notes.
 	DeleteExpiredRemoteNotes(expiryDays, batchSize int) (int64, error)
@@ -350,9 +350,38 @@ func (r *noteRepository) IncrementUserNotesCount(userID string, delta int) error
 	return r.db.Exec(`UPDATE "user" SET "notesCount" = "notesCount" + ? WHERE "id" = ?`, delta, userID).Error
 }
 
+// applyTimelineFilter adds common filter conditions to a GORM query builder.
+func applyTimelineFilter(q *gorm.DB, f model.TimelineDBFilter) *gorm.DB {
+	if f.WithFiles {
+		q = q.Where(`"fileIds" != '{}'`)
+	}
+	if f.WithRenotes != nil && !*f.WithRenotes {
+		// pure renote (テキストもファイルもない renote) を除外
+		q = q.Where(`NOT ("renoteId" IS NOT NULL AND text IS NULL AND "fileIds" = '{}')`)
+	}
+	if f.WithReplies != nil && !*f.WithReplies {
+		if f.ViewerID != "" {
+			// 自分への返信は残す
+			q = q.Where(`("replyId" IS NULL OR "replyUserId" = ?)`, f.ViewerID)
+		} else {
+			q = q.Where(`"replyId" IS NULL`)
+		}
+	}
+	if f.IncludeMyRenotes != nil && !*f.IncludeMyRenotes && f.ViewerID != "" {
+		q = q.Where(`NOT ("renoteId" IS NOT NULL AND text IS NULL AND "fileIds" = '{}' AND "userId" = ?)`, f.ViewerID)
+	}
+	if f.IncludeRenotedMyNotes != nil && !*f.IncludeRenotedMyNotes && f.ViewerID != "" {
+		q = q.Where(`NOT ("renoteId" IS NOT NULL AND text IS NULL AND "fileIds" = '{}' AND "renoteUserId" = ?)`, f.ViewerID)
+	}
+	if f.IncludeLocalRenotes != nil && !*f.IncludeLocalRenotes {
+		q = q.Where(`NOT ("renoteId" IS NOT NULL AND text IS NULL AND "fileIds" = '{}' AND "renoteUserHost" IS NULL)`)
+	}
+	return q
+}
+
 // ListHomeTimeline returns notes by the user and users they follow.
 // DBフォールバック用。Redisが空のときに使う。
-func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error) {
 	q := r.db.Preload("User").
 		Where(`("userId" = ? OR "userId" IN (SELECT "followeeId" FROM "following" WHERE "followerId" = ?)) AND "visibility" IN ('public','home','followers')`, userID, userID).
 		Order(`"id" DESC`).Limit(limit)
@@ -362,6 +391,7 @@ func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, unt
 	if untilID != "" {
 		q = q.Where(`"id" < ?`, untilID)
 	}
+	q = applyTimelineFilter(q, filter)
 	var notes []*model.Note
 	if err := q.Find(&notes).Error; err != nil {
 		return nil, err
@@ -370,9 +400,9 @@ func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, unt
 }
 
 // ListLocalTimeline returns public/home notes by local users.
-func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error) {
+func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error) {
 	q := r.db.Preload("User").
-		Where(`"userHost" IS NULL AND "visibility" = 'public'`).
+		Where(`"userHost" IS NULL AND "visibility" = 'public' AND "channelId" IS NULL`).
 		Order(`"id" DESC`).Limit(limit)
 	if sinceID != "" {
 		q = q.Where(`"id" > ?`, sinceID)
@@ -380,6 +410,7 @@ func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string) (
 	if untilID != "" {
 		q = q.Where(`"id" < ?`, untilID)
 	}
+	q = applyTimelineFilter(q, filter)
 	var notes []*model.Note
 	if err := q.Find(&notes).Error; err != nil {
 		return nil, err
@@ -388,9 +419,10 @@ func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string) (
 }
 
 // ListGlobalTimeline returns all public notes.
-func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string) ([]*model.Note, error) {
+// channelId IS NULL でチャンネルノートを除外する (TS互換)。
+func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error) {
 	q := r.db.Preload("User").
-		Where(`"visibility" = 'public'`).
+		Where(`"visibility" = 'public' AND "channelId" IS NULL`).
 		Order(`"id" DESC`).Limit(limit)
 	if sinceID != "" {
 		q = q.Where(`"id" > ?`, sinceID)
@@ -398,6 +430,7 @@ func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string) 
 	if untilID != "" {
 		q = q.Where(`"id" < ?`, untilID)
 	}
+	q = applyTimelineFilter(q, filter)
 	var notes []*model.Note
 	if err := q.Find(&notes).Error; err != nil {
 		return nil, err

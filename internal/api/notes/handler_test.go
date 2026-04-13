@@ -575,13 +575,13 @@ func (f *failingNoteRepo) SearchByTag(_ string, _ int, _, _ string) ([]*model.No
 }
 func (f *failingNoteRepo) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
 func (f *failingNoteRepo) IncrementUserNotesCount(_ string, _ int) error { return nil }
-func (f *failingNoteRepo) ListHomeTimeline(_ string, _ int, _, _ string) ([]*model.Note, error) {
+func (f *failingNoteRepo) ListHomeTimeline(_ string, _ int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return nil, nil
 }
-func (f *failingNoteRepo) ListLocalTimeline(_ int, _, _ string) ([]*model.Note, error) {
+func (f *failingNoteRepo) ListLocalTimeline(_ int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return nil, nil
 }
-func (f *failingNoteRepo) ListGlobalTimeline(_ int, _, _ string) ([]*model.Note, error) {
+func (f *failingNoteRepo) ListGlobalTimeline(_ int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return nil, nil
 }
 func (f *failingNoteRepo) DeleteExpiredRemoteNotes(_, _ int) (int64, error) { return 0, nil }

@@ -363,3 +363,63 @@ func TestSigninFlow_RecordsSigninHistory(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, 1, signinRepo.Len())
 }
+
+// --- Step 1 captcha branching ---
+
+func TestSigninFlow_Step1_CaptchaNext_WhenCaptchaEnabled(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "capstep", "pass")
+
+	captchaSvc := captcha.NewService(&model.Meta{EnableTestcaptcha: true})
+	h.SetCaptcha(captchaSvc)
+
+	// 2FA無効 + captcha有効 → Step 1で "captcha" を返す
+	rec := doPost(h.SigninFlow, `{"username":"capstep"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["finished"])
+	assert.Equal(t, "captcha", resp["next"])
+}
+
+func TestSigninFlow_Step1_PasswordNext_When2FAEnabled(t *testing.T) {
+	h, repo := newTestHandler(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hashStr := string(hash)
+	token := "tok"
+	repo.Users["u2fa2"] = &model.User{
+		ID: "u2fa2", Username: "tfa2", UsernameLower: "tfa2", Token: &token,
+	}
+	repo.Profiles["u2fa2"] = &model.UserProfile{
+		UserID:           "u2fa2",
+		Password:         &hashStr,
+		TwoFactorEnabled: true,
+	}
+
+	captchaSvc := captcha.NewService(&model.Meta{EnableTestcaptcha: true})
+	h.SetCaptcha(captchaSvc)
+
+	// 2FA有効 + captcha有効 → Step 1で "password" を返す
+	rec := doPost(h.SigninFlow, `{"username":"tfa2"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["finished"])
+	assert.Equal(t, "password", resp["next"])
+}
+
+func TestSigninFlow_Step1_PasswordNext_WhenNoCaptcha(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "nocap", "pass")
+
+	// captchaサービスなし → "password" を返す
+	rec := doPost(h.SigninFlow, `{"username":"nocap"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["finished"])
+	assert.Equal(t, "password", resp["next"])
+}
