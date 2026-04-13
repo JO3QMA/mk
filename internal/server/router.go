@@ -352,6 +352,7 @@ func (s *Server) setupRoutes() {
 	federationResolver := corefederation.NewResolver(userRepo, noteRepo, apURLs, apFetcher, idGen)
 	publickeyRepo := repository.NewUserPublickeyRepository(s.db)
 	federationResolver.SetPublickeyRepo(publickeyRepo)
+	federationResolver.SetPollRepo(pollRepo)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 
 	// Instance management (Phase 3 Step H)

@@ -86,6 +86,7 @@ type Resolver struct {
 	instanceTracker InstanceTracker           // optional: ホスト発見を通知
 	chartHook       ChartHook                 // optional: 新規 remote user の集計
 	publickeyRepo   PublickeyStore            // optional: 公開鍵の永続化
+	pollRepo        repository.PollRepository // optional: Question(投票)のPoll作成
 }
 
 // NewResolver constructs a Resolver.
@@ -142,6 +143,11 @@ func (r *Resolver) SetChartHook(h ChartHook) {
 // storage. nil 渡しは無効化と同義 (in-memory only に戻る)。
 func (r *Resolver) SetPublickeyRepo(repo PublickeyStore) {
 	r.publickeyRepo = repo
+}
+
+// SetPollRepo attaches a PollRepository for ingesting Question (poll) objects.
+func (r *Resolver) SetPollRepo(repo repository.PollRepository) {
+	r.pollRepo = repo
 }
 
 // PublicKeyForActor returns the cached public key PEM for an actor ID.
@@ -445,6 +451,10 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	if apNote.Content != "" {
 		note.Mentions = corenote.ExtractMentions(apNote.Content)
 	}
+	// Question（投票）の場合はhasPollフラグをCreate前に設定
+	if len(apNote.OneOf) > 0 || len(apNote.AnyOf) > 0 {
+		note.HasPoll = true
+	}
 	if err := r.noteRepo.Create(note); err != nil {
 		return nil, err
 	}
@@ -454,7 +464,49 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	if note.ReplyID != nil {
 		_ = r.noteRepo.IncrementCount(*note.ReplyID, "repliesCount", 1)
 	}
+	// Question (投票) の処理: oneOf/anyOf から Poll レコードを作成
+	if r.pollRepo != nil && note.HasPoll {
+		r.createPollFromQuestion(note, &apNote)
+	}
 	return note, nil
+}
+
+// createPollFromQuestion creates a Poll record from an AP Question's oneOf/anyOf choices.
+func (r *Resolver) createPollFromQuestion(note *model.Note, apNote *activitypub.Note) {
+	choices := apNote.OneOf
+	multiple := false
+	if len(apNote.AnyOf) > 0 {
+		choices = apNote.AnyOf
+		multiple = true
+	}
+	choiceNames := make([]string, len(choices))
+	votes := make([]int64, len(choices))
+	for i, c := range choices {
+		choiceNames[i] = c.Name
+		if c.Replies != nil {
+			votes[i] = int64(c.Replies.TotalItems)
+		}
+	}
+	poll := &model.Poll{
+		NoteID:         note.ID,
+		Multiple:       multiple,
+		Choices:        choiceNames,
+		Votes:          votes,
+		NoteVisibility: note.Visibility,
+		UserID:         note.UserID,
+		UserHost:       note.UserHost,
+	}
+	// endTime/closedから有効期限を設定
+	if apNote.EndTime != "" {
+		if t, err := time.Parse(time.RFC3339, apNote.EndTime); err == nil {
+			poll.ExpiresAt = &t
+		}
+	} else if apNote.Closed != "" {
+		if t, err := time.Parse(time.RFC3339, apNote.Closed); err == nil {
+			poll.ExpiresAt = &t
+		}
+	}
+	_ = r.pollRepo.Create(poll)
 }
 
 // UpdateRemoteNote applies an inbound Update Note activity body to an existing

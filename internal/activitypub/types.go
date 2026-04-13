@@ -88,6 +88,24 @@ type Note struct {
 	MisskeyContent string   `json:"_misskey_content,omitempty"`
 	MisskeyQuote   string   `json:"_misskey_quote,omitempty"`
 	QuoteURL       string   `json:"quoteUrl,omitempty"`
+	// Question (poll) fields — AP Question typeで使用
+	OneOf   []QuestionChoice `json:"oneOf,omitempty"`
+	AnyOf   []QuestionChoice `json:"anyOf,omitempty"`
+	EndTime string           `json:"endTime,omitempty"`
+	Closed  string           `json:"closed,omitempty"`
+}
+
+// QuestionChoice represents a single choice in an AP Question (poll).
+type QuestionChoice struct {
+	Type    string                 `json:"type"` // "Note"
+	Name    string                 `json:"name"`
+	Replies *QuestionChoiceReplies `json:"replies,omitempty"`
+}
+
+// QuestionChoiceReplies holds the vote count for a poll choice.
+type QuestionChoiceReplies struct {
+	Type       string `json:"type"` // "Collection"
+	TotalItems int    `json:"totalItems"`
 }
 
 // Mention is an ActivityStreams Mention tag used inside Note.tag to inform
