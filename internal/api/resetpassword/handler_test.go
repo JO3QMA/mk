@@ -1,0 +1,296 @@
+package resetpassword
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
+)
+
+// --- Mock Repos ---
+
+type mockUserRepo struct {
+	users    map[string]*model.User        // keyed by ID
+	profiles map[string]*model.UserProfile // keyed by userID
+}
+
+func newMockUserRepo() *mockUserRepo {
+	return &mockUserRepo{
+		users:    make(map[string]*model.User),
+		profiles: make(map[string]*model.UserProfile),
+	}
+}
+
+func (m *mockUserRepo) Create(u *model.User) error                { m.users[u.ID] = u; return nil }
+func (m *mockUserRepo) FindByID(id string) (*model.User, error)   { return m.findByID(id) }
+func (m *mockUserRepo) FindByURI(string) (*model.User, error)     { return nil, errMock }
+func (m *mockUserRepo) FindByToken(string) (*model.User, error)   { return nil, errMock }
+func (m *mockUserRepo) IncrementFollowingCount(string, int) error { return nil }
+func (m *mockUserRepo) IncrementFollowersCount(string, int) error { return nil }
+func (m *mockUserRepo) SearchByUsername(string, int, int) ([]*model.User, error) {
+	return nil, nil
+}
+func (m *mockUserRepo) UpdateUser(string, map[string]any) error               { return nil }
+func (m *mockUserRepo) CreateProfile(*model.UserProfile) error                { return nil }
+func (m *mockUserRepo) ListUsers(model.UserListFilter) ([]*model.User, error) { return nil, nil }
+func (m *mockUserRepo) ListRemoteInboxes() ([]string, error)                  { return nil, nil }
+
+func (m *mockUserRepo) findByID(id string) (*model.User, error) {
+	u, ok := m.users[id]
+	if !ok {
+		return nil, errMock
+	}
+	return u, nil
+}
+
+func (m *mockUserRepo) FindByUsernameLower(username string, host *string) (*model.User, error) {
+	for _, u := range m.users {
+		if u.UsernameLower == username && host == nil && u.Host == nil {
+			return u, nil
+		}
+	}
+	return nil, errMock
+}
+
+func (m *mockUserRepo) FindProfileByUserID(userID string) (*model.UserProfile, error) {
+	p, ok := m.profiles[userID]
+	if !ok {
+		return nil, errMock
+	}
+	return p, nil
+}
+
+func (m *mockUserRepo) FindProfileByVerifyCode(string) (*model.UserProfile, error) {
+	return nil, errMock
+}
+
+func (m *mockUserRepo) UpdateProfile(userID string, fields map[string]any) error {
+	p, ok := m.profiles[userID]
+	if !ok {
+		return errMock
+	}
+	if pw, has := fields["password"]; has {
+		s := pw.(string)
+		p.Password = &s
+	}
+	return nil
+}
+
+var errMock = assert.AnError
+
+type mockResetRepo struct {
+	requests map[string]*model.PasswordResetRequest
+}
+
+func newMockResetRepo() *mockResetRepo {
+	return &mockResetRepo{requests: make(map[string]*model.PasswordResetRequest)}
+}
+
+func (m *mockResetRepo) Create(req *model.PasswordResetRequest) error {
+	m.requests[req.ID] = req
+	return nil
+}
+
+func (m *mockResetRepo) FindByToken(token string) (*model.PasswordResetRequest, error) {
+	for _, r := range m.requests {
+		if r.Token == token {
+			return r, nil
+		}
+	}
+	return nil, errMock
+}
+
+func (m *mockResetRepo) Delete(id string) error {
+	delete(m.requests, id)
+	return nil
+}
+
+func newTestHandler() (*Handler, *mockUserRepo, *mockResetRepo) {
+	idGen, _ := id.NewGenerator("aidx")
+	userRepo := newMockUserRepo()
+	resetRepo := newMockResetRepo()
+	h := NewHandler(userRepo, resetRepo, idGen)
+	h.SetServerURL("https://example.com")
+	return h, userRepo, resetRepo
+}
+
+func post(handler func(echo.Context) error, body string) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	_ = handler(c)
+	return rec
+}
+
+// --- RequestReset ---
+
+func TestRequestReset_Success(t *testing.T) {
+	h, userRepo, resetRepo := newTestHandler()
+
+	email := "test@example.com"
+	userRepo.users["u1"] = &model.User{ID: "u1", Username: "testuser", UsernameLower: "testuser"}
+	userRepo.profiles["u1"] = &model.UserProfile{
+		UserID:        "u1",
+		Email:         &email,
+		EmailVerified: true,
+	}
+
+	var mu sync.Mutex
+	var sentTo, sentSubject string
+	h.SetEmailSender(func(to, subject, body string) {
+		mu.Lock()
+		defer mu.Unlock()
+		sentTo = to
+		sentSubject = subject
+	})
+
+	rec := post(h.RequestReset, `{"username":"testuser","email":"test@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	// リセットリクエストが保存されている
+	assert.Len(t, resetRepo.requests, 1)
+
+	// メール送信を待つ
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	assert.Equal(t, "test@example.com", sentTo)
+	assert.Equal(t, "Password reset", sentSubject)
+	mu.Unlock()
+}
+
+func TestRequestReset_UserNotFound(t *testing.T) {
+	h, _, resetRepo := newTestHandler()
+
+	// ユーザーが存在しなくても成功レスポンス（情報漏洩防止）
+	rec := post(h.RequestReset, `{"username":"ghost","email":"x@x.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, resetRepo.requests, 0)
+}
+
+func TestRequestReset_EmailMismatch(t *testing.T) {
+	h, userRepo, resetRepo := newTestHandler()
+
+	email := "real@example.com"
+	userRepo.users["u1"] = &model.User{ID: "u1", Username: "testuser", UsernameLower: "testuser"}
+	userRepo.profiles["u1"] = &model.UserProfile{
+		UserID:        "u1",
+		Email:         &email,
+		EmailVerified: true,
+	}
+
+	rec := post(h.RequestReset, `{"username":"testuser","email":"wrong@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, resetRepo.requests, 0)
+}
+
+func TestRequestReset_EmailNotVerified(t *testing.T) {
+	h, userRepo, resetRepo := newTestHandler()
+
+	email := "test@example.com"
+	userRepo.users["u1"] = &model.User{ID: "u1", Username: "testuser", UsernameLower: "testuser"}
+	userRepo.profiles["u1"] = &model.UserProfile{
+		UserID:        "u1",
+		Email:         &email,
+		EmailVerified: false,
+	}
+
+	rec := post(h.RequestReset, `{"username":"testuser","email":"test@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, resetRepo.requests, 0)
+}
+
+func TestRequestReset_InvalidParam(t *testing.T) {
+	h, _, _ := newTestHandler()
+
+	rec := post(h.RequestReset, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	rec = post(h.RequestReset, `{"username":"test"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Reset ---
+
+func TestReset_Success(t *testing.T) {
+	h, userRepo, resetRepo := newTestHandler()
+
+	pw, _ := bcrypt.GenerateFromPassword([]byte("oldpassword"), 8)
+	oldPw := string(pw)
+	userRepo.profiles["u1"] = &model.UserProfile{UserID: "u1", Password: &oldPw}
+
+	// 有効なリセットトークンを作成（IDは現在時刻で生成）
+	idGen, _ := id.NewGenerator("aidx")
+	resetID := idGen.Generate(time.Now())
+	resetRepo.requests[resetID] = &model.PasswordResetRequest{
+		ID:     resetID,
+		Token:  "valid-token",
+		UserID: "u1",
+	}
+
+	rec := post(h.Reset, `{"token":"valid-token","password":"newpassword"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	// パスワードが更新されている
+	newPw := *userRepo.profiles["u1"].Password
+	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(newPw), []byte("newpassword")))
+
+	// トークンが削除されている
+	assert.Len(t, resetRepo.requests, 0)
+}
+
+func TestReset_TokenNotFound(t *testing.T) {
+	h, _, _ := newTestHandler()
+
+	rec := post(h.Reset, `{"token":"invalid","password":"newpw"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestReset_TokenExpired(t *testing.T) {
+	h, _, resetRepo := newTestHandler()
+
+	// 31分前のIDを生成
+	idGen, _ := id.NewGenerator("aidx")
+	resetID := idGen.Generate(time.Now().Add(-31 * time.Minute))
+	resetRepo.requests[resetID] = &model.PasswordResetRequest{
+		ID:     resetID,
+		Token:  "expired-token",
+		UserID: "u1",
+	}
+
+	rec := post(h.Reset, `{"token":"expired-token","password":"newpw"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Contains(t, errObj["message"], "expired")
+}
+
+func TestReset_InvalidParam(t *testing.T) {
+	h, _, _ := newTestHandler()
+
+	rec := post(h.Reset, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	rec = post(h.Reset, `{"token":"t"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSecureRandomHex(t *testing.T) {
+	s := secureRandomHex(64)
+	assert.Len(t, s, 64)
+	s2 := secureRandomHex(64)
+	assert.NotEqual(t, s, s2)
+}

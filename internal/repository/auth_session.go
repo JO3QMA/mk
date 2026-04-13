@@ -21,6 +21,10 @@ type AuthSessionRepository interface {
 	// AccessToken operations for MiAuth
 	FindAccessTokenByAppAndUser(appID, userID string) (*model.AccessToken, error)
 	CreateAccessToken(token *model.AccessToken) error
+
+	// App lookup
+	FindAppByID(id string) (*model.App, error)
+	ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error)
 }
 
 type authSessionRepository struct {
@@ -82,4 +86,20 @@ func (r *authSessionRepository) FindAccessTokenByAppAndUser(appID, userID string
 
 func (r *authSessionRepository) CreateAccessToken(token *model.AccessToken) error {
 	return r.db.Create(token).Error
+}
+
+func (r *authSessionRepository) FindAppByID(id string) (*model.App, error) {
+	var app model.App
+	if err := r.db.Where(`"id" = ?`, id).First(&app).Error; err != nil {
+		return nil, err
+	}
+	return &app, nil
+}
+
+func (r *authSessionRepository) ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error) {
+	var apps []*model.App
+	if err := r.db.Where(`"userId" = ?`, userID).Order(`"createdAt" DESC`).Limit(limit).Offset(offset).Find(&apps).Error; err != nil {
+		return nil, err
+	}
+	return apps, nil
 }

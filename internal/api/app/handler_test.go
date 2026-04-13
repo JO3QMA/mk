@@ -1,0 +1,268 @@
+package app
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- Mock ---
+
+type mockAuthSessionRepo struct {
+	apps         map[string]*model.App
+	accessTokens map[string]*model.AccessToken
+	sessions     map[string]*model.AuthSession
+	createErr    error
+}
+
+func newMockRepo() *mockAuthSessionRepo {
+	return &mockAuthSessionRepo{
+		apps:         make(map[string]*model.App),
+		accessTokens: make(map[string]*model.AccessToken),
+		sessions:     make(map[string]*model.AuthSession),
+	}
+}
+
+func (m *mockAuthSessionRepo) FindAppBySecret(secret string) (*model.App, error) {
+	for _, a := range m.apps {
+		if a.Secret == secret {
+			return a, nil
+		}
+	}
+	return nil, assert.AnError
+}
+func (m *mockAuthSessionRepo) CreateApp(app *model.App) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.apps[app.ID] = app
+	return nil
+}
+func (m *mockAuthSessionRepo) CreateSession(*model.AuthSession) error { return nil }
+func (m *mockAuthSessionRepo) FindSessionByToken(string) (*model.AuthSession, error) {
+	return nil, assert.AnError
+}
+func (m *mockAuthSessionRepo) FindSessionByTokenAndAppID(string, string) (*model.AuthSession, error) {
+	return nil, assert.AnError
+}
+func (m *mockAuthSessionRepo) UpdateSessionUserID(string, string) error { return nil }
+func (m *mockAuthSessionRepo) DeleteSession(string) error               { return nil }
+func (m *mockAuthSessionRepo) FindAccessTokenByAppAndUser(string, string) (*model.AccessToken, error) {
+	return nil, assert.AnError
+}
+func (m *mockAuthSessionRepo) CreateAccessToken(t *model.AccessToken) error {
+	m.accessTokens[t.ID] = t
+	return nil
+}
+
+func (m *mockAuthSessionRepo) FindAppByID(id string) (*model.App, error) {
+	a, ok := m.apps[id]
+	if !ok {
+		return nil, assert.AnError
+	}
+	return a, nil
+}
+
+func (m *mockAuthSessionRepo) ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error) {
+	var apps []*model.App
+	for _, a := range m.apps {
+		if a.UserID != nil && *a.UserID == userID {
+			apps = append(apps, a)
+		}
+	}
+	if offset >= len(apps) {
+		return []*model.App{}, nil
+	}
+	apps = apps[offset:]
+	if len(apps) > limit {
+		apps = apps[:limit]
+	}
+	return apps, nil
+}
+
+func newTestHandler() (*Handler, *mockAuthSessionRepo) {
+	idGen, _ := id.NewGenerator("aidx")
+	repo := newMockRepo()
+	return NewHandler(repo, idGen), repo
+}
+
+func post(handler func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if user != nil {
+		c.Set(string(middleware.UserContextKey), user)
+	}
+	_ = handler(c)
+	return rec
+}
+
+// --- Create ---
+
+func TestCreate_Success(t *testing.T) {
+	h, repo := newTestHandler()
+
+	rec := post(h.Create, `{"name":"MyApp","description":"desc","permission":["read:account"]}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "MyApp", resp["name"])
+	assert.NotEmpty(t, resp["secret"])
+	assert.NotEmpty(t, resp["id"])
+	assert.Len(t, repo.apps, 1)
+}
+
+func TestCreate_WithUser(t *testing.T) {
+	h, repo := newTestHandler()
+	user := &model.User{ID: "u1"}
+
+	rec := post(h.Create, `{"name":"App","description":"d","permission":["read:account"]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	for _, a := range repo.apps {
+		require.NotNil(t, a.UserID)
+		assert.Equal(t, "u1", *a.UserID)
+	}
+}
+
+func TestCreate_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+
+	rec := post(h.Create, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	rec = post(h.Create, `{"name":"x"}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreate_DBError(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.createErr = assert.AnError
+
+	rec := post(h.Create, `{"name":"App","description":"d","permission":["read:account"]}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- Show ---
+
+func TestShow_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.apps["app1"] = &model.App{ID: "app1", Name: "MyApp", Secret: "s1", Permission: pq.StringArray{"read:account"}}
+
+	rec := post(h.Show, `{"appId":"app1"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "MyApp", resp["name"])
+	// 認証なし→secret非公開
+	_, hasSecret := resp["secret"]
+	assert.False(t, hasSecret)
+}
+
+func TestShow_WithOwner(t *testing.T) {
+	h, repo := newTestHandler()
+	uid := "u1"
+	repo.apps["app1"] = &model.App{ID: "app1", Name: "MyApp", Secret: "s1", UserID: &uid, Permission: pq.StringArray{"read:account"}}
+
+	rec := post(h.Show, `{"appId":"app1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "s1", resp["secret"])
+}
+
+func TestShow_NotFound(t *testing.T) {
+	h, _ := newTestHandler()
+
+	rec := post(h.Show, `{"appId":"ghost"}`, nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShow_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+
+	rec := post(h.Show, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- MyApps ---
+
+func TestMyApps_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	uid := "u1"
+	repo.apps["a1"] = &model.App{ID: "a1", Name: "App1", Secret: "s1", UserID: &uid, Permission: pq.StringArray{"read:account"}}
+	repo.apps["a2"] = &model.App{ID: "a2", Name: "App2", Secret: "s2", UserID: &uid, Permission: pq.StringArray{"read:account"}}
+
+	rec := post(h.MyApps, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 2)
+	// secretが含まれている
+	for _, a := range resp {
+		assert.NotEmpty(t, a["secret"])
+	}
+}
+
+func TestMyApps_Empty(t *testing.T) {
+	h, _ := newTestHandler()
+
+	rec := post(h.MyApps, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 0)
+}
+
+func TestMyApps_WithLimit(t *testing.T) {
+	h, repo := newTestHandler()
+	uid := "u1"
+	for i := 0; i < 5; i++ {
+		appID := "a" + string(rune('0'+i))
+		repo.apps[appID] = &model.App{ID: appID, Name: "App", Secret: "s", UserID: &uid, Permission: pq.StringArray{"read:account"}}
+	}
+
+	rec := post(h.MyApps, `{"limit":2}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.LessOrEqual(t, len(resp), 2)
+}
+
+func TestSecureRandomHex(t *testing.T) {
+	s := secureRandomHex(32)
+	assert.Len(t, s, 32)
+	s2 := secureRandomHex(32)
+	assert.NotEqual(t, s, s2)
+}
+
+func TestPackApp_NoSecret(t *testing.T) {
+	a := &model.App{ID: "a1", Name: "App", Permission: pq.StringArray{"read:account"}}
+	result := packApp(a, false)
+	_, has := result["secret"]
+	assert.False(t, has)
+}
+
+func TestPackApp_WithSecret(t *testing.T) {
+	a := &model.App{ID: "a1", Name: "App", Secret: "s123", Permission: pq.StringArray{"read:account"}}
+	result := packApp(a, true)
+	assert.Equal(t, "s123", result["secret"])
+}

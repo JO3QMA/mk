@@ -122,6 +122,30 @@ func (m *mockAuthSessionRepo) CreateAccessToken(token *model.AccessToken) error 
 	return nil
 }
 
+func (m *mockAuthSessionRepo) FindAppByID(appID string) (*model.App, error) {
+	if app := m.findAppByID(appID); app != nil {
+		return app, nil
+	}
+	return nil, errNotFound
+}
+
+func (m *mockAuthSessionRepo) ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error) {
+	var apps []*model.App
+	for _, a := range m.apps {
+		if a.UserID != nil && *a.UserID == userID {
+			apps = append(apps, a)
+		}
+	}
+	if offset >= len(apps) {
+		return []*model.App{}, nil
+	}
+	apps = apps[offset:]
+	if len(apps) > limit {
+		apps = apps[:limit]
+	}
+	return apps, nil
+}
+
 func (m *mockAuthSessionRepo) findAppByID(appID string) *model.App {
 	for _, app := range m.apps {
 		if app.ID == appID {
@@ -376,4 +400,63 @@ func TestPackSession_NilApp(t *testing.T) {
 func TestPackUser_Nil(t *testing.T) {
 	result := packUser(nil)
 	assert.Empty(t, result)
+}
+
+// --- GenToken ---
+
+func TestGenToken_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{"permission":["read:account","write:notes"]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp["token"])
+
+	// DB上にアクセストークンが作成されている
+	assert.Len(t, repo.accessTokens, 1)
+	for _, at := range repo.accessTokens {
+		assert.Equal(t, "u1", at.UserID)
+		assert.Nil(t, at.AppID)
+		assert.Equal(t, resp["token"], at.Token)
+	}
+}
+
+func TestGenToken_WithOptionalFields(t *testing.T) {
+	h, repo := newTestHandler()
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{"permission":["read:account"],"name":"MyApp","description":"desc","iconUrl":"https://example.com/icon.png","session":"sess1"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Len(t, repo.accessTokens, 1)
+	for _, at := range repo.accessTokens {
+		assert.NotNil(t, at.Name)
+		assert.Equal(t, "MyApp", *at.Name)
+		assert.NotNil(t, at.Description)
+		assert.Equal(t, "desc", *at.Description)
+		assert.NotNil(t, at.IconURL)
+		assert.Equal(t, "https://example.com/icon.png", *at.IconURL)
+		assert.NotNil(t, at.Session)
+		assert.Equal(t, "sess1", *at.Session)
+	}
+}
+
+func TestGenToken_MissingPermission(t *testing.T) {
+	h, _ := newTestHandler()
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGenToken_CreateError(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.createErr = errNotFound
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{"permission":["read:account"]}`, user)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

@@ -167,6 +167,42 @@ func (h *Handler) SessionUserkey(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
+// GenToken handles POST /api/miauth/gen-token.
+// MiAuth用のアクセストークンを直接生成する（App不要）。
+func (h *Handler) GenToken(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		Session     *string  `json:"session"`
+		Name        *string  `json:"name"`
+		Description *string  `json:"description"`
+		IconURL     *string  `json:"iconUrl"`
+		Permission  []string `json:"permission"`
+	}
+	if err := c.Bind(&req); err != nil || req.Permission == nil {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "permission is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+	}
+
+	tokenStr := secureRandomHex(32)
+	now := time.Now()
+	accessToken := &model.AccessToken{
+		ID:          h.idGen.Generate(now),
+		LastUsedAt:  &now,
+		Token:       tokenStr,
+		Hash:        tokenStr,
+		UserID:      user.ID,
+		Session:     req.Session,
+		Name:        req.Name,
+		Description: req.Description,
+		IconURL:     req.IconURL,
+		Permission:  req.Permission,
+	}
+	if err := h.repo.CreateAccessToken(accessToken); err != nil {
+		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{"token": tokenStr})
+}
+
 func packSession(s *model.AuthSession) map[string]any {
 	result := map[string]any{
 		"id":    s.ID,
