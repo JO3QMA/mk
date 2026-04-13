@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
+	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
@@ -35,6 +37,13 @@ type Processor struct {
 	noteDeleteSvc    *corenote.DeleteService
 	userRepo         repository.UserRepository
 	noteRepo         repository.NoteRepository
+
+	// Block/Flag/Move/Add/Remove federation hooks.
+	// SetBlockingService等で注入。nilの場合は対応activityがErrUnsupportedActivityを返す。
+	blockingService *coreblocking.Service
+	abuseReportRepo repository.AbuseReportRepository
+	pinningRepo     repository.UserNotePiningRepository
+	pinningIDGen    id.Generator
 
 	// Reversi federation hooks (Phase 9.7). All four are set via
 	// SetReversi; if nil, reversi inbox types are treated as unsupported.
@@ -124,6 +133,18 @@ func (p *Processor) Process(body []byte) error {
 		return p.handleUpdate(act)
 	case "reject":
 		return p.handleReject(act)
+	case "block":
+		return p.handleBlock(act)
+	case "flag":
+		return p.handleFlag(act)
+	case "move":
+		return p.handleMove(act)
+	case "add":
+		return p.handleAdd(act)
+	case "remove":
+		return p.handleRemove(act)
+	case "emojireaction", "emojireact":
+		return p.handleLike(act)
 	case "invite":
 		return p.handleReversiInvite(act)
 	case "join":
@@ -132,6 +153,22 @@ func (p *Processor) Process(body []byte) error {
 		return p.handleReversiLeave(act)
 	}
 	return ErrUnsupportedActivity
+}
+
+// SetBlockingService wires the blocking service for Block/Undo Block activities.
+func (p *Processor) SetBlockingService(svc *coreblocking.Service) {
+	p.blockingService = svc
+}
+
+// SetAbuseReportRepo wires the abuse report repository for Flag activities.
+func (p *Processor) SetAbuseReportRepo(repo repository.AbuseReportRepository) {
+	p.abuseReportRepo = repo
+}
+
+// SetPinningRepo wires the note pinning repository for Add/Remove activities.
+func (p *Processor) SetPinningRepo(repo repository.UserNotePiningRepository, idGen id.Generator) {
+	p.pinningRepo = repo
+	p.pinningIDGen = idGen
 }
 
 // SetReversi wires the reversi federation dependencies. When any of the
@@ -186,6 +223,8 @@ func (p *Processor) handleUndo(act genericActivity) error {
 		return p.handleUndoLike(act, inner)
 	case "announce":
 		return p.handleUndoAnnounce(act, inner)
+	case "block":
+		return p.handleUndoBlock(act, inner)
 	}
 	return ErrUnsupportedActivity
 }
@@ -513,6 +552,229 @@ func (p *Processor) handleReject(act genericActivity) error {
 		!errors.Is(err, corefollowing.ErrRequestNotFound) {
 		return err
 	}
+	return nil
+}
+
+// handleBlock processes an inbound Block activity. リモートユーザーがローカル
+// ユーザーをブロックした場合にブロック関係を作成する。
+func (p *Processor) handleBlock(act genericActivity) error {
+	if p.blockingService == nil {
+		return ErrUnsupportedActivity
+	}
+	blocker, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	blockeeURI, err := readObjectString(act.Object)
+	if err != nil {
+		return err
+	}
+	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	if err != nil {
+		return errors.New("unknown blockee")
+	}
+	// ローカルユーザーのみ対象
+	if blockee.Host != nil {
+		return nil
+	}
+	if _, err := p.blockingService.Block(blocker.ID, blockee.ID); err != nil {
+		if errors.Is(err, coreblocking.ErrAlreadyBlocking) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// handleUndoBlock removes a blocking relationship created by a previous Block.
+func (p *Processor) handleUndoBlock(act genericActivity, inner genericActivity) error {
+	if p.blockingService == nil {
+		return ErrUnsupportedActivity
+	}
+	blocker, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	blockeeURI, err := readObjectString(inner.Object)
+	if err != nil {
+		return err
+	}
+	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	if err != nil {
+		return errors.New("unknown blockee")
+	}
+	if err := p.blockingService.Unblock(blocker.ID, blockee.ID); err != nil {
+		if errors.Is(err, coreblocking.ErrNotBlocking) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// handleFlag processes an inbound Flag (abuse report) activity. リモートインスタンスからの
+// 通報を保存する。
+func (p *Processor) handleFlag(act genericActivity) error {
+	if p.abuseReportRepo == nil {
+		return ErrUnsupportedActivity
+	}
+	reporter, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	// objectからURI配列を取得（ユーザーやノートのURI）
+	var uris []string
+	if err := json.Unmarshal(act.Object, &uris); err != nil {
+		// 単一URIの場合
+		var single string
+		if err2 := json.Unmarshal(act.Object, &single); err2 != nil {
+			return errors.New("flag: cannot parse object")
+		}
+		uris = []string{single}
+	}
+	if len(uris) == 0 {
+		return errors.New("flag: empty object")
+	}
+	// 最初のURIからターゲットユーザーを特定
+	var targetUserID string
+	for _, uri := range uris {
+		if u, err := p.userRepo.FindByURI(uri); err == nil {
+			targetUserID = u.ID
+			break
+		}
+	}
+	if targetUserID == "" {
+		// ノートURIからユーザーを特定する試み
+		for _, uri := range uris {
+			if n, err := p.noteRepo.FindByURI(uri); err == nil {
+				targetUserID = n.UserID
+				break
+			}
+		}
+	}
+	if targetUserID == "" {
+		return errors.New("flag: cannot resolve target user")
+	}
+	// contentフィールドを取得
+	var content struct {
+		Content string `json:"content"`
+	}
+	_ = json.Unmarshal(act.raw, &content)
+	comment := content.Content
+	if comment == "" {
+		comment = "(flagged via ActivityPub)"
+	}
+	report := &model.AbuseUserReport{
+		TargetUserID:   targetUserID,
+		ReporterID:     reporter.ID,
+		Comment:        comment,
+		TargetUserHost: nil,
+		ReporterHost:   reporter.Host,
+	}
+	// ターゲットユーザーのホスト情報を取得
+	if target, err := p.userRepo.FindByID(targetUserID); err == nil {
+		report.TargetUserHost = target.Host
+	}
+	if err := p.abuseReportRepo.Create(report); err != nil {
+		slog.Warn("failed to create abuse report from flag activity", "err", err)
+		return err
+	}
+	return nil
+}
+
+// handleMove processes an inbound Move activity. アカウント移行通知を受けて
+// リモートactorのプロフィールを再取得する。
+func (p *Processor) handleMove(act genericActivity) error {
+	// actorのプロフィールを最新に更新（movedTo, alsoKnownAs等が反映される）
+	if _, err := p.resolver.ResolveActor(act.Actor); err != nil {
+		return err
+	}
+	return nil
+}
+
+// handleAdd processes an inbound Add activity. actorのfeaturedコレクションへの
+// ノートピン留めを処理する。
+func (p *Processor) handleAdd(act genericActivity) error {
+	if p.pinningRepo == nil {
+		return ErrUnsupportedActivity
+	}
+	actor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	// targetがactorのfeaturedコレクションか確認
+	var target struct {
+		Target string `json:"target"`
+	}
+	_ = json.Unmarshal(act.raw, &target)
+	actorURI := ""
+	if actor.URI != nil {
+		actorURI = *actor.URI
+	}
+	expectedFeatured := actorURI + "/collections/featured"
+	if target.Target != expectedFeatured {
+		return nil
+	}
+	noteURI, err := readObjectString(act.Object)
+	if err != nil {
+		return err
+	}
+	// ローカルノートならDBから検索、リモートならIngestNoteで取り込む
+	note, err := p.noteRepo.FindByURI(noteURI)
+	if err != nil {
+		note, err = p.resolver.IngestNote(act.Object)
+		if err != nil {
+			return err
+		}
+	}
+	now := nowFn()
+	pin := &model.UserNotePining{
+		ID:     p.pinningIDGen.Generate(now),
+		UserID: actor.ID,
+		NoteID: note.ID,
+	}
+	if err := p.pinningRepo.Create(pin); err != nil {
+		// 既にピン留め済みなら無視
+		return nil
+	}
+	return nil
+}
+
+// handleRemove processes an inbound Remove activity. actorのfeaturedコレクションから
+// ノートのピン留めを解除する。
+func (p *Processor) handleRemove(act genericActivity) error {
+	if p.pinningRepo == nil {
+		return ErrUnsupportedActivity
+	}
+	actor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	var target struct {
+		Target string `json:"target"`
+	}
+	_ = json.Unmarshal(act.raw, &target)
+	actorURI := ""
+	if actor.URI != nil {
+		actorURI = *actor.URI
+	}
+	expectedFeatured := actorURI + "/collections/featured"
+	if target.Target != expectedFeatured {
+		return nil
+	}
+	noteURI, err := readObjectString(act.Object)
+	if err != nil {
+		return err
+	}
+	note, err := p.noteRepo.FindByURI(noteURI)
+	if err != nil {
+		return nil
+	}
+	pin, err := p.pinningRepo.FindByPair(actor.ID, note.ID)
+	if err != nil {
+		return nil
+	}
+	_ = p.pinningRepo.Delete(pin)
 	return nil
 }
 
