@@ -413,7 +413,7 @@ func resolveTrustProxy(provided []string) []string {
 }
 
 // ParseTrustProxy converts a list of CIDR strings into parsed *net.IPNet values.
-// 無効なCIDRはスキップしてログに記録する。
+// Invalid CIDRs are skipped with a warning log.
 func ParseTrustProxy(cidrs []string) []*net.IPNet {
 	var nets []*net.IPNet
 	for _, cidr := range cidrs {
