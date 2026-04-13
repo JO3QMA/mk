@@ -217,7 +217,8 @@ func (h *Handler) ListsUpdateMembership(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"}})
 	}
 	if err := h.userListRepo.UpdateMembership(req.ListID, req.UserID, req.WithReplies); err != nil {
-		return internalError(c)
+		// メンバーが存在しない場合は404
+		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such user.", "code": "NO_SUCH_USER", "id": "588e7f72-c744-4a61-b180-d354e912bda2"}})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

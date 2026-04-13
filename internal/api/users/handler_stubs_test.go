@@ -231,15 +231,15 @@ func TestListsUpdateMembership_NilRepo(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
-func TestListsUpdateMembership_UpdateError(t *testing.T) {
+func TestListsUpdateMembership_MemberNotFound(t *testing.T) {
 	h, _ := newTestHandler(t)
 	listRepo := testutil.NewMockUserListRepository()
 	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "test"}
-	// メンバーが存在しないためUpdateMembershipがErrNotFoundを返す
+	// メンバーが存在しないためUpdateMembershipがErrNotFoundを返す→404
 	h.SetUserListRepo(listRepo)
 
 	rec := postStub(h.ListsUpdateMembership, `{"listId":"l1","userId":"ghost","withReplies":true}`, &model.User{ID: "u1"})
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // --- UsersBulk ---
