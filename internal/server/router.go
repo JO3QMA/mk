@@ -1533,16 +1533,19 @@ func (s *Server) setupRoutes() {
 			})
 		}
 		createdBy := entity.PackUserLite(user)
-		return c.JSON(http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"id":        ticket.ID,
 			"code":      ticket.Code,
 			"expiresAt": ticket.ExpiresAt,
-			"createdAt": ticket.ID,
 			"createdBy": createdBy,
 			"usedBy":    nil,
 			"usedAt":    nil,
 			"used":      false,
-		})
+		}
+		if t, err := idGen.ParseTime(ticket.ID); err == nil {
+			resp["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		}
+		return c.JSON(http.StatusOK, resp)
 	}, middleware.RequireAuth())
 
 	// invite/list — 招待コード一覧 (認証必須)
@@ -1576,16 +1579,19 @@ func (s *Server) setupRoutes() {
 		}
 		out := make([]map[string]any, 0, len(tickets))
 		for _, t := range tickets {
-			out = append(out, map[string]any{
+			entry := map[string]any{
 				"id":        t.ID,
 				"code":      t.Code,
 				"expiresAt": t.ExpiresAt,
-				"createdAt": t.ID,
 				"createdBy": nil,
 				"usedBy":    nil,
 				"usedAt":    t.UsedAt,
 				"used":      t.UsedByID != nil,
-			})
+			}
+			if ts, err := idGen.ParseTime(t.ID); err == nil {
+				entry["createdAt"] = ts.UTC().Format("2006-01-02T15:04:05.000Z")
+			}
+			out = append(out, entry)
 		}
 		return c.JSON(http.StatusOK, out)
 	}, middleware.RequireAuth())
@@ -1661,7 +1667,9 @@ func (s *Server) setupRoutes() {
 func generateInviteCode() string {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, 8)
-	_, _ = io.ReadFull(cryptorand.Reader, b)
+	if _, err := io.ReadFull(cryptorand.Reader, b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	for i := range b {
 		b[i] = chars[b[i]%byte(len(chars))]
 	}
