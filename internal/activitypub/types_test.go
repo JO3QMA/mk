@@ -62,6 +62,19 @@ func TestAddContext_Variants(t *testing.T) {
 	}
 }
 
+func TestAddContext_IndependentSlices(t *testing.T) {
+	// 異なるオブジェクトが独立したcontextスライスを持つこと
+	p := &Person{}
+	n := &Note{}
+	AddContext(p)
+	AddContext(n)
+	pCtx := p.Context.([]any)
+	nCtx := n.Context.([]any)
+	// appendしても互いに影響しない
+	pCtx = append(pCtx, "extra")
+	assert.Len(t, nCtx, 3)
+}
+
 func TestAddContext_NoOpForUnknown(t *testing.T) {
 	// 引数の型が switch にない場合はno-op
 	type other struct{}

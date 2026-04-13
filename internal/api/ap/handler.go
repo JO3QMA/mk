@@ -156,7 +156,7 @@ func (h *Handler) APIGet(c echo.Context) error {
 		}
 	}
 
-	return c.JSON(http.StatusOK, map[string]any{})
+	return c.JSON(http.StatusNotFound, apAPIError("NO_SUCH_OBJECT", "No such object.", "dc94d745-1262-4e63-a17d-fecaa57efc82"))
 }
 
 // APIShow handles POST /api/ap/show — URIからUser/Noteを解決して返す。
@@ -290,7 +290,12 @@ func extractLocalID(uri, pathPrefix string) string {
 	if prefixIdx < 0 {
 		return ""
 	}
-	return uri[prefixIdx+len(pathPrefix):]
+	id := uri[prefixIdx+len(pathPrefix):]
+	// フラグメント (#main-key 等) を除去
+	if i := strings.IndexByte(id, '#'); i >= 0 {
+		id = id[:i]
+	}
+	return id
 }
 
 func packNoteForAPI(n *model.Note) map[string]any {

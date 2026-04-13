@@ -1,6 +1,8 @@
 package activitypub
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -67,9 +69,15 @@ func (b *URLBuilder) CreateActivityURI(noteID string) string {
 	return b.NoteURI(noteID) + "/activity"
 }
 
-// FollowURI returns the URI for a Follow activity (followerID-followeeID).
+// FollowURI returns the URI for a Follow activity.
+// followeeIDが完全なURIの場合はハッシュ化してパスセグメントに埋め込む。
 func (b *URLBuilder) FollowURI(followerID, followeeID string) string {
-	return b.baseURL + "/follows/" + followerID + "/" + followeeID
+	id := followeeID
+	if strings.Contains(followeeID, "/") {
+		h := sha256.Sum256([]byte(followeeID))
+		id = hex.EncodeToString(h[:16])
+	}
+	return b.baseURL + "/follows/" + followerID + "/" + id
 }
 
 // MentionResolver resolves a note.Mentions entry (user ID) into the data
@@ -79,6 +87,9 @@ func (b *URLBuilder) FollowURI(followerID, followeeID string) string {
 //
 // uri はローカルユーザーなら urls.UserURI(user.ID)、リモートユーザーなら
 // user.URI を返す。name は Misskey 互換で "@username" / "@username@host"。
+//
+// TODO: ok bool ではDB障害とユーザー未存在を区別できない。
+// 将来的に (name, uri string, err error) に変更してログ出力を改善する。
 type MentionResolver interface {
 	ResolveMention(userID string) (name, uri string, ok bool)
 }
@@ -560,6 +571,7 @@ func stringValue(p *string) string {
 func parseNoteTime(noteID string, idGen id.Generator) string {
 	t, err := idGen.ParseTime(noteID)
 	if err != nil {
+		slog.Warn("renderer: failed to parse note ID for timestamp, using time.Now()", "noteId", noteID, "err", err)
 		return time.Now().UTC().Format(time.RFC3339)
 	}
 	return t.UTC().Format(time.RFC3339)

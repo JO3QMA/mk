@@ -243,33 +243,43 @@ var MisskeyContext = map[string]any{
 }
 
 // fullContext は全AP出力で使われる完全なJSON-LDコンテキスト。
+// 不変として扱うこと。各オブジェクトには newContext() で新しいコピーを渡す。
 var fullContext = []any{ContextURL, SecurityContextURL, MisskeyContext}
+
+// newContext returns a fresh copy of fullContext so callers cannot
+// accidentally mutate the shared template via append.
+func newContext() []any {
+	c := make([]any, len(fullContext))
+	copy(c, fullContext)
+	return c
+}
 
 // AddContext attaches the standard AS+security+Misskey context to any object
 // that embeds Object. 配列で持つことで複数 vocabulary を表現する。
 func AddContext(o any) {
+	ctx := newContext()
 	switch v := o.(type) {
 	case *Person:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Note:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Create:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Follow:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Accept:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Reject:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Undo:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Delete:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Update:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Like:
-		v.Context = fullContext
+		v.Context = ctx
 	case *Announce:
-		v.Context = fullContext
+		v.Context = ctx
 	}
 }

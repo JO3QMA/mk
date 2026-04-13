@@ -106,6 +106,11 @@ func renderNode(b *strings.Builder, n *Node, host string) {
 			html.EscapeString(u), html.EscapeString(u)))
 	case NodeLink:
 		u, _ := n.Props["url"].(string)
+		// XSS防止: http/https以外のスキーム (javascript: 等) はリンク化しない
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			renderChildren(b, n.Children, host)
+			break
+		}
 		b.WriteString(fmt.Sprintf(`<a href="%s">`, html.EscapeString(u)))
 		renderChildren(b, n.Children, host)
 		b.WriteString("</a>")

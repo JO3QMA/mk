@@ -964,9 +964,11 @@ func (s *state) trySearch() *Node {
 	line := s.src[lineStart:s.pos]
 
 	// 検索キーワードで終わるか確認
+	trimmedLine := strings.TrimSpace(line)
 	for _, suffix := range []string{" 検索", " search", " [検索]", " [search]", " Search", " SEARCH"} {
-		if strings.HasSuffix(strings.TrimSpace(line), strings.TrimSpace(suffix)) {
-			query := strings.TrimSpace(line[:len(line)-len(suffix)])
+		trimmedSuffix := strings.TrimSpace(suffix)
+		if strings.HasSuffix(trimmedLine, trimmedSuffix) {
+			query := strings.TrimSpace(trimmedLine[:len(trimmedLine)-len(trimmedSuffix)])
 			if query == "" {
 				continue
 			}

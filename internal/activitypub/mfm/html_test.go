@@ -204,6 +204,31 @@ func TestToHTML_Fn_Ruby_NoArgs(t *testing.T) {
 	assert.Equal(t, "<i>base</i>", result)
 }
 
+func TestToHTML_Link_JavascriptXSS(t *testing.T) {
+	// javascript: スキームはリンク化せずテキストのみ出力
+	nodes := []*Node{{
+		Type:     NodeLink,
+		Props:    map[string]any{"url": "javascript:alert(1)"},
+		Children: []*Node{Text("click me")},
+	}}
+	result := ToHTML(nodes, testHost)
+	assert.NotContains(t, result, "javascript:")
+	assert.NotContains(t, result, "<a")
+	assert.Contains(t, result, "click me")
+}
+
+func TestToHTML_Link_DataScheme(t *testing.T) {
+	// data: スキームもリンク化しない
+	nodes := []*Node{{
+		Type:     NodeLink,
+		Props:    map[string]any{"url": "data:text/html,<script>alert(1)</script>"},
+		Children: []*Node{Text("label")},
+	}}
+	result := ToHTML(nodes, testHost)
+	assert.NotContains(t, result, "<a")
+	assert.Contains(t, result, "label")
+}
+
 func TestToHTML_Fn_Unixtime_Invalid(t *testing.T) {
 	// non-numeric → italic fallback
 	nodes := []*Node{{

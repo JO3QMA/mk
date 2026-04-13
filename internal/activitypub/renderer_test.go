@@ -2,6 +2,7 @@ package activitypub
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,18 @@ func TestURLBuilder_Helpers(t *testing.T) {
 	assert.Equal(t, "https://example.com/inbox", b.SharedInbox())
 	assert.Equal(t, "https://example.com/notes/n1", b.NoteURI("n1"))
 	assert.Equal(t, "https://example.com/notes/n1/activity", b.CreateActivityURI("n1"))
+	// 短いIDはそのまま使われる
 	assert.Equal(t, "https://example.com/follows/a/b", b.FollowURI("a", "b"))
+}
+
+func TestURLBuilder_FollowURI_FullURI(t *testing.T) {
+	b := NewURLBuilder("https://example.com")
+	// 完全なURIはハッシュ化されてパスセグメントに入る
+	uri := b.FollowURI("alice", "https://remote.example/users/bob")
+	assert.True(t, strings.HasPrefix(uri, "https://example.com/follows/alice/"), "URI should start with follows prefix")
+	assert.NotContains(t, uri, "https://remote.example")
+	// 同じ入力で同じ出力
+	assert.Equal(t, uri, b.FollowURI("alice", "https://remote.example/users/bob"))
 }
 
 func TestRenderer_RenderPerson(t *testing.T) {
@@ -242,6 +254,9 @@ func TestRenderer_RenderFollow(t *testing.T) {
 	assert.Equal(t, "Follow", f.Type)
 	assert.Equal(t, "https://example.com/users/alice", f.Actor)
 	assert.Equal(t, "https://remote.example/users/bob", f.Object)
+	// IDはURI部分がハッシュ化されている
+	assert.Contains(t, f.ID, "https://example.com/follows/alice/")
+	assert.NotContains(t, f.ID, "https://remote.example")
 }
 
 func TestRenderer_RenderAccept(t *testing.T) {
