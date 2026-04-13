@@ -625,10 +625,31 @@ func newProcessorWithPinning(t *testing.T) (*federation.Processor, *testutil.Moc
 	return processor, repo, noteRepo, piningRepo
 }
 
+// resolveAliceAndSetFeatured はalice actorを事前解決してFeaturedフィールドを設定する。
+func resolveAliceAndSetFeatured(t *testing.T, p *federation.Processor, repo *testutil.MockUserRepository) string {
+	t.Helper()
+	// Followでaliceを解決させる（ダミーのfollowee不要、ResolveActorが呼ばれれば良い）
+	dummyURI := "https://example.com/users/dummy"
+	repo.Users["dummy"] = &model.User{ID: "dummy", Username: "dummy", URI: &dummyURI}
+	_ = p.Process([]byte(`{"type":"Follow","actor":"https://remote.example/users/alice","object":"https://example.com/users/dummy"}`))
+
+	var aliceID string
+	featured := "https://remote.example/users/alice/collections/featured"
+	for _, u := range repo.Users {
+		if u.Username == "alice" {
+			aliceID = u.ID
+			u.Featured = &featured
+			break
+		}
+	}
+	require.NotEmpty(t, aliceID)
+	return aliceID
+}
+
 func TestProcess_Add(t *testing.T) {
 	p, repo, noteRepo, piningRepo := newProcessorWithPinning(t)
-	// actorのfeaturedコレクションURIを構成するためにactorのURIが必要
-	// resolverが作成するaliceのURIは "https://remote.example/users/alice"
+	_ = resolveAliceAndSetFeatured(t, p, repo)
+
 	noteURI := "https://remote.example/notes/n1"
 	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "alice", URI: &noteURI}
 
@@ -639,15 +660,6 @@ func TestProcess_Add(t *testing.T) {
 		"target": "https://remote.example/users/alice/collections/featured"
 	}`)
 	require.NoError(t, p.Process(body))
-	// resolverが生成したaliceのIDを取得
-	var aliceID string
-	for _, u := range repo.Users {
-		if u.Username == "alice" {
-			aliceID = u.ID
-			break
-		}
-	}
-	require.NotEmpty(t, aliceID)
 	assert.True(t, len(piningRepo.Pinings) > 0)
 }
 
@@ -666,6 +678,8 @@ func TestProcess_Add_WrongTarget(t *testing.T) {
 
 func TestProcess_Remove(t *testing.T) {
 	p, repo, noteRepo, piningRepo := newProcessorWithPinning(t)
+	_ = resolveAliceAndSetFeatured(t, p, repo)
+
 	noteURI := "https://remote.example/notes/n1"
 	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "alice", URI: &noteURI}
 
@@ -677,14 +691,6 @@ func TestProcess_Remove(t *testing.T) {
 		"target": "https://remote.example/users/alice/collections/featured"
 	}`)
 	require.NoError(t, p.Process(addBody))
-	var aliceID string
-	for _, u := range repo.Users {
-		if u.Username == "alice" {
-			aliceID = u.ID
-			break
-		}
-	}
-	require.NotEmpty(t, aliceID)
 	require.True(t, len(piningRepo.Pinings) > 0)
 
 	// Remove

@@ -688,10 +688,10 @@ func (p *Processor) handleFlag(act genericActivity) error {
 }
 
 // handleMove processes an inbound Move activity. アカウント移行通知を受けて
-// リモートactorのプロフィールを再取得する。
+// リモートactorのプロフィールを強制再取得する。TTLキャッシュをバイパスして
+// movedTo/alsoKnownAsの最新値を反映する。
 func (p *Processor) handleMove(act genericActivity) error {
-	// actorのプロフィールを最新に更新（movedTo, alsoKnownAs等が反映される）
-	if _, err := p.resolver.ResolveActor(act.Actor); err != nil {
+	if _, err := p.resolver.ForceResolveActor(act.Actor); err != nil {
 		return err
 	}
 	return nil
@@ -712,12 +712,7 @@ func (p *Processor) handleAdd(act genericActivity) error {
 		Target string `json:"target"`
 	}
 	_ = json.Unmarshal(act.raw, &target)
-	actorURI := ""
-	if actor.URI != nil {
-		actorURI = *actor.URI
-	}
-	expectedFeatured := actorURI + "/collections/featured"
-	if target.Target != expectedFeatured {
+	if actor.Featured == nil || target.Target != *actor.Featured {
 		return nil
 	}
 	noteURI, err := readObjectString(act.Object)

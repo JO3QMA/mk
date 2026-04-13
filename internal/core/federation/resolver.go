@@ -218,6 +218,16 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	return user, nil
 }
 
+// ForceResolveActor resolves an actor and always re-fetches the profile,
+// bypassing the TTL cache. Move activityなどプロフィール更新が確実に必要な場合に使う。
+func (r *Resolver) ForceResolveActor(uri string) (*model.User, error) {
+	if existing, err := r.userRepo.FindByURI(uri); err == nil {
+		r.refreshActor(existing, uri)
+		return existing, nil
+	}
+	return r.ResolveActor(uri)
+}
+
 // notifyInstance is a best-effort hook into the instance tracker. ベスト
 // エフォートのため、失敗してもエラーは伝搬しない。
 func (r *Resolver) notifyInstance(host string) {
