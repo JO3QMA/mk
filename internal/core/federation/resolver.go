@@ -273,6 +273,24 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 		fields["sharedInbox"] = &shared
 		existing.SharedInbox = &shared
 	}
+	if actor.Featured != "" {
+		featured := actor.Featured
+		fields["featured"] = &featured
+		existing.Featured = &featured
+	}
+	if actor.MovedTo != "" {
+		movedTo := actor.MovedTo
+		fields["movedToUri"] = &movedTo
+		fields["movedAt"] = &now
+		existing.MovedToURI = &movedTo
+		existing.MovedAt = &now
+	}
+	if len(actor.AlsoKnownAs) > 0 {
+		aka, _ := json.Marshal(actor.AlsoKnownAs)
+		akaStr := string(aka)
+		fields["alsoKnownAs"] = &akaStr
+		existing.AlsoKnownAs = &akaStr
+	}
 	existing.LastFetchedAt = &now
 	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)
 	_ = r.userRepo.UpdateUser(existing.ID, fields)
