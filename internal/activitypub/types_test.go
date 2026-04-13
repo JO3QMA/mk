@@ -31,7 +31,7 @@ func TestAddContext_Variants(t *testing.T) {
 	}
 	for _, c := range cases {
 		AddContext(c)
-		// 全て single string context (Person 以外)
+		// 全型で fullContext (AS + Security + MisskeyContext) が設定される
 		var ctx any
 		switch v := c.(type) {
 		case *Note:
@@ -55,8 +55,24 @@ func TestAddContext_Variants(t *testing.T) {
 		case *Announce:
 			ctx = v.Context
 		}
-		assert.Equal(t, ContextURL, ctx)
+		arr, ok := ctx.([]any)
+		assert.True(t, ok)
+		assert.Contains(t, arr, ContextURL)
+		assert.Contains(t, arr, SecurityContextURL)
 	}
+}
+
+func TestAddContext_IndependentSlices(t *testing.T) {
+	// 異なるオブジェクトが独立したcontextスライスを持つこと
+	p := &Person{}
+	n := &Note{}
+	AddContext(p)
+	AddContext(n)
+	pCtx := p.Context.([]any)
+	nCtx := n.Context.([]any)
+	// appendしても互いに影響しない
+	pCtx = append(pCtx, "extra")
+	assert.Len(t, nCtx, 3)
 }
 
 func TestAddContext_NoOpForUnknown(t *testing.T) {

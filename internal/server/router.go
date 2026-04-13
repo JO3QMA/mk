@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	urlpkg "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -325,6 +326,13 @@ func (s *Server) setupRoutes() {
 	apRenderer := activitypub.NewRenderer(apURLs)
 	// Mention tag を AP Note に埋め込むための resolver。
 	apRenderer.SetMentionResolver(corefederation.NewUserMentionResolver(userRepo, apURLs))
+	apRenderer.SetFileResolver(driveFileRepo)
+	apRenderer.SetEmojiResolver(emojiRepo)
+	apRenderer.SetNoteResolver(noteRepo)
+	// config.URL は "https://example.com" 形式。ホスト部分だけ抽出する。
+	if u, err := urlpkg.Parse(s.config.URL); err == nil {
+		apRenderer.SetHost(u.Host)
+	}
 	apClient := activitypub.NewClient(nil, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
 	if m, err := metaRepo.Fetch(); err == nil && !m.AllowExternalApRedirect {

@@ -1,8 +1,14 @@
 package activitypub
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/activitypub/mfm"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 )
@@ -63,9 +69,15 @@ func (b *URLBuilder) CreateActivityURI(noteID string) string {
 	return b.NoteURI(noteID) + "/activity"
 }
 
-// FollowURI returns the URI for a Follow activity (followerID-followeeID).
+// FollowURI returns the URI for a Follow activity.
+// followeeIDが完全なURIの場合はハッシュ化してパスセグメントに埋め込む。
 func (b *URLBuilder) FollowURI(followerID, followeeID string) string {
-	return b.baseURL + "/follows/" + followerID + "/" + followeeID
+	id := followeeID
+	if strings.Contains(followeeID, "/") {
+		h := sha256.Sum256([]byte(followeeID))
+		id = hex.EncodeToString(h[:16])
+	}
+	return b.baseURL + "/follows/" + followerID + "/" + id
 }
 
 // MentionResolver resolves a note.Mentions entry (user ID) into the data
@@ -75,14 +87,36 @@ func (b *URLBuilder) FollowURI(followerID, followeeID string) string {
 //
 // uri はローカルユーザーなら urls.UserURI(user.ID)、リモートユーザーなら
 // user.URI を返す。name は Misskey 互換で "@username" / "@username@host"。
+//
+// TODO: ok bool ではDB障害とユーザー未存在を区別できない。
+// 将来的に (name, uri string, err error) に変更してログ出力を改善する。
 type MentionResolver interface {
 	ResolveMention(userID string) (name, uri string, ok bool)
+}
+
+// FileResolver loads drive files by ID for rendering Note attachments.
+type FileResolver interface {
+	FindByIDs(ids []string) ([]*model.DriveFile, error)
+}
+
+// EmojiResolver resolves custom emoji names to their model data.
+type EmojiResolver interface {
+	FindByNameAndHost(name string, host *string) (*model.Emoji, error)
+}
+
+// NoteResolver resolves a note by ID (for quote renote URI lookup).
+type NoteResolver interface {
+	FindByID(id string) (*model.Note, error)
 }
 
 // Renderer converts model entities into AS objects.
 type Renderer struct {
 	urls            *URLBuilder
 	mentionResolver MentionResolver
+	fileResolver    FileResolver
+	emojiResolver   EmojiResolver
+	noteResolver    NoteResolver
+	host            string // ローカルホスト名 (MFM変換用)
 }
 
 // NewRenderer constructs a Renderer.
@@ -96,14 +130,41 @@ func (r *Renderer) SetMentionResolver(mr MentionResolver) {
 	r.mentionResolver = mr
 }
 
+// SetFileResolver attaches a FileResolver for Note attachment rendering.
+func (r *Renderer) SetFileResolver(fr FileResolver) {
+	r.fileResolver = fr
+}
+
+// SetEmojiResolver attaches an EmojiResolver for custom emoji tags.
+func (r *Renderer) SetEmojiResolver(er EmojiResolver) {
+	r.emojiResolver = er
+}
+
+// SetNoteResolver attaches a NoteResolver for quote renote URI lookup.
+func (r *Renderer) SetNoteResolver(nr NoteResolver) {
+	r.noteResolver = nr
+}
+
+// SetHost sets the local hostname for MFM→HTML conversion.
+func (r *Renderer) SetHost(host string) {
+	r.host = host
+}
+
 // RenderPerson packs a local user into a Person actor object.
+// profile は nil でもよい (その場合 summary 等のフィールドは省略される)。
 // publicKeyPEM はリポジトリから取得した公開鍵PEM文字列。
-func (r *Renderer) RenderPerson(u *model.User, publicKeyPEM string) *Person {
+func (r *Renderer) RenderPerson(u *model.User, profile *model.UserProfile, publicKeyPEM string) *Person {
 	uri := r.urls.UserURI(u.ID)
+
+	actorType := "Person"
+	if u.IsBot {
+		actorType = "Service"
+	}
+
 	p := &Person{
 		Object: Object{
 			ID:   uri,
-			Type: "Person",
+			Type: actorType,
 			Name: stringValue(u.Name),
 		},
 		Inbox:             r.urls.UserInbox(u.ID),
@@ -120,32 +181,135 @@ func (r *Renderer) RenderPerson(u *model.User, publicKeyPEM string) *Person {
 		},
 		ManuallyApproves: u.IsLocked,
 		Discoverable:     u.IsExplorable,
+		IsCat:            u.IsCat,
 	}
 	if u.AvatarURL != nil {
 		p.Icon = &Image{Type: "Image", URL: *u.AvatarURL}
 	}
+	if u.BannerURL != nil {
+		p.Image = &Image{Type: "Image", URL: *u.BannerURL}
+	}
+	if u.MovedToURI != nil && *u.MovedToURI != "" {
+		p.MovedTo = *u.MovedToURI
+	}
+	if u.AlsoKnownAs != nil && *u.AlsoKnownAs != "" {
+		p.AlsoKnownAs = strings.Split(*u.AlsoKnownAs, ",")
+	}
+	if u.Featured != nil && *u.Featured != "" {
+		p.Featured = *u.Featured
+	}
+
+	// profile から追加フィールドを埋める
+	if profile != nil {
+		r.enrichPersonFromProfile(p, profile)
+	}
+
+	// ユーザーのカスタム絵文字をEmoji tagとして追加
+	r.addEmojiTags(&p.Tag, u.Emojis, nil)
+
 	AddContext(p)
 	return p
 }
 
+// enrichPersonFromProfile fills profile-derived fields into Person.
+func (r *Renderer) enrichPersonFromProfile(p *Person, profile *model.UserProfile) {
+	if profile.Description != nil && *profile.Description != "" {
+		desc := *profile.Description
+		// MFM → HTML
+		nodes := mfm.Parse(desc)
+		p.Summary = mfm.ToHTML(nodes, r.host)
+		p.MisskeySummary = desc
+	}
+	if profile.Birthday != nil && *profile.Birthday != "" {
+		p.VcardBday = *profile.Birthday
+	}
+	if profile.Location != nil && *profile.Location != "" {
+		p.VcardAddress = *profile.Location
+	}
+	if profile.FollowedMessage != nil && *profile.FollowedMessage != "" {
+		p.MisskeyFollowedMessage = *profile.FollowedMessage
+	}
+
+	// profile.Fields → PropertyValue attachment
+	if len(profile.Fields) > 0 {
+		var fields []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(profile.Fields, &fields); err == nil && len(fields) > 0 {
+			for _, f := range fields {
+				p.Attachment = append(p.Attachment, PropertyValue{
+					Type:  "PropertyValue",
+					Name:  f.Name,
+					Value: f.Value,
+				})
+			}
+		}
+	}
+}
+
 // RenderNote packs a local note into a Note object.
 func (r *Renderer) RenderNote(n *model.Note, idGen id.Generator) *Note {
+	text := stringValue(n.Text)
+
+	// MFM → HTML変換
+	var htmlContent string
+	var nodes []*mfm.Node
+	if text != "" {
+		nodes = mfm.Parse(text)
+		htmlContent = mfm.ToHTML(nodes, r.host)
+	}
+
 	out := &Note{
 		Object: Object{
 			ID:   r.urls.NoteURI(n.ID),
 			Type: "Note",
 		},
 		AttributedTo: r.urls.UserURI(n.UserID),
-		Content:      stringValue(n.Text),
+		Content:      htmlContent,
 		Published:    parseNoteTime(n.ID, idGen),
 		Sensitive:    n.CW != nil && *n.CW != "",
 	}
+
+	// _misskey_content / source: 標準ノードのみなら省略 (TS版 noMisskeyContent)
+	if text != "" && !mfm.IsSimple(nodes) {
+		out.MisskeyContent = text
+		out.Source = &Source{
+			Content:   text,
+			MediaType: "text/x.misskeymarkdown",
+		}
+	}
+
 	if n.CW != nil {
 		out.Summary = *n.CW
 	}
 	if n.ReplyID != nil {
 		out.InReplyTo = r.urls.NoteURI(*n.ReplyID)
 	}
+
+	// Quote renote: text付きrenoteは_misskey_quote + quoteUrlを付ける
+	if n.RenoteID != nil && text != "" {
+		quoteURI := r.resolveNoteURI(*n.RenoteID)
+		if quoteURI != "" {
+			out.MisskeyQuote = quoteURI
+			out.QuoteURL = quoteURI
+		}
+	}
+
+	// 添付ファイル
+	r.addAttachments(out, n)
+
+	// Hashtag tags
+	for _, tag := range n.Tags {
+		out.Tag = append(out.Tag, Hashtag{
+			Type: "Hashtag",
+			Href: "https://" + r.host + "/tags/" + tag,
+			Name: "#" + tag,
+		})
+	}
+
+	// Custom emoji tags
+	r.addEmojiTags(&out.Tag, n.Emojis, nil)
 
 	to, cc := r.addressing(n)
 
@@ -175,6 +339,65 @@ func (r *Renderer) RenderNote(n *model.Note, idGen id.Generator) *Note {
 
 	AddContext(out)
 	return out
+}
+
+// addAttachments loads drive files and adds Document entries to the note.
+func (r *Renderer) addAttachments(out *Note, n *model.Note) {
+	if r.fileResolver == nil || len(n.FileIDs) == 0 {
+		return
+	}
+	files, err := r.fileResolver.FindByIDs(n.FileIDs)
+	if err != nil {
+		slog.Warn("renderer: failed to load drive files", "noteId", n.ID, "err", err)
+		return
+	}
+	for _, f := range files {
+		doc := Document{
+			Type:      "Document",
+			MediaType: f.Type,
+			URL:       f.URL,
+			Name:      stringValue(f.Comment),
+			Sensitive: f.IsSensitive,
+		}
+		out.Attachment = append(out.Attachment, doc)
+		if f.IsSensitive {
+			out.Sensitive = true
+		}
+	}
+}
+
+// resolveNoteURI returns the canonical URI for a note (remote URI or local).
+func (r *Renderer) resolveNoteURI(noteID string) string {
+	if r.noteResolver != nil {
+		if note, err := r.noteResolver.FindByID(noteID); err == nil {
+			if note.URI != nil && *note.URI != "" {
+				return *note.URI
+			}
+		}
+	}
+	return r.urls.NoteURI(noteID)
+}
+
+// addEmojiTags resolves custom emoji names and appends EmojiTag entries.
+func (r *Renderer) addEmojiTags(tags *[]any, emojiNames []string, host *string) {
+	if r.emojiResolver == nil || len(emojiNames) == 0 {
+		return
+	}
+	for _, name := range emojiNames {
+		emoji, err := r.emojiResolver.FindByNameAndHost(name, host)
+		if err != nil {
+			continue
+		}
+		tag := EmojiTag{
+			Type: "Emoji",
+			Name: ":" + emoji.Name + ":",
+			Icon: Image{Type: "Image", URL: emoji.PublicURL},
+		}
+		if emoji.URI != nil {
+			tag.ID = *emoji.URI
+		}
+		*tags = append(*tags, tag)
+	}
 }
 
 // RenderCreate wraps a Note into a Create activity addressed to the same audience.
@@ -348,6 +571,7 @@ func stringValue(p *string) string {
 func parseNoteTime(noteID string, idGen id.Generator) string {
 	t, err := idGen.ParseTime(noteID)
 	if err != nil {
+		slog.Warn("renderer: failed to parse note ID for timestamp, using time.Now()", "noteId", noteID, "err", err)
 		return time.Now().UTC().Format(time.RFC3339)
 	}
 	return t.UTC().Format(time.RFC3339)

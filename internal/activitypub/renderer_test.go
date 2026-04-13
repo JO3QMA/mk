@@ -1,6 +1,8 @@
 package activitypub
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 func newRenderer() *Renderer {
@@ -26,7 +29,18 @@ func TestURLBuilder_Helpers(t *testing.T) {
 	assert.Equal(t, "https://example.com/inbox", b.SharedInbox())
 	assert.Equal(t, "https://example.com/notes/n1", b.NoteURI("n1"))
 	assert.Equal(t, "https://example.com/notes/n1/activity", b.CreateActivityURI("n1"))
+	// 短いIDはそのまま使われる
 	assert.Equal(t, "https://example.com/follows/a/b", b.FollowURI("a", "b"))
+}
+
+func TestURLBuilder_FollowURI_FullURI(t *testing.T) {
+	b := NewURLBuilder("https://example.com")
+	// 完全なURIはハッシュ化されてパスセグメントに入る
+	uri := b.FollowURI("alice", "https://remote.example/users/bob")
+	assert.True(t, strings.HasPrefix(uri, "https://example.com/follows/alice/"), "URI should start with follows prefix")
+	assert.NotContains(t, uri, "https://remote.example")
+	// 同じ入力で同じ出力
+	assert.Equal(t, uri, b.FollowURI("alice", "https://remote.example/users/bob"))
 }
 
 func TestRenderer_RenderPerson(t *testing.T) {
@@ -41,7 +55,7 @@ func TestRenderer_RenderPerson(t *testing.T) {
 		IsLocked:     true,
 		IsExplorable: true,
 	}
-	p := r.RenderPerson(u, "PUBKEY")
+	p := r.RenderPerson(u, nil, "PUBKEY")
 	assert.Equal(t, "https://example.com/users/u1", p.ID)
 	assert.Equal(t, "Person", p.Type)
 	assert.Equal(t, "alice", p.PreferredUsername)
@@ -56,7 +70,7 @@ func TestRenderer_RenderPerson(t *testing.T) {
 func TestRenderer_RenderPerson_NoOptionalFields(t *testing.T) {
 	r := newRenderer()
 	u := &model.User{ID: "u1", Username: "alice"}
-	p := r.RenderPerson(u, "PUBKEY")
+	p := r.RenderPerson(u, nil, "PUBKEY")
 	assert.Empty(t, p.Name)
 	assert.Nil(t, p.Icon)
 	assert.False(t, p.ManuallyApproves)
@@ -240,6 +254,9 @@ func TestRenderer_RenderFollow(t *testing.T) {
 	assert.Equal(t, "Follow", f.Type)
 	assert.Equal(t, "https://example.com/users/alice", f.Actor)
 	assert.Equal(t, "https://remote.example/users/bob", f.Object)
+	// IDはURI部分がハッシュ化されている
+	assert.Contains(t, f.ID, "https://example.com/follows/alice/")
+	assert.NotContains(t, f.ID, "https://remote.example")
 }
 
 func TestRenderer_RenderAccept(t *testing.T) {
@@ -323,4 +340,311 @@ func TestRenderer_RenderDelete(t *testing.T) {
 	assert.Equal(t, "Tombstone", tomb.Type)
 	assert.Equal(t, "https://example.com/notes/n1", tomb.ID)
 	assert.Contains(t, d.To, Public)
+}
+
+func TestRenderer_RenderPerson_Bot(t *testing.T) {
+	r := newRenderer()
+	u := &model.User{ID: "u1", Username: "bot", IsBot: true}
+	p := r.RenderPerson(u, nil, "PUBKEY")
+	assert.Equal(t, "Service", p.Type)
+}
+
+func TestRenderer_RenderPerson_WithProfile(t *testing.T) {
+	r := newRenderer()
+	r.SetHost("example.com")
+	desc := "**hello** world"
+	bday := "2000-01-01"
+	loc := "Tokyo"
+	followedMsg := "Thanks!"
+	fields := datatypes.JSON(`[{"name":"Website","value":"https://example.com"}]`)
+	u := &model.User{ID: "u1", Username: "alice", IsCat: true}
+	profile := &model.UserProfile{
+		Description:     &desc,
+		Birthday:        &bday,
+		Location:        &loc,
+		FollowedMessage: &followedMsg,
+		Fields:          fields,
+	}
+	p := r.RenderPerson(u, profile, "PUBKEY")
+	assert.Contains(t, p.Summary, "<b>hello</b>")
+	assert.Equal(t, desc, p.MisskeySummary)
+	assert.Equal(t, "2000-01-01", p.VcardBday)
+	assert.Equal(t, "Tokyo", p.VcardAddress)
+	assert.Equal(t, "Thanks!", p.MisskeyFollowedMessage)
+	assert.True(t, p.IsCat)
+	require.Len(t, p.Attachment, 1)
+	pv, ok := p.Attachment[0].(PropertyValue)
+	require.True(t, ok)
+	assert.Equal(t, "PropertyValue", pv.Type)
+	assert.Equal(t, "Website", pv.Name)
+	assert.Equal(t, "https://example.com", pv.Value)
+}
+
+func TestRenderer_RenderPerson_BannerAndMovedTo(t *testing.T) {
+	r := newRenderer()
+	banner := "https://example.com/banner.png"
+	movedTo := "https://other.example/users/alice"
+	alsoKnownAs := "https://other.example/users/alice,https://third.example/users/a"
+	featured := "https://example.com/users/u1/collections/featured"
+	u := &model.User{
+		ID:          "u1",
+		Username:    "alice",
+		BannerURL:   &banner,
+		MovedToURI:  &movedTo,
+		AlsoKnownAs: &alsoKnownAs,
+		Featured:    &featured,
+	}
+	p := r.RenderPerson(u, nil, "PUBKEY")
+	require.NotNil(t, p.Image)
+	assert.Equal(t, banner, p.Image.URL)
+	assert.Equal(t, movedTo, p.MovedTo)
+	assert.Equal(t, []string{"https://other.example/users/alice", "https://third.example/users/a"}, p.AlsoKnownAs)
+	assert.Equal(t, featured, p.Featured)
+}
+
+// stubFileResolver returns fixed drive files.
+type stubFileResolver struct {
+	files []*model.DriveFile
+	err   error
+}
+
+func (s *stubFileResolver) FindByIDs(_ []string) ([]*model.DriveFile, error) {
+	return s.files, s.err
+}
+
+func TestRenderer_RenderNote_WithAttachment(t *testing.T) {
+	r := newRenderer()
+	comment := "photo"
+	r.SetFileResolver(&stubFileResolver{files: []*model.DriveFile{
+		{Type: "image/png", URL: "https://example.com/files/f1.png", Comment: &comment, IsSensitive: false},
+		{Type: "video/mp4", URL: "https://example.com/files/f2.mp4", IsSensitive: true},
+	}})
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+		FileIDs:    pq.StringArray{"f1", "f2"},
+	}
+	out := r.RenderNote(n, idGen)
+	require.Len(t, out.Attachment, 2)
+	doc0, ok := out.Attachment[0].(Document)
+	require.True(t, ok)
+	assert.Equal(t, "Document", doc0.Type)
+	assert.Equal(t, "image/png", doc0.MediaType)
+	assert.Equal(t, "photo", doc0.Name)
+	assert.False(t, doc0.Sensitive)
+	doc1, ok := out.Attachment[1].(Document)
+	require.True(t, ok)
+	assert.True(t, doc1.Sensitive)
+	// sensitive ファイルがあるのでNote自体もsensitiveになる
+	assert.True(t, out.Sensitive)
+}
+
+func TestRenderer_RenderNote_AttachmentError(t *testing.T) {
+	r := newRenderer()
+	r.SetFileResolver(&stubFileResolver{err: errors.New("db error")})
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+		FileIDs:    pq.StringArray{"f1"},
+	}
+	out := r.RenderNote(n, idGen)
+	// エラー時は添付なしで進む
+	assert.Empty(t, out.Attachment)
+}
+
+func TestRenderer_RenderNote_WithMFMContent(t *testing.T) {
+	r := newRenderer()
+	r.SetHost("example.com")
+	idGen := newIDGen(t)
+	text := "**bold** and `code`"
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(n, idGen)
+	assert.Contains(t, out.Content, "<b>bold</b>")
+	assert.Contains(t, out.Content, "<code>code</code>")
+	// MFMマークアップあり → _misskey_content / source が設定される
+	assert.Equal(t, text, out.MisskeyContent)
+	require.NotNil(t, out.Source)
+	assert.Equal(t, text, out.Source.Content)
+	assert.Equal(t, "text/x.misskeymarkdown", out.Source.MediaType)
+}
+
+func TestRenderer_RenderNote_SimpleContent(t *testing.T) {
+	r := newRenderer()
+	idGen := newIDGen(t)
+	text := "hello world"
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(n, idGen)
+	assert.Equal(t, "hello world", out.Content)
+	// 単純テキストのみ → _misskey_content / source 省略
+	assert.Empty(t, out.MisskeyContent)
+	assert.Nil(t, out.Source)
+}
+
+// stubNoteResolver returns a fixed note.
+type stubNoteResolver struct {
+	note *model.Note
+	err  error
+}
+
+func (s *stubNoteResolver) FindByID(_ string) (*model.Note, error) {
+	return s.note, s.err
+}
+
+func TestRenderer_RenderNote_QuoteRenote(t *testing.T) {
+	r := newRenderer()
+	remoteURI := "https://remote.example/notes/orig"
+	r.SetNoteResolver(&stubNoteResolver{note: &model.Note{URI: &remoteURI}})
+	idGen := newIDGen(t)
+	renoteID := "renote-target"
+	text := "quoting this"
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Text:       &text,
+		RenoteID:   &renoteID,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(n, idGen)
+	assert.Equal(t, remoteURI, out.MisskeyQuote)
+	assert.Equal(t, remoteURI, out.QuoteURL)
+}
+
+func TestRenderer_RenderNote_QuoteRenote_LocalFallback(t *testing.T) {
+	r := newRenderer()
+	// noteResolver返すノートにURIがない → ローカルURIフォールバック
+	r.SetNoteResolver(&stubNoteResolver{note: &model.Note{}})
+	idGen := newIDGen(t)
+	renoteID := "local-note"
+	text := "quoting"
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Text:       &text,
+		RenoteID:   &renoteID,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(n, idGen)
+	assert.Equal(t, "https://example.com/notes/local-note", out.MisskeyQuote)
+}
+
+func TestRenderer_RenderNote_HashtagTag(t *testing.T) {
+	r := newRenderer()
+	r.SetHost("example.com")
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+		Tags:       pq.StringArray{"golang", "misskey"},
+	}
+	out := r.RenderNote(n, idGen)
+	require.Len(t, out.Tag, 2)
+	ht0, ok := out.Tag[0].(Hashtag)
+	require.True(t, ok)
+	assert.Equal(t, "Hashtag", ht0.Type)
+	assert.Equal(t, "#golang", ht0.Name)
+	assert.Equal(t, "https://example.com/tags/golang", ht0.Href)
+}
+
+// stubEmojiResolver returns a fixed emoji.
+type stubEmojiResolver struct {
+	emojis map[string]*model.Emoji
+}
+
+func (s *stubEmojiResolver) FindByNameAndHost(name string, _ *string) (*model.Emoji, error) {
+	e, ok := s.emojis[name]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return e, nil
+}
+
+func TestRenderer_RenderNote_EmojiTag(t *testing.T) {
+	r := newRenderer()
+	emojiURI := "https://example.com/emojis/blobcat"
+	r.SetEmojiResolver(&stubEmojiResolver{emojis: map[string]*model.Emoji{
+		"blobcat": {Name: "blobcat", PublicURL: "https://example.com/files/blobcat.webp", URI: &emojiURI},
+	}})
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+		Emojis:     pq.StringArray{"blobcat", "unknown"},
+	}
+	out := r.RenderNote(n, idGen)
+	// "unknown"は解決失敗してスキップされる
+	require.Len(t, out.Tag, 1)
+	et, ok := out.Tag[0].(EmojiTag)
+	require.True(t, ok)
+	assert.Equal(t, "Emoji", et.Type)
+	assert.Equal(t, ":blobcat:", et.Name)
+	assert.Equal(t, "https://example.com/files/blobcat.webp", et.Icon.URL)
+	assert.Equal(t, emojiURI, et.ID)
+}
+
+func TestRenderer_RenderPerson_EmojiTag(t *testing.T) {
+	r := newRenderer()
+	r.SetEmojiResolver(&stubEmojiResolver{emojis: map[string]*model.Emoji{
+		"verified": {Name: "verified", PublicURL: "https://example.com/files/verified.webp"},
+	}})
+	u := &model.User{
+		ID:       "u1",
+		Username: "alice",
+		Emojis:   pq.StringArray{"verified"},
+	}
+	p := r.RenderPerson(u, nil, "PUBKEY")
+	require.Len(t, p.Tag, 1)
+	et, ok := p.Tag[0].(EmojiTag)
+	require.True(t, ok)
+	assert.Equal(t, ":verified:", et.Name)
+}
+
+func TestRenderer_RenderNote_ContextIncludesMisskey(t *testing.T) {
+	r := newRenderer()
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(n, idGen)
+	ctx, ok := out.Context.([]any)
+	require.True(t, ok)
+	assert.Contains(t, ctx, ContextURL)
+	assert.Contains(t, ctx, SecurityContextURL)
+	// MisskeyContextのmapが含まれているか確認
+	var hasMk bool
+	for _, c := range ctx {
+		if m, ok := c.(map[string]any); ok {
+			if _, exists := m["misskey"]; exists {
+				hasMk = true
+			}
+		}
+	}
+	assert.True(t, hasMk, "context should include MisskeyContext map")
+}
+
+func TestRenderer_SetResolvers(t *testing.T) {
+	r := newRenderer()
+	// カバレッジ用: 各setter呼び出し
+	r.SetFileResolver(nil)
+	r.SetEmojiResolver(nil)
+	r.SetNoteResolver(nil)
+	r.SetHost("example.com")
+	assert.Equal(t, "example.com", r.host)
 }

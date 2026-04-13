@@ -169,8 +169,8 @@ func TestAPIGet_Success_User(t *testing.T) {
 func TestAPIGet_NotFound(t *testing.T) {
 	h, _, _, _ := newHandler(t)
 	rec := postJSON(h.APIGet, `{"uri":"https://example.com/notes/ghost"}`)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "{}\n", rec.Body.String())
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NO_SUCH_OBJECT")
 }
 
 func TestAPIGet_InvalidParam(t *testing.T) {
@@ -182,8 +182,8 @@ func TestAPIGet_InvalidParam(t *testing.T) {
 func TestAPIGet_UserNotFound(t *testing.T) {
 	h, _, _, _ := newHandler(t)
 	rec := postJSON(h.APIGet, `{"uri":"https://example.com/users/ghost"}`)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "{}\n", rec.Body.String())
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NO_SUCH_OBJECT")
 }
 
 func TestAPIGet_UserKeypairError(t *testing.T) {
@@ -191,15 +191,15 @@ func TestAPIGet_UserKeypairError(t *testing.T) {
 	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
 	keypairRepo.err = errors.New("db down")
 	rec := postJSON(h.APIGet, `{"uri":"https://example.com/users/u1"}`)
-	// keypairエラー → 空オブジェクト返却
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "{}\n", rec.Body.String())
+	// keypairエラー → 404
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NO_SUCH_OBJECT")
 }
 
 func TestAPIGet_NoMatch(t *testing.T) {
 	h, _, _, _ := newHandler(t)
 	rec := postJSON(h.APIGet, `{"uri":"https://other.example/something"}`)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestAPIShow_Note(t *testing.T) {
@@ -253,6 +253,12 @@ func TestExtractLocalID(t *testing.T) {
 	assert.Equal(t, "xyz", extractLocalID("https://example.com/users/xyz", "/users/"))
 	assert.Equal(t, "", extractLocalID("https://example.com/other", "/notes/"))
 	assert.Equal(t, "", extractLocalID("", "/notes/"))
+}
+
+func TestExtractLocalID_Fragment(t *testing.T) {
+	// #main-key 等のフラグメントが除去されること
+	assert.Equal(t, "u1", extractLocalID("https://example.com/users/u1#main-key", "/users/"))
+	assert.Equal(t, "n1", extractLocalID("https://example.com/notes/n1#fragment", "/notes/"))
 }
 
 func TestPackNoteForAPI_NilUser(t *testing.T) {
@@ -327,8 +333,8 @@ func TestAPIGet_RemoteFetchError(t *testing.T) {
 	h, _, _, _ := newHandler(t)
 	h.SetRemote(&mockFetcher{err: assert.AnError}, nil)
 	rec := postJSON(h.APIGet, `{"uri":"https://remote.example/notes/1"}`)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "{}\n", rec.Body.String())
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NO_SUCH_OBJECT")
 }
 
 func TestAPIShow_RemoteResolveActor(t *testing.T) {
@@ -511,6 +517,6 @@ func TestAPIGet_RemoteInvalidJSON(t *testing.T) {
 	h, _, _, _ := newHandler(t)
 	h.SetRemote(&mockFetcher{data: []byte(`not json`)}, nil)
 	rec := postJSON(h.APIGet, `{"uri":"https://remote.example/x"}`)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "{}\n", rec.Body.String())
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NO_SUCH_OBJECT")
 }
