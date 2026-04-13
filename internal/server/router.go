@@ -752,6 +752,7 @@ func (s *Server) setupRoutes() {
 	usersHandler.SetAbuseRepo(repository.NewAbuseReportRepository(s.db))
 	usersHandler.SetMemoRepo(repository.NewUserMemoRepository(s.db))
 	usersHandler.SetUserListFavoriteRepo(userListFavoriteRepo)
+	usersHandler.SetUserListRepo(userListRepo)
 	// Phase 7.3: users/* 完全化 (実データハンドラ)
 	api.POST("/users/achievements", usersHandler.Achievements)
 	api.POST("/users/clips", usersHandler.Clips)

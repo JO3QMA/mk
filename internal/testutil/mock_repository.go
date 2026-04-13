@@ -7,6 +7,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/gorm"
 )
 
 // MockUserRepository is a test double for repository.UserRepository.
@@ -2432,6 +2433,30 @@ func (m *MockUserListRepository) ListMembers(listID string) ([]*model.UserListMe
 		}
 	}
 	return result, nil
+}
+
+func (m *MockUserListRepository) UpdateList(id string, fields map[string]any) error {
+	list, ok := m.Lists[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if name, ok := fields["name"]; ok {
+		list.Name = name.(string)
+	}
+	if isPublic, ok := fields["isPublic"]; ok {
+		list.IsPublic = isPublic.(bool)
+	}
+	return nil
+}
+
+func (m *MockUserListRepository) UpdateMembership(listID, userID string, withReplies bool) error {
+	for _, mem := range m.Members {
+		if mem.UserListID == listID && mem.UserID == userID {
+			mem.WithReplies = withReplies
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
 }
 
 // ---------------------------------------------------------------------------

@@ -2,13 +2,16 @@ package users
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
+	"gorm.io/gorm"
 )
 
 // UserListFavoriteRepository is the interface for user list favorite operations.
@@ -22,6 +25,11 @@ type UserListFavoriteRepository interface {
 // SetUserListFavoriteRepo attaches a UserListFavoriteRepository.
 func (h *Handler) SetUserListFavoriteRepo(r UserListFavoriteRepository) {
 	h.userListFavoriteRepo = r
+}
+
+// SetUserListRepo attaches a UserListRepository for list update endpoints.
+func (h *Handler) SetUserListRepo(r repository.UserListRepository) {
+	h.userListRepo = r
 }
 
 // Achievements handles POST /api/users/achievements.
@@ -151,11 +159,71 @@ func (h *Handler) ListsUnfavorite(c echo.Context) error {
 
 // ListsUpdate handles POST /api/users/lists/update.
 func (h *Handler) ListsUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
+	user := middleware.GetUser(c)
+	var req struct {
+		ListID   string `json:"listId"`
+		Name     string `json:"name"`
+		IsPublic *bool  `json:"isPublic"`
+	}
+	if err := c.Bind(&req); err != nil || req.ListID == "" {
+		return invalidParam(c)
+	}
+	if h.userListRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	list, err := h.userListRepo.FindByID(req.ListID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "796666fe-3dff-4d39-becb-8a5932c1d5b7"}})
+	}
+	// 所有権チェック
+	if list.UserID != user.ID {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "796666fe-3dff-4d39-becb-8a5932c1d5b7"}})
+	}
+	fields := map[string]any{}
+	if req.Name != "" {
+		fields["name"] = req.Name
+		list.Name = req.Name
+	}
+	if req.IsPublic != nil {
+		fields["isPublic"] = *req.IsPublic
+		list.IsPublic = *req.IsPublic
+	}
+	if len(fields) > 0 {
+		if err := h.userListRepo.UpdateList(req.ListID, fields); err != nil {
+			return internalError(c)
+		}
+	}
+	return c.JSON(http.StatusOK, list)
 }
 
 // ListsUpdateMembership handles POST /api/users/lists/update-membership.
 func (h *Handler) ListsUpdateMembership(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		ListID      string `json:"listId"`
+		UserID      string `json:"userId"`
+		WithReplies bool   `json:"withReplies"`
+	}
+	if err := c.Bind(&req); err != nil || req.ListID == "" || req.UserID == "" {
+		return invalidParam(c)
+	}
+	if h.userListRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	list, err := h.userListRepo.FindByID(req.ListID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"}})
+	}
+	// 所有権チェック
+	if list.UserID != user.ID {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"}})
+	}
+	if err := h.userListRepo.UpdateMembership(req.ListID, req.UserID, req.WithReplies); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such user.", "code": "NO_SUCH_USER", "id": "588e7f72-c744-4a61-b180-d354e912bda2"}})
+		}
+		return internalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

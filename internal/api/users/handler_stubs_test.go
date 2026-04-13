@@ -134,16 +134,112 @@ func TestListsUnfavorite(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestListsUpdate(t *testing.T) {
+func TestListsUpdate_MissingListID(t *testing.T) {
 	h, _ := newTestHandler(t)
 	rec := postStub(h.ListsUpdate, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestListsUpdate_Success(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "old"}
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdate, `{"listId":"l1","name":"new"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "new", listRepo.Lists["l1"].Name)
+}
+
+func TestListsUpdate_NotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdate, `{"listId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestListsUpdate_IsPublic(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "test"}
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdate, `{"listId":"l1","isPublic":true}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, listRepo.Lists["l1"].IsPublic)
+}
+
+func TestListsUpdate_NotOwner(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "other", Name: "test"}
+	h.SetUserListRepo(listRepo)
+
+	// u1は所有者ではないので404
+	rec := postStub(h.ListsUpdate, `{"listId":"l1","name":"hacked"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestListsUpdate_NilRepo(t *testing.T) {
+	h, _ := newTestHandler(t)
+	// userListRepo未注入時はgraceful NoContent
+	rec := postStub(h.ListsUpdate, `{"listId":"l1"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
-func TestListsUpdateMembership(t *testing.T) {
+func TestListsUpdateMembership_MissingParams(t *testing.T) {
 	h, _ := newTestHandler(t)
 	rec := postStub(h.ListsUpdateMembership, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestListsUpdateMembership_Success(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "test"}
+	listRepo.Members = append(listRepo.Members, &model.UserListMembership{ID: "m1", UserListID: "l1", UserID: "u2"})
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdateMembership, `{"listId":"l1","userId":"u2","withReplies":true}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestListsUpdateMembership_NotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdateMembership, `{"listId":"ghost","userId":"u2","withReplies":false}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestListsUpdateMembership_NotOwner(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "other", Name: "test"}
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdateMembership, `{"listId":"l1","userId":"u2","withReplies":true}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestListsUpdateMembership_NilRepo(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := postStub(h.ListsUpdateMembership, `{"listId":"l1","userId":"u2","withReplies":true}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestListsUpdateMembership_MemberNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "test"}
+	// メンバーが存在しないためUpdateMembershipがErrNotFoundを返す→404
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdateMembership, `{"listId":"l1","userId":"ghost","withReplies":true}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // --- UsersBulk ---
