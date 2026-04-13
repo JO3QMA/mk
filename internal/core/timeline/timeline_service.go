@@ -40,7 +40,7 @@ func NewService(fanout *FanoutTimelineService, noteRepo repository.NoteRepositor
 
 // HomeTimeline returns the timeline for a logged-in user. The home timeline
 // shows notes by users they follow plus their own notes.
-func (s *Service) HomeTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int) ([]*model.Note, error) {
+func (s *Service) HomeTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int, filter TimelineFilter) ([]*model.Note, error) {
 	if viewer == nil {
 		return nil, ErrUnauthenticated
 	}
@@ -52,46 +52,75 @@ func (s *Service) HomeTimeline(ctx context.Context, viewer *model.User, untilID,
 		return nil, err
 	}
 	if len(ids) > 0 {
-		return s.resolve(ids)
+		notes, err := s.resolve(ids)
+		if err != nil {
+			return nil, err
+		}
+		notes = ApplyFilter(notes, viewer.ID, filter)
+		if !filter.AllowPartial && len(notes) < limit {
+			return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID, toDBFilter(filter, viewer.ID))
+		}
+		return notes, nil
 	}
-	// Redisが空の場合、DBから直接取得 (自分+フォロー中のユーザーのノート)
-	return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID)
+	return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID, toDBFilter(filter, viewer.ID))
 }
 
 // LocalTimeline returns notes posted by local users with public/home visibility.
-func (s *Service) LocalTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int) ([]*model.Note, error) {
+func (s *Service) LocalTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int, filter TimelineFilter) ([]*model.Note, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	viewerID := ""
+	if viewer != nil {
+		viewerID = viewer.ID
 	}
 	ids, err := s.fanout.Get(ctx, LocalTimeline, untilID, sinceID, limit)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) > 0 {
-		return s.resolve(ids)
+		notes, err := s.resolve(ids)
+		if err != nil {
+			return nil, err
+		}
+		notes = ApplyFilter(notes, viewerID, filter)
+		if !filter.AllowPartial && len(notes) < limit {
+			return s.noteRepo.ListLocalTimeline(limit, sinceID, untilID, toDBFilter(filter, viewerID))
+		}
+		return notes, nil
 	}
-	// Redisが空の場合、DBから直接取得
-	return s.noteRepo.ListLocalTimeline(limit, sinceID, untilID)
+	return s.noteRepo.ListLocalTimeline(limit, sinceID, untilID, toDBFilter(filter, viewerID))
 }
 
 // GlobalTimeline returns all public notes including federated remotes.
-func (s *Service) GlobalTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int) ([]*model.Note, error) {
+func (s *Service) GlobalTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int, filter TimelineFilter) ([]*model.Note, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	viewerID := ""
+	if viewer != nil {
+		viewerID = viewer.ID
 	}
 	ids, err := s.fanout.Get(ctx, GlobalTimeline, untilID, sinceID, limit)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) > 0 {
-		return s.resolve(ids)
+		notes, err := s.resolve(ids)
+		if err != nil {
+			return nil, err
+		}
+		notes = ApplyFilter(notes, viewerID, filter)
+		if !filter.AllowPartial && len(notes) < limit {
+			return s.noteRepo.ListGlobalTimeline(limit, sinceID, untilID, toDBFilter(filter, viewerID))
+		}
+		return notes, nil
 	}
-	// Redisが空の場合、DBから直接取得
-	return s.noteRepo.ListGlobalTimeline(limit, sinceID, untilID)
+	return s.noteRepo.ListGlobalTimeline(limit, sinceID, untilID, toDBFilter(filter, viewerID))
 }
 
 // HybridTimeline merges home and local timelines into a single feed.
-func (s *Service) HybridTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int) ([]*model.Note, error) {
+func (s *Service) HybridTimeline(ctx context.Context, viewer *model.User, untilID, sinceID string, limit int, filter TimelineFilter) ([]*model.Note, error) {
 	if viewer == nil {
 		return nil, ErrUnauthenticated
 	}
@@ -104,10 +133,30 @@ func (s *Service) HybridTimeline(ctx context.Context, viewer *model.User, untilI
 	}
 	merged := mergeIDs(multi, limit)
 	if len(merged) > 0 {
-		return s.resolve(merged)
+		notes, err := s.resolve(merged)
+		if err != nil {
+			return nil, err
+		}
+		notes = ApplyFilter(notes, viewer.ID, filter)
+		if !filter.AllowPartial && len(notes) < limit {
+			return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID, toDBFilter(filter, viewer.ID))
+		}
+		return notes, nil
 	}
-	// Redisが空の場合、DBフォールバック (homeとlocalを統合)
-	return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID)
+	return s.noteRepo.ListHomeTimeline(viewer.ID, limit, sinceID, untilID, toDBFilter(filter, viewer.ID))
+}
+
+// toDBFilter converts a TimelineFilter to a model.TimelineDBFilter.
+func toDBFilter(f TimelineFilter, viewerID string) model.TimelineDBFilter {
+	return model.TimelineDBFilter{
+		WithFiles:             f.WithFiles,
+		WithRenotes:           f.WithRenotes,
+		WithReplies:           f.WithReplies,
+		IncludeMyRenotes:      f.IncludeMyRenotes,
+		IncludeRenotedMyNotes: f.IncludeRenotedMyNotes,
+		IncludeLocalRenotes:   f.IncludeLocalRenotes,
+		ViewerID:              viewerID,
+	}
 }
 
 // resolve fetches notes from the repository preserving id ordering.

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/shiroha-a/mk/internal/activitypub"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -59,13 +61,19 @@ type publicKeyEntry struct {
 	fetchedAt time.Time
 }
 
+// PublickeyStore abstracts persistence of remote actor public keys. Resolver
+// uses this to fall back to the database when the in-memory cache misses.
+type PublickeyStore interface {
+	Upsert(pk *model.UserPublickey) error
+	FindByUserID(userID string) (*model.UserPublickey, error)
+}
+
 // Resolver fetches remote actors / notes and persists them in the local
 // user / note tables.
 //
-// 公開鍵は別キャッシュ (in-memory map) で actorID → publicKeyEntry を保持
+// 公開鍵は in-memory + DB (user_publickey テーブル) の二段キャッシュで管理
 // する。エントリは actorTTL を超えると miss として扱い、次回 ResolveActor 時
-// にリフレッシュされる。永続化は後続フェーズで user_publickey 相当のテーブル
-// に移す予定。
+// にリフレッシュされる。
 type Resolver struct {
 	userRepo        repository.UserRepository
 	noteRepo        repository.NoteRepository
@@ -77,6 +85,7 @@ type Resolver struct {
 	actorTTL        time.Duration             // アクター情報の最大寿命
 	instanceTracker InstanceTracker           // optional: ホスト発見を通知
 	chartHook       ChartHook                 // optional: 新規 remote user の集計
+	publickeyRepo   PublickeyStore            // optional: 公開鍵の永続化
 }
 
 // NewResolver constructs a Resolver.
@@ -129,20 +138,31 @@ func (r *Resolver) SetChartHook(h ChartHook) {
 	r.chartHook = h
 }
 
-// PublicKeyForActor returns the cached public key PEM for an actor ID. TTL を
-// 超過したエントリは miss として扱い、ErrPublicKeyMissing 相当のエラーを返す。
+// SetPublickeyRepo attaches a PublickeyStore for persistent public key
+// storage. nil 渡しは無効化と同義 (in-memory only に戻る)。
+func (r *Resolver) SetPublickeyRepo(repo PublickeyStore) {
+	r.publickeyRepo = repo
+}
+
+// PublicKeyForActor returns the cached public key PEM for an actor ID.
+// in-memory → DB → miss の順で探索する。TTL超過は miss として扱い、呼び出し
+// 側が ResolveActor を再実行することで refresh をトリガできる。
 func (r *Resolver) PublicKeyForActor(actorID string) (string, error) {
-	entry, ok := r.keys[actorID]
-	if !ok {
-		return "", fmt.Errorf("public key for actor %q not cached", actorID)
-	}
-	if r.clock().Sub(entry.fetchedAt) > r.actorTTL {
-		// 期限切れ: キャッシュを破棄しエラーを返す。呼び出し側 (inbox handler 等)
-		// は ResolveActor を再実行することで refresh をトリガできる。
+	// 1. in-memory cache (TTL内)
+	if entry, ok := r.keys[actorID]; ok {
+		if r.clock().Sub(entry.fetchedAt) <= r.actorTTL {
+			return entry.pem, nil
+		}
 		delete(r.keys, actorID)
-		return "", fmt.Errorf("public key for actor %q expired", actorID)
 	}
-	return entry.pem, nil
+	// 2. DB fallback
+	if r.publickeyRepo != nil {
+		if pk, err := r.publickeyRepo.FindByUserID(actorID); err == nil {
+			r.keys[actorID] = publicKeyEntry{pem: pk.KeyPEM, fetchedAt: r.clock()}
+			return pk.KeyPEM, nil
+		}
+	}
+	return "", fmt.Errorf("public key for actor %q not cached", actorID)
 }
 
 // ResolveActor returns the local model.User row for a remote actor URI,
@@ -190,7 +210,7 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	if err := r.userRepo.Create(user); err != nil {
 		return nil, err
 	}
-	r.cachePublicKey(user.ID, actor.PublicKey.PublicKeyPEM)
+	r.cachePublicKey(user.ID, actor.PublicKey.ID, actor.PublicKey.PublicKeyPEM)
 	r.notifyInstance(host)
 	if r.chartHook != nil {
 		r.chartHook.OnRemoteUserCreated(user)
@@ -246,7 +266,7 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 	existing.LastFetchedAt = &now
 	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)
 	_ = r.userRepo.UpdateUser(existing.ID, fields)
-	r.cachePublicKey(existing.ID, actor.PublicKey.PublicKeyPEM)
+	r.cachePublicKey(existing.ID, actor.PublicKey.ID, actor.PublicKey.PublicKeyPEM)
 	if existing.Host != nil {
 		r.notifyInstance(*existing.Host)
 	}
@@ -275,13 +295,22 @@ func (r *Resolver) refreshPublicKey(userID, uri string) {
 	if err != nil {
 		return
 	}
-	r.cachePublicKey(userID, actor.PublicKey.PublicKeyPEM)
+	r.cachePublicKey(userID, actor.PublicKey.ID, actor.PublicKey.PublicKeyPEM)
 }
 
-// cachePublicKey stores a PEM in the in-memory cache with the current clock
-// reading as the fetch time.
-func (r *Resolver) cachePublicKey(userID, pem string) {
+// cachePublicKey stores a PEM in the in-memory cache and optionally persists
+// it to the user_publickey table.
+func (r *Resolver) cachePublicKey(userID, keyID, pem string) {
 	r.keys[userID] = publicKeyEntry{pem: pem, fetchedAt: r.clock()}
+	if r.publickeyRepo != nil && keyID != "" {
+		if err := r.publickeyRepo.Upsert(&model.UserPublickey{
+			UserID: userID,
+			KeyID:  keyID,
+			KeyPEM: pem,
+		}); err != nil {
+			slog.Warn("failed to persist public key", "userId", userID, "err", err)
+		}
+	}
 }
 
 // ResolveActorByKeyID resolves an actor based on the keyId fragment URI.

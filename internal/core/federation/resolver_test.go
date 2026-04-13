@@ -741,6 +741,54 @@ func TestResolveActor_TTLRefreshFetchError(t *testing.T) {
 	assert.Equal(t, "Original", *user.Name)
 }
 
+func TestPublicKeyForActor_DBFallback(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	pkRepo := testutil.NewMockUserPublickeyRepository()
+	r.SetPublickeyRepo(pkRepo)
+
+	// ResolveActorで公開鍵をin-memory + DBにキャッシュ
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+
+	// DBに永続化されていることを確認
+	require.Len(t, pkRepo.Keys, 1)
+	pk := pkRepo.Keys[user.ID]
+	require.NotNil(t, pk)
+	assert.Equal(t, "https://remote.example/users/alice#main-key", pk.KeyID)
+	assert.Contains(t, pk.KeyPEM, "FAKE")
+
+	// in-memoryキャッシュを期限切れにする
+	r.SetClock(func() time.Time { return time.Now().Add(48 * time.Hour) })
+
+	// DBフォールバックで復元できることを確認
+	pem, err := r.PublicKeyForActor(user.ID)
+	require.NoError(t, err)
+	assert.Contains(t, pem, "FAKE")
+}
+
+func TestPublicKeyForActor_DBFallback_NilRepo(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	// publickeyRepo未設定
+
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+
+	// in-memoryキャッシュを期限切れにする
+	r.SetClock(func() time.Time { return time.Now().Add(48 * time.Hour) })
+
+	// DB無しなのでmiss
+	_, err = r.PublicKeyForActor(user.ID)
+	assert.Error(t, err)
+}
+
 func TestPublicKeyForActor_TTLExpiry(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
 	noteRepo := testutil.NewMockNoteRepository()

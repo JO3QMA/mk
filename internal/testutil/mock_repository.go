@@ -703,15 +703,15 @@ func (m *MockNoteRepository) SearchByTag(tag string, limit int, _, _ string) ([]
 func (m *MockNoteRepository) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
 func (m *MockNoteRepository) IncrementUserNotesCount(_ string, _ int) error { return nil }
 
-func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, _, _ string) ([]*model.Note, error) {
+func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listPublic(limit)
 }
 
-func (m *MockNoteRepository) ListLocalTimeline(limit int, _, _ string) ([]*model.Note, error) {
+func (m *MockNoteRepository) ListLocalTimeline(limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listPublic(limit)
 }
 
-func (m *MockNoteRepository) ListGlobalTimeline(limit int, _, _ string) ([]*model.Note, error) {
+func (m *MockNoteRepository) ListGlobalTimeline(limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listPublic(limit)
 }
 
@@ -2822,4 +2822,27 @@ func (m *MockUserMemoRepository) FindByPair(userID, targetUserID string) (*model
 func (m *MockUserMemoRepository) Delete(userID, targetUserID string) error {
 	delete(m.Memos, userID+":"+targetUserID)
 	return nil
+}
+
+// MockUserPublickeyRepository is a test double for federation.PublickeyStore.
+type MockUserPublickeyRepository struct {
+	// keyed by userID
+	Keys map[string]*model.UserPublickey
+}
+
+// NewMockUserPublickeyRepository creates an empty MockUserPublickeyRepository.
+func NewMockUserPublickeyRepository() *MockUserPublickeyRepository {
+	return &MockUserPublickeyRepository{Keys: make(map[string]*model.UserPublickey)}
+}
+
+func (m *MockUserPublickeyRepository) Upsert(pk *model.UserPublickey) error {
+	m.Keys[pk.UserID] = pk
+	return nil
+}
+
+func (m *MockUserPublickeyRepository) FindByUserID(userID string) (*model.UserPublickey, error) {
+	if pk, ok := m.Keys[userID]; ok {
+		return pk, nil
+	}
+	return nil, ErrNotFound
 }

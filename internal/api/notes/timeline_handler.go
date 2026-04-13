@@ -2,17 +2,28 @@ package notes
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/core/timeline"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // TimelineRequest is the common request body for the four timeline endpoints.
 type TimelineRequest struct {
-	Limit   int    `json:"limit"`
-	SinceID string `json:"sinceId"`
-	UntilID string `json:"untilId"`
+	Limit                 int    `json:"limit"`
+	SinceID               string `json:"sinceId"`
+	UntilID               string `json:"untilId"`
+	SinceDate             *int64 `json:"sinceDate"`
+	UntilDate             *int64 `json:"untilDate"`
+	WithFiles             bool   `json:"withFiles"`
+	WithRenotes           *bool  `json:"withRenotes"`
+	WithReplies           *bool  `json:"withReplies"`
+	IncludeMyRenotes      *bool  `json:"includeMyRenotes"`
+	IncludeRenotedMyNotes *bool  `json:"includeRenotedMyNotes"`
+	IncludeLocalRenotes   *bool  `json:"includeLocalRenotes"`
+	AllowPartial          bool   `json:"allowPartial"`
 }
 
 func (r *TimelineRequest) normalize() {
@@ -27,28 +38,56 @@ func (r *TimelineRequest) normalize() {
 // Timeline handles POST /api/notes/timeline (home timeline).
 func (h *Handler) Timeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
-		return h.timelineService.HomeTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit)
+		f := timeline.TimelineFilter{
+			WithFiles:             req.WithFiles,
+			WithRenotes:           req.WithRenotes,
+			IncludeMyRenotes:      req.IncludeMyRenotes,
+			IncludeRenotedMyNotes: req.IncludeRenotedMyNotes,
+			IncludeLocalRenotes:   req.IncludeLocalRenotes,
+			AllowPartial:          req.AllowPartial,
+		}
+		return h.timelineService.HomeTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, true)
 }
 
 // LocalTimeline handles POST /api/notes/local-timeline.
 func (h *Handler) LocalTimeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
-		return h.timelineService.LocalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit)
+		f := timeline.TimelineFilter{
+			WithFiles:    req.WithFiles,
+			WithRenotes:  req.WithRenotes,
+			WithReplies:  req.WithReplies,
+			AllowPartial: req.AllowPartial,
+		}
+		return h.timelineService.LocalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, false)
 }
 
 // GlobalTimeline handles POST /api/notes/global-timeline.
 func (h *Handler) GlobalTimeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
-		return h.timelineService.GlobalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit)
+		f := timeline.TimelineFilter{
+			WithFiles:    req.WithFiles,
+			WithRenotes:  req.WithRenotes,
+			AllowPartial: req.AllowPartial,
+		}
+		return h.timelineService.GlobalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, false)
 }
 
 // HybridTimeline handles POST /api/notes/hybrid-timeline.
 func (h *Handler) HybridTimeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
-		return h.timelineService.HybridTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit)
+		f := timeline.TimelineFilter{
+			WithFiles:             req.WithFiles,
+			WithRenotes:           req.WithRenotes,
+			WithReplies:           req.WithReplies,
+			IncludeMyRenotes:      req.IncludeMyRenotes,
+			IncludeRenotedMyNotes: req.IncludeRenotedMyNotes,
+			IncludeLocalRenotes:   req.IncludeLocalRenotes,
+			AllowPartial:          req.AllowPartial,
+		}
+		return h.timelineService.HybridTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, true)
 }
 
@@ -64,6 +103,14 @@ func (h *Handler) serveTimeline(
 		return invalidParam(c)
 	}
 	req.normalize()
+
+	// sinceDate/untilDate → sinceID/untilID 変換 (TS互換)
+	if req.SinceDate != nil && req.SinceID == "" {
+		req.SinceID = h.idGen.Generate(time.UnixMilli(*req.SinceDate))
+	}
+	if req.UntilDate != nil && req.UntilID == "" {
+		req.UntilID = h.idGen.Generate(time.UnixMilli(*req.UntilDate))
+	}
 
 	viewer := middleware.GetUser(c)
 	if requireAuth && viewer == nil {
