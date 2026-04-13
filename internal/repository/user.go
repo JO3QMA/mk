@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
@@ -22,6 +24,7 @@ type UserRepository interface {
 	ListUsers(filter model.UserListFilter) ([]*model.User, error)
 	ListRemoteInboxes() ([]string, error)
 	FindProfileByVerifyCode(code string) (*model.UserProfile, error)
+	CountOnlineUsers() (int64, error)
 }
 
 type userRepository struct {
@@ -211,4 +214,15 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 		return nil, err
 	}
 	return users, nil
+}
+
+// CountOnlineUsers returns the number of local users active within the last 10 minutes.
+func (r *userRepository) CountOnlineUsers() (int64, error) {
+	var count int64
+	threshold := time.Now().Add(-10 * time.Minute)
+	err := r.db.Model(&model.User{}).
+		Where("host IS NULL").
+		Where(`"lastActiveDate" > ?`, threshold).
+		Count(&count).Error
+	return count, err
 }

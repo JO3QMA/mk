@@ -3,10 +3,26 @@ package users
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 )
+
+// UserListFavoriteRepository is the interface for user list favorite operations.
+type UserListFavoriteRepository interface {
+	Create(fav *model.UserListFavorite) error
+	Delete(userID, listID string) error
+	ListByUser(userID string) ([]*model.UserListFavorite, error)
+	Exists(userID, listID string) (bool, error)
+}
+
+// SetUserListFavoriteRepo attaches a UserListFavoriteRepository.
+func (h *Handler) SetUserListFavoriteRepo(r UserListFavoriteRepository) {
+	h.userListFavoriteRepo = r
+}
 
 // Achievements handles POST /api/users/achievements.
 func (h *Handler) Achievements(c echo.Context) error {
@@ -90,11 +106,46 @@ func (h *Handler) ListsCreateFromPublic(c echo.Context) error {
 
 // ListsFavorite handles POST /api/users/lists/favorite.
 func (h *Handler) ListsFavorite(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		ListID string `json:"listId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ListID == "" {
+		return invalidParam(c)
+	}
+	if h.userListFavoriteRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	already, _ := h.userListFavoriteRepo.Exists(user.ID, req.ListID)
+	if already {
+		return c.NoContent(http.StatusNoContent)
+	}
+	fav := &model.UserListFavorite{
+		ID:         h.idGen.Generate(time.Now()),
+		UserID:     user.ID,
+		UserListID: req.ListID,
+	}
+	if err := h.userListFavoriteRepo.Create(fav); err != nil {
+		return internalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // ListsUnfavorite handles POST /api/users/lists/unfavorite.
 func (h *Handler) ListsUnfavorite(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		ListID string `json:"listId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ListID == "" {
+		return invalidParam(c)
+	}
+	if h.userListFavoriteRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.userListFavoriteRepo.Delete(user.ID, req.ListID); err != nil {
+		return internalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

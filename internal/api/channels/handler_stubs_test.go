@@ -1,14 +1,36 @@
 package channels
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	corechannel "github.com/shiroha-a/mk/internal/core/channel"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func newStubHandler(t *testing.T) (*Handler, *testutil.MockChannelRepository, *testutil.MockChannelFavoriteRepository, *testutil.MockChannelMutingRepository) {
+	t.Helper()
+	repo := testutil.NewMockChannelRepository()
+	followRepo := testutil.NewMockChannelFollowingRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corechannel.NewService(repo, followRepo, noteRepo, idGen)
+	h := NewHandler(svc, idGen)
+	favRepo := testutil.NewMockChannelFavoriteRepository()
+	mutRepo := testutil.NewMockChannelMutingRepository()
+	h.SetFavoriteRepo(favRepo)
+	h.SetMutingRepo(mutRepo)
+	return h, repo, favRepo, mutRepo
+}
 
 func postStub(handler func(echo.Context) error) *httptest.ResponseRecorder {
 	e := echo.New()
@@ -20,27 +42,168 @@ func postStub(handler func(echo.Context) error) *httptest.ResponseRecorder {
 	return rec
 }
 
-func TestFavorite(t *testing.T) {
-	h, _, _, _ := newHandler(t)
-	assert.Equal(t, http.StatusNoContent, postStub(h.Favorite).Code)
+func postStubWithBody(t *testing.T, handler func(echo.Context) error, body string, userID string) *httptest.ResponseRecorder {
+	t.Helper()
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if userID != "" {
+		c.Set(string(middleware.UserContextKey), &model.User{ID: userID})
+	}
+	_ = handler(c)
+	return rec
 }
-func TestUnfavorite(t *testing.T) {
-	h, _, _, _ := newHandler(t)
-	assert.Equal(t, http.StatusNoContent, postStub(h.Unfavorite).Code)
+
+// --- Favorite ---
+
+func TestFavorite_MissingChannelID(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.Favorite, `{}`, "u1")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
-func TestMuteCreate(t *testing.T) {
-	h, _, _, _ := newHandler(t)
-	assert.Equal(t, http.StatusNoContent, postStub(h.MuteCreate).Code)
+
+func TestFavorite_ChannelNotFound(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.Favorite, `{"channelId":"nonexist"}`, "u1")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
-func TestMuteDelete(t *testing.T) {
-	h, _, _, _ := newHandler(t)
-	assert.Equal(t, http.StatusNoContent, postStub(h.MuteDelete).Code)
+
+func TestFavorite_Success(t *testing.T) {
+	h, chRepo, favRepo, _ := newStubHandler(t)
+	chRepo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "test"}
+	rec := postStubWithBody(t, h.Favorite, `{"channelId":"ch1"}`, "u1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	exists, _ := favRepo.Exists("u1", "ch1")
+	assert.True(t, exists)
 }
-func TestMyFavorites(t *testing.T) {
-	h, _, _, _ := newHandler(t)
-	assert.Equal(t, http.StatusOK, postStub(h.MyFavorites).Code)
+
+func TestFavorite_AlreadyFavorited(t *testing.T) {
+	h, chRepo, favRepo, _ := newStubHandler(t)
+	chRepo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "test"}
+	favRepo.Favorites["u1:ch1"] = &model.ChannelFavorite{ID: "f1", UserID: "u1", ChannelID: "ch1"}
+	rec := postStubWithBody(t, h.Favorite, `{"channelId":"ch1"}`, "u1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
-func TestMuteList(t *testing.T) {
-	h, _, _, _ := newHandler(t)
-	assert.Equal(t, http.StatusOK, postStub(h.MuteList).Code)
+
+func TestFavorite_NilRepo(t *testing.T) {
+	repo := testutil.NewMockChannelRepository()
+	followRepo := testutil.NewMockChannelFollowingRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := corechannel.NewService(repo, followRepo, noteRepo, idGen)
+	h := NewHandler(svc, idGen)
+	// favoriteRepo is nil
+	rec := postStubWithBody(t, h.Favorite, `{"channelId":"ch1"}`, "u1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// --- Unfavorite ---
+
+func TestUnfavorite_Success(t *testing.T) {
+	h, _, favRepo, _ := newStubHandler(t)
+	favRepo.Favorites["u1:ch1"] = &model.ChannelFavorite{ID: "f1", UserID: "u1", ChannelID: "ch1"}
+	rec := postStubWithBody(t, h.Unfavorite, `{"channelId":"ch1"}`, "u1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	exists, _ := favRepo.Exists("u1", "ch1")
+	assert.False(t, exists)
+}
+
+func TestUnfavorite_MissingChannelID(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.Unfavorite, `{}`, "u1")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- MyFavorites ---
+
+func TestMyFavorites_Empty(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.MyFavorites, `{}`, "u1")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var arr []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &arr))
+	assert.Empty(t, arr)
+}
+
+func TestMyFavorites_WithData(t *testing.T) {
+	h, chRepo, favRepo, _ := newStubHandler(t)
+	chRepo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "test"}
+	favRepo.Favorites["u1:ch1"] = &model.ChannelFavorite{ID: "f1", UserID: "u1", ChannelID: "ch1"}
+	rec := postStubWithBody(t, h.MyFavorites, `{}`, "u1")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var arr []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &arr))
+	assert.Len(t, arr, 1)
+}
+
+// --- MuteCreate ---
+
+func TestMuteCreate_Success(t *testing.T) {
+	h, chRepo, _, mutRepo := newStubHandler(t)
+	chRepo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "test"}
+	rec := postStubWithBody(t, h.MuteCreate, `{"channelId":"ch1"}`, "u1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	exists, _ := mutRepo.Exists("u1", "ch1")
+	assert.True(t, exists)
+}
+
+func TestMuteCreate_MissingChannelID(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.MuteCreate, `{}`, "u1")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestMuteCreate_ChannelNotFound(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.MuteCreate, `{"channelId":"nonexist"}`, "u1")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestMuteCreate_AlreadyMuted(t *testing.T) {
+	h, chRepo, _, mutRepo := newStubHandler(t)
+	chRepo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "test"}
+	mutRepo.Mutings["u1:ch1"] = &model.ChannelMuting{ID: "m1", UserID: "u1", ChannelID: "ch1"}
+	rec := postStubWithBody(t, h.MuteCreate, `{"channelId":"ch1"}`, "u1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// --- MuteDelete ---
+
+func TestMuteDelete_Success(t *testing.T) {
+	h, _, _, mutRepo := newStubHandler(t)
+	mutRepo.Mutings["u1:ch1"] = &model.ChannelMuting{ID: "m1", UserID: "u1", ChannelID: "ch1"}
+	rec := postStubWithBody(t, h.MuteDelete, `{"channelId":"ch1"}`, "u1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	exists, _ := mutRepo.Exists("u1", "ch1")
+	assert.False(t, exists)
+}
+
+func TestMuteDelete_MissingChannelID(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.MuteDelete, `{}`, "u1")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- MuteList ---
+
+func TestMuteList_Empty(t *testing.T) {
+	h, _, _, _ := newStubHandler(t)
+	rec := postStubWithBody(t, h.MuteList, `{}`, "u1")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var arr []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &arr))
+	assert.Empty(t, arr)
+}
+
+func TestMuteList_WithData(t *testing.T) {
+	h, chRepo, _, mutRepo := newStubHandler(t)
+	chRepo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "test"}
+	mutRepo.Mutings["u1:ch1"] = &model.ChannelMuting{ID: "m1", UserID: "u1", ChannelID: "ch1"}
+	rec := postStubWithBody(t, h.MuteList, `{}`, "u1")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var arr []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &arr))
+	assert.Len(t, arr, 1)
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"io"
 	"net/http"
 	urlpkg "net/url"
@@ -79,6 +80,7 @@ import (
 	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	corerole "github.com/shiroha-a/mk/internal/core/role"
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
+	"github.com/shiroha-a/mk/internal/core/serverstats"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coretransfer "github.com/shiroha-a/mk/internal/core/transfer"
@@ -150,6 +152,12 @@ func (s *Server) setupRoutes() {
 	systemWebhookRepo := repository.NewSystemWebhookRepository(s.db)
 	reversiRepo := repository.NewReversiRepository(s.db)
 	chatRepo := repository.NewChatRepository(s.db)
+	channelFavoriteRepo := repository.NewChannelFavoriteRepository(s.db)
+	channelMutingRepo := repository.NewChannelMutingRepository(s.db)
+	clipFavoriteRepo := repository.NewClipFavoriteRepository(s.db)
+	userListFavoriteRepo := repository.NewUserListFavoriteRepository(s.db)
+	retentionRepo := repository.NewRetentionAggregationRepository(s.db)
+	promoReadRepo := repository.NewPromoReadRepository(s.db)
 
 	// Core services
 	roleService := corerole.NewService(roleRepo, roleAssignmentRepo, metaRepo, idGen)
@@ -663,9 +671,10 @@ func (s *Server) setupRoutes() {
 		signinHandler.SetWebAuthn(webauthnSvc, userSecurityKeyRepo)
 	}
 
-	// Emojis endpoint (public, Phase 4.5i)
+	// Emojis endpoints (public)
 	emojisHandler := apiemojis.NewHandler(emojiRepo)
 	api.POST("/emojis", emojisHandler.Emojis)
+	api.POST("/emoji", emojisHandler.Emoji)
 
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
@@ -741,6 +750,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/update-memo", usersHandler.UpdateMemo, middleware.RequireAuth())
 	usersHandler.SetAbuseRepo(repository.NewAbuseReportRepository(s.db))
 	usersHandler.SetMemoRepo(repository.NewUserMemoRepository(s.db))
+	usersHandler.SetUserListFavoriteRepo(userListFavoriteRepo)
 	// Phase 7.3: users/* 完全化 (実データハンドラ)
 	api.POST("/users/achievements", usersHandler.Achievements)
 	api.POST("/users/clips", usersHandler.Clips)
@@ -1012,6 +1022,8 @@ func (s *Server) setupRoutes() {
 
 	// Channels endpoints (Phase 4.2)
 	channelsHandler := apichannels.NewHandler(channelService, idGen)
+	channelsHandler.SetFavoriteRepo(channelFavoriteRepo)
+	channelsHandler.SetMutingRepo(channelMutingRepo)
 	api.POST("/channels/create", channelsHandler.Create, middleware.RequireAuth())
 	api.POST("/channels/show", channelsHandler.Show)
 	api.POST("/channels/update", channelsHandler.Update, middleware.RequireAuth())
@@ -1034,6 +1046,7 @@ func (s *Server) setupRoutes() {
 
 	// Clips endpoints (Phase 4.4)
 	clipsHandler := clips.NewHandler(clipService, idGen)
+	clipsHandler.SetFavoriteRepo(clipFavoriteRepo)
 	api.POST("/clips/create", clipsHandler.Create, middleware.RequireAuth())
 	api.POST("/clips/show", clipsHandler.Show)
 	api.POST("/clips/update", clipsHandler.Update, middleware.RequireAuth())
@@ -1164,9 +1177,12 @@ func (s *Server) setupRoutes() {
 
 	// Public roles (Phase 6)
 	rolesHandler := apiroles.NewHandler(roleService)
+	rolesHandler.SetNotesQuery(repository.NewRoleNotesQuery(s.db))
+	rolesHandler.SetIDGen(idGen)
 	api.POST("/roles/list", rolesHandler.List)
 	api.POST("/roles/show", rolesHandler.Show)
 	api.POST("/roles/users", rolesHandler.Users)
+	api.POST("/roles/notes", rolesHandler.Notes)
 
 	// User lists (Phase 6)
 	userListHandler := apiuserlists.NewHandler(userListRepo, idGen)
@@ -1382,6 +1398,238 @@ func (s *Server) setupRoutes() {
 	api.POST("/chat/history", chatHandler.History, middleware.RequireAuth())
 	api.POST("/chat/unread-count", chatHandler.UnreadCount, middleware.RequireAuth())
 
+	// --- Phase P3: 補助公開エンドポイント ---
+
+	// get-online-users-count — オンラインユーザー数
+	api.POST("/get-online-users-count", func(c echo.Context) error {
+		count, _ := userRepo.CountOnlineUsers()
+		return c.JSON(http.StatusOK, map[string]any{"count": count})
+	})
+
+	// server-info (公開版) — サーバー情報
+	api.POST("/server-info", func(c echo.Context) error {
+		if m, err := metaRepo.Fetch(); err == nil && m.EnableServerMachineStats {
+			return c.JSON(http.StatusOK, serverstats.Collect())
+		}
+		return c.JSON(http.StatusOK, serverstats.Empty())
+	})
+
+	// endpoints — 登録済みAPIエンドポイント一覧
+	api.POST("/endpoints", func(c echo.Context) error {
+		routes := s.echo.Routes()
+		names := make([]string, 0, len(routes))
+		seen := make(map[string]bool)
+		for _, r := range routes {
+			if r.Method != http.MethodPost {
+				continue
+			}
+			name := strings.TrimPrefix(r.Path, "/api/")
+			if name == r.Path || name == "" || name == "*" {
+				continue
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+		return c.JSON(http.StatusOK, names)
+	})
+
+	// endpoint — エンドポイント情報 (簡易版: パラメータ情報なし)
+	api.POST("/endpoint", func(c echo.Context) error {
+		var req struct {
+			Endpoint string `json:"endpoint"`
+		}
+		if err := c.Bind(&req); err != nil || req.Endpoint == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{
+					"message": "Invalid param.",
+					"code":    "INVALID_PARAM",
+					"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
+				},
+			})
+		}
+		return c.JSON(http.StatusOK, map[string]any{"params": map[string]any{}})
+	})
+
+	// retention — リテンション統計
+	api.POST("/retention", func(c echo.Context) error {
+		records, err := retentionRepo.ListRecent(30)
+		if err != nil {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		out := make([]map[string]any, 0, len(records))
+		for _, r := range records {
+			out = append(out, map[string]any{
+				"createdAt": r.CreatedAt,
+				"users":     r.UsersCount,
+				"data":      r.Data,
+			})
+		}
+		return c.JSON(http.StatusOK, out)
+	})
+
+	// get-avatar-decorations — アバターデコレーション全件取得
+	api.POST("/get-avatar-decorations", func(c echo.Context) error {
+		var decorations []model.AvatarDecoration
+		if err := s.db.Find(&decorations).Error; err != nil {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		out := make([]map[string]any, 0, len(decorations))
+		for _, d := range decorations {
+			out = append(out, map[string]any{
+				"id":                                 d.ID,
+				"name":                               d.Name,
+				"description":                        d.Description,
+				"url":                                d.URL,
+				"roleIdsThatCanBeUsedThisDecoration": d.RoleIDs,
+			})
+		}
+		return c.JSON(http.StatusOK, out)
+	})
+
+	// email-address/available — メールアドレスの利用可否チェック (認証必須)
+	api.POST("/email-address/available", func(c echo.Context) error {
+		var req struct {
+			EmailAddress string `json:"emailAddress"`
+		}
+		if err := c.Bind(&req); err != nil || req.EmailAddress == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{
+					"message": "Invalid param.",
+					"code":    "INVALID_PARAM",
+					"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
+				},
+			})
+		}
+		var count int64
+		s.db.Model(&model.UserProfile{}).Where(`"email" = ?`, req.EmailAddress).Count(&count)
+		available := count == 0
+		var reason *string
+		if !available {
+			r := "unavailable"
+			reason = &r
+		}
+		return c.JSON(http.StatusOK, map[string]any{
+			"available": available,
+			"reason":    reason,
+		})
+	}, middleware.RequireAuth())
+
+	// promo/read — プロモノートの既読マーク (認証必須)
+	api.POST("/promo/read", func(c echo.Context) error {
+		user := middleware.GetUser(c)
+		var req struct {
+			NoteID string `json:"noteId"`
+		}
+		if err := c.Bind(&req); err != nil || req.NoteID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"error": map[string]any{
+					"message": "Invalid param.",
+					"code":    "INVALID_PARAM",
+					"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
+				},
+			})
+		}
+		if _, err := noteRepo.FindByID(req.NoteID); err != nil {
+			return c.JSON(http.StatusNotFound, map[string]any{
+				"error": map[string]any{
+					"message": "No such note.",
+					"code":    "NO_SUCH_NOTE",
+					"id":      "fc8c0b49-c7a3-4664-a0a6-b418d386bb8d",
+				},
+			})
+		}
+		_ = promoReadRepo.MarkRead(&model.PromoRead{
+			ID:     idGen.Generate(time.Now()),
+			UserID: user.ID,
+			NoteID: req.NoteID,
+		})
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// invite/create — 招待コード作成 (認証必須)
+	api.POST("/invite/create", func(c echo.Context) error {
+		user := middleware.GetUser(c)
+		ticket := &model.RegistrationTicket{
+			ID:          idGen.Generate(time.Now()),
+			Code:        generateInviteCode(),
+			CreatedByID: &user.ID,
+		}
+		if err := s.db.Create(ticket).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]any{
+				"error": map[string]any{
+					"message": "Internal error.",
+					"code":    "INTERNAL_ERROR",
+					"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
+				},
+			})
+		}
+		createdBy := entity.PackUserLite(user)
+		resp := map[string]any{
+			"id":        ticket.ID,
+			"code":      ticket.Code,
+			"expiresAt": ticket.ExpiresAt,
+			"createdBy": createdBy,
+			"usedBy":    nil,
+			"usedAt":    nil,
+			"used":      false,
+		}
+		if t, err := idGen.ParseTime(ticket.ID); err == nil {
+			resp["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		}
+		return c.JSON(http.StatusOK, resp)
+	}, middleware.RequireAuth())
+
+	// invite/list — 招待コード一覧 (認証必須)
+	api.POST("/invite/list", func(c echo.Context) error {
+		user := middleware.GetUser(c)
+		var req struct {
+			Limit   int    `json:"limit"`
+			SinceID string `json:"sinceId"`
+			UntilID string `json:"untilId"`
+		}
+		_ = c.Bind(&req)
+		if req.Limit <= 0 {
+			req.Limit = 30
+		}
+		if req.Limit > 100 {
+			req.Limit = 100
+		}
+		q := s.db.Model(&model.RegistrationTicket{}).
+			Where(`"createdById" = ?`, user.ID).
+			Order("id DESC").
+			Limit(req.Limit)
+		if req.SinceID != "" {
+			q = q.Where("id > ?", req.SinceID)
+		}
+		if req.UntilID != "" {
+			q = q.Where("id < ?", req.UntilID)
+		}
+		var tickets []*model.RegistrationTicket
+		if err := q.Find(&tickets).Error; err != nil {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		out := make([]map[string]any, 0, len(tickets))
+		for _, t := range tickets {
+			entry := map[string]any{
+				"id":        t.ID,
+				"code":      t.Code,
+				"expiresAt": t.ExpiresAt,
+				"createdBy": nil,
+				"usedBy":    nil,
+				"usedAt":    t.UsedAt,
+				"used":      t.UsedByID != nil,
+			}
+			if ts, err := idGen.ParseTime(t.ID); err == nil {
+				entry["createdAt"] = ts.UTC().Format("2006-01-02T15:04:05.000Z")
+			}
+			out = append(out, entry)
+		}
+		return c.JSON(http.StatusOK, out)
+	}, middleware.RequireAuth())
+
 	// --- その他の残りエンドポイント ---
 	// test — フロントエンドのテスト用
 	api.POST("/test", func(c echo.Context) error {
@@ -1447,6 +1695,19 @@ func (s *Server) setupRoutes() {
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
+}
+
+// generateInviteCode creates a random invite code string.
+func generateInviteCode() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 8)
+	if _, err := io.ReadFull(cryptorand.Reader, b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	for i := range b {
+		b[i] = chars[b[i]%byte(len(chars))]
+	}
+	return string(b)
 }
 
 // gormTicketStore implements apisignup.TicketStore using GORM.

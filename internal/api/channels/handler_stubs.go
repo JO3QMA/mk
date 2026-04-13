@@ -2,36 +2,157 @@ package channels
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 )
+
+// SetFavoriteRepo attaches a ChannelFavoriteRepository for favorite endpoints.
+func (h *Handler) SetFavoriteRepo(r ChannelFavoriteRepository) {
+	h.favoriteRepo = r
+}
+
+// SetMutingRepo attaches a ChannelMutingRepository for mute endpoints.
+func (h *Handler) SetMutingRepo(r ChannelMutingRepository) {
+	h.mutingRepo = r
+}
 
 // Favorite handles POST /api/channels/favorite.
 func (h *Handler) Favorite(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
+		return invalidParam(c)
+	}
+	if h.favoriteRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if _, err := h.svc.Show(req.ChannelID); err != nil {
+		return notFound(c)
+	}
+	already, _ := h.favoriteRepo.Exists(user.ID, req.ChannelID)
+	if already {
+		return c.NoContent(http.StatusNoContent)
+	}
+	fav := &model.ChannelFavorite{
+		ID:        h.idGen.Generate(time.Now()),
+		UserID:    user.ID,
+		ChannelID: req.ChannelID,
+	}
+	if err := h.favoriteRepo.Create(fav); err != nil {
+		return internalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // Unfavorite handles POST /api/channels/unfavorite.
 func (h *Handler) Unfavorite(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
-}
-
-// MuteCreate handles POST /api/channels/mute/create.
-func (h *Handler) MuteCreate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent)
-}
-
-// MuteDelete handles POST /api/channels/mute/delete.
-func (h *Handler) MuteDelete(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
+		return invalidParam(c)
+	}
+	if h.favoriteRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.favoriteRepo.Delete(user.ID, req.ChannelID); err != nil {
+		return internalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // MyFavorites handles POST /api/channels/my-favorites.
 func (h *Handler) MyFavorites(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	user := middleware.GetUser(c)
+	if h.favoriteRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	favs, err := h.favoriteRepo.ListByUser(user.ID)
+	if err != nil {
+		return internalError(c)
+	}
+	out := make([]map[string]any, 0, len(favs))
+	for _, f := range favs {
+		ch, err := h.svc.Show(f.ChannelID)
+		if err != nil {
+			continue
+		}
+		out = append(out, channelToMap(ch))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// MuteCreate handles POST /api/channels/mute/create.
+func (h *Handler) MuteCreate(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
+		return invalidParam(c)
+	}
+	if h.mutingRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if _, err := h.svc.Show(req.ChannelID); err != nil {
+		return notFound(c)
+	}
+	already, _ := h.mutingRepo.Exists(user.ID, req.ChannelID)
+	if already {
+		return c.NoContent(http.StatusNoContent)
+	}
+	mut := &model.ChannelMuting{
+		ID:        h.idGen.Generate(time.Now()),
+		UserID:    user.ID,
+		ChannelID: req.ChannelID,
+	}
+	if err := h.mutingRepo.Create(mut); err != nil {
+		return internalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// MuteDelete handles POST /api/channels/mute/delete.
+func (h *Handler) MuteDelete(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
+		return invalidParam(c)
+	}
+	if h.mutingRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.mutingRepo.Delete(user.ID, req.ChannelID); err != nil {
+		return internalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // MuteList handles POST /api/channels/mute/list.
 func (h *Handler) MuteList(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	user := middleware.GetUser(c)
+	if h.mutingRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	mutings, err := h.mutingRepo.ListByUser(user.ID)
+	if err != nil {
+		return internalError(c)
+	}
+	out := make([]map[string]any, 0, len(mutings))
+	for _, m := range mutings {
+		ch, err := h.svc.Show(m.ChannelID)
+		if err != nil {
+			continue
+		}
+		out = append(out, channelToMap(ch))
+	}
+	return c.JSON(http.StatusOK, out)
 }

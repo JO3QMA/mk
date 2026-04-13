@@ -157,12 +157,112 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	resp := entity.PackUserDetailed(result.User, nil)
-	out := map[string]any{
-		"id":       resp.ID,
-		"username": resp.Username,
-		"token":    result.Token,
+	u := result.User
+	detailed := entity.PackUserDetailed(u, nil)
+
+	isAdmin := false
+	isMod := false
+	userPolicies := role.DefaultPolicies()
+	if h.roleService != nil {
+		isAdmin = h.roleService.IsAdministrator(u.ID)
+		isMod = h.roleService.IsModerator(u.ID)
+		userPolicies = h.roleService.GetUserPolicies(u.ID)
 	}
+
+	out := map[string]any{
+		// UserLite
+		"id":                u.ID,
+		"name":              detailed.Name,
+		"username":          detailed.Username,
+		"host":              detailed.Host,
+		"avatarUrl":         detailed.AvatarURL,
+		"avatarBlurhash":    detailed.AvatarBlurhash,
+		"avatarDecorations": detailed.AvatarDecorations,
+		"isBot":             detailed.IsBot,
+		"isCat":             detailed.IsCat,
+		"emojis":            detailed.Emojis,
+		"onlineStatus":      detailed.OnlineStatus,
+		"badgeRoles":        detailed.BadgeRoles,
+		// UserDetailed
+		"bannerUrl":      detailed.BannerURL,
+		"bannerBlurhash": detailed.BannerBlurhash,
+		"isLocked":       detailed.IsLocked,
+		"isSilenced":     false,
+		"isSuspended":    detailed.IsSuspended,
+		"description":    detailed.Description,
+		"location":       detailed.Location,
+		"birthday":       detailed.Birthday,
+		"lang":           detailed.Lang,
+		"fields":         detailed.Fields,
+		"verifiedLinks":  detailed.VerifiedLinks,
+		"followersCount": detailed.FollowersCount,
+		"followingCount": detailed.FollowingCount,
+		"notesCount":     detailed.NotesCount,
+		"uri":            detailed.URI,
+		"url":            detailed.URL,
+		"movedTo":        u.MovedToURI,
+		"alsoKnownAs":    u.AlsoKnownAs,
+		"updatedAt":      detailed.UpdatedAt,
+		"lastFetchedAt":  nil,
+		// MeDetailed (新規ユーザーなのでゼロ値が多い)
+		"avatarId":                        u.AvatarID,
+		"bannerId":                        u.BannerID,
+		"followersVisibility":             detailed.FollowersVisibility,
+		"followingVisibility":             detailed.FollowingVisibility,
+		"chatScope":                       u.ChatScope,
+		"canChat":                         true,
+		"followedMessage":                 nil,
+		"memo":                            nil,
+		"moderationNote":                  nil,
+		"hideOnlineStatus":                u.HideOnlineStatus,
+		"isAdmin":                         isAdmin,
+		"isModerator":                     isMod,
+		"isDeleted":                       u.IsDeleted,
+		"isExplorable":                    u.IsExplorable,
+		"hasUnreadNotification":           false,
+		"hasPendingReceivedFollowRequest": false,
+		"hasUnreadAnnouncement":           false,
+		"hasUnreadAntenna":                false,
+		"hasUnreadChannel":                false,
+		"hasUnreadMentions":               false,
+		"hasUnreadSpecifiedNotes":         false,
+		"hasUnreadChatMessages":           false,
+		"unreadNotificationsCount":        0,
+		"unreadAnnouncements":             []any{},
+		"pinnedNoteIds":                   []string{},
+		"pinnedNotes":                     []any{},
+		"pinnedPageId":                    nil,
+		"pinnedPage":                      nil,
+		"policies":                        userPolicies,
+		"roles":                           []any{},
+		"securityKeysList":                []any{},
+		"mutingNotificationTypes":         []any{},
+		"notificationRecieveConfig":       map[string]any{},
+		"emailNotificationTypes":          []string{"follow", "receiveFollowRequest"},
+		"twoFactorEnabled":                false,
+		"usePasswordLessLogin":            false,
+		"securityKeys":                    false,
+		"twoFactorBackupCodesStock":       "none",
+		"autoAcceptFollowed":              true,
+		"noCrawle":                        false,
+		"preventAiLearning":               true,
+		"alwaysMarkNsfw":                  false,
+		"autoSensitive":                   false,
+		"carefulBot":                      false,
+		"injectFeaturedNote":              true,
+		"receiveAnnouncementEmail":        true,
+		"publicReactions":                 true,
+		"loggedInDays":                    0,
+		"achievements":                    []any{},
+		// token (MeDetailed にない追加フィールド)
+		"token": result.Token,
+	}
+
+	// createdAt は ID から復元
+	if t, err := h.idGen.ParseTime(u.ID); err == nil {
+		out["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+	}
+
 	return c.JSON(http.StatusOK, out)
 }
 

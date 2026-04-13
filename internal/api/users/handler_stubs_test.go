@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
@@ -121,14 +122,16 @@ func TestListsCreateFromPublic(t *testing.T) {
 
 func TestListsFavorite(t *testing.T) {
 	h, _ := newTestHandler(t)
+	// listId未指定 → 400
 	rec := postStub(h.ListsFavorite, `{}`, &model.User{ID: "u1"})
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestListsUnfavorite(t *testing.T) {
 	h, _ := newTestHandler(t)
+	// listId未指定 → 400
 	rec := postStub(h.ListsUnfavorite, `{}`, &model.User{ID: "u1"})
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestListsUpdate(t *testing.T) {
@@ -163,6 +166,46 @@ func TestUsersBulk_InvalidParam(t *testing.T) {
 	h, _ := newTestHandler(t)
 	rec := postStub(h.UsersBulk, `invalid`, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- ListsFavorite with repo ---
+
+func TestListsFavorite_WithRepo(t *testing.T) {
+	h, _ := newTestHandler(t)
+	favRepo := testutil.NewMockUserListFavoriteRepository()
+	h.SetUserListFavoriteRepo(favRepo)
+	rec := postStub(h.ListsFavorite, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	exists, _ := favRepo.Exists("u1", "l1")
+	assert.True(t, exists)
+}
+
+func TestListsFavorite_AlreadyFavorited(t *testing.T) {
+	h, _ := newTestHandler(t)
+	favRepo := testutil.NewMockUserListFavoriteRepository()
+	favRepo.Favorites["u1:l1"] = &model.UserListFavorite{ID: "f1", UserID: "u1", UserListID: "l1"}
+	h.SetUserListFavoriteRepo(favRepo)
+	rec := postStub(h.ListsFavorite, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestListsFavorite_MissingListID(t *testing.T) {
+	h, _ := newTestHandler(t)
+	favRepo := testutil.NewMockUserListFavoriteRepository()
+	h.SetUserListFavoriteRepo(favRepo)
+	rec := postStub(h.ListsFavorite, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestListsUnfavorite_WithRepo(t *testing.T) {
+	h, _ := newTestHandler(t)
+	favRepo := testutil.NewMockUserListFavoriteRepository()
+	favRepo.Favorites["u1:l1"] = &model.UserListFavorite{ID: "f1", UserID: "u1", UserListID: "l1"}
+	h.SetUserListFavoriteRepo(favRepo)
+	rec := postStub(h.ListsUnfavorite, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	exists, _ := favRepo.Exists("u1", "l1")
+	assert.False(t, exists)
 }
 
 // --- Show with isFollowing ---
