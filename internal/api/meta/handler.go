@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
@@ -112,7 +113,7 @@ func (h *Handler) Meta(c echo.Context) error {
 		// デフォルト値を使う前提。
 		"clientOptions": clientOptionsJSON(m.ClientOptions),
 
-		"policies": defaultPolicies(),
+		"policies": role.DefaultPolicies(),
 
 		"features": map[string]any{
 			"registration":           !m.DisableRegistration,
@@ -127,50 +128,6 @@ func (h *Handler) Meta(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, resp)
-}
-
-// defaultPolicies returns the Misskey default policies matching the TS implementation.
-func defaultPolicies() map[string]any {
-	return map[string]any{
-		"gtlAvailable":               true,
-		"ltlAvailable":               true,
-		"canPublicNote":              true,
-		"mentionLimit":               20,
-		"canInvite":                  false,
-		"inviteLimit":                0,
-		"inviteLimitCycle":           10080,
-		"inviteExpirationTime":       0,
-		"canManageCustomEmojis":      false,
-		"canManageAvatarDecorations": false,
-		"canSearchNotes":             false,
-		"canSearchUsers":             true,
-		"canUseTranslator":           true,
-		"canHideAds":                 false,
-		"driveCapacityMb":            100,
-		"maxFileSizeMb":              30,
-		"alwaysMarkNsfw":             false,
-		"canUpdateBioMedia":          true,
-		"pinLimit":                   5,
-		"antennaLimit":               5,
-		"wordMuteLimit":              200,
-		"webhookLimit":               3,
-		"clipLimit":                  10,
-		"noteEachClipsLimit":         200,
-		"userListLimit":              10,
-		"userEachUserListsLimit":     50,
-		"rateLimitFactor":            1,
-		"avatarDecorationLimit":      1,
-		"canImportAntennas":          false,
-		"canImportBlocking":          false,
-		"canImportFollowing":         false,
-		"canImportMuting":            false,
-		"canImportUserLists":         false,
-		"chatAvailability":           "available",
-		"uploadableFileTypes":        []string{"text/*", "application/json", "image/*", "video/*", "audio/*"},
-		"noteDraftLimit":             10,
-		"scheduledNoteLimit":         1,
-		"watermarkAvailable":         true,
-	}
 }
 
 // Ping returns a simple pong response.

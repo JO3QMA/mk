@@ -13,6 +13,7 @@ import (
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -258,6 +259,153 @@ func TestShow_UsernameNotFound(t *testing.T) {
 	err := h.Show(c)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestShow_ViewerDependentFields(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+
+	// ターゲットユーザー
+	target := &model.User{
+		ID:                "target1",
+		Username:          "target",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	userRepo.Users["target1"] = target
+
+	// viewer
+	viewer := &model.User{ID: "viewer1", Username: "viewer"}
+
+	// blockingリポジトリをセット (viewerがtargetをブロック)
+	blockingRepo := testutil.NewMockBlockingRepository()
+	blockingRepo.Blockings["b1"] = &model.Blocking{ID: "b1", BlockerID: "viewer1", BlockeeID: "target1"}
+	h.SetBlockingRepo(blockingRepo)
+
+	// mutingリポジトリをセット
+	mutingRepo := testutil.NewMockMutingRepository()
+	h.SetMutingRepo(mutingRepo)
+
+	// followRequestリポジトリをセット
+	followRequestRepo := testutil.NewMockFollowRequestRepository()
+	h.SetFollowRequestRepo(followRequestRepo)
+
+	body := `{"userId": "target1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), viewer)
+
+	err := h.Show(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["isBlocking"])
+	assert.Equal(t, false, resp["isBlocked"])
+	assert.Equal(t, false, resp["isMuted"])
+}
+
+func TestShow_ViewerMemo(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+
+	target := &model.User{
+		ID:                "target1",
+		Username:          "target",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	userRepo.Users["target1"] = target
+
+	viewer := &model.User{ID: "viewer1", Username: "viewer"}
+
+	// memoリポジトリをセット
+	memoRepo := testutil.NewMockUserMemoRepository()
+	memoRepo.Memos["viewer1:target1"] = &model.UserMemo{
+		UserID:       "viewer1",
+		TargetUserID: "target1",
+		Memo:         "important person",
+	}
+	h.SetMemoRepo(memoRepo)
+
+	// followingリポジトリをセット (notify/withRepliesのテスト用)
+	followingRepo := testutil.NewMockFollowingRepository()
+	notify := "normal"
+	followingRepo.Followings["f1"] = &model.Following{
+		ID:          "f1",
+		FollowerID:  "viewer1",
+		FolloweeID:  "target1",
+		Notify:      &notify,
+		WithReplies: true,
+	}
+	h.SetFollowingRepo(followingRepo)
+
+	// renoteMutingリポジトリをセット
+	renoteMutingRepo := testutil.NewMockRenoteMutingRepository()
+	h.SetRenoteMutingRepo(renoteMutingRepo)
+
+	body := `{"userId": "target1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), viewer)
+
+	err := h.Show(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "important person", resp["memo"])
+	assert.Equal(t, "normal", resp["notify"])
+	assert.Equal(t, true, resp["withReplies"])
+	assert.Equal(t, true, resp["isFollowing"])
+	assert.Equal(t, false, resp["isRenoteMuted"])
+}
+
+func TestShow_RemoteUserInstance(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+
+	host := "remote.example.com"
+	target := &model.User{
+		ID:                "remote1",
+		Username:          "remoteuser",
+		Host:              &host,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	userRepo.Users["remote1"] = target
+
+	// instanceリポジトリをセット
+	instanceRepo := testutil.NewMockInstanceRepository()
+	instName := "Remote Instance"
+	softwareName := "misskey"
+	instanceRepo.Instances["remote.example.com"] = &model.Instance{
+		ID:               "inst1",
+		Host:             "remote.example.com",
+		Name:             &instName,
+		SoftwareName:     &softwareName,
+		FirstRetrievedAt: time.Now(),
+	}
+	h.SetInstanceRepo(instanceRepo)
+
+	body := `{"userId": "remote1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	err := h.Show(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	inst := resp["instance"].(map[string]any)
+	assert.Equal(t, "Remote Instance", inst["name"])
+	assert.Equal(t, "misskey", inst["softwareName"])
 }
 
 // --- post is a small helper that exercises a handler with an optional body ---

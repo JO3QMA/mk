@@ -21,18 +21,20 @@ import (
 
 // Handler handles note-related API endpoints.
 type Handler struct {
-	noteRepo        repository.NoteRepository
-	createService   *note.CreateService
-	deleteService   *note.DeleteService
-	queryService    *note.QueryService
-	timelineService *timeline.Service
-	reactionService *reaction.Service
-	pollService     *poll.Service
-	searchService   *search.Service
-	idGen           id.Generator
-	favoriteRepo    repository.NoteFavoriteRepository
-	driveFileRepo   repository.DriveFileRepository
-	draftRepo       repository.NoteDraftRepository
+	noteRepo         repository.NoteRepository
+	createService    *note.CreateService
+	deleteService    *note.DeleteService
+	queryService     *note.QueryService
+	timelineService  *timeline.Service
+	reactionService  *reaction.Service
+	pollService      *poll.Service
+	searchService    *search.Service
+	idGen            id.Generator
+	favoriteRepo     repository.NoteFavoriteRepository
+	driveFileRepo    repository.DriveFileRepository
+	draftRepo        repository.NoteDraftRepository
+	noteReactionRepo repository.NoteReactionRepository
+	channelRepo      repository.ChannelRepository
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
@@ -52,6 +54,16 @@ func (h *Handler) SetUGCVisibility(v string) {
 // SetDriveFileRepo attaches a DriveFileRepository for file resolution.
 func (h *Handler) SetDriveFileRepo(r repository.DriveFileRepository) {
 	h.driveFileRepo = r
+}
+
+// SetNoteReactionRepo attaches a NoteReactionRepository for myReaction resolution.
+func (h *Handler) SetNoteReactionRepo(r repository.NoteReactionRepository) {
+	h.noteReactionRepo = r
+}
+
+// SetChannelRepo attaches a ChannelRepository for channel resolution.
+func (h *Handler) SetChannelRepo(r repository.ChannelRepository) {
+	h.channelRepo = r
 }
 
 // NewHandler creates a new notes Handler.
@@ -173,6 +185,7 @@ func (h *Handler) Create(c echo.Context) error {
 	packed := entity.PackNote(created, h.idGen)
 	s := []entity.NoteEntity{packed}
 	h.resolveFiles(s)
+	h.resolveViewerFields(s, user)
 	return c.JSON(http.StatusOK, map[string]any{
 		"createdNote": s[0],
 	})
@@ -199,6 +212,7 @@ func (h *Handler) Show(c echo.Context) error {
 	packed := entity.PackNote(n, h.idGen)
 	s := []entity.NoteEntity{packed}
 	h.resolveFiles(s)
+	h.resolveViewerFields(s, viewer)
 	return c.JSON(http.StatusOK, s[0])
 }
 
@@ -305,7 +319,7 @@ func (h *Handler) serveList(c echo.Context, fn func(*model.User, listRequest) ([
 		}
 		return internalError(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes))
+	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
 
 // SearchRequest is the request body for notes/search.
@@ -373,7 +387,7 @@ func (h *Handler) Search(c echo.Context) error {
 		}
 		return internalError(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes))
+	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
 
 // State handles POST /api/notes/state.
@@ -416,17 +430,19 @@ func (h *Handler) Conversation(c echo.Context) error {
 		// 現状QueryService.ConversationはErrNoteNotFound以外を返さない
 		return noSuchNote(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes))
+	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
 
 // packMany serializes a list of notes into NoteEntity objects.
 // driveFileRepoが設定されている場合、ファイル情報を解決してFilesに含める。
-func (h *Handler) packMany(notes []*model.Note) []entity.NoteEntity {
+// viewerがnon-nilの場合、myReactionなどのviewer依存フィールドも解決する。
+func (h *Handler) packMany(notes []*model.Note, viewer *model.User) []entity.NoteEntity {
 	out := make([]entity.NoteEntity, 0, len(notes))
 	for _, n := range notes {
 		out = append(out, entity.PackNote(n, h.idGen))
 	}
 	h.resolveFiles(out)
+	h.resolveViewerFields(out, viewer)
 	return out
 }
 
@@ -462,6 +478,62 @@ func (h *Handler) resolveFiles(notes []entity.NoteEntity) {
 			}
 		}
 		notes[i].Files = packed
+	}
+}
+
+// resolveViewerFields populates viewer-dependent fields (MyReaction, Channel)
+// on packed NoteEntities. viewerがnilの場合はChannel解決のみ行う。
+func (h *Handler) resolveViewerFields(notes []entity.NoteEntity, viewer *model.User) {
+	if len(notes) == 0 {
+		return
+	}
+
+	// MyReaction: viewerが認証済みの場合にバッチ取得
+	if viewer != nil && h.noteReactionRepo != nil {
+		noteIDs := make([]string, len(notes))
+		for i := range notes {
+			noteIDs[i] = notes[i].ID
+		}
+		reactionMap, err := h.noteReactionRepo.FindByUserAndNoteIDs(viewer.ID, noteIDs)
+		if err == nil {
+			for i := range notes {
+				if r, ok := reactionMap[notes[i].ID]; ok {
+					notes[i].MyReaction = &r.Reaction
+				}
+			}
+		}
+	}
+
+	// Channel: ChannelIDがnon-nilのノートについてバッチ取得
+	if h.channelRepo != nil {
+		var channelIDs []string
+		for _, n := range notes {
+			if n.ChannelID != nil && *n.ChannelID != "" {
+				channelIDs = append(channelIDs, *n.ChannelID)
+			}
+		}
+		if len(channelIDs) > 0 {
+			channels, err := h.channelRepo.FindByIDs(channelIDs)
+			if err == nil {
+				chMap := make(map[string]*model.Channel, len(channels))
+				for _, ch := range channels {
+					chMap[ch.ID] = ch
+				}
+				for i := range notes {
+					if notes[i].ChannelID != nil {
+						if ch, ok := chMap[*notes[i].ChannelID]; ok {
+							notes[i].Channel = &entity.ChannelLite{
+								ID:                    ch.ID,
+								Name:                  ch.Name,
+								Color:                 ch.Color,
+								IsSensitive:           ch.IsSensitive,
+								AllowRenoteToExternal: ch.AllowRenoteToExternal,
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 }
 

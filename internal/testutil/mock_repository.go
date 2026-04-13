@@ -798,6 +798,20 @@ func (m *MockNoteReactionRepository) FindByPair(userID, noteID string) (*model.N
 	return nil, ErrNotFound
 }
 
+func (m *MockNoteReactionRepository) FindByUserAndNoteIDs(userID string, noteIDs []string) (map[string]*model.NoteReaction, error) {
+	result := make(map[string]*model.NoteReaction)
+	noteIDSet := make(map[string]bool, len(noteIDs))
+	for _, id := range noteIDs {
+		noteIDSet[id] = true
+	}
+	for _, r := range m.Reactions {
+		if r.UserID == userID && noteIDSet[r.NoteID] {
+			result[r.NoteID] = r
+		}
+	}
+	return result, nil
+}
+
 func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID string, limit int, reaction string) ([]*model.NoteReaction, error) {
 	var rows []*model.NoteReaction
 	for _, r := range m.Reactions {
@@ -2015,6 +2029,16 @@ func (m *MockChannelRepository) FindByID(id string) (*model.Channel, error) {
 	return c, nil
 }
 
+func (m *MockChannelRepository) FindByIDs(ids []string) ([]*model.Channel, error) {
+	var result []*model.Channel
+	for _, id := range ids {
+		if ch, ok := m.Channels[id]; ok {
+			result = append(result, ch)
+		}
+	}
+	return result, nil
+}
+
 func (m *MockChannelRepository) UpdateFields(channelID string, fields map[string]any) error {
 	if m.UpdateErr != nil {
 		return m.UpdateErr
@@ -2770,4 +2794,32 @@ func (m *MockRoleAssignmentRepository) Exists(userID, roleID string) (bool, erro
 		return false, nil
 	}
 	return true, nil
+}
+
+// MockUserMemoRepository is a test double for repository.UserMemoRepository.
+type MockUserMemoRepository struct {
+	// keyed by "userID:targetUserID"
+	Memos map[string]*model.UserMemo
+}
+
+// NewMockUserMemoRepository creates an empty MockUserMemoRepository.
+func NewMockUserMemoRepository() *MockUserMemoRepository {
+	return &MockUserMemoRepository{Memos: make(map[string]*model.UserMemo)}
+}
+
+func (m *MockUserMemoRepository) CreateOrUpdate(memo *model.UserMemo) error {
+	m.Memos[memo.UserID+":"+memo.TargetUserID] = memo
+	return nil
+}
+
+func (m *MockUserMemoRepository) FindByPair(userID, targetUserID string) (*model.UserMemo, error) {
+	if memo, ok := m.Memos[userID+":"+targetUserID]; ok {
+		return memo, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockUserMemoRepository) Delete(userID, targetUserID string) error {
+	delete(m.Memos, userID+":"+targetUserID)
+	return nil
 }

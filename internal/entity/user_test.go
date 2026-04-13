@@ -3,6 +3,7 @@ package entity
 import (
 	"testing"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -129,6 +130,60 @@ func TestPackUserDetailed(t *testing.T) {
 	assert.Equal(t, &location, detailed.Location)
 	assert.Equal(t, &birthday, detailed.Birthday)
 	assert.Equal(t, &lang, detailed.Lang)
+}
+
+func TestPackUserDetailed_ProfileVisibility(t *testing.T) {
+	u := &model.User{
+		ID:                "user5",
+		Username:          "visible",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	profile := &model.UserProfile{
+		UserID:              "user5",
+		FollowersVisibility: model.FollowingVisibilityFollowers,
+		FollowingVisibility: model.FollowingVisibilityPrivate,
+		Fields:              datatypes.JSON([]byte("[]")),
+	}
+
+	detailed := PackUserDetailed(u, profile)
+
+	assert.Equal(t, "followers", detailed.FollowersVisibility)
+	assert.Equal(t, "private", detailed.FollowingVisibility)
+}
+
+func TestPackUserDetailed_VerifiedLinks(t *testing.T) {
+	u := &model.User{
+		ID:                "user6",
+		Username:          "verified",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	profile := &model.UserProfile{
+		UserID:        "user6",
+		VerifiedLinks: pq.StringArray{"https://example.com", "https://blog.example.com"},
+		Fields:        datatypes.JSON([]byte("[]")),
+	}
+
+	detailed := PackUserDetailed(u, profile)
+
+	assert.Equal(t, []string{"https://example.com", "https://blog.example.com"}, detailed.VerifiedLinks)
+}
+
+func TestPackUserDetailed_DefaultValues(t *testing.T) {
+	u := &model.User{
+		ID:                "user7",
+		Username:          "defaults",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	// nilプロフィールのデフォルト
+	detailed := PackUserDetailed(u, nil)
+
+	assert.Equal(t, "public", detailed.FollowersVisibility)
+	assert.Equal(t, "public", detailed.FollowingVisibility)
+	assert.NotNil(t, detailed.VerifiedLinks)
+	assert.Empty(t, detailed.VerifiedLinks)
 }
 
 func TestPackUserDetailed_NilProfile(t *testing.T) {
