@@ -475,3 +475,35 @@ redis:
 	assert.Equal(t, "https://proxy.example.com", cfg.MediaProxy)
 	assert.True(t, cfg.ExternalMediaProxyEnabled)
 }
+
+// --- TrustProxy ---
+
+func TestTrustProxy_Default(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultTrustProxy, cfg.TrustProxy)
+}
+
+func TestTrustProxy_Custom(t *testing.T) {
+	yml := testYAML + `
+trustProxy:
+  - "203.0.113.0/24"
+  - "198.51.100.0/24"
+`
+	path := writeTestConfig(t, yml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"203.0.113.0/24", "198.51.100.0/24"}, cfg.TrustProxy)
+}
+
+func TestResolveTrustProxy_EmptyUsesDefault(t *testing.T) {
+	result := resolveTrustProxy(nil)
+	assert.Equal(t, DefaultTrustProxy, result)
+}
+
+func TestResolveTrustProxy_CustomReturnsProvided(t *testing.T) {
+	custom := []string{"10.0.0.0/8"}
+	result := resolveTrustProxy(custom)
+	assert.Equal(t, custom, result)
+}

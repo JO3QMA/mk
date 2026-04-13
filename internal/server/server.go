@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 
 	"github.com/hibiken/asynq"
@@ -37,6 +38,11 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
+
+	// trustProxyからIPExtractorを構成
+	if opts := parseTrustProxy(cfg.TrustProxy); len(opts) > 0 {
+		e.IPExtractor = echo.ExtractIPFromXFFHeader(opts...)
+	}
 
 	// Global middleware
 	e.Use(echomw.Recover())
@@ -174,4 +180,19 @@ func buildAsynqRedisOpt(opts config.RedisOptions) asynq.RedisClientOpt {
 // from setupRoutes after the chart engines are constructed.
 func (s *Server) setChartManagement(m *chart.ManagementService) {
 	s.chartMgmt = m
+}
+
+// parseTrustProxy converts a list of CIDR strings into Echo TrustOptions.
+// 無効なCIDRはスキップしてログに記録する。
+func parseTrustProxy(cidrs []string) []echo.TrustOption {
+	var opts []echo.TrustOption
+	for _, cidr := range cidrs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			slog.Warn("invalid trustProxy CIDR, skipping", "cidr", cidr, "err", err)
+			continue
+		}
+		opts = append(opts, echo.TrustIPRange(ipNet))
+	}
+	return opts
 }

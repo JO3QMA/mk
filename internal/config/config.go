@@ -115,6 +115,11 @@ type Source struct {
 	DeactivateAntennaThreshold   *int   `mapstructure:"deactivateAntennaThreshold"`
 	PidFile                      string `mapstructure:"pidFile"`
 
+	// TrustProxy is a list of CIDR ranges for trusted reverse proxies.
+	// When set, Echo uses X-Forwarded-For from these ranges to determine
+	// the real client IP. Defaults to private IP ranges (TS-compatible).
+	TrustProxy []string `mapstructure:"trustProxy"`
+
 	// TestMode enables destructive test-only endpoints such as /api/reset-db.
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
 	TestMode bool `mapstructure:"testMode"`
@@ -188,6 +193,9 @@ type Config struct {
 	DeactivateAntennaThreshold   int
 	PidFile                      string
 	Logging                      *LoggingOptions
+
+	// TrustProxy is a list of CIDR ranges for trusted reverse proxies.
+	TrustProxy []string
 
 	// TestMode enables destructive test-only endpoints such as /api/reset-db.
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
@@ -355,6 +363,8 @@ func resolve(src *Source) (*Config, error) {
 		PidFile:                      src.PidFile,
 		Logging:                      src.Logging,
 
+		TrustProxy: resolveTrustProxy(src.TrustProxy),
+
 		TestMode: src.TestMode,
 	}
 
@@ -384,6 +394,25 @@ func resolveRedis(opts RedisOptions, host string) RedisOptions {
 
 // deriveMediaProxySecret returns a secret for HMAC-signed media proxy URLs.
 // 設定にsecretがあればそれを使用、なければインスタンスURL固有のキーを自動生成する。
+// DefaultTrustProxy is the default set of CIDR ranges for trusted proxies,
+// matching the TypeScript Misskey defaults (private IP ranges).
+var DefaultTrustProxy = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"127.0.0.1/32",
+	"::1/128",
+	"fc00::/7",
+}
+
+// resolveTrustProxy returns the provided list or the default if empty.
+func resolveTrustProxy(provided []string) []string {
+	if len(provided) > 0 {
+		return provided
+	}
+	return DefaultTrustProxy
+}
+
 func deriveMediaProxySecret(src *Source) []byte {
 	if src.MediaProxySecret != "" {
 		return []byte(src.MediaProxySecret)
