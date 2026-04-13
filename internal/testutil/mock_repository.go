@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -2826,6 +2827,197 @@ func (m *MockUserMemoRepository) FindByPair(userID, targetUserID string) (*model
 func (m *MockUserMemoRepository) Delete(userID, targetUserID string) error {
 	delete(m.Memos, userID+":"+targetUserID)
 	return nil
+}
+
+// MockPasswordResetRequestRepository is a test double for repository.PasswordResetRequestRepository.
+type MockPasswordResetRequestRepository struct {
+	Requests map[string]*model.PasswordResetRequest // keyed by ID
+}
+
+func NewMockPasswordResetRequestRepository() *MockPasswordResetRequestRepository {
+	return &MockPasswordResetRequestRepository{Requests: make(map[string]*model.PasswordResetRequest)}
+}
+
+func (m *MockPasswordResetRequestRepository) Create(req *model.PasswordResetRequest) error {
+	m.Requests[req.ID] = req
+	return nil
+}
+
+func (m *MockPasswordResetRequestRepository) FindByToken(token string) (*model.PasswordResetRequest, error) {
+	for _, r := range m.Requests {
+		if r.Token == token {
+			return r, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockPasswordResetRequestRepository) Delete(id string) error {
+	delete(m.Requests, id)
+	return nil
+}
+
+// MockSigninRepository is a test double for repository.SigninRepository.
+type MockSigninRepository struct {
+	mu      sync.Mutex
+	Signins []*model.Signin
+}
+
+func NewMockSigninRepository() *MockSigninRepository {
+	return &MockSigninRepository{}
+}
+
+func (m *MockSigninRepository) Create(s *model.Signin) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Signins = append(m.Signins, s)
+	return nil
+}
+
+// Len returns the number of signin records (thread-safe).
+func (m *MockSigninRepository) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Signins)
+}
+
+func (m *MockSigninRepository) ListByUserID(userID string, limit int, untilID, sinceID string) ([]*model.Signin, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var rows []*model.Signin
+	for _, s := range m.Signins {
+		if s.UserID != userID {
+			continue
+		}
+		if untilID != "" && s.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && s.ID <= sinceID {
+			continue
+		}
+		rows = append(rows, s)
+	}
+	// 最新順（IDの降順）にするため逆順にする
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+// MockAuthSessionRepository is a test double for repository.AuthSessionRepository.
+type MockAuthSessionRepository struct {
+	Apps         map[string]*model.App         // keyed by ID
+	Sessions     map[string]*model.AuthSession // keyed by ID
+	AccessTokens map[string]*model.AccessToken // keyed by ID
+}
+
+func NewMockAuthSessionRepository() *MockAuthSessionRepository {
+	return &MockAuthSessionRepository{
+		Apps:         make(map[string]*model.App),
+		Sessions:     make(map[string]*model.AuthSession),
+		AccessTokens: make(map[string]*model.AccessToken),
+	}
+}
+
+func (m *MockAuthSessionRepository) FindAppBySecret(secret string) (*model.App, error) {
+	for _, a := range m.Apps {
+		if a.Secret == secret {
+			return a, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) CreateApp(app *model.App) error {
+	m.Apps[app.ID] = app
+	return nil
+}
+
+func (m *MockAuthSessionRepository) CreateSession(session *model.AuthSession) error {
+	m.Sessions[session.ID] = session
+	return nil
+}
+
+func (m *MockAuthSessionRepository) FindSessionByToken(token string) (*model.AuthSession, error) {
+	for _, s := range m.Sessions {
+		if s.Token == token {
+			if s.App == nil && s.AppID != "" {
+				if a, ok := m.Apps[s.AppID]; ok {
+					s.App = a
+				}
+			}
+			return s, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) FindSessionByTokenAndAppID(token, appID string) (*model.AuthSession, error) {
+	for _, s := range m.Sessions {
+		if s.Token == token && s.AppID == appID {
+			if s.App == nil {
+				if a, ok := m.Apps[s.AppID]; ok {
+					s.App = a
+				}
+			}
+			return s, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) UpdateSessionUserID(sessionID, userID string) error {
+	if s, ok := m.Sessions[sessionID]; ok {
+		s.UserID = &userID
+	}
+	return nil
+}
+
+func (m *MockAuthSessionRepository) DeleteSession(sessionID string) error {
+	delete(m.Sessions, sessionID)
+	return nil
+}
+
+func (m *MockAuthSessionRepository) FindAccessTokenByAppAndUser(appID, userID string) (*model.AccessToken, error) {
+	for _, t := range m.AccessTokens {
+		if t.AppID != nil && *t.AppID == appID && t.UserID == userID {
+			return t, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) CreateAccessToken(token *model.AccessToken) error {
+	m.AccessTokens[token.ID] = token
+	return nil
+}
+
+func (m *MockAuthSessionRepository) FindAppByID(id string) (*model.App, error) {
+	a, ok := m.Apps[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
+func (m *MockAuthSessionRepository) ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error) {
+	var apps []*model.App
+	for _, a := range m.Apps {
+		if a.UserID != nil && *a.UserID == userID {
+			apps = append(apps, a)
+		}
+	}
+	if offset >= len(apps) {
+		return []*model.App{}, nil
+	}
+	apps = apps[offset:]
+	if len(apps) > limit {
+		apps = apps[:limit]
+	}
+	return apps, nil
 }
 
 // MockUserPublickeyRepository is a test double for federation.PublickeyStore.

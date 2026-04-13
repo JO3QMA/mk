@@ -44,6 +44,7 @@ type Handler struct {
 	metaRepo         repository.MetaRepository
 	emailSender      EmailSender
 	serverURL        string
+	signinRepo       repository.SigninRepository
 }
 
 // SetServerURL sets the base URL used for email verification links.
@@ -70,6 +71,11 @@ func (h *Handler) SetMetaRepo(r repository.MetaRepository) {
 func (h *Handler) SetWebAuthn(svc *twofactor.WebAuthnService, repo repository.UserSecurityKeyRepository) {
 	h.webauthnSvc = svc
 	h.securityKeyRepo = repo
+}
+
+// SetSigninRepo attaches a SigninRepository for i/signin-history.
+func (h *Handler) SetSigninRepo(r repository.SigninRepository) {
+	h.signinRepo = r
 }
 
 // SetFavoriteRepo attaches a NoteFavoriteRepository for i/favorites.
