@@ -16,6 +16,7 @@ import (
 	apiannouncements "github.com/shiroha-a/mk/internal/api/announcements"
 	"github.com/shiroha-a/mk/internal/api/antennas"
 	"github.com/shiroha-a/mk/internal/api/ap"
+	apiapp "github.com/shiroha-a/mk/internal/api/app"
 	apiauth "github.com/shiroha-a/mk/internal/api/auth"
 	"github.com/shiroha-a/mk/internal/api/blocking"
 	apibubblegame "github.com/shiroha-a/mk/internal/api/bubblegame"
@@ -40,6 +41,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/pages"
 	apiproxy "github.com/shiroha-a/mk/internal/api/proxy"
 	"github.com/shiroha-a/mk/internal/api/renotemute"
+	apiresetpassword "github.com/shiroha-a/mk/internal/api/resetpassword"
 	apireversi "github.com/shiroha-a/mk/internal/api/reversi"
 	apiroles "github.com/shiroha-a/mk/internal/api/roles"
 	apisignin "github.com/shiroha-a/mk/internal/api/signin"
@@ -625,8 +627,30 @@ func (s *Server) setupRoutes() {
 	if serverMeta, err := metaRepo.Fetch(); err == nil && serverMeta.EnableIPLogging {
 		signinHandler.SetIPLogger(userIPRepo, true)
 	}
+	// signin履歴レコード注入
+	signinRepo := repository.NewSigninRepository(s.db)
+	signinHandler.SetSigninRepo(signinRepo, idGen)
 	api.POST("/signin", signinHandler.Signin)
 	api.POST("/signin-flow", signinHandler.SigninFlow)
+
+	// パスワードリセット (認証不要)
+	resetReqRepo := repository.NewPasswordResetRequestRepository(s.db)
+	resetHandler := apiresetpassword.NewHandler(userRepo, resetReqRepo, idGen)
+	resetHandler.SetServerURL(s.config.URL)
+	if smtpMeta2, err := metaRepo.Fetch(); err == nil && smtpMeta2.EnableEmail && smtpMeta2.Email != nil && smtpMeta2.SmtpHost != nil {
+		fromAddr := *smtpMeta2.Email
+		host := *smtpMeta2.SmtpHost
+		port := 587
+		if smtpMeta2.SmtpPort != nil {
+			port = *smtpMeta2.SmtpPort
+		}
+		smtpUser, smtpPass := smtpMeta2.SmtpUser, smtpMeta2.SmtpPass
+		resetHandler.SetEmailSender(func(to, subject, body string) {
+			miscsmtp.Send(host, port, smtpUser, smtpPass, fromAddr, to, subject, body)
+		})
+	}
+	api.POST("/request-reset-password", resetHandler.RequestReset)
+	api.POST("/reset-password", resetHandler.Reset)
 
 	// WebAuthn / 2FA (issue #42)
 	// userSecurityKeyRepo + WebAuthnService を構築して signin と /api/i に注入する。
@@ -756,6 +780,7 @@ func (s *Server) setupRoutes() {
 	if webauthnSvc != nil {
 		iHandler.SetWebAuthn(webauthnSvc, userSecurityKeyRepo)
 	}
+	iHandler.SetSigninRepo(signinRepo)
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
 	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
 	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())
@@ -1286,6 +1311,15 @@ func (s *Server) setupRoutes() {
 	api.POST("/auth/session/show", authHandler.SessionShow)
 	api.POST("/auth/session/userkey", authHandler.SessionUserkey)
 	api.POST("/auth/accept", authHandler.Accept, middleware.RequireAuth())
+
+	// miauth/gen-token — アクセストークン直接生成
+	api.POST("/miauth/gen-token", authHandler.GenToken, middleware.RequireAuth())
+
+	// app/* — アプリ管理API
+	appHandler := apiapp.NewHandler(authSessionRepo, idGen)
+	api.POST("/app/create", appHandler.Create)
+	api.POST("/app/show", appHandler.Show)
+	api.POST("/my/apps", appHandler.MyApps, middleware.RequireAuth())
 
 	// ap/* — ActivityPub API lookup (実データ: ローカルオブジェクト解決)
 	api.POST("/ap/get", apHandler.APIGet, middleware.RequireAdmin(roleService))
