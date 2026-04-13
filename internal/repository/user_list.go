@@ -72,7 +72,14 @@ func (r *userListRepository) UpdateList(id string, fields map[string]any) error 
 }
 
 func (r *userListRepository) UpdateMembership(listID, userID string, withReplies bool) error {
-	return r.db.Model(&model.UserListMembership{}).
+	result := r.db.Model(&model.UserListMembership{}).
 		Where("\"userListId\" = ? AND \"userId\" = ?", listID, userID).
-		Update("withReplies", withReplies).Error
+		Update("withReplies", withReplies)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
