@@ -24,6 +24,7 @@ type mockAuthSessionRepo struct {
 	accessTokens map[string]*model.AccessToken
 	sessions     map[string]*model.AuthSession
 	createErr    error
+	listErr      error
 }
 
 func newMockRepo() *mockAuthSessionRepo {
@@ -75,6 +76,9 @@ func (m *mockAuthSessionRepo) FindAppByID(id string) (*model.App, error) {
 }
 
 func (m *mockAuthSessionRepo) ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	var apps []*model.App
 	for _, a := range m.apps {
 		if a.UserID != nil && *a.UserID == userID {
@@ -246,6 +250,48 @@ func TestMyApps_WithLimit(t *testing.T) {
 	var resp []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.LessOrEqual(t, len(resp), 2)
+}
+
+func TestMyApps_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler()
+	// 不正なJSON
+	rec := post(h.MyApps, `{invalid`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestMyApps_LimitClamp(t *testing.T) {
+	h, _ := newTestHandler()
+
+	// limit < 1 → 1にクランプ
+	rec := post(h.MyApps, `{"limit":0}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// limit > 100 → 100にクランプ
+	rec = post(h.MyApps, `{"limit":999}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestMyApps_WithOffset(t *testing.T) {
+	h, repo := newTestHandler()
+	uid := "u1"
+	for i := range 5 {
+		appID := "a" + string(rune('0'+i))
+		repo.apps[appID] = &model.App{ID: appID, Name: "App", Secret: "s", UserID: &uid, Permission: pq.StringArray{"read:account"}}
+	}
+
+	rec := post(h.MyApps, `{"offset":3}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.LessOrEqual(t, len(resp), 2)
+}
+
+func TestMyApps_DBError(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.listErr = assert.AnError
+	rec := post(h.MyApps, `{}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 func TestSecureRandomHex(t *testing.T) {
