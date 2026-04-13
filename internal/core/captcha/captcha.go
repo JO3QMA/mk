@@ -72,6 +72,11 @@ func NewService(meta *model.Meta) *Service {
 	return s
 }
 
+// IsEnabled reports whether any captcha provider is configured.
+func (s *Service) IsEnabled() bool {
+	return s.hcaptcha != nil || s.recaptcha != nil || s.turnstile != nil || s.mcaptcha != nil || s.testcap != nil
+}
+
 // Verify checks the token matching the first enabled provider. Returns nil
 // if no provider is enabled (captcha disabled).
 func (s *Service) Verify(ctx context.Context, tokens CaptchaTokens) error {
