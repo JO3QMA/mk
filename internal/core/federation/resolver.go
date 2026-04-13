@@ -207,6 +207,17 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	if actor.Endpoints.SharedInbox != "" {
 		user.SharedInbox = &actor.Endpoints.SharedInbox
 	}
+	if actor.Featured != "" {
+		user.Featured = &actor.Featured
+	}
+	if actor.MovedTo != "" {
+		user.MovedToURI = &actor.MovedTo
+		user.MovedAt = &now
+	}
+	if len(actor.AlsoKnownAs) > 0 {
+		aka := strings.Join(actor.AlsoKnownAs, ",")
+		user.AlsoKnownAs = &aka
+	}
 	if err := r.userRepo.Create(user); err != nil {
 		return nil, err
 	}
@@ -216,6 +227,16 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		r.chartHook.OnRemoteUserCreated(user)
 	}
 	return user, nil
+}
+
+// ForceResolveActor resolves an actor and always re-fetches the profile,
+// bypassing the TTL cache. Move activityなどプロフィール更新が確実に必要な場合に使う。
+func (r *Resolver) ForceResolveActor(uri string) (*model.User, error) {
+	if existing, err := r.userRepo.FindByURI(uri); err == nil {
+		r.refreshActor(existing, uri)
+		return existing, nil
+	}
+	return r.ResolveActor(uri)
 }
 
 // notifyInstance is a best-effort hook into the instance tracker. ベスト
@@ -262,6 +283,23 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 		shared := actor.Endpoints.SharedInbox
 		fields["sharedInbox"] = &shared
 		existing.SharedInbox = &shared
+	}
+	if actor.Featured != "" {
+		featured := actor.Featured
+		fields["featured"] = &featured
+		existing.Featured = &featured
+	}
+	if actor.MovedTo != "" {
+		movedTo := actor.MovedTo
+		fields["movedToUri"] = &movedTo
+		fields["movedAt"] = &now
+		existing.MovedToURI = &movedTo
+		existing.MovedAt = &now
+	}
+	if len(actor.AlsoKnownAs) > 0 {
+		akaStr := strings.Join(actor.AlsoKnownAs, ",")
+		fields["alsoKnownAs"] = &akaStr
+		existing.AlsoKnownAs = &akaStr
 	}
 	existing.LastFetchedAt = &now
 	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)

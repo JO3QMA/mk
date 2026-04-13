@@ -1133,6 +1133,9 @@ func (s *Server) setupRoutes() {
 	// federation inbox で同じインスタンスを共有する。
 	reversiFedCache := corereversi.NewFederationIDCache(s.redis.Default)
 	federationProcessor.SetReversi(reversiService, reversiRepo, idGen, reversiFedCache)
+	federationProcessor.SetBlockingService(blockingService)
+	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db), idGen)
+	federationProcessor.SetPinningRepo(piningRepo, idGen)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
