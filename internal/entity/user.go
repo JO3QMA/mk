@@ -25,28 +25,52 @@ type UserLite struct {
 // UserDetailed includes additional fields for detailed user views.
 type UserDetailed struct {
 	UserLite
-	BannerURL      *string        `json:"bannerUrl"`
-	BannerBlurhash *string        `json:"bannerBlurhash"`
-	IsLocked       bool           `json:"isLocked"`
-	IsSilenced     bool           `json:"isSilenced"`
-	IsSuspended    bool           `json:"isSuspended"`
-	Description    *string        `json:"description"`
-	Location       *string        `json:"location"`
-	Birthday       *string        `json:"birthday"`
-	Lang           *string        `json:"lang"`
-	Fields         datatypes.JSON `json:"fields"`
-	FollowersCount int            `json:"followersCount"`
-	FollowingCount int            `json:"followingCount"`
-	NotesCount     int            `json:"notesCount"`
-	CreatedAt      string         `json:"createdAt"`
-	UpdatedAt      *string        `json:"updatedAt"`
-	URI            *string        `json:"uri"`
-	URL            *string        `json:"url"`
-	PinnedNoteIDs  []string       `json:"pinnedNoteIds"`
-	PinnedNotes    []any          `json:"pinnedNotes"`
-	Roles          []any          `json:"roles"`
-	IsFollowing    *bool          `json:"isFollowing"`
-	IsFollowed     *bool          `json:"isFollowed"`
+	BannerURL           *string        `json:"bannerUrl"`
+	BannerBlurhash      *string        `json:"bannerBlurhash"`
+	IsLocked            bool           `json:"isLocked"`
+	IsSilenced          bool           `json:"isSilenced"`
+	IsSuspended         bool           `json:"isSuspended"`
+	Description         *string        `json:"description"`
+	Location            *string        `json:"location"`
+	Birthday            *string        `json:"birthday"`
+	Lang                *string        `json:"lang"`
+	Fields              datatypes.JSON `json:"fields"`
+	VerifiedLinks       []string       `json:"verifiedLinks"`
+	FollowersCount      int            `json:"followersCount"`
+	FollowingCount      int            `json:"followingCount"`
+	NotesCount          int            `json:"notesCount"`
+	FollowersVisibility string         `json:"followersVisibility"`
+	FollowingVisibility string         `json:"followingVisibility"`
+	CreatedAt           string         `json:"createdAt"`
+	UpdatedAt           *string        `json:"updatedAt"`
+	URI                 *string        `json:"uri"`
+	URL                 *string        `json:"url"`
+	PinnedNoteIDs       []string       `json:"pinnedNoteIds"`
+	PinnedNotes         []any          `json:"pinnedNotes"`
+	Roles               []any          `json:"roles"`
+	Instance            *InstanceLite  `json:"instance,omitempty"`
+	// viewer依存フィールド (ハンドラ側でセット)
+	IsFollowing                    *bool   `json:"isFollowing"`
+	IsFollowed                     *bool   `json:"isFollowed"`
+	IsBlocking                     *bool   `json:"isBlocking,omitempty"`
+	IsBlocked                      *bool   `json:"isBlocked,omitempty"`
+	IsMuted                        *bool   `json:"isMuted,omitempty"`
+	IsRenoteMuted                  *bool   `json:"isRenoteMuted,omitempty"`
+	HasPendingFollowRequestFromYou *bool   `json:"hasPendingFollowRequestFromYou,omitempty"`
+	HasPendingFollowRequestToYou   *bool   `json:"hasPendingFollowRequestToYou,omitempty"`
+	Notify                         *string `json:"notify,omitempty"`
+	WithReplies                    *bool   `json:"withReplies,omitempty"`
+	Memo                           *string `json:"memo,omitempty"`
+}
+
+// InstanceLite is the minimal instance info embedded in UserDetailed for remote users.
+type InstanceLite struct {
+	Name            *string `json:"name"`
+	SoftwareName    *string `json:"softwareName"`
+	SoftwareVersion *string `json:"softwareVersion"`
+	IconURL         *string `json:"iconUrl"`
+	FaviconURL      *string `json:"faviconUrl"`
+	ThemeColor      *string `json:"themeColor"`
 }
 
 // PackUserLite converts a model.User to a UserLite DTO.
@@ -80,18 +104,21 @@ func PackUserLite(u *model.User) UserLite {
 // PackUserDetailed converts a model.User and optional profile to UserDetailed.
 func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Generator) UserDetailed {
 	d := UserDetailed{
-		UserLite:       PackUserLite(u),
-		BannerURL:      u.BannerURL,
-		BannerBlurhash: u.BannerBlurhash,
-		IsLocked:       u.IsLocked,
-		IsSuspended:    u.IsSuspended,
-		FollowersCount: u.FollowersCount,
-		FollowingCount: u.FollowingCount,
-		NotesCount:     u.NotesCount,
-		URI:            u.URI,
-		PinnedNoteIDs:  []string{},
-		PinnedNotes:    []any{},
-		Roles:          []any{},
+		UserLite:            PackUserLite(u),
+		BannerURL:           u.BannerURL,
+		BannerBlurhash:      u.BannerBlurhash,
+		IsLocked:            u.IsLocked,
+		IsSuspended:         u.IsSuspended,
+		FollowersCount:      u.FollowersCount,
+		FollowingCount:      u.FollowingCount,
+		NotesCount:          u.NotesCount,
+		VerifiedLinks:       []string{},
+		FollowersVisibility: "public",
+		FollowingVisibility: "public",
+		URI:                 u.URI,
+		PinnedNoteIDs:       []string{},
+		PinnedNotes:         []any{},
+		Roles:               []any{},
 	}
 
 	// IDからcreatedAtを抽出
@@ -107,6 +134,11 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 		d.Birthday = profile.Birthday
 		d.Lang = profile.Lang
 		d.Fields = profile.Fields
+		if len(profile.VerifiedLinks) > 0 {
+			d.VerifiedLinks = []string(profile.VerifiedLinks)
+		}
+		d.FollowersVisibility = string(profile.FollowersVisibility)
+		d.FollowingVisibility = string(profile.FollowingVisibility)
 	}
 
 	return d

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -241,22 +242,22 @@ func (h *Handler) Me(c echo.Context) error {
 		"birthday":       detailed.Birthday,
 		"lang":           detailed.Lang,
 		"fields":         detailed.Fields,
-		"verifiedLinks":  []string{},
+		"verifiedLinks":  detailed.VerifiedLinks,
 		"followersCount": detailed.FollowersCount,
 		"followingCount": detailed.FollowingCount,
 		"notesCount":     detailed.NotesCount,
 		"uri":            detailed.URI,
 		"url":            detailed.URL,
-		"movedTo":        nil,
-		"alsoKnownAs":    nil,
+		"movedTo":        u.MovedToURI,
+		"alsoKnownAs":    u.AlsoKnownAs,
 		"updatedAt":      detailed.UpdatedAt,
 		"lastFetchedAt":  nil,
 		// MeDetailed fields
-		"avatarId":            nil,
-		"bannerId":            nil,
-		"followersVisibility": "public",
-		"followingVisibility": "public",
-		"chatScope":           "mutual",
+		"avatarId":            u.AvatarID,
+		"bannerId":            u.BannerID,
+		"followersVisibility": detailed.FollowersVisibility,
+		"followingVisibility": detailed.FollowingVisibility,
+		"chatScope":           u.ChatScope,
 		"canChat":             true,
 		"followedMessage":     nil,
 		"memo":                nil,
@@ -282,6 +283,12 @@ func (h *Handler) Me(c echo.Context) error {
 		resp["hardMutedWords"] = profile.HardMutedWords
 		resp["mutedInstances"] = profile.MutedInstances
 		resp["publicReactions"] = profile.PublicReactions
+		resp["followedMessage"] = profile.FollowedMessage
+		resp["loggedInDays"] = len(profile.LoggedInDates)
+		resp["achievements"] = jsonbArray(profile.Achievements)
+		resp["securityKeys"] = profile.SecurityKeysAvailable
+		// twoFactorBackupCodesStock: full/partial/none
+		resp["twoFactorBackupCodesStock"] = backupCodesStock(profile)
 		// clientData / room は jsonb を生のまま返すと frontend (本家) が
 		// オブジェクトとして parse するため、空/不正時は空オブジェクトに
 		// 正規化する。user が手動でキーを書き換えるだけなので scheme は持たない。
@@ -292,7 +299,7 @@ func (h *Handler) Me(c echo.Context) error {
 	// フロントエンド互換性フィールド (Phase 4.5c / Phase 5)
 	isAdmin := false
 	isMod := false
-	userPolicies := defaultMePolicies()
+	userPolicies := role.DefaultPolicies()
 	var userRoles []any
 	if h.roleProvider != nil {
 		isAdmin = h.roleProvider.IsAdministrator(u.ID)
@@ -334,13 +341,26 @@ func (h *Handler) Me(c echo.Context) error {
 	resp["pinnedNotes"] = []any{}
 	resp["pinnedPageId"] = nil
 	resp["pinnedPage"] = nil
-	resp["loggedInDays"] = 0
 	resp["policies"] = userPolicies
 	resp["roles"] = userRoles
-	resp["achievements"] = []any{}
-	resp["twoFactorBackupCodesStock"] = "none"
-	resp["securityKeys"] = false
-	resp["securityKeysList"] = []any{}
+	// securityKeysList: WebAuthnキーの一覧
+	if h.securityKeyRepo != nil {
+		if keys, err := h.securityKeyRepo.ListByUser(u.ID); err == nil && len(keys) > 0 {
+			list := make([]map[string]any, len(keys))
+			for i, k := range keys {
+				list[i] = map[string]any{
+					"id":       k.ID,
+					"name":     k.Name,
+					"lastUsed": k.LastUsed.UTC().Format("2006-01-02T15:04:05.000Z"),
+				}
+			}
+			resp["securityKeysList"] = list
+		} else {
+			resp["securityKeysList"] = []any{}
+		}
+	} else {
+		resp["securityKeysList"] = []any{}
+	}
 	resp["mutingNotificationTypes"] = []any{}
 	resp["notificationRecieveConfig"] = map[string]any{}
 	resp["emailNotificationTypes"] = []string{"follow", "receiveFollowRequest"}
@@ -388,6 +408,31 @@ func jsonbObject(raw []byte) any {
 		return map[string]any{}
 	}
 	return out
+}
+
+// jsonbArray normalizes a raw jsonb byte slice into []any for the Me response.
+// Empty or malformed payloads become an empty array.
+func jsonbArray(raw []byte) any {
+	if len(raw) == 0 {
+		return []any{}
+	}
+	var out []any
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return []any{}
+	}
+	return out
+}
+
+// backupCodesStock returns "full", "partial", or "none" based on the number of
+// remaining 2FA backup codes. Misskey uses 5 codes as the full set.
+func backupCodesStock(profile *model.UserProfile) string {
+	if !profile.TwoFactorEnabled || len(profile.TwoFactorBackupSecret) == 0 {
+		return "none"
+	}
+	if len(profile.TwoFactorBackupSecret) >= 5 {
+		return "full"
+	}
+	return "partial"
 }
 
 // containsProhibitedWord reports whether name contains any entry from words
@@ -532,50 +577,6 @@ func errEnvelope(message, code, id string) map[string]any {
 			"code":    code,
 			"id":      id,
 		},
-	}
-}
-
-// defaultMePolicies returns the Misskey default policies for MeDetailed.
-func defaultMePolicies() map[string]any {
-	return map[string]any{
-		"gtlAvailable":               true,
-		"ltlAvailable":               true,
-		"canPublicNote":              true,
-		"mentionLimit":               20,
-		"canInvite":                  false,
-		"inviteLimit":                0,
-		"inviteLimitCycle":           10080,
-		"inviteExpirationTime":       0,
-		"canManageCustomEmojis":      false,
-		"canManageAvatarDecorations": false,
-		"canSearchNotes":             false,
-		"canSearchUsers":             true,
-		"canUseTranslator":           true,
-		"canHideAds":                 false,
-		"driveCapacityMb":            100,
-		"maxFileSizeMb":              30,
-		"alwaysMarkNsfw":             false,
-		"canUpdateBioMedia":          true,
-		"pinLimit":                   5,
-		"antennaLimit":               5,
-		"wordMuteLimit":              200,
-		"webhookLimit":               3,
-		"clipLimit":                  10,
-		"noteEachClipsLimit":         200,
-		"userListLimit":              10,
-		"userEachUserListsLimit":     50,
-		"rateLimitFactor":            1,
-		"avatarDecorationLimit":      1,
-		"canImportAntennas":          false,
-		"canImportBlocking":          false,
-		"canImportFollowing":         false,
-		"canImportMuting":            false,
-		"canImportUserLists":         false,
-		"chatAvailability":           "available",
-		"uploadableFileTypes":        []string{"text/*", "application/json", "image/*", "video/*", "audio/*"},
-		"noteDraftLimit":             10,
-		"scheduledNoteLimit":         1,
-		"watermarkAvailable":         true,
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -120,18 +121,21 @@ func TestMe_Success(t *testing.T) {
 		FollowingCount:    20,
 		NotesCount:        100,
 		AvatarDecorations: datatypes.JSON([]byte("[]")),
+		ChatScope:         "mutual",
 	}
 
 	email := "test@example.com"
 	userRepo.Profiles["user1"] = &model.UserProfile{
-		UserID:             "user1",
-		Email:              &email,
-		EmailVerified:      true,
-		TwoFactorEnabled:   false,
-		AutoAcceptFollowed: true,
-		NoCrawle:           false,
-		PreventAiLearning:  true,
-		Fields:             datatypes.JSON([]byte("[]")),
+		UserID:              "user1",
+		Email:               &email,
+		EmailVerified:       true,
+		TwoFactorEnabled:    false,
+		AutoAcceptFollowed:  true,
+		NoCrawle:            false,
+		PreventAiLearning:   true,
+		Fields:              datatypes.JSON([]byte("[]")),
+		FollowersVisibility: model.FollowingVisibilityPublic,
+		FollowingVisibility: model.FollowingVisibilityPublic,
 	}
 
 	e := echo.New()
@@ -190,6 +194,144 @@ func TestMe_Success(t *testing.T) {
 	assert.Equal(t, false, resp["securityKeys"])
 	assert.Nil(t, resp["movedTo"])
 	assert.Nil(t, resp["alsoKnownAs"])
+}
+
+func TestMe_LoggedInDays(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+
+	user := &model.User{
+		ID:                "user1",
+		Username:          "testuser",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+		ChatScope:         "mutual",
+	}
+
+	userRepo.Profiles["user1"] = &model.UserProfile{
+		UserID:              "user1",
+		Fields:              datatypes.JSON([]byte("[]")),
+		LoggedInDates:       pq.StringArray{"2026-04-01", "2026-04-02", "2026-04-03"},
+		FollowersVisibility: model.FollowingVisibilityPublic,
+		FollowingVisibility: model.FollowingVisibilityPublic,
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), user)
+
+	err := h.Me(c)
+	require.NoError(t, err)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, float64(3), resp["loggedInDays"])
+}
+
+func TestMe_BackupCodesStock(t *testing.T) {
+	tests := []struct {
+		name     string
+		enabled  bool
+		codes    pq.StringArray
+		expected string
+	}{
+		{"disabled 2FA", false, nil, "none"},
+		{"enabled but no codes", true, pq.StringArray{}, "none"},
+		{"enabled with partial codes", true, pq.StringArray{"code1", "code2"}, "partial"},
+		{"enabled with full codes", true, pq.StringArray{"c1", "c2", "c3", "c4", "c5"}, "full"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, userRepo, _, _ := newTestHandler(t)
+
+			user := &model.User{
+				ID:                "user1",
+				Username:          "testuser",
+				AvatarDecorations: datatypes.JSON([]byte("[]")),
+				ChatScope:         "mutual",
+			}
+
+			userRepo.Profiles["user1"] = &model.UserProfile{
+				UserID:                "user1",
+				Fields:                datatypes.JSON([]byte("[]")),
+				TwoFactorEnabled:      tt.enabled,
+				TwoFactorBackupSecret: tt.codes,
+				FollowersVisibility:   model.FollowingVisibilityPublic,
+				FollowingVisibility:   model.FollowingVisibilityPublic,
+			}
+
+			e := echo.New()
+			req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.Set(string(middleware.UserContextKey), user)
+
+			err := h.Me(c)
+			require.NoError(t, err)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Equal(t, tt.expected, resp["twoFactorBackupCodesStock"])
+		})
+	}
+}
+
+func TestJsonbArray(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		expected any
+	}{
+		{"nil input", nil, []any{}},
+		{"empty input", []byte{}, []any{}},
+		{"valid array", []byte(`[{"name":"test"}]`), []any{map[string]any{"name": "test"}}},
+		{"invalid JSON", []byte("not json"), []any{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := jsonbArray(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestMe_AvatarAndBannerIDs(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+
+	avatarID := "avatar123"
+	bannerID := "banner456"
+	user := &model.User{
+		ID:                "user1",
+		Username:          "testuser",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+		ChatScope:         "mutual",
+		AvatarID:          &avatarID,
+		BannerID:          &bannerID,
+	}
+
+	userRepo.Profiles["user1"] = &model.UserProfile{
+		UserID:              "user1",
+		Fields:              datatypes.JSON([]byte("[]")),
+		FollowersVisibility: model.FollowingVisibilityPublic,
+		FollowingVisibility: model.FollowingVisibilityPublic,
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), user)
+
+	err := h.Me(c)
+	require.NoError(t, err)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "avatar123", resp["avatarId"])
+	assert.Equal(t, "banner456", resp["bannerId"])
+	assert.NotNil(t, resp["securityKeysList"])
 }
 
 // stubRoleProvider implements i.RoleProvider for testing.

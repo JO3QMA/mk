@@ -9,6 +9,8 @@ import (
 type ChannelRepository interface {
 	Create(c *model.Channel) error
 	FindByID(id string) (*model.Channel, error)
+	// FindByIDs returns channels matching the given IDs.
+	FindByIDs(ids []string) ([]*model.Channel, error)
 	UpdateFields(channelID string, fields map[string]any) error
 	IncrementCount(channelID, column string, delta int) error
 	List(filter model.ChannelListFilter) ([]*model.Channel, error)
@@ -33,6 +35,17 @@ func (r *channelRepository) FindByID(id string) (*model.Channel, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+func (r *channelRepository) FindByIDs(ids []string) ([]*model.Channel, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var rows []*model.Channel
+	if err := r.db.Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // UpdateFields applies a map of column → value updates to the channel row.

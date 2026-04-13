@@ -88,5 +88,5 @@ func (h *Handler) serveTimeline(
 		// ErrUnauthenticatedはここには到達しない。残りはRedis等の障害のみ。
 		return internalError(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes))
+	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }

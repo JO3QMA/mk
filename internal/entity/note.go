@@ -1,6 +1,8 @@
 package entity
 
 import (
+	"encoding/json"
+
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/datatypes"
@@ -35,6 +37,21 @@ type NoteEntity struct {
 	Poll               *PollEntity       `json:"poll,omitempty"`
 	Emojis             map[string]string `json:"emojis,omitempty"`
 	ChannelID          *string           `json:"channelId,omitempty"`
+	Channel            *ChannelLite      `json:"channel,omitempty"`
+	VisibleUserIDs     []string          `json:"visibleUserIds"`
+	Mentions           []string          `json:"mentions"`
+	HasPoll            bool              `json:"hasPoll"`
+	MyReaction         *string           `json:"myReaction,omitempty"`
+	IsHidden           bool              `json:"isHidden,omitempty"`
+}
+
+// ChannelLite is the minimal channel info embedded in NoteEntity.
+type ChannelLite struct {
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Color                 string `json:"color"`
+	IsSensitive           bool   `json:"isSensitive"`
+	AllowRenoteToExternal bool   `json:"allowRenoteToExternal"`
 }
 
 // PollEntity is the poll representation in a note.
@@ -63,6 +80,16 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 		fileIDs = n.FileIDs
 	}
 
+	visibleUserIDs := make([]string, 0)
+	if n.VisibleUserIDs != nil {
+		visibleUserIDs = n.VisibleUserIDs
+	}
+
+	mentions := make([]string, 0)
+	if n.Mentions != nil {
+		mentions = n.Mentions
+	}
+
 	entity := NoteEntity{
 		ID:                 n.ID,
 		CreatedAt:          createdAt,
@@ -73,7 +100,7 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 		LocalOnly:          n.LocalOnly,
 		ReactionAcceptance: n.ReactionAcceptance,
 		Reactions:          n.Reactions,
-		ReactionCount:      0,
+		ReactionCount:      sumReactions(n.Reactions),
 		ReactionEmojis:     make(map[string]string),
 		RenoteCount:        n.RenoteCount,
 		RepliesCount:       n.RepliesCount,
@@ -87,6 +114,9 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 		Tags:               n.Tags,
 		Emojis:             make(map[string]string),
 		ChannelID:          n.ChannelID,
+		VisibleUserIDs:     visibleUserIDs,
+		Mentions:           mentions,
+		HasPoll:            n.HasPoll,
 	}
 
 	if n.User != nil {
@@ -94,4 +124,20 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 	}
 
 	return entity
+}
+
+// sumReactions decodes the reactions JSONB and sums all values.
+func sumReactions(raw datatypes.JSON) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var m map[string]float64
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return 0
+	}
+	total := 0
+	for _, v := range m {
+		total += int(v)
+	}
+	return total
 }

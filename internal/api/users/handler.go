@@ -22,14 +22,19 @@ type ChartHook interface {
 
 // Handler handles user-related API endpoints.
 type Handler struct {
-	userService      *user.Service
-	followingService *corefollowing.Service
-	noteRepo         repository.NoteRepository
-	idGen            id.Generator
-	chartHook        ChartHook
-	abuseRepo        repository.AbuseReportRepository
-	followingRepo    repository.FollowingRepository
-	memoRepo         repository.UserMemoRepository
+	userService       *user.Service
+	followingService  *corefollowing.Service
+	noteRepo          repository.NoteRepository
+	idGen             id.Generator
+	chartHook         ChartHook
+	abuseRepo         repository.AbuseReportRepository
+	followingRepo     repository.FollowingRepository
+	memoRepo          repository.UserMemoRepository
+	blockingRepo      repository.BlockingRepository
+	mutingRepo        repository.MutingRepository
+	renoteMutingRepo  repository.RenoteMutingRepository
+	followRequestRepo repository.FollowRequestRepository
+	instanceRepo      repository.InstanceRepository
 }
 
 // SetMemoRepo attaches a UserMemoRepository for users/update-memo.
@@ -40,6 +45,31 @@ func (h *Handler) SetMemoRepo(r repository.UserMemoRepository) {
 // SetFollowingRepo attaches a FollowingRepository for follow relation queries.
 func (h *Handler) SetFollowingRepo(r repository.FollowingRepository) {
 	h.followingRepo = r
+}
+
+// SetBlockingRepo attaches a BlockingRepository for block status queries.
+func (h *Handler) SetBlockingRepo(r repository.BlockingRepository) {
+	h.blockingRepo = r
+}
+
+// SetMutingRepo attaches a MutingRepository for mute status queries.
+func (h *Handler) SetMutingRepo(r repository.MutingRepository) {
+	h.mutingRepo = r
+}
+
+// SetRenoteMutingRepo attaches a RenoteMutingRepository for renote mute status queries.
+func (h *Handler) SetRenoteMutingRepo(r repository.RenoteMutingRepository) {
+	h.renoteMutingRepo = r
+}
+
+// SetFollowRequestRepo attaches a FollowRequestRepository for pending request queries.
+func (h *Handler) SetFollowRequestRepo(r repository.FollowRequestRepository) {
+	h.followRequestRepo = r
+}
+
+// SetInstanceRepo attaches an InstanceRepository for remote user instance info.
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
 }
 
 // NewHandler creates a new users Handler.
@@ -118,12 +148,59 @@ func (h *Handler) Show(c echo.Context) error {
 
 	detailed := entity.PackUserDetailed(bundle.User, bundle.Profile, h.idGen)
 
-	// viewerがログインしている場合、フォロー関係を追加
-	if viewer := middleware.GetUser(c); viewer != nil && viewer.ID != bundle.User.ID && h.followingRepo != nil {
-		isFollowing, _ := h.followingRepo.Exists(viewer.ID, bundle.User.ID)
-		isFollowed, _ := h.followingRepo.Exists(bundle.User.ID, viewer.ID)
-		detailed.IsFollowing = &isFollowing
-		detailed.IsFollowed = &isFollowed
+	// リモートユーザーの場合、Instance情報を付与
+	if bundle.User.Host != nil && h.instanceRepo != nil {
+		if inst, err := h.instanceRepo.FindByHost(*bundle.User.Host); err == nil {
+			detailed.Instance = &entity.InstanceLite{
+				Name:            inst.Name,
+				SoftwareName:    inst.SoftwareName,
+				SoftwareVersion: inst.SoftwareVersion,
+				IconURL:         inst.IconURL,
+				FaviconURL:      inst.FaviconURL,
+				ThemeColor:      inst.ThemeColor,
+			}
+		}
+	}
+
+	// viewerがログインしている場合、viewer依存フィールドを追加
+	if viewer := middleware.GetUser(c); viewer != nil && viewer.ID != bundle.User.ID {
+		if h.followingRepo != nil {
+			isFollowing, _ := h.followingRepo.Exists(viewer.ID, bundle.User.ID)
+			isFollowed, _ := h.followingRepo.Exists(bundle.User.ID, viewer.ID)
+			detailed.IsFollowing = &isFollowing
+			detailed.IsFollowed = &isFollowed
+			// notify/withReplies はフォロー関係レコードから取得
+			if f, err := h.followingRepo.FindByPair(viewer.ID, bundle.User.ID); err == nil {
+				detailed.Notify = f.Notify
+				wr := f.WithReplies
+				detailed.WithReplies = &wr
+			}
+		}
+		if h.blockingRepo != nil {
+			isBlocking, _ := h.blockingRepo.Exists(viewer.ID, bundle.User.ID)
+			isBlocked, _ := h.blockingRepo.Exists(bundle.User.ID, viewer.ID)
+			detailed.IsBlocking = &isBlocking
+			detailed.IsBlocked = &isBlocked
+		}
+		if h.mutingRepo != nil {
+			isMuted, _ := h.mutingRepo.Exists(viewer.ID, bundle.User.ID)
+			detailed.IsMuted = &isMuted
+		}
+		if h.renoteMutingRepo != nil {
+			isRenoteMuted, _ := h.renoteMutingRepo.Exists(viewer.ID, bundle.User.ID)
+			detailed.IsRenoteMuted = &isRenoteMuted
+		}
+		if h.followRequestRepo != nil {
+			hasPendingFrom, _ := h.followRequestRepo.Exists(viewer.ID, bundle.User.ID)
+			hasPendingTo, _ := h.followRequestRepo.Exists(bundle.User.ID, viewer.ID)
+			detailed.HasPendingFollowRequestFromYou = &hasPendingFrom
+			detailed.HasPendingFollowRequestToYou = &hasPendingTo
+		}
+		if h.memoRepo != nil {
+			if memo, err := h.memoRepo.FindByPair(viewer.ID, bundle.User.ID); err == nil {
+				detailed.Memo = &memo.Memo
+			}
+		}
 	}
 
 	return c.JSON(http.StatusOK, detailed)

@@ -17,6 +17,9 @@ type NoteReactionRepository interface {
 	Create(r *model.NoteReaction) error
 	Delete(r *model.NoteReaction) error
 	FindByPair(userID, noteID string) (*model.NoteReaction, error)
+	// FindByUserAndNoteIDs returns reactions for a user across multiple notes.
+	// noteIDをキーとしたmapを返す。
+	FindByUserAndNoteIDs(userID string, noteIDs []string) (map[string]*model.NoteReaction, error)
 	ListByNoteID(noteID string, untilID, sinceID string, limit int, reaction string) ([]*model.NoteReaction, error)
 }
 
@@ -51,6 +54,21 @@ func (r *noteReactionRepository) FindByPair(userID, noteID string) (*model.NoteR
 		return nil, err
 	}
 	return &rec, nil
+}
+
+func (r *noteReactionRepository) FindByUserAndNoteIDs(userID string, noteIDs []string) (map[string]*model.NoteReaction, error) {
+	if len(noteIDs) == 0 {
+		return map[string]*model.NoteReaction{}, nil
+	}
+	var rows []*model.NoteReaction
+	if err := r.db.Where("\"userId\" = ? AND \"noteId\" IN ?", userID, noteIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	m := make(map[string]*model.NoteReaction, len(rows))
+	for _, row := range rows {
+		m[row.NoteID] = row
+	}
+	return m, nil
 }
 
 // ListByNoteID returns reactions for the given noteID, optionally filtered by

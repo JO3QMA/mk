@@ -207,6 +207,107 @@ func TestShow_MissingNoteId(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestShow_MyReaction(t *testing.T) {
+	h, noteRepo := newTestHandler(t)
+
+	// リアクションリポジトリをセット
+	reactionRepo := testutil.NewMockNoteReactionRepository()
+	h.SetNoteReactionRepo(reactionRepo)
+
+	text := "test note"
+	noteRepo.Notes["note1"] = &model.Note{
+		ID:         "note1",
+		UserID:     "author1",
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{"👍":1}`)),
+		User: &model.User{
+			ID:                "author1",
+			Username:          "author",
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+	}
+
+	// viewerのリアクションを登録
+	reactionRepo.Reactions["r1"] = &model.NoteReaction{
+		ID:       "r1",
+		UserID:   "viewer1",
+		NoteID:   "note1",
+		Reaction: "👍",
+	}
+
+	viewer := &model.User{ID: "viewer1", Username: "viewer"}
+
+	body := `{"noteId": "note1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, viewer)
+
+	err := h.Show(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "👍", resp["myReaction"])
+	assert.Equal(t, float64(1), resp["reactionCount"])
+}
+
+func TestShow_Channel(t *testing.T) {
+	h, noteRepo := newTestHandler(t)
+
+	// チャンネルリポジトリをセット
+	channelRepo := testutil.NewMockChannelRepository()
+	h.SetChannelRepo(channelRepo)
+
+	channelRepo.Channels["ch1"] = &model.Channel{
+		ID:                    "ch1",
+		Name:                  "test-channel",
+		Color:                 "#ff0000",
+		IsSensitive:           true,
+		AllowRenoteToExternal: false,
+	}
+
+	text := "channel note"
+	chID := "ch1"
+	noteRepo.Notes["note2"] = &model.Note{
+		ID:         "note2",
+		UserID:     "user1",
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		ChannelID:  &chID,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User: &model.User{
+			ID:                "user1",
+			Username:          "testuser",
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+	}
+
+	body := `{"noteId": "note2"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	err := h.Show(c)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	ch := resp["channel"].(map[string]any)
+	assert.Equal(t, "ch1", ch["id"])
+	assert.Equal(t, "test-channel", ch["name"])
+	assert.Equal(t, "#ff0000", ch["color"])
+	assert.Equal(t, true, ch["isSensitive"])
+	assert.Equal(t, false, ch["allowRenoteToExternal"])
+}
+
 func TestDelete_Success(t *testing.T) {
 	h, noteRepo := newTestHandler(t)
 

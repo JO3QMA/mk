@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/shiroha-a/mk/internal/core/captcha"
+	"github.com/shiroha-a/mk/internal/core/role"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -215,47 +216,12 @@ func packSignupResponse(u *model.User, token string, idGen id.Generator) map[str
 		"mutedWords":               []any{},
 		"hardMutedWords":           []any{},
 		"mutedInstances":           []any{},
-		"policies":                 defaultPolicies(),
+		"policies":                 role.DefaultPolicies(),
 		"token":                    token,
 	}
 }
 
 // defaultPolicies returns the Misskey default policies for a new user.
-func defaultPolicies() map[string]any {
-	return map[string]any{
-		"gtlAvailable":               true,
-		"ltlAvailable":               true,
-		"canPublicNote":              true,
-		"mentionLimit":               150,
-		"canInvite":                  false,
-		"inviteLimit":                0,
-		"inviteLimitCycle":           float64(525600),
-		"inviteExpirationTime":       float64(0),
-		"canManageCustomEmojis":      false,
-		"canManageAvatarDecorations": false,
-		"canSearchNotes":             true,
-		"canUseTranslator":           true,
-		"canHideAds":                 false,
-		"driveCapacityMb":            float64(100),
-		"alwaysMarkNsfw":             false,
-		"pinLimit":                   5,
-		"antennaLimit":               5,
-		"wordMuteLimit":              200,
-		"webhookLimit":               3,
-		"clipLimit":                  10,
-		"noteEachClipsLimit":         200,
-		"userListLimit":              10,
-		"userEachUserListsLimit":     50,
-		"rateLimitFactor":            float64(1),
-		"avatarDecorationLimit":      1,
-		"canImportAntennas":          true,
-		"canImportBlocking":          true,
-		"canImportFollowing":         true,
-		"canImportMuting":            true,
-		"canImportUserLists":         true,
-	}
-}
-
 var errInvalidCode = errors.New("invalid invitation code")
 
 func errResp(code, message, id string) map[string]any {
