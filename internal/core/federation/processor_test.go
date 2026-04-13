@@ -740,6 +740,165 @@ func TestProcess_RemoveWithoutRepo(t *testing.T) {
 	assert.ErrorIs(t, p.Process(body), federation.ErrUnsupportedActivity)
 }
 
+// --- Accept ---
+
+func TestProcess_AcceptFollow(t *testing.T) {
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	// ローカルユーザーbob（follower）を登録
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+
+	// aliceからのAcceptを処理（bobからaliceへのFollow承認）
+	// ExtractLocalUserIDで /users/bob → ID "bob" と解決される
+	acceptBody := []byte(`{
+		"type": "Accept",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Follow",
+			"actor": "https://example.com/users/bob",
+			"object": "https://remote.example/users/alice"
+		}
+	}`)
+	// AcceptRequest自体はフォローリクエストが存在しなくてもエラーにならない（nil返却）
+	require.NoError(t, p.Process(acceptBody))
+}
+
+func TestProcess_AcceptNonFollow(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	// inner objectがFollowでない場合は無視
+	body := []byte(`{
+		"type": "Accept",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Like",
+			"actor": "https://example.com/users/bob"
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+}
+
+func TestProcess_AcceptBadObject(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	// objectが文字列（Follow IDのURI）の場合は無視
+	body := []byte(`{
+		"type": "Accept",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/follows/123"
+	}`)
+	require.NoError(t, p.Process(body))
+}
+
+func TestProcess_AcceptUnknownFollower(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	// followerが見つからない場合は無視
+	body := []byte(`{
+		"type": "Accept",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Follow",
+			"actor": "https://example.com/users/ghost",
+			"object": "https://remote.example/users/alice"
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+}
+
+// --- Question/Poll ---
+
+func TestProcess_CreateQuestion(t *testing.T) {
+	p, repo, _, noteRepo := newProcessor(t, aliceActor)
+	// resolverにpollRepoを注入するためresolverへのアクセスが必要
+	// newProcessorで作成されたresolverにSetPollRepoできないため、
+	// processor経由でresolverを取得する方法がない。代わりにfull setup。
+	pollRepo := testutil.NewMockPollRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen2, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(aliceActor)}, idGen2)
+	resolver.SetPollRepo(pollRepo)
+	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen2)
+	p = federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
+
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Question",
+			"id": "https://remote.example/notes/q1",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "Best language?",
+			"oneOf": [
+				{"type": "Note", "name": "Go", "replies": {"type": "Collection", "totalItems": 5}},
+				{"type": "Note", "name": "Rust", "replies": {"type": "Collection", "totalItems": 3}}
+			],
+			"endTime": "2026-12-31T23:59:59Z",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"]
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+	// ノートが作成されていること
+	assert.True(t, len(noteRepo.Notes) > 0)
+	// Pollが作成されていること
+	assert.Len(t, pollRepo.Polls, 1)
+	for _, poll := range pollRepo.Polls {
+		assert.False(t, poll.Multiple) // oneOf → single choice
+		assert.Len(t, poll.Choices, 2)
+		assert.Equal(t, "Go", poll.Choices[0])
+		assert.Equal(t, "Rust", poll.Choices[1])
+	}
+}
+
+func TestProcess_CreateQuestionAnyOf(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	pollRepo := testutil.NewMockPollRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen2, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(aliceActor)}, idGen2)
+	resolver.SetPollRepo(pollRepo)
+	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen2)
+	p := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
+
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Question",
+			"id": "https://remote.example/notes/q2",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "Pick all that apply",
+			"anyOf": [
+				{"type": "Note", "name": "A"},
+				{"type": "Note", "name": "B"},
+				{"type": "Note", "name": "C"}
+			],
+			"closed": "2026-12-31T23:59:59Z",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"]
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Len(t, pollRepo.Polls, 1)
+	for _, poll := range pollRepo.Polls {
+		assert.True(t, poll.Multiple) // anyOf → multiple choice
+		assert.Len(t, poll.Choices, 3)
+		assert.NotNil(t, poll.ExpiresAt) // closedから設定
+	}
+}
+
+// --- ExtractLocalUserID ---
+
+func TestExtractLocalUserID(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(aliceActor)}, idGen)
+
+	assert.Equal(t, "abc123", resolver.ExtractLocalUserID("https://example.com/users/abc123"))
+	assert.Equal(t, "", resolver.ExtractLocalUserID("https://remote.example/users/abc123"))
+	assert.Equal(t, "", resolver.ExtractLocalUserID(""))
+}
+
 func TestProcess_FlagWithoutRepo(t *testing.T) {
 	p, _, _, _ := newProcessor(t, aliceActor)
 	body := []byte(`{
