@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strings"
 
@@ -392,8 +393,6 @@ func resolveRedis(opts RedisOptions, host string) RedisOptions {
 	return opts
 }
 
-// deriveMediaProxySecret returns a secret for HMAC-signed media proxy URLs.
-// 設定にsecretがあればそれを使用、なければインスタンスURL固有のキーを自動生成する。
 // DefaultTrustProxy is the default set of CIDR ranges for trusted proxies,
 // matching the TypeScript Misskey defaults (private IP ranges).
 var DefaultTrustProxy = []string{
@@ -413,6 +412,23 @@ func resolveTrustProxy(provided []string) []string {
 	return DefaultTrustProxy
 }
 
+// ParseTrustProxy converts a list of CIDR strings into parsed *net.IPNet values.
+// 無効なCIDRはスキップしてログに記録する。
+func ParseTrustProxy(cidrs []string) []*net.IPNet {
+	var nets []*net.IPNet
+	for _, cidr := range cidrs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			slog.Warn("invalid trustProxy CIDR, skipping", "cidr", cidr, "err", err)
+			continue
+		}
+		nets = append(nets, ipNet)
+	}
+	return nets
+}
+
+// deriveMediaProxySecret returns a secret for HMAC-signed media proxy URLs.
+// 設定にsecretがあればそれを使用、なければインスタンスURL固有のキーを自動生成する。
 func deriveMediaProxySecret(src *Source) []byte {
 	if src.MediaProxySecret != "" {
 		return []byte(src.MediaProxySecret)
