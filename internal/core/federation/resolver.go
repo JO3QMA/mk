@@ -286,8 +286,7 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 		existing.MovedAt = &now
 	}
 	if len(actor.AlsoKnownAs) > 0 {
-		aka, _ := json.Marshal(actor.AlsoKnownAs)
-		akaStr := string(aka)
+		akaStr := strings.Join(actor.AlsoKnownAs, ",")
 		fields["alsoKnownAs"] = &akaStr
 		existing.AlsoKnownAs = &akaStr
 	}
