@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -375,10 +376,10 @@ func TestSessionUserkey_TokenNotFound(t *testing.T) {
 // --- Helper functions ---
 
 func TestSecureRandomHex(t *testing.T) {
-	s := secureRandomHex(32)
+	s := misc.SecureRandomHex(32)
 	assert.Len(t, s, 32)
 	// 2回呼ぶと異なる値
-	s2 := secureRandomHex(32)
+	s2 := misc.SecureRandomHex(32)
 	assert.NotEqual(t, s, s2)
 }
 

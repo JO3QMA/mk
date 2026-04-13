@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -103,7 +103,7 @@ func (h *Handler) Accept(c echo.Context) error {
 	_, tokenErr := h.repo.FindAccessTokenByAppAndUser(session.AppID, user.ID)
 	if tokenErr != nil {
 		// アクセストークンを新規生成
-		tokenStr := secureRandomHex(32)
+		tokenStr := misc.SecureRandomHex(32)
 		hash := sha256Hex(tokenStr + session.App.Secret)
 		now := time.Now()
 		accessToken := &model.AccessToken{
@@ -182,13 +182,13 @@ func (h *Handler) GenToken(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "permission is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
-	tokenStr := secureRandomHex(32)
+	tokenStr := misc.SecureRandomHex(32)
 	now := time.Now()
 	accessToken := &model.AccessToken{
 		ID:          h.idGen.Generate(now),
 		LastUsedAt:  &now,
 		Token:       tokenStr,
-		Hash:        tokenStr,
+		Hash:        sha256Hex(tokenStr),
 		UserID:      user.ID,
 		Session:     req.Session,
 		Name:        req.Name,
@@ -229,12 +229,6 @@ func packUser(u *model.User) map[string]any {
 		"name":     u.Name,
 		"host":     u.Host,
 	}
-}
-
-func secureRandomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)[:n]
 }
 
 func sha256Hex(s string) string {

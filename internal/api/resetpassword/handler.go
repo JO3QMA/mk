@@ -1,13 +1,12 @@
 package resetpassword
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -67,7 +66,7 @@ func (h *Handler) RequestReset(c echo.Context) error {
 	}
 
 	// 64文字のランダムトークン生成
-	token := secureRandomHex(64)
+	token := misc.SecureRandomHex(64)
 	now := time.Now()
 	resetReq := &model.PasswordResetRequest{
 		ID:     h.idGen.Generate(now),
@@ -96,6 +95,11 @@ func (h *Handler) Reset(c echo.Context) error {
 	}
 	if err := c.Bind(&req); err != nil || req.Token == "" || req.Password == "" {
 		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "token and password are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+
+	// bcryptは72バイトまでしか受け付けない
+	if len(req.Password) > 72 {
+		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Password too long.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	resetReq, err := h.resetRepo.FindByToken(req.Token)
@@ -131,10 +135,4 @@ func (h *Handler) Reset(c echo.Context) error {
 	_ = h.resetRepo.Delete(resetReq.ID)
 
 	return c.NoContent(http.StatusNoContent)
-}
-
-func secureRandomHex(n int) string {
-	b := make([]byte, (n+1)/2)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)[:n]
 }

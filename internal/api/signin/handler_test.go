@@ -323,6 +323,32 @@ func TestSignin_IPLogging(t *testing.T) {
 	assert.True(t, logged.Load())
 }
 
+func TestSignin_SanitizesHeaders(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "testuser", "password123")
+
+	signinRepo := testutil.NewMockSigninRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h.SetSigninRepo(signinRepo, idGen)
+
+	// Authorization, Cookieヘッダー付きのリクエスト
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/signin", strings.NewReader(`{"username":"testuser","password":"password123"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Cookie", "session=abc123")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	_ = h.Signin(c)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 1, signinRepo.Len())
+	stored := string(signinRepo.Signins[0].Headers)
+	assert.NotContains(t, stored, "secret-token")
+	assert.NotContains(t, stored, "abc123")
+}
+
 func TestSigninFlow_RecordsSigninHistory(t *testing.T) {
 	h, repo := newTestHandler(t)
 	createTestUser(repo, "testuser", "password123")

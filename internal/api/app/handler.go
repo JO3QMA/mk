@@ -1,13 +1,12 @@
 package app
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -54,7 +53,7 @@ func (h *Handler) Create(c echo.Context) error {
 		ID:          h.idGen.Generate(now),
 		CreatedAt:   now,
 		UserID:      userID,
-		Secret:      secureRandomHex(32),
+		Secret:      misc.SecureRandomHex(32),
 		Name:        req.Name,
 		Description: req.Description,
 		Permission:  pq.StringArray(req.Permission),
@@ -140,10 +139,4 @@ func packApp(a *model.App, includeSecret bool) map[string]any {
 		resp["secret"] = a.Secret
 	}
 	return resp
-}
-
-func secureRandomHex(n int) string {
-	b := make([]byte, (n+1)/2)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)[:n]
 }

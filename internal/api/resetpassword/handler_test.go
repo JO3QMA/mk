@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
@@ -288,9 +289,19 @@ func TestReset_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestReset_PasswordTooLong(t *testing.T) {
+	h, _, resetRepo := newTestHandler()
+	resetRepo.requests["tok1"] = &model.PasswordResetRequest{
+		ID: "r1", Token: "tok1", UserID: "u1",
+	}
+	longPw := strings.Repeat("a", 73)
+	rec := post(h.Reset, `{"token":"tok1","password":"`+longPw+`"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestSecureRandomHex(t *testing.T) {
-	s := secureRandomHex(64)
+	s := misc.SecureRandomHex(64)
 	assert.Len(t, s, 64)
-	s2 := secureRandomHex(64)
+	s2 := misc.SecureRandomHex(64)
 	assert.NotEqual(t, s, s2)
 }
