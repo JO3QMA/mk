@@ -227,6 +227,8 @@ func (p *Processor) handleUndo(act genericActivity) error {
 		return p.handleUndoAnnounce(act, inner)
 	case "block":
 		return p.handleUndoBlock(act, inner)
+	case "emojireaction", "emojireact":
+		return p.handleUndoLike(act, inner)
 	}
 	return ErrUnsupportedActivity
 }
