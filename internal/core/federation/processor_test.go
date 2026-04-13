@@ -491,7 +491,8 @@ func TestProcess_UndoBlock_NotBlocking(t *testing.T) {
 func TestProcess_FlagHappyPath(t *testing.T) {
 	p, repo, _ := newProcessorWithBlocking(t)
 	abuseRepo := testutil.NewMockAbuseReportRepository()
-	p.SetAbuseReportRepo(abuseRepo)
+	idGenFlag, _ := id.NewGenerator("aidx")
+	p.SetAbuseReportRepo(abuseRepo, idGenFlag)
 
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
@@ -512,7 +513,8 @@ func TestProcess_FlagHappyPath(t *testing.T) {
 func TestProcess_FlagSingleURI(t *testing.T) {
 	p, repo, _ := newProcessorWithBlocking(t)
 	abuseRepo := testutil.NewMockAbuseReportRepository()
-	p.SetAbuseReportRepo(abuseRepo)
+	idGenFlag, _ := id.NewGenerator("aidx")
+	p.SetAbuseReportRepo(abuseRepo, idGenFlag)
 
 	bobURI := "https://example.com/users/bob"
 	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
@@ -530,7 +532,8 @@ func TestProcess_FlagSingleURI(t *testing.T) {
 func TestProcess_FlagFromNote(t *testing.T) {
 	p, repo, _ := newProcessorWithBlocking(t)
 	abuseRepo := testutil.NewMockAbuseReportRepository()
-	p.SetAbuseReportRepo(abuseRepo)
+	idGenFlag, _ := id.NewGenerator("aidx")
+	p.SetAbuseReportRepo(abuseRepo, idGenFlag)
 	noteRepo := testutil.NewMockNoteRepository()
 
 	bobURI := "https://example.com/users/bob"

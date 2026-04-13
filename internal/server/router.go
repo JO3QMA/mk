@@ -1134,7 +1134,7 @@ func (s *Server) setupRoutes() {
 	reversiFedCache := corereversi.NewFederationIDCache(s.redis.Default)
 	federationProcessor.SetReversi(reversiService, reversiRepo, idGen, reversiFedCache)
 	federationProcessor.SetBlockingService(blockingService)
-	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db))
+	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db), idGen)
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
 
 	// 5. /streaming エンドポイント配線

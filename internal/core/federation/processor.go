@@ -42,6 +42,7 @@ type Processor struct {
 	// SetBlockingService等で注入。nilの場合は対応activityがErrUnsupportedActivityを返す。
 	blockingService *coreblocking.Service
 	abuseReportRepo repository.AbuseReportRepository
+	abuseIDGen      id.Generator
 	pinningRepo     repository.UserNotePiningRepository
 	pinningIDGen    id.Generator
 
@@ -161,8 +162,9 @@ func (p *Processor) SetBlockingService(svc *coreblocking.Service) {
 }
 
 // SetAbuseReportRepo wires the abuse report repository for Flag activities.
-func (p *Processor) SetAbuseReportRepo(repo repository.AbuseReportRepository) {
+func (p *Processor) SetAbuseReportRepo(repo repository.AbuseReportRepository, idGen id.Generator) {
 	p.abuseReportRepo = repo
+	p.abuseIDGen = idGen
 }
 
 // SetPinningRepo wires the note pinning repository for Add/Remove activities.
@@ -665,6 +667,7 @@ func (p *Processor) handleFlag(act genericActivity) error {
 		comment = "(flagged via ActivityPub)"
 	}
 	report := &model.AbuseUserReport{
+		ID:             p.abuseIDGen.Generate(nowFn()),
 		TargetUserID:   targetUserID,
 		ReporterID:     reporter.ID,
 		Comment:        comment,
@@ -734,8 +737,11 @@ func (p *Processor) handleAdd(act genericActivity) error {
 		NoteID: note.ID,
 	}
 	if err := p.pinningRepo.Create(pin); err != nil {
-		// 既にピン留め済みなら無視
-		return nil
+		// 既にピン留め済み（重複キー）の場合のみ無視
+		if existing, _ := p.pinningRepo.FindByPair(actor.ID, note.ID); existing != nil {
+			return nil
+		}
+		return err
 	}
 	return nil
 }
