@@ -38,6 +38,15 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	e.HideBanner = true
 	e.HidePort = true
 
+	// trustProxyからIPExtractorを構成
+	if nets := config.ParseTrustProxy(cfg.TrustProxy); len(nets) > 0 {
+		var opts []echo.TrustOption
+		for _, n := range nets {
+			opts = append(opts, echo.TrustIPRange(n))
+		}
+		e.IPExtractor = echo.ExtractIPFromXFFHeader(opts...)
+	}
+
 	// Global middleware
 	e.Use(echomw.Recover())
 	e.Use(echomw.RequestID())
