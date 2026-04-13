@@ -36,6 +36,7 @@ type Handler struct {
 	followRequestRepo    repository.FollowRequestRepository
 	instanceRepo         repository.InstanceRepository
 	userListFavoriteRepo UserListFavoriteRepository
+	userListRepo         repository.UserListRepository
 }
 
 // SetMemoRepo attaches a UserMemoRepository for users/update-memo.

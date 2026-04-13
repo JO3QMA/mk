@@ -14,6 +14,8 @@ type UserListRepository interface {
 	AddMember(m *model.UserListMembership) error
 	RemoveMember(listID, userID string) error
 	ListMembers(listID string) ([]*model.UserListMembership, error)
+	UpdateList(id string, fields map[string]any) error
+	UpdateMembership(listID, userID string, withReplies bool) error
 }
 
 type userListRepository struct {
@@ -63,4 +65,14 @@ func (r *userListRepository) ListMembers(listID string) ([]*model.UserListMember
 		return nil, err
 	}
 	return members, nil
+}
+
+func (r *userListRepository) UpdateList(id string, fields map[string]any) error {
+	return r.db.Model(&model.UserList{}).Where("id = ?", id).Updates(fields).Error
+}
+
+func (r *userListRepository) UpdateMembership(listID, userID string, withReplies bool) error {
+	return r.db.Model(&model.UserListMembership{}).
+		Where("\"userListId\" = ? AND \"userId\" = ?", listID, userID).
+		Update("withReplies", withReplies).Error
 }
