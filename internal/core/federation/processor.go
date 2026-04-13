@@ -354,9 +354,11 @@ func (p *Processor) handleAccept(act genericActivity) error {
 	}
 	// フォローリクエストを承認してフォロー関係を確立
 	if err := p.followingService.AcceptRequest(followee.ID, follower.ID); err != nil {
-		// フォローリクエストがない場合もある（既にフォロー済み等）
-		// その場合はエラーにせず無視
-		return nil
+		// フォローリクエストが存在しない場合は無視（既にフォロー済み等）
+		if errors.Is(err, corefollowing.ErrRequestNotFound) {
+			return nil
+		}
+		return err
 	}
 	return nil
 }
