@@ -569,6 +569,23 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 	return existing, nil
 }
 
+// ExtractLocalUserID returns the user ID for a URI matching the local
+// /users/{id} pattern, or "" if the URI does not match.
+func (r *Resolver) ExtractLocalUserID(uri string) string {
+	if r.urls == nil {
+		return ""
+	}
+	prefix := r.urls.UserURI("")
+	if !strings.HasPrefix(uri, prefix) {
+		return ""
+	}
+	rest := uri[len(prefix):]
+	if i := strings.Index(rest, "/"); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest
+}
+
 // extractLocalNoteID returns the trailing note ID for a URI rooted at the
 // local instance, or "" if the URI does not match the local pattern.
 func (r *Resolver) extractLocalNoteID(uri string) string {

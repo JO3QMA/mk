@@ -341,9 +341,15 @@ func (p *Processor) handleAccept(act genericActivity) error {
 	if err != nil {
 		return nil
 	}
-	follower, err := p.userRepo.FindByURI(followerURI)
+	// ローカルユーザーはURIカラムがNULLなのでFindByURIでは見つからない。
+	// ローカルURI（/users/{id}）からIDを抽出してFindByIDで検索する。
+	var follower *model.User
+	if localID := p.resolver.ExtractLocalUserID(followerURI); localID != "" {
+		follower, err = p.userRepo.FindByID(localID)
+	} else {
+		follower, err = p.userRepo.FindByURI(followerURI)
+	}
 	if err != nil {
-		// ローカルユーザーが見つからない場合は無視
 		return nil
 	}
 	// フォローリクエストを承認してフォロー関係を確立
