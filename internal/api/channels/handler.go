@@ -15,8 +15,26 @@ import (
 
 // Handler handles channel-related API endpoints.
 type Handler struct {
-	svc   *corechannel.Service
-	idGen id.Generator
+	svc          *corechannel.Service
+	idGen        id.Generator
+	favoriteRepo ChannelFavoriteRepository
+	mutingRepo   ChannelMutingRepository
+}
+
+// ChannelFavoriteRepository is the interface for channel favorite operations.
+type ChannelFavoriteRepository interface {
+	Create(fav *model.ChannelFavorite) error
+	Delete(userID, channelID string) error
+	ListByUser(userID string) ([]*model.ChannelFavorite, error)
+	Exists(userID, channelID string) (bool, error)
+}
+
+// ChannelMutingRepository is the interface for channel muting operations.
+type ChannelMutingRepository interface {
+	Create(mut *model.ChannelMuting) error
+	Delete(userID, channelID string) error
+	ListByUser(userID string) ([]*model.ChannelMuting, error)
+	Exists(userID, channelID string) (bool, error)
 }
 
 // NewHandler creates a new channels Handler.

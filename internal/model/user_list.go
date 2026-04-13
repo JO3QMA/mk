@@ -12,9 +12,11 @@ func (UserList) TableName() string { return "user_list" }
 
 // UserListMembership represents the `user_list_membership` table.
 type UserListMembership struct {
-	ID         string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
-	UserListID string `gorm:"column:userListId;type:varchar(32);not null" json:"userListId"`
-	UserID     string `gorm:"column:userId;type:varchar(32);not null" json:"userId"`
+	ID             string  `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	UserListID     string  `gorm:"column:userListId;type:varchar(32);not null" json:"userListId"`
+	UserID         string  `gorm:"column:userId;type:varchar(32);not null" json:"userId"`
+	WithReplies    bool    `gorm:"column:withReplies;default:false" json:"withReplies"`
+	UserListUserID *string `gorm:"column:userListUserId;type:varchar(32)" json:"userListUserId"`
 
 	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }

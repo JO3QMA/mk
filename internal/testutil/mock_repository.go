@@ -194,6 +194,10 @@ func (m *MockUserRepository) ListRemoteInboxes() ([]string, error) {
 	return out, nil
 }
 
+func (m *MockUserRepository) CountOnlineUsers() (int64, error) {
+	return 0, nil
+}
+
 func (m *MockUserRepository) UpdateProfile(userID string, fields map[string]any) error {
 	p, ok := m.Profiles[userID]
 	if !ok {
@@ -2845,4 +2849,219 @@ func (m *MockUserPublickeyRepository) FindByUserID(userID string) (*model.UserPu
 		return pk, nil
 	}
 	return nil, ErrNotFound
+}
+
+// MockChannelFavoriteRepository is a test double for repository.ChannelFavoriteRepository.
+type MockChannelFavoriteRepository struct {
+	Favorites map[string]*model.ChannelFavorite // keyed by "userId:channelId"
+}
+
+func NewMockChannelFavoriteRepository() *MockChannelFavoriteRepository {
+	return &MockChannelFavoriteRepository{Favorites: make(map[string]*model.ChannelFavorite)}
+}
+
+func (m *MockChannelFavoriteRepository) Create(fav *model.ChannelFavorite) error {
+	m.Favorites[fav.UserID+":"+fav.ChannelID] = fav
+	return nil
+}
+
+func (m *MockChannelFavoriteRepository) Delete(userID, channelID string) error {
+	delete(m.Favorites, userID+":"+channelID)
+	return nil
+}
+
+func (m *MockChannelFavoriteRepository) ListByUser(userID string) ([]*model.ChannelFavorite, error) {
+	var result []*model.ChannelFavorite
+	for _, f := range m.Favorites {
+		if f.UserID == userID {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockChannelFavoriteRepository) Exists(userID, channelID string) (bool, error) {
+	_, ok := m.Favorites[userID+":"+channelID]
+	return ok, nil
+}
+
+// MockChannelMutingRepository is a test double for repository.ChannelMutingRepository.
+type MockChannelMutingRepository struct {
+	Mutings map[string]*model.ChannelMuting // keyed by "userId:channelId"
+}
+
+func NewMockChannelMutingRepository() *MockChannelMutingRepository {
+	return &MockChannelMutingRepository{Mutings: make(map[string]*model.ChannelMuting)}
+}
+
+func (m *MockChannelMutingRepository) Create(mut *model.ChannelMuting) error {
+	m.Mutings[mut.UserID+":"+mut.ChannelID] = mut
+	return nil
+}
+
+func (m *MockChannelMutingRepository) Delete(userID, channelID string) error {
+	delete(m.Mutings, userID+":"+channelID)
+	return nil
+}
+
+func (m *MockChannelMutingRepository) ListByUser(userID string) ([]*model.ChannelMuting, error) {
+	var result []*model.ChannelMuting
+	for _, mut := range m.Mutings {
+		if mut.UserID == userID {
+			result = append(result, mut)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockChannelMutingRepository) Exists(userID, channelID string) (bool, error) {
+	_, ok := m.Mutings[userID+":"+channelID]
+	return ok, nil
+}
+
+// MockClipFavoriteRepository is a test double for repository.ClipFavoriteRepository.
+type MockClipFavoriteRepository struct {
+	Favorites map[string]*model.ClipFavorite // keyed by "userId:clipId"
+}
+
+func NewMockClipFavoriteRepository() *MockClipFavoriteRepository {
+	return &MockClipFavoriteRepository{Favorites: make(map[string]*model.ClipFavorite)}
+}
+
+func (m *MockClipFavoriteRepository) Create(fav *model.ClipFavorite) error {
+	m.Favorites[fav.UserID+":"+fav.ClipID] = fav
+	return nil
+}
+
+func (m *MockClipFavoriteRepository) Delete(userID, clipID string) error {
+	delete(m.Favorites, userID+":"+clipID)
+	return nil
+}
+
+func (m *MockClipFavoriteRepository) ListByUser(userID string) ([]*model.ClipFavorite, error) {
+	var result []*model.ClipFavorite
+	for _, f := range m.Favorites {
+		if f.UserID == userID {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockClipFavoriteRepository) Exists(userID, clipID string) (bool, error) {
+	_, ok := m.Favorites[userID+":"+clipID]
+	return ok, nil
+}
+
+// MockUserListFavoriteRepository is a test double for repository.UserListFavoriteRepository.
+type MockUserListFavoriteRepository struct {
+	Favorites map[string]*model.UserListFavorite // keyed by "userId:userListId"
+}
+
+func NewMockUserListFavoriteRepository() *MockUserListFavoriteRepository {
+	return &MockUserListFavoriteRepository{Favorites: make(map[string]*model.UserListFavorite)}
+}
+
+func (m *MockUserListFavoriteRepository) Create(fav *model.UserListFavorite) error {
+	m.Favorites[fav.UserID+":"+fav.UserListID] = fav
+	return nil
+}
+
+func (m *MockUserListFavoriteRepository) Delete(userID, listID string) error {
+	delete(m.Favorites, userID+":"+listID)
+	return nil
+}
+
+func (m *MockUserListFavoriteRepository) ListByUser(userID string) ([]*model.UserListFavorite, error) {
+	var result []*model.UserListFavorite
+	for _, f := range m.Favorites {
+		if f.UserID == userID {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockUserListFavoriteRepository) Exists(userID, listID string) (bool, error) {
+	_, ok := m.Favorites[userID+":"+listID]
+	return ok, nil
+}
+
+// MockRetentionAggregationRepository is a test double for repository.RetentionAggregationRepository.
+type MockRetentionAggregationRepository struct {
+	Records []*model.RetentionAggregation
+}
+
+func NewMockRetentionAggregationRepository() *MockRetentionAggregationRepository {
+	return &MockRetentionAggregationRepository{}
+}
+
+func (m *MockRetentionAggregationRepository) ListRecent(limit int) ([]*model.RetentionAggregation, error) {
+	if limit >= len(m.Records) {
+		return m.Records, nil
+	}
+	return m.Records[:limit], nil
+}
+
+// MockSystemAccountRepository is a test double for repository.SystemAccountRepository.
+type MockSystemAccountRepository struct {
+	Accounts map[string]*model.SystemAccount // keyed by type
+}
+
+func NewMockSystemAccountRepository() *MockSystemAccountRepository {
+	return &MockSystemAccountRepository{Accounts: make(map[string]*model.SystemAccount)}
+}
+
+func (m *MockSystemAccountRepository) FindByType(typ string) (*model.SystemAccount, error) {
+	if sa, ok := m.Accounts[typ]; ok {
+		return sa, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockSystemAccountRepository) Create(sa *model.SystemAccount) error {
+	m.Accounts[sa.Type] = sa
+	return nil
+}
+
+// MockNoteThreadMutingRepository is a test double for repository.NoteThreadMutingRepository.
+type MockNoteThreadMutingRepository struct {
+	Mutings map[string]*model.NoteThreadMuting // keyed by "userId:threadId"
+}
+
+func NewMockNoteThreadMutingRepository() *MockNoteThreadMutingRepository {
+	return &MockNoteThreadMutingRepository{Mutings: make(map[string]*model.NoteThreadMuting)}
+}
+
+func (m *MockNoteThreadMutingRepository) Create(mut *model.NoteThreadMuting) error {
+	m.Mutings[mut.UserID+":"+mut.ThreadID] = mut
+	return nil
+}
+
+func (m *MockNoteThreadMutingRepository) Delete(userID, threadID string) error {
+	delete(m.Mutings, userID+":"+threadID)
+	return nil
+}
+
+func (m *MockNoteThreadMutingRepository) Exists(userID, threadID string) (bool, error) {
+	_, ok := m.Mutings[userID+":"+threadID]
+	return ok, nil
+}
+
+// MockUsedUsernameRepository is a test double for repository.UsedUsernameRepository.
+type MockUsedUsernameRepository struct {
+	Usernames map[string]bool
+}
+
+func NewMockUsedUsernameRepository() *MockUsedUsernameRepository {
+	return &MockUsedUsernameRepository{Usernames: make(map[string]bool)}
+}
+
+func (m *MockUsedUsernameRepository) Create(username string) error {
+	m.Usernames[username] = true
+	return nil
+}
+
+func (m *MockUsedUsernameRepository) Exists(username string) (bool, error) {
+	return m.Usernames[username], nil
 }

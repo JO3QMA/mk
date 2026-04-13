@@ -27,22 +27,23 @@ const (
 
 // Antenna represents the `antenna` table.
 type Antenna struct {
-	ID              string         `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
-	LastUsedAt      time.Time      `gorm:"column:lastUsedAt;type:timestamp with time zone;not null" json:"lastUsedAt"`
-	UserID          string         `gorm:"column:userId;type:varchar(32);not null" json:"userId"`
-	Name            string         `gorm:"column:name;type:varchar(128);not null" json:"name"`
-	Src             AntennaSource  `gorm:"column:src;type:antenna_src_enum;not null" json:"src"`
-	UserListID      *string        `gorm:"column:userListId;type:varchar(32)" json:"userListId"`
-	Users           pq.StringArray `gorm:"column:users;type:varchar(1024)[];default:'{}'" json:"users"`
-	Keywords        datatypes.JSON `gorm:"column:keywords;type:jsonb;default:'[]'" json:"keywords"`
-	ExcludeKeywords datatypes.JSON `gorm:"column:excludeKeywords;type:jsonb;default:'[]'" json:"excludeKeywords"`
-	CaseSensitive   bool           `gorm:"column:caseSensitive;default:false" json:"caseSensitive"`
-	ExcludeBots     bool           `gorm:"column:excludeBots;default:false" json:"excludeBots"`
-	WithReplies     bool           `gorm:"column:withReplies;default:false" json:"withReplies"`
-	WithFile        bool           `gorm:"column:withFile;default:false" json:"withFile"`
-	Expression      *string        `gorm:"column:expression;type:varchar(2048)" json:"expression"`
-	IsActive        bool           `gorm:"column:isActive;default:true" json:"isActive"`
-	LocalOnly       bool           `gorm:"column:localOnly;default:false" json:"localOnly"`
+	ID                             string         `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	LastUsedAt                     time.Time      `gorm:"column:lastUsedAt;type:timestamp with time zone;not null" json:"lastUsedAt"`
+	UserID                         string         `gorm:"column:userId;type:varchar(32);not null" json:"userId"`
+	Name                           string         `gorm:"column:name;type:varchar(128);not null" json:"name"`
+	Src                            AntennaSource  `gorm:"column:src;type:antenna_src_enum;not null" json:"src"`
+	UserListID                     *string        `gorm:"column:userListId;type:varchar(32)" json:"userListId"`
+	Users                          pq.StringArray `gorm:"column:users;type:varchar(1024)[];default:'{}'" json:"users"`
+	Keywords                       datatypes.JSON `gorm:"column:keywords;type:jsonb;default:'[]'" json:"keywords"`
+	ExcludeKeywords                datatypes.JSON `gorm:"column:excludeKeywords;type:jsonb;default:'[]'" json:"excludeKeywords"`
+	CaseSensitive                  bool           `gorm:"column:caseSensitive;default:false" json:"caseSensitive"`
+	ExcludeBots                    bool           `gorm:"column:excludeBots;default:false" json:"excludeBots"`
+	WithReplies                    bool           `gorm:"column:withReplies;default:false" json:"withReplies"`
+	WithFile                       bool           `gorm:"column:withFile;default:false" json:"withFile"`
+	Expression                     *string        `gorm:"column:expression;type:varchar(2048)" json:"expression"`
+	IsActive                       bool           `gorm:"column:isActive;default:true" json:"isActive"`
+	LocalOnly                      bool           `gorm:"column:localOnly;default:false" json:"localOnly"`
+	ExcludeNotesInSensitiveChannel bool           `gorm:"column:excludeNotesInSensitiveChannel;default:false" json:"excludeNotesInSensitiveChannel"`
 }
 
 func (Antenna) TableName() string { return "antenna" }

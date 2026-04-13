@@ -15,8 +15,9 @@ import (
 
 // Handler handles clip-related API endpoints.
 type Handler struct {
-	svc   *coreclip.Service
-	idGen id.Generator
+	svc          *coreclip.Service
+	idGen        id.Generator
+	favoriteRepo ClipFavoriteRepository
 }
 
 // NewHandler creates a new clips Handler.

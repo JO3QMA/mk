@@ -22,19 +22,20 @@ type ChartHook interface {
 
 // Handler handles user-related API endpoints.
 type Handler struct {
-	userService       *user.Service
-	followingService  *corefollowing.Service
-	noteRepo          repository.NoteRepository
-	idGen             id.Generator
-	chartHook         ChartHook
-	abuseRepo         repository.AbuseReportRepository
-	followingRepo     repository.FollowingRepository
-	memoRepo          repository.UserMemoRepository
-	blockingRepo      repository.BlockingRepository
-	mutingRepo        repository.MutingRepository
-	renoteMutingRepo  repository.RenoteMutingRepository
-	followRequestRepo repository.FollowRequestRepository
-	instanceRepo      repository.InstanceRepository
+	userService          *user.Service
+	followingService     *corefollowing.Service
+	noteRepo             repository.NoteRepository
+	idGen                id.Generator
+	chartHook            ChartHook
+	abuseRepo            repository.AbuseReportRepository
+	followingRepo        repository.FollowingRepository
+	memoRepo             repository.UserMemoRepository
+	blockingRepo         repository.BlockingRepository
+	mutingRepo           repository.MutingRepository
+	renoteMutingRepo     repository.RenoteMutingRepository
+	followRequestRepo    repository.FollowRequestRepository
+	instanceRepo         repository.InstanceRepository
+	userListFavoriteRepo UserListFavoriteRepository
 }
 
 // SetMemoRepo attaches a UserMemoRepository for users/update-memo.
