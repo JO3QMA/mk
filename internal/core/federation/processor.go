@@ -757,12 +757,7 @@ func (p *Processor) handleRemove(act genericActivity) error {
 		Target string `json:"target"`
 	}
 	_ = json.Unmarshal(act.raw, &target)
-	actorURI := ""
-	if actor.URI != nil {
-		actorURI = *actor.URI
-	}
-	expectedFeatured := actorURI + "/collections/featured"
-	if target.Target != expectedFeatured {
+	if actor.Featured == nil || target.Target != *actor.Featured {
 		return nil
 	}
 	noteURI, err := readObjectString(act.Object)
