@@ -299,8 +299,10 @@ func (h *Handler) ok(c echo.Context, user *model.User) error {
 		go h.ipLogger.Upsert(user.ID, c.RealIP())
 	}
 	// signinレコードを非同期で記録
+	// Echoがリクエストを再利用する前にヘッダーをコピーする
 	if h.signinRepo != nil && h.idGen != nil {
-		go h.recordSignin(user.ID, c.RealIP(), c.Request().Header)
+		hdrs := c.Request().Header.Clone()
+		go h.recordSignin(user.ID, c.RealIP(), hdrs)
 	}
 	token := ""
 	if user.Token != nil {
