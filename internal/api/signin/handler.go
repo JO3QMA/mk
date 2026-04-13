@@ -322,18 +322,18 @@ func (h *Handler) ok(c echo.Context, user *model.User) error {
 	})
 }
 
-// sanitizeHeaders removes sensitive headers before persisting.
-func sanitizeHeaders(h http.Header) http.Header {
-	safe := h.Clone()
-	safe.Del("Authorization")
-	safe.Del("Cookie")
-	safe.Del("Set-Cookie")
-	return safe
+// sanitizeHeaders removes sensitive headers in-place before persisting.
+// 呼び出し元でClone済みのヘッダーを受け取る前提
+func sanitizeHeaders(h http.Header) {
+	h.Del("Authorization")
+	h.Del("Cookie")
+	h.Del("Set-Cookie")
 }
 
 // recordSignin persists a signin record asynchronously.
 func (h *Handler) recordSignin(userID, ip string, headers http.Header) {
-	hdrs, err := json.Marshal(sanitizeHeaders(headers))
+	sanitizeHeaders(headers)
+	hdrs, err := json.Marshal(headers)
 	if err != nil {
 		hdrs = []byte("{}")
 	}

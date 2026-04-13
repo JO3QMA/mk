@@ -422,6 +422,9 @@ func TestGenToken_Success(t *testing.T) {
 		assert.Equal(t, "u1", at.UserID)
 		assert.Nil(t, at.AppID)
 		assert.Equal(t, resp["token"], at.Token)
+		// SHA-256ハッシュ化の検証: HashはTokenと異なり、sha256Hexの結果と一致する
+		assert.NotEqual(t, at.Token, at.Hash, "Hash should differ from raw Token")
+		assert.Equal(t, sha256Hex(at.Token), at.Hash, "Hash should be SHA-256 of Token")
 	}
 }
 
