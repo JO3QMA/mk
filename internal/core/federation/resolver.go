@@ -207,6 +207,17 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	if actor.Endpoints.SharedInbox != "" {
 		user.SharedInbox = &actor.Endpoints.SharedInbox
 	}
+	if actor.Featured != "" {
+		user.Featured = &actor.Featured
+	}
+	if actor.MovedTo != "" {
+		user.MovedToURI = &actor.MovedTo
+		user.MovedAt = &now
+	}
+	if len(actor.AlsoKnownAs) > 0 {
+		aka := strings.Join(actor.AlsoKnownAs, ",")
+		user.AlsoKnownAs = &aka
+	}
 	if err := r.userRepo.Create(user); err != nil {
 		return nil, err
 	}
