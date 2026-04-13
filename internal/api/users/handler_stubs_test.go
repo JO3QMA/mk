@@ -171,6 +171,17 @@ func TestListsUpdate_IsPublic(t *testing.T) {
 	assert.True(t, listRepo.Lists["l1"].IsPublic)
 }
 
+func TestListsUpdate_NotOwner(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "other", Name: "test"}
+	h.SetUserListRepo(listRepo)
+
+	// u1は所有者ではないので404
+	rec := postStub(h.ListsUpdate, `{"listId":"l1","name":"hacked"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 func TestListsUpdate_NilRepo(t *testing.T) {
 	h, _ := newTestHandler(t)
 	// userListRepo未注入時はgraceful NoContent
@@ -201,6 +212,16 @@ func TestListsUpdateMembership_NotFound(t *testing.T) {
 	h.SetUserListRepo(listRepo)
 
 	rec := postStub(h.ListsUpdateMembership, `{"listId":"ghost","userId":"u2","withReplies":false}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestListsUpdateMembership_NotOwner(t *testing.T) {
+	h, _ := newTestHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "other", Name: "test"}
+	h.SetUserListRepo(listRepo)
+
+	rec := postStub(h.ListsUpdateMembership, `{"listId":"l1","userId":"u2","withReplies":true}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 

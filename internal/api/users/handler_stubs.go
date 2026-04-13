@@ -157,6 +157,7 @@ func (h *Handler) ListsUnfavorite(c echo.Context) error {
 
 // ListsUpdate handles POST /api/users/lists/update.
 func (h *Handler) ListsUpdate(c echo.Context) error {
+	user := middleware.GetUser(c)
 	var req struct {
 		ListID   string `json:"listId"`
 		Name     string `json:"name"`
@@ -170,6 +171,10 @@ func (h *Handler) ListsUpdate(c echo.Context) error {
 	}
 	list, err := h.userListRepo.FindByID(req.ListID)
 	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "796666fe-3dff-4d39-becb-8a5932c1d5b7"}})
+	}
+	// 所有権チェック
+	if list.UserID != user.ID {
 		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "796666fe-3dff-4d39-becb-8a5932c1d5b7"}})
 	}
 	fields := map[string]any{}
@@ -191,6 +196,7 @@ func (h *Handler) ListsUpdate(c echo.Context) error {
 
 // ListsUpdateMembership handles POST /api/users/lists/update-membership.
 func (h *Handler) ListsUpdateMembership(c echo.Context) error {
+	user := middleware.GetUser(c)
 	var req struct {
 		ListID      string `json:"listId"`
 		UserID      string `json:"userId"`
@@ -202,7 +208,12 @@ func (h *Handler) ListsUpdateMembership(c echo.Context) error {
 	if h.userListRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if _, err := h.userListRepo.FindByID(req.ListID); err != nil {
+	list, err := h.userListRepo.FindByID(req.ListID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"}})
+	}
+	// 所有権チェック
+	if list.UserID != user.ID {
 		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"}})
 	}
 	if err := h.userListRepo.UpdateMembership(req.ListID, req.UserID, req.WithReplies); err != nil {
