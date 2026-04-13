@@ -1,0 +1,54 @@
+package channels
+
+import (
+	"encoding/json"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/stream"
+)
+
+// ReversiChannel forwards global reversi game events (match invitations, etc.).
+// reversiGameチャンネル（特定ゲームのイベント）とは異なり、ゲーム発見用。
+type ReversiChannel struct {
+	ctx       stream.ChannelContext
+	connected bool
+}
+
+// NewReversi returns a channel factory for "reversi".
+func NewReversi(ctx stream.ChannelContext) stream.Channel {
+	return &ReversiChannel{ctx: ctx}
+}
+
+func (c *ReversiChannel) Init(_ json.RawMessage) {
+	// 認証必須
+	user, ok := c.ctx.User().(*model.User)
+	if !ok || user == nil {
+		return
+	}
+	c.connected = true
+	c.ctx.Subscribe("reversi:" + user.ID)
+}
+
+func (c *ReversiChannel) OnRedisEvent(payload []byte) {
+	// {type, body}エンベロープの展開
+	var envelope struct {
+		Type string          `json:"type"`
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err == nil && envelope.Type != "" {
+		_ = c.ctx.Send(envelope.Type, envelope.Body)
+		return
+	}
+	_ = c.ctx.Send("reversiEvent", json.RawMessage(payload))
+}
+
+func (c *ReversiChannel) OnClientMessage(string, json.RawMessage) {}
+
+func (c *ReversiChannel) Dispose() {
+	if c.connected {
+		user, ok := c.ctx.User().(*model.User)
+		if ok && user != nil {
+			c.ctx.Unsubscribe("reversi:" + user.ID)
+		}
+	}
+}
