@@ -320,13 +320,51 @@ func (p *Processor) handleUndoAnnounce(act genericActivity, inner genericActivit
 	return nil
 }
 
-// handleAccept currently only logs that an Accept was received. リモートからの
-// Acceptは主に follow request の承認なので、Step E 以降で完全実装する。
-func (p *Processor) handleAccept(_ genericActivity) error {
+// handleAccept processes an inbound Accept activity. リモートfolloweeがローカル
+// followerからのフォローリクエストを承認した場合に、フォロー関係を確立する。
+func (p *Processor) handleAccept(act genericActivity) error {
+	var inner genericActivity
+	if err := json.Unmarshal(act.Object, &inner); err != nil {
+		// objectが文字列（Follow IDのURI）の場合もあるが、現状はnilで許容
+		return nil
+	}
+	if !strings.EqualFold(inner.Type, "follow") {
+		return nil
+	}
+	// actorはリモートfollowee（承認した側）
+	followee, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	// inner.actorはローカルfollower（フォローを申請した側）
+	followerURI, err := readActorString(inner)
+	if err != nil {
+		return nil
+	}
+	// ローカルユーザーはURIカラムがNULLなのでFindByURIでは見つからない。
+	// ローカルURI（/users/{id}）からIDを抽出してFindByIDで検索する。
+	var follower *model.User
+	if localID := p.resolver.ExtractLocalUserID(followerURI); localID != "" {
+		follower, err = p.userRepo.FindByID(localID)
+	} else {
+		follower, err = p.userRepo.FindByURI(followerURI)
+	}
+	if err != nil {
+		return nil
+	}
+	// フォローリクエストを承認してフォロー関係を確立
+	if err := p.followingService.AcceptRequest(followee.ID, follower.ID); err != nil {
+		// フォローリクエストが存在しない場合は無視（既にフォロー済み等）
+		if errors.Is(err, corefollowing.ErrRequestNotFound) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 
-// handleCreate persists an inbound Note carried by a Create activity.
+// handleCreate persists an inbound Note or Question carried by a Create activity.
+// Question (投票) はNote同様にIngestNoteで処理され、Pollレコードが自動作成される。
 func (p *Processor) handleCreate(act genericActivity) error {
 	if _, err := p.resolver.ResolveActor(act.Actor); err != nil {
 		return err
