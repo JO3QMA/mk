@@ -93,6 +93,107 @@ func TestPackNote_WithUser(t *testing.T) {
 	assert.Equal(t, "testuser", entity.User.Username)
 }
 
+func TestPackNote_ReactionCount(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{"👍":3,"❤️":2,"🎉":1}`)),
+	}
+
+	entity := PackNote(note, idGen)
+	assert.Equal(t, 6, entity.ReactionCount)
+}
+
+func TestPackNote_ReactionCount_Empty(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+
+	entity := PackNote(note, idGen)
+	assert.Equal(t, 0, entity.ReactionCount)
+}
+
+func TestPackNote_ReactionCount_NilReactions(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+	}
+
+	entity := PackNote(note, idGen)
+	assert.Equal(t, 0, entity.ReactionCount)
+}
+
+func TestPackNote_ReactionCount_InvalidJSON(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("invalid")),
+	}
+
+	entity := PackNote(note, idGen)
+	assert.Equal(t, 0, entity.ReactionCount)
+}
+
+func TestPackNote_VisibleUserIDs_Mentions_HasPoll(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:             noteID,
+		UserID:         "user1",
+		Visibility:     model.NoteVisibilitySpecified,
+		Reactions:      datatypes.JSON([]byte("{}")),
+		VisibleUserIDs: pq.StringArray{"user2", "user3"},
+		Mentions:       pq.StringArray{"user2"},
+		HasPoll:        true,
+	}
+
+	entity := PackNote(note, idGen)
+
+	assert.Equal(t, []string{"user2", "user3"}, entity.VisibleUserIDs)
+	assert.Equal(t, []string{"user2"}, entity.Mentions)
+	assert.True(t, entity.HasPoll)
+}
+
+func TestPackNote_NilVisibleUserIDs_Mentions(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+
+	entity := PackNote(note, idGen)
+
+	// nil → empty slice
+	assert.NotNil(t, entity.VisibleUserIDs)
+	assert.Empty(t, entity.VisibleUserIDs)
+	assert.NotNil(t, entity.Mentions)
+	assert.Empty(t, entity.Mentions)
+	assert.False(t, entity.HasPoll)
+}
+
 func TestPackNote_CreatedAtParsing(t *testing.T) {
 	idGen := newTestIDGen(t)
 	noteID := idGen.Generate(time.Now())

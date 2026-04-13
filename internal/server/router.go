@@ -644,6 +644,8 @@ func (s *Server) setupRoutes() {
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
 	notesHandler.SetDriveFileRepo(driveFileRepo)
+	notesHandler.SetNoteReactionRepo(reactionRepo)
+	notesHandler.SetChannelRepo(channelRepo)
 	if m, err := metaRepo.Fetch(); err == nil {
 		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
 		if m.DeeplAuthKey != nil && *m.DeeplAuthKey != "" {
@@ -695,6 +697,11 @@ func (s *Server) setupRoutes() {
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)
 	usersHandler.SetChartHook(chartHooks)
 	usersHandler.SetFollowingRepo(followingRepo)
+	usersHandler.SetBlockingRepo(blockingRepo)
+	usersHandler.SetMutingRepo(mutingRepo)
+	usersHandler.SetRenoteMutingRepo(renoteMutingRepo)
+	usersHandler.SetFollowRequestRepo(followRequestRepo)
+	usersHandler.SetInstanceRepo(instanceRepo)
 	api.POST("/users/show", usersHandler.Show)
 	api.POST("/users/search", usersHandler.Search)
 	api.POST("/users/notes", usersHandler.Notes)

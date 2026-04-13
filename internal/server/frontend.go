@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
@@ -271,7 +272,7 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		"sentryForFrontend":            nil,
 		"googleAnalyticsMeasurementId": m.GoogleAnalyticsMeasurementID,
 		"clientOptions":                clientOptionsJSON(m.ClientOptions),
-		"policies":                     defaultMetaPolicies(),
+		"policies":                     role.DefaultPolicies(),
 		"features": map[string]any{
 			"registration":           !m.DisableRegistration,
 			"emailRequiredForSignup": m.EmailRequiredForSignup,
@@ -300,27 +301,6 @@ func clientOptionsJSON(raw []byte) any {
 		return map[string]any{}
 	}
 	return out
-}
-
-// defaultMetaPolicies returns the Misskey default policies for the inline meta.
-func defaultMetaPolicies() map[string]any {
-	return map[string]any{
-		"gtlAvailable": true, "ltlAvailable": true,
-		"canPublicNote": true, "mentionLimit": 20,
-		"canInvite": false, "inviteLimit": 0, "inviteLimitCycle": 10080,
-		"inviteExpirationTime": 0, "canManageCustomEmojis": false,
-		"canManageAvatarDecorations": false, "canSearchNotes": false,
-		"canSearchUsers": true, "canUseTranslator": true,
-		"canHideAds": false, "driveCapacityMb": 100, "maxFileSizeMb": 30,
-		"alwaysMarkNsfw": false, "canUpdateBioMedia": true,
-		"pinLimit": 5, "antennaLimit": 5, "wordMuteLimit": 200,
-		"webhookLimit": 3, "clipLimit": 10, "noteEachClipsLimit": 200,
-		"userListLimit": 10, "userEachUserListsLimit": 50,
-		"rateLimitFactor": 1, "avatarDecorationLimit": 1,
-		"canImportAntennas": false, "canImportBlocking": false,
-		"canImportFollowing": false, "canImportMuting": false,
-		"canImportUserLists": false, "chatAvailability": "available",
-	}
 }
 
 // manifestJSON generates a PWA manifest.json response.
