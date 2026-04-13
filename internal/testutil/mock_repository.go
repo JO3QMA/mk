@@ -7,6 +7,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/gorm"
 )
 
 // MockUserRepository is a test double for repository.UserRepository.
@@ -2455,7 +2456,7 @@ func (m *MockUserListRepository) UpdateMembership(listID, userID string, withRep
 			return nil
 		}
 	}
-	return ErrNotFound
+	return gorm.ErrRecordNotFound
 }
 
 // ---------------------------------------------------------------------------
