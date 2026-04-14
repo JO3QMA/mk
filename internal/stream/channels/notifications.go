@@ -20,13 +20,14 @@ func NewNotifications(ctx stream.ChannelContext) stream.Channel {
 	return &NotificationsChannel{ctx: ctx}
 }
 
-func (c *NotificationsChannel) Init(_ json.RawMessage) {
+func (c *NotificationsChannel) Init(_ json.RawMessage) error {
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.topic = "notifications:" + user.ID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *NotificationsChannel) OnRedisEvent(payload []byte) {
@@ -60,15 +61,17 @@ func NewMain(ctx stream.ChannelContext) stream.Channel {
 	return &MainChannel{ctx: ctx}
 }
 
-func (c *MainChannel) Init(_ json.RawMessage) {
+func (c *MainChannel) Init(_ json.RawMessage) error {
+	// TS本家のmain.ts: if (!this.user) return false;
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.notif = "notifications:" + user.ID
 	c.mainTop = "main:" + user.ID
 	c.ctx.Subscribe(c.notif)
 	c.ctx.Subscribe(c.mainTop)
+	return nil
 }
 
 // OnRedisEvent attempts to read a hint type from the payload (a JSON object

@@ -18,21 +18,22 @@ func NewHashtag(ctx stream.ChannelContext) stream.Channel {
 	return &HashtagChannel{ctx: ctx}
 }
 
-func (c *HashtagChannel) Init(params json.RawMessage) {
+func (c *HashtagChannel) Init(params json.RawMessage) error {
 	var p struct {
 		Q [][]string `json:"q"`
 	}
 	if len(params) > 0 {
 		_ = json.Unmarshal(params, &p)
 	}
-	// qが空ならno-op
+	// TS Misskey は q が配列でない/要素がないと init が false を返して接続拒否
 	if len(p.Q) == 0 || len(p.Q[0]) == 0 {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.filter = parseNoteFilter(params)
 	// 最初のタグでトピック購読
 	c.topic = "hashtag:" + p.Q[0][0]
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *HashtagChannel) OnRedisEvent(payload []byte) {

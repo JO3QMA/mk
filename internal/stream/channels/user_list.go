@@ -19,11 +19,11 @@ func NewUserList(ctx stream.ChannelContext) stream.Channel {
 	return &UserListChannel{ctx: ctx}
 }
 
-func (c *UserListChannel) Init(params json.RawMessage) {
-	// 認証必須
+func (c *UserListChannel) Init(params json.RawMessage) error {
+	// TS Misskey: 認証欠如もlistId欠如もinitでfalseを返す
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	var p struct {
 		ListID      string `json:"listId"`
@@ -33,7 +33,7 @@ func (c *UserListChannel) Init(params json.RawMessage) {
 		_ = json.Unmarshal(params, &p)
 	}
 	if p.ListID == "" {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.filter = parseNoteFilter(params)
 	// withRepliesパラメータがtrueなら上書き
@@ -42,6 +42,7 @@ func (c *UserListChannel) Init(params json.RawMessage) {
 	}
 	c.topic = "userListTimeline:" + p.ListID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *UserListChannel) OnRedisEvent(payload []byte) {

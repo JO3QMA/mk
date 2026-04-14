@@ -18,11 +18,11 @@ func NewAntenna(ctx stream.ChannelContext) stream.Channel {
 	return &AntennaChannel{ctx: ctx}
 }
 
-func (c *AntennaChannel) Init(params json.RawMessage) {
+func (c *AntennaChannel) Init(params json.RawMessage) error {
 	// 認証必須
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	var p struct {
 		AntennaID string `json:"antennaId"`
@@ -31,10 +31,11 @@ func (c *AntennaChannel) Init(params json.RawMessage) {
 		_ = json.Unmarshal(params, &p)
 	}
 	if p.AntennaID == "" {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.topic = "antennaTimeline:" + p.AntennaID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *AntennaChannel) OnRedisEvent(payload []byte) {

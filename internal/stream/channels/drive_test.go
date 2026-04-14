@@ -36,7 +36,8 @@ func TestDrive_AuthenticatedSubscribesPerUser(t *testing.T) {
 func TestDrive_AnonymousIsNoOp(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewDrive(ctx)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 	ch.Dispose()
 	assert.Empty(t, ctx.unsubs)
@@ -45,6 +46,7 @@ func TestDrive_AnonymousIsNoOp(t *testing.T) {
 func TestDrive_NilUserPointer(t *testing.T) {
 	ctx := newCtx((*model.User)(nil))
 	ch := NewDrive(ctx)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }

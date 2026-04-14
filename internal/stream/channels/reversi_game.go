@@ -44,16 +44,18 @@ func (f *ReversiGameFactory) New(ctx stream.ChannelContext) stream.Channel {
 // Init subscribes to `reversiGame:{gameId}` so the channel receives game
 // events published by the service. Missing / malformed params silently
 // result in a no-op channel.
-func (c *ReversiGameChannel) Init(params json.RawMessage) {
+func (c *ReversiGameChannel) Init(params json.RawMessage) error {
 	var p struct {
 		GameID string `json:"gameId"`
 	}
+	// TS本家のreversi-game.tsはgameId欠如時にreturn (init自体は成功) するためerrorは返さない
 	if err := json.Unmarshal(params, &p); err != nil || p.GameID == "" {
-		return
+		return nil
 	}
 	c.gameID = p.GameID
 	c.topic = "reversiGame:" + p.GameID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 // OnRedisEvent forwards a `reversiGame:{gameId}` pub/sub payload to the

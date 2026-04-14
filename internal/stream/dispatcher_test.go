@@ -50,16 +50,21 @@ func (b *stubBus) deliver(topic string, payload []byte) {
 type fakeChannel struct {
 	ctx          ChannelContext
 	initParams   json.RawMessage
+	initErr      error
 	disposeCount int
 	redisEvents  [][]byte
 	clientMsgs   []string
 	subscribed   []string
 }
 
-func (f *fakeChannel) Init(params json.RawMessage) {
+func (f *fakeChannel) Init(params json.RawMessage) error {
 	f.initParams = params
+	if f.initErr != nil {
+		return f.initErr
+	}
 	f.subscribed = append(f.subscribed, "topic-a")
 	f.ctx.Subscribe("topic-a")
+	return nil
 }
 func (f *fakeChannel) Dispose() { f.disposeCount++ }
 func (f *fakeChannel) OnRedisEvent(payload []byte) {
@@ -285,10 +290,11 @@ type sendingChannel struct {
 	gotUser any
 }
 
-func (s *sendingChannel) Init(json.RawMessage) {
+func (s *sendingChannel) Init(json.RawMessage) error {
 	s.gotUser = s.ctx.User()
 	_ = s.ctx.Send("note", map[string]any{"text": "hi"})
 	s.got = "ok"
+	return nil
 }
 func (s *sendingChannel) Dispose()                                {}
 func (s *sendingChannel) OnRedisEvent([]byte)                     {}
@@ -630,4 +636,88 @@ func TestDispatcher_ShareablePongAck(t *testing.T) {
 	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"shared","pong":true}`))
 
 	require.Eventually(t, func() bool { return fc.writeCount() >= 2 }, time.Second, 10*time.Millisecond)
+}
+
+// --- Init error path ---
+
+func TestDispatcher_InitError_RollsBackChannel(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		return &fakeChannel{ctx: ctx, initErr: ErrInvalidParams}
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+
+	// Init が error を返したら channel は登録されない
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 0)
+}
+
+func TestDispatcher_InitError_NoPongAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		return &fakeChannel{ctx: ctx, initErr: ErrInvalidParams}
+	})
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	// pong=true でも Init error 時は ack を送らない (TS 互換)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test","pong":true}`))
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 0, fc.writeCount())
+}
+
+// initSubscribingChannel is a test channel that Subscribe時に失敗する Init を
+// 持つ。Dispatcher が removeChannel で topic refcount を適切に戻すことを
+// 確認するための helper。
+type initSubscribingChannel struct {
+	ctx          ChannelContext
+	disposeCount int
+}
+
+func (c *initSubscribingChannel) Init(json.RawMessage) error {
+	c.ctx.Subscribe("dangling-topic")
+	return ErrInvalidParams
+}
+func (c *initSubscribingChannel) OnRedisEvent([]byte)                     {}
+func (c *initSubscribingChannel) OnClientMessage(string, json.RawMessage) {}
+func (c *initSubscribingChannel) Dispose()                                { c.disposeCount++ }
+
+func TestDispatcher_InitError_CleansUpSubscriptions(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	var created *initSubscribingChannel
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		created = &initSubscribingChannel{ctx: ctx}
+		return created
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+
+	// Init 中に Subscribe した topic が Dispatcher の map から除去され、
+	// bus からも Unsubscribe されている必要がある。
+	d.mu.RLock()
+	_, topicRemains := d.topics["dangling-topic"]
+	d.mu.RUnlock()
+	assert.False(t, topicRemains)
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	assert.Contains(t, bus.unsubs, "dangling-topic")
+	// Dispose も呼ばれる
+	assert.Equal(t, 1, created.disposeCount)
 }

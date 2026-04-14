@@ -23,9 +23,10 @@ func NewLocalTimeline(ctx stream.ChannelContext) stream.Channel {
 }
 
 // Init subscribes to the local-timeline pubsub topic.
-func (c *LocalTimelineChannel) Init(params json.RawMessage) {
+func (c *LocalTimelineChannel) Init(params json.RawMessage) error {
 	c.filter = parseNoteFilter(params)
 	c.ctx.Subscribe("localTimeline")
+	return nil
 }
 
 // OnRedisEvent forwards a JSON-encoded note payload as a `note` event.
@@ -55,9 +56,10 @@ func NewGlobalTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &GlobalTimelineChannel{ctx: ctx}
 }
 
-func (c *GlobalTimelineChannel) Init(params json.RawMessage) {
+func (c *GlobalTimelineChannel) Init(params json.RawMessage) error {
 	c.filter = parseNoteFilter(params)
 	c.ctx.Subscribe("globalTimeline")
+	return nil
 }
 func (c *GlobalTimelineChannel) OnRedisEvent(payload []byte) {
 	if !c.filter.shouldEmit(payload) {
@@ -83,14 +85,18 @@ func NewHomeTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &HomeTimelineChannel{ctx: ctx}
 }
 
-func (c *HomeTimelineChannel) Init(params json.RawMessage) {
+func (c *HomeTimelineChannel) Init(params json.RawMessage) error {
 	c.filter = parseNoteFilter(params)
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		// TS本家はrequireCredential=trueでConnection側で弾くが、
+		// Go側は現状 silent no-op としている。Phase 3ではシグネチャ変更に
+		// とどめ、認証拒否はPermittedChannel等別系で扱う
+		return nil
 	}
 	c.topic = "homeTimeline:" + user.ID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *HomeTimelineChannel) OnRedisEvent(payload []byte) {
@@ -122,13 +128,14 @@ func NewHybridTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &HybridTimelineChannel{ctx: ctx}
 }
 
-func (c *HybridTimelineChannel) Init(params json.RawMessage) {
+func (c *HybridTimelineChannel) Init(params json.RawMessage) error {
 	c.filter = parseNoteFilter(params)
 	c.ctx.Subscribe("localTimeline")
 	if user, ok := c.ctx.User().(*model.User); ok && user != nil {
 		c.homeTopic = "homeTimeline:" + user.ID
 		c.ctx.Subscribe(c.homeTopic)
 	}
+	return nil
 }
 
 func (c *HybridTimelineChannel) OnRedisEvent(payload []byte) {

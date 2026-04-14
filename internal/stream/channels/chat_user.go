@@ -37,24 +37,25 @@ func (f *ChatUserFactory) New(ctx stream.ChannelContext) stream.Channel {
 }
 
 // Init parses `otherId` and subscribes to the user's own conversation view.
-func (c *ChatUserChannel) Init(params json.RawMessage) {
+func (c *ChatUserChannel) Init(params json.RawMessage) error {
 	var p struct {
 		OtherID string `json:"otherId"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil || p.OtherID == "" {
-		return
+		return stream.ErrInvalidParams
 	}
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	// 自分と同じ id を other に指定するのは無効。
 	if p.OtherID == user.ID {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.otherID = p.OtherID
 	c.topic = "chatUserStream:" + user.ID + "-" + p.OtherID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 // OnRedisEvent decodes a {type, body} envelope and forwards to the client.
