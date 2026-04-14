@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -17,6 +18,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// RelayService is the subset of core/relay.Service needed by the
+// admin/relays endpoints. Kept as an interface so tests can inject a
+// fake without the rest of the federation pipeline.
+type RelayService interface {
+	Add(ctx context.Context, inbox string) (*model.Relay, error)
+	Remove(ctx context.Context, id string) error
+	List(ctx context.Context) ([]*model.Relay, error)
+}
+
 // Handler handles admin API endpoints.
 type Handler struct {
 	signupService  *signup.Service
@@ -31,7 +41,14 @@ type Handler struct {
 	userIPRepo     repository.UserIPRepository
 	queueInspector QueueInspector
 	emojiEnqueuer  EmojiImportEnqueuer
+	relayService   RelayService
 	idGen          id.Generator
+}
+
+// SetRelayService wires the relay service used by admin/relays endpoints.
+// nil を渡せば Admin API が DB fallback (create/update/delete のみ) に戻る。
+func (h *Handler) SetRelayService(s RelayService) {
+	h.relayService = s
 }
 
 // EmojiImportEnqueuer is the subset of queue.Enqueuer needed to schedule

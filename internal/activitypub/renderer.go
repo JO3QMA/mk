@@ -80,6 +80,14 @@ func (b *URLBuilder) FollowURI(followerID, followeeID string) string {
 	return b.baseURL + "/follows/" + followerID + "/" + id
 }
 
+// FollowRelayURI returns the URI for a Follow-Relay activity.
+// Path 形式は upstream と一致させる (`/activities/follow-relay/{relayID}`):
+// Accept / Reject inbox ハンドラがこの正規表現で relay を特定するため、
+// 変更するときは processor 側の regex も一緒に更新すること。
+func (b *URLBuilder) FollowRelayURI(relayID string) string {
+	return b.baseURL + "/activities/follow-relay/" + relayID
+}
+
 // MentionResolver resolves a note.Mentions entry (user ID) into the data
 // required to build an AS Mention tag. 実装は server/router.go 側で
 // UserRepository を wrap する形で提供される。解決に失敗したら ok=false を
@@ -438,6 +446,32 @@ func (r *Renderer) RenderFollow(followerID, followeeURI string) *Follow {
 			Actor: r.urls.UserURI(followerID),
 		},
 		Object: followeeURI,
+	}
+	AddContext(f)
+	return f
+}
+
+// RenderFollowRelay returns the special-purpose Follow activity used to
+// subscribe the instance's relay system actor to a relay endpoint.
+//
+// Mirrors upstream ApRendererService.renderFollowRelay:
+//   - id: `${baseURL}/activities/follow-relay/${relayID}`
+//   - actor: relay actor's local URI
+//   - object: the ActivityStreams Public IRI (= subscribe to everything)
+//
+// The id format is load-bearing — inbox Accept/Reject activities are
+// matched against `/activities/follow-relay/([\w-]+)$` to look the
+// relay up when marking its status.
+func (r *Renderer) RenderFollowRelay(relayID string, relayActorID string) *Follow {
+	f := &Follow{
+		Activity: Activity{
+			Object: Object{
+				ID:   r.urls.FollowRelayURI(relayID),
+				Type: "Follow",
+			},
+			Actor: r.urls.UserURI(relayActorID),
+		},
+		Object: Public,
 	}
 	AddContext(f)
 	return f

@@ -77,11 +77,13 @@ import (
 	corepage "github.com/shiroha-a/mk/internal/core/page"
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
+	corerelay "github.com/shiroha-a/mk/internal/core/relay"
 	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	corerole "github.com/shiroha-a/mk/internal/core/role"
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
 	"github.com/shiroha-a/mk/internal/core/serverstats"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
+	coresystemaccount "github.com/shiroha-a/mk/internal/core/systemaccount"
 	coretimeline "github.com/shiroha-a/mk/internal/core/timeline"
 	coretransfer "github.com/shiroha-a/mk/internal/core/transfer"
 	coretranslate "github.com/shiroha-a/mk/internal/core/translate"
@@ -364,7 +366,17 @@ func (s *Server) setupRoutes() {
 	// AP delivery: DeliverService + フック登録 + asynq processor 登録
 	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
 	deliverService.SetHostBlockChecker(instanceService)
-	noteCreateService.SetFederationHook(corefederation.NewNoteDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo, noteRepo))
+
+	// Relay 連携 (#161): relay actor system account + relay.Service。
+	// relay.Service は AP delivery を必要とするので deliverService 構築の
+	// 直後でセットアップする。admin/relays ハンドラへ注入し、Accept/Reject
+	// inbox 処理で status を更新できるように processor にも渡す。
+	sysAcctSvc := coresystemaccount.NewService(userRepo, keypairRepo, repository.NewSystemAccountRepository(s.db), idGen)
+	relaySvc := corerelay.NewService(repository.NewRelayRepository(s.db), sysAcctSvc, apRenderer, deliverService, idGen)
+
+	noteDeliveryHook := corefederation.NewNoteDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo, noteRepo)
+	noteDeliveryHook.SetRelayBroadcaster(relaySvc)
+	noteCreateService.SetFederationHook(noteDeliveryHook)
 	followingService.SetFederationHook(corefederation.NewFollowingDeliveryHook(deliverService, apRenderer, apURLs))
 	reactionService.SetFederationHook(corefederation.NewReactionDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo))
 	noteDeleteHook := corefederation.NewNoteDeleteDeliveryHook(deliverService, apRenderer, apURLs)
@@ -1159,6 +1171,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetBlockingService(blockingService)
 	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db), idGen)
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
+	federationProcessor.SetRelayMarker(relaySvc)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
@@ -1245,6 +1258,7 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetAdminDB(s.db)
 	adminHandler.SetUserIPRepo(userIPRepo)
 	adminHandler.SetEmojiImportEnqueuer(s.queueClient)
+	adminHandler.SetRelayService(relaySvc)
 	if s.queueInspector != nil {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
 	}

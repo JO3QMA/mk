@@ -1,6 +1,7 @@
 package federation_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -349,4 +350,57 @@ func TestNoteDeliveryHook_PureRenote_DeliverError_DoesNotPanic(t *testing.T) {
 
 	hook.OnNoteCreated(renote, author)
 	assert.Empty(t, enq.calls)
+}
+
+// fakeRelayBroadcaster captures DeliverToAccepted calls to assert that
+// NoteDeliveryHook only fan outs public notes to relays (not home /
+// followers / specified).
+type fakeRelayBroadcaster struct {
+	calls []relayCall
+	err   error
+}
+
+type relayCall struct {
+	SignerID string
+	Activity any
+}
+
+func (f *fakeRelayBroadcaster) DeliverToAccepted(_ context.Context, signerUserID string, activity any) error {
+	f.calls = append(f.calls, relayCall{SignerID: signerUserID, Activity: activity})
+	return f.err
+}
+
+func TestNoteDeliveryHook_Public_FansOutToRelay(t *testing.T) {
+	hook, _, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+	relay := &fakeRelayBroadcaster{}
+	hook.SetRelayBroadcaster(relay)
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	hook.OnNoteCreated(note, author)
+
+	require.Len(t, relay.calls, 1)
+	assert.Equal(t, author.ID, relay.calls[0].SignerID)
+}
+
+func TestNoteDeliveryHook_Home_SkipsRelay(t *testing.T) {
+	hook, _, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+	relay := &fakeRelayBroadcaster{}
+	hook.SetRelayBroadcaster(relay)
+
+	note := makeNote(author.ID, model.NoteVisibilityHome)
+	hook.OnNoteCreated(note, author)
+
+	// home visibility は relay 対象外 (as:Public addressed でないため)
+	assert.Empty(t, relay.calls)
+}
+
+func TestNoteDeliveryHook_RelayBroadcasterNil_IsSafe(t *testing.T) {
+	hook, _, userRepo, _, keypairRepo, _ := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	// SetRelayBroadcaster を呼ばなくても panic しない
+	hook.OnNoteCreated(note, author)
 }

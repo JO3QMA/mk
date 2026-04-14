@@ -3290,3 +3290,56 @@ func (m *MockUsedUsernameRepository) Create(username string) error {
 func (m *MockUsedUsernameRepository) Exists(username string) (bool, error) {
 	return m.Usernames[username], nil
 }
+
+// MockRelayRepository is a test double for repository.RelayRepository.
+type MockRelayRepository struct {
+	Relays map[string]*model.Relay
+}
+
+func NewMockRelayRepository() *MockRelayRepository {
+	return &MockRelayRepository{Relays: make(map[string]*model.Relay)}
+}
+
+func (m *MockRelayRepository) Create(r *model.Relay) error {
+	m.Relays[r.ID] = r
+	return nil
+}
+
+func (m *MockRelayRepository) FindByID(id string) (*model.Relay, error) {
+	if r, ok := m.Relays[id]; ok {
+		return r, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockRelayRepository) List() ([]*model.Relay, error) {
+	out := make([]*model.Relay, 0, len(m.Relays))
+	for _, r := range m.Relays {
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (m *MockRelayRepository) ListByStatus(status string) ([]*model.Relay, error) {
+	out := make([]*model.Relay, 0)
+	for _, r := range m.Relays {
+		if r.Status == status {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockRelayRepository) UpdateStatus(id, status string) error {
+	r, ok := m.Relays[id]
+	if !ok {
+		return ErrNotFound
+	}
+	r.Status = status
+	return nil
+}
+
+func (m *MockRelayRepository) Delete(id string) error {
+	delete(m.Relays, id)
+	return nil
+}

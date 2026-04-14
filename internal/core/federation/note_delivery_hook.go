@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 
@@ -21,6 +22,13 @@ import (
 //
 // pure renote (text/cw/file/poll を伴わない renote) は Create ではなく
 // Announce activity として配信する。
+// RelayBroadcaster is the subset of core/relay.Service used by the note
+// delivery hook to fan a public Create activity out to every accepted
+// relay's inbox. nil を許容 (relay 未構築時は no-op)。
+type RelayBroadcaster interface {
+	DeliverToAccepted(ctx context.Context, signerUserID string, activity any) error
+}
+
 type NoteDeliveryHook struct {
 	deliver  *DeliverService
 	renderer *activitypub.Renderer
@@ -28,6 +36,8 @@ type NoteDeliveryHook struct {
 	idGen    id.Generator
 	userRepo repository.UserRepository
 	noteRepo repository.NoteRepository
+
+	relay RelayBroadcaster
 }
 
 // NewNoteDeliveryHook constructs a NoteDeliveryHook.
@@ -47,6 +57,12 @@ func NewNoteDeliveryHook(
 		userRepo: userRepo,
 		noteRepo: noteRepo,
 	}
+}
+
+// SetRelayBroadcaster wires the relay fan-out target. nil を渡せば
+// relay 配送を無効化できる (初期状態)。
+func (h *NoteDeliveryHook) SetRelayBroadcaster(r RelayBroadcaster) {
+	h.relay = r
 }
 
 // OnNoteCreated is invoked by NoteCreateService once a note has been
@@ -87,6 +103,15 @@ func (h *NoteDeliveryHook) OnNoteCreated(note *model.Note, author *model.User) {
 	// メンションされたリモートユーザーにも直接配信する。フォロワー配信だけでは
 	// 相手にノートが届かないため、メンション通知が発生しない。
 	h.deliverToMentionedRemotes(author, note, body)
+
+	// public な note のみ relay に fanout する。relay は AS Public addressed
+	// activity しか受け付けないため、home/followers/specified はスキップ。
+	if note.Visibility == model.NoteVisibilityPublic && h.relay != nil {
+		if err := h.relay.DeliverToAccepted(context.Background(), author.ID, create); err != nil {
+			slog.Warn("note delivery: relay fanout failed",
+				"noteId", note.ID, "err", err)
+		}
+	}
 }
 
 // deliverToMentionedRemotes finds remote users mentioned in the note text and
