@@ -205,6 +205,7 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		Host:          &host,
 		URI:           &actor.ID,
 		Inbox:         &actor.Inbox,
+		IsBot:         activitypub.IsBotActorType(actor.Type),
 		LastFetchedAt: &now,
 	}
 	if name := actor.Name; name != "" {
@@ -275,6 +276,11 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 	fields := map[string]any{
 		"lastFetchedAt": &now,
 	}
+	// actor type が変わるケース (Person ↔ Service など) を反映する。常に上書きする
+	// (TS Misskey も同様)。
+	isBot := activitypub.IsBotActorType(actor.Type)
+	fields["isBot"] = isBot
+	existing.IsBot = isBot
 	if actor.Name != "" {
 		name := actor.Name
 		fields["name"] = &name
@@ -316,7 +322,9 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 	}
 }
 
-// fetchActor fetches and decodes a remote actor document.
+// fetchActor fetches and decodes a remote actor document. Reject any
+// document whose `type` is not in activitypub.ValidActorTypes — this guards
+// against a non-Actor object (e.g. a Note) being interpreted as a Person.
 func (r *Resolver) fetchActor(uri string) (*activitypub.Person, error) {
 	body, err := r.fetcher.FetchObject(uri)
 	if err != nil {
@@ -327,6 +335,12 @@ func (r *Resolver) fetchActor(uri string) (*activitypub.Person, error) {
 		return nil, ErrInvalidActor
 	}
 	if actor.ID == "" || actor.PreferredUsername == "" {
+		return nil, ErrInvalidActor
+	}
+	if !activitypub.IsValidActorType(actor.Type) {
+		// Note/Activity 等 Actor でない object が actor として参照された場合の
+		// 防衛策。デバッグのため URI と type を残してから拒否する。
+		slog.Warn("federation: rejecting non-actor type", "uri", uri, "type", actor.Type)
 		return nil, ErrInvalidActor
 	}
 	return &actor, nil

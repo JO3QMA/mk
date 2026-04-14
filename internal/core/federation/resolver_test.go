@@ -973,3 +973,100 @@ func TestRefreshPublicKey_OnExistingUser_FetchError(t *testing.T) {
 	_, err = r.PublicKeyForActor("existing")
 	assert.Error(t, err)
 }
+
+// --- multi actor type support (#153) ---
+
+// actorJSON renders a minimal actor JSON document with the given type.
+func actorJSON(actorType string) string {
+	return fmt.Sprintf(`{
+		"id": "https://remote.example/users/x",
+		"type": %q,
+		"preferredUsername": "x",
+		"name": "X",
+		"inbox": "https://remote.example/users/x/inbox",
+		"endpoints": {"sharedInbox": "https://remote.example/inbox"},
+		"publicKey": {
+			"id": "https://remote.example/users/x#main-key",
+			"owner": "https://remote.example/users/x",
+			"publicKeyPem": "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----"
+		}
+	}`, actorType)
+}
+
+func TestResolveActor_AllValidActorTypesAccepted(t *testing.T) {
+	for _, typ := range activitypub.ValidActorTypes {
+		t.Run(typ, func(t *testing.T) {
+			r, repo := newResolver(t, actorJSON(typ), nil)
+			user, err := r.ResolveActor("https://remote.example/users/x")
+			require.NoError(t, err)
+			assert.Equal(t, "x", user.Username)
+			assert.Len(t, repo.Users, 1)
+		})
+	}
+}
+
+func TestResolveActor_InvalidActorTypeRejected(t *testing.T) {
+	for _, typ := range []string{"Note", "Tombstone", "Article", ""} {
+		t.Run(typ, func(t *testing.T) {
+			r, _ := newResolver(t, actorJSON(typ), nil)
+			_, err := r.ResolveActor("https://remote.example/users/x")
+			require.ErrorIs(t, err, federation.ErrInvalidActor)
+		})
+	}
+}
+
+func TestResolveActor_ServiceTypeSetsIsBot(t *testing.T) {
+	r, repo := newResolver(t, actorJSON("Service"), nil)
+	user, err := r.ResolveActor("https://remote.example/users/x")
+	require.NoError(t, err)
+	assert.True(t, user.IsBot)
+	// 永続化された user も isBot=true
+	require.Len(t, repo.Users, 1)
+	for _, u := range repo.Users {
+		assert.True(t, u.IsBot)
+	}
+}
+
+func TestResolveActor_ApplicationTypeSetsIsBot(t *testing.T) {
+	r, _ := newResolver(t, actorJSON("Application"), nil)
+	user, err := r.ResolveActor("https://remote.example/users/x")
+	require.NoError(t, err)
+	assert.True(t, user.IsBot)
+}
+
+func TestResolveActor_GroupTypeDoesNotSetIsBot(t *testing.T) {
+	r, _ := newResolver(t, actorJSON("Group"), nil)
+	user, err := r.ResolveActor("https://remote.example/users/x")
+	require.NoError(t, err)
+	assert.False(t, user.IsBot)
+}
+
+func TestResolveActor_OrganizationTypeDoesNotSetIsBot(t *testing.T) {
+	r, _ := newResolver(t, actorJSON("Organization"), nil)
+	user, err := r.ResolveActor("https://remote.example/users/x")
+	require.NoError(t, err)
+	assert.False(t, user.IsBot)
+}
+
+func TestRefreshActor_UpdatesIsBotOnTypeChange(t *testing.T) {
+	// 既存 Person ユーザーが Service に切り替わった場合、refresh で IsBot=true
+	// に追従する。
+	repo := testutil.NewMockUserRepository()
+	uri := "https://remote.example/users/x"
+	stale := time.Now().Add(-48 * time.Hour) // TTL超過
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "x",
+		URI:           &uri,
+		IsBot:         false,
+		LastFetchedAt: &stale,
+	}
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(actorJSON("Service"))}, idGen)
+
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	assert.True(t, user.IsBot)
+}
