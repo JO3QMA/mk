@@ -487,6 +487,23 @@ func TestConnection_Permissions_HasPermission(t *testing.T) {
 	assert.True(t, conn.HasPermission(""))
 }
 
+func TestConnection_HasPermission_NilMeansUnrestricted(t *testing.T) {
+	// session/cookie 認証では SetPermissions が呼ばれず nil のまま。
+	// この場合はトークンスコープによる制限がないため、全ての kind で true。
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	assert.True(t, conn.HasPermission("read:account"))
+	assert.True(t, conn.HasPermission("write:admin"))
+}
+
+func TestConnection_HasPermission_EmptySliceDenies(t *testing.T) {
+	// 明示的に空スライスをセット → スコープなしトークン → 全 kind で false
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	conn.SetPermissions([]string{})
+	assert.False(t, conn.HasPermission("read:account"))
+	// 空 kind だけは常に true
+	assert.True(t, conn.HasPermission(""))
+}
+
 func TestDispatcher_PermittedChannel_Granted(t *testing.T) {
 	bus := newStubBus()
 	registry := NewRegistry()
@@ -523,15 +540,34 @@ func TestDispatcher_PermittedChannel_Denied(t *testing.T) {
 	assert.Len(t, d.channels, 0)
 }
 
-func TestDispatcher_PermittedChannel_NoPermissionsDenied(t *testing.T) {
+func TestDispatcher_PermittedChannel_SessionAuthAllowed(t *testing.T) {
 	bus := newStubBus()
 	registry := NewRegistry()
 	registry.Register("permitted", func(ctx ChannelContext) Channel {
 		return &permittedFakeChannel{fakeChannel: fakeChannel{ctx: ctx}, kind: "read:account"}
 	})
 
-	// permissions を set しない (nil)
+	// permissions を set しない (session/cookie 認証相当) → フルアクセス扱い
 	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"permitted"}`))
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 1)
+}
+
+func TestDispatcher_PermittedChannel_EmptyPermissionsDenied(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("permitted", func(ctx ChannelContext) Channel {
+		return &permittedFakeChannel{fakeChannel: fakeChannel{ctx: ctx}, kind: "read:account"}
+	})
+
+	// 明示的に空スライスをセット (スコープなしトークン) → 拒否
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	conn.SetPermissions([]string{})
 	d := NewDispatcher(conn, registry, bus)
 
 	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"permitted"}`))

@@ -106,10 +106,15 @@ func (c *Connection) Permissions() []string {
 	return c.permissions
 }
 
-// HasPermission reports whether the connection's attached token permissions
-// include the given scope.
+// HasPermission reports whether the connection is allowed to access the
+// given scope. session/cookie 認証ではトークン permission が無いため、
+// nil permissions は「制限なし (フルアクセス)」として扱う。
+// 空スライス ([]) は明示的にスコープなしのトークンを意味する。
 func (c *Connection) HasPermission(kind string) bool {
 	if kind == "" {
+		return true
+	}
+	if c.permissions == nil {
 		return true
 	}
 	return slices.Contains(c.permissions, kind)
