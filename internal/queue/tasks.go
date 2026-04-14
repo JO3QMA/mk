@@ -37,6 +37,18 @@ const TaskTypeCleanRemoteNotes = "maintenance:cleanRemoteNotes"
 // reaction counts from Redis to the database.
 const TaskTypeReactionFlush = "maintenance:reactionFlush"
 
+// TaskTypeChartTick is the asynq task type for the hourly tick-charts
+// job. Mirrors upstream `tickCharts` (cron `55 * * * *`).
+const TaskTypeChartTick = "chart:tick"
+
+// TaskTypeChartResync is the asynq task type for the daily resync-charts
+// job. Mirrors upstream `resyncCharts` (cron `0 0 * * *`).
+const TaskTypeChartResync = "chart:resync"
+
+// TaskTypeChartClean is the asynq task type for the daily clean-charts
+// job. Mirrors upstream `cleanCharts` (cron `0 0 * * *`).
+const TaskTypeChartClean = "chart:clean"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {

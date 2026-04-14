@@ -465,6 +465,27 @@ func (s *Server) setupRoutes() {
 	federationResolver.SetChartHook(chartHooks)
 	deliverProcessor.SetChartHook(chartHooks)
 
+	// Chart cron processor: tickCharts (毎時) / resyncCharts (毎日) /
+	// cleanCharts (毎日) を queue.Scheduler 経由で受け取る。Scheduler
+	// 自体の cron 登録は server.Start() で行う。
+	chartProcessor := processors.NewChartProcessor([]*chart.Chart{
+		chartCharts.Notes,
+		chartCharts.Users,
+		chartCharts.Drive,
+		chartCharts.Federation,
+		chartCharts.Instance,
+		chartCharts.ApRequest,
+		chartCharts.ActiveUsers,
+		chartCharts.PerUserNotes,
+		chartCharts.PerUserDrive,
+		chartCharts.PerUserFollowing,
+		chartCharts.PerUserPv,
+		chartCharts.PerUserReaction,
+	})
+	s.queueServer.Handle(queue.TaskTypeChartTick, chartProcessor.HandleTick)
+	s.queueServer.Handle(queue.TaskTypeChartResync, chartProcessor.HandleResync)
+	s.queueServer.Handle(queue.TaskTypeChartClean, chartProcessor.HandleClean)
+
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})

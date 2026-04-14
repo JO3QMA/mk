@@ -29,6 +29,7 @@ type Server struct {
 	auth           *middleware.AuthMiddleware
 	queueClient    *queue.Client
 	queueServer    *queue.Server
+	queueScheduler *queue.Scheduler
 	queueInspector *queue.Inspector
 	chartMgmt      *chart.ManagementService
 }
@@ -80,6 +81,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	}
 	queueClient := queue.NewClient(redisOpt)
 	queueServer := queue.NewServer(redisOpt, queue.ServerConfig{Concurrency: concurrency})
+	queueScheduler := queue.NewScheduler(redisOpt)
 	queueInspector := queue.NewInspector(redisOpt)
 
 	s := &Server{
@@ -90,6 +92,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 		auth:           auth,
 		queueClient:    queueClient,
 		queueServer:    queueServer,
+		queueScheduler: queueScheduler,
 		queueInspector: queueInspector,
 	}
 
@@ -113,6 +116,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Start() error {
 	if err := s.queueServer.Start(); err != nil {
 		return fmt.Errorf("start queue worker: %w", err)
+	}
+	if s.queueScheduler != nil {
+		if err := s.queueScheduler.RegisterChartJobs(); err != nil {
+			slog.Warn("chart scheduler register failed", "err", err)
+		} else if err := s.queueScheduler.Start(); err != nil {
+			slog.Warn("chart scheduler start failed", "err", err)
+		}
 	}
 	if s.chartMgmt != nil {
 		if err := s.chartMgmt.Start(context.Background()); err != nil {
@@ -146,6 +156,9 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.chartMgmt != nil {
 		s.chartMgmt.Stop(ctx)
+	}
+	if s.queueScheduler != nil {
+		s.queueScheduler.Shutdown()
 	}
 	s.queueServer.Shutdown()
 	if err := s.queueClient.Close(); err != nil {

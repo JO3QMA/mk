@@ -163,10 +163,11 @@ func NewServer(redisOpt asynq.RedisClientOpt, cfg ServerConfig) *Server {
 		// map のキーが登録済み queue として扱われ、未登録の queue は
 		// processor を実行しないので新しい TaskType 追加時は忘れずに足す。
 		Queues: map[string]int{
-			QueueName:        1,
-			PushQueueName:    1,
-			ExportQueueName:  1,
-			WebhookQueueName: 1,
+			QueueName:            1,
+			PushQueueName:        1,
+			ExportQueueName:      1,
+			WebhookQueueName:     1,
+			MaintenanceQueueName: 1,
 		},
 	})
 	return &Server{inner: inner, mux: asynq.NewServeMux()}
