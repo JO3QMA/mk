@@ -71,7 +71,8 @@ func NewService(
 
 // SetFollowingRepo enables the `home` antenna source by providing a
 // way to check whether the antenna owner follows the note author.
-// nil でも antenna service は動くが `home` は `all` にフォールバックする。
+// nil でも antenna service は動くが `home` source は常に不一致扱いになる
+// (matchSource 実装と揃える)。
 func (s *Service) SetFollowingRepo(r repository.FollowingRepository) {
 	s.followingRepo = r
 }
