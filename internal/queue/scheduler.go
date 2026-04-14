@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"time"
+
 	"github.com/hibiken/asynq"
 )
 
@@ -33,21 +35,25 @@ func NewScheduler(redisOpt asynq.RedisClientOpt) *Scheduler {
 //   - resyncCharts: 毎日 00:00 UTC
 //   - cleanCharts : 毎日 00:00 UTC
 //
-// 重複 enqueue 防止のため Unique TTL を cron 周期と合わせる。
+// 重複 enqueue 防止のため Unique TTL を cron 周期と合わせる。前回の
+// 同種ジョブが処理中のまま次回 cron が発火しても、TTL 内であれば asynq が
+// 重複 enqueue を弾く。
 func (s *Scheduler) RegisterChartJobs() error {
 	jobs := []struct {
-		cron     string
-		taskType string
+		cron      string
+		taskType  string
+		uniqueTTL time.Duration
 	}{
-		{"55 * * * *", TaskTypeChartTick},
-		{"0 0 * * *", TaskTypeChartResync},
-		{"0 0 * * *", TaskTypeChartClean},
+		{"55 * * * *", TaskTypeChartTick, 1 * time.Hour},
+		{"0 0 * * *", TaskTypeChartResync, 24 * time.Hour},
+		{"0 0 * * *", TaskTypeChartClean, 24 * time.Hour},
 	}
 	for _, j := range jobs {
 		task := asynq.NewTask(j.taskType, nil)
 		if _, err := s.inner.Register(j.cron, task,
 			asynq.Queue(MaintenanceQueueName),
 			asynq.MaxRetry(0),
+			asynq.Unique(j.uniqueTTL),
 		); err != nil {
 			return err
 		}
