@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
@@ -233,6 +234,197 @@ func TestCryptoSmoke(t *testing.T) {
 	hashed := sha256.Sum256([]byte("x"))
 	_, err := rsa.SignPKCS1v15(nil, rsaKey, crypto.SHA256, hashed[:])
 	require.NoError(t, err)
+}
+
+// --- multi-algorithm tests (#155) ---
+
+func newTestEd25519Key(t *testing.T) (*PrivateKey, string) {
+	t.Helper()
+	priv, pub, err := GenerateEd25519Keypair()
+	require.NoError(t, err)
+	k, err := NewEd25519PrivateKey("https://example.com/users/u1#main-key", priv)
+	require.NoError(t, err)
+	return k, pub
+}
+
+func TestGenerateEd25519Keypair(t *testing.T) {
+	priv, pub, err := GenerateEd25519Keypair()
+	require.NoError(t, err)
+	assert.Contains(t, priv, "PRIVATE KEY")
+	assert.Contains(t, pub, "PUBLIC KEY")
+}
+
+func TestParsePublicKey_RSA(t *testing.T) {
+	_, pub, err := GenerateRSAKeypair()
+	require.NoError(t, err)
+	parsed, kt, err := ParsePublicKey(pub)
+	require.NoError(t, err)
+	assert.Equal(t, KeyTypeRSA, kt)
+	assert.NotNil(t, parsed)
+}
+
+func TestParsePublicKey_Ed25519(t *testing.T) {
+	_, pub, err := GenerateEd25519Keypair()
+	require.NoError(t, err)
+	parsed, kt, err := ParsePublicKey(pub)
+	require.NoError(t, err)
+	assert.Equal(t, KeyTypeEd25519, kt)
+	assert.NotNil(t, parsed)
+}
+
+func TestParsePublicKey_BadPEM(t *testing.T) {
+	_, _, err := ParsePublicKey("not pem")
+	assert.Error(t, err)
+}
+
+func TestNewEd25519PrivateKey_InvalidPEM(t *testing.T) {
+	_, err := NewEd25519PrivateKey("kid", "not pem")
+	assert.Error(t, err)
+}
+
+func TestNewEd25519PrivateKey_RSAKeyRejected(t *testing.T) {
+	rsaPriv, _, err := GenerateRSAKeypair()
+	require.NoError(t, err)
+	_, err = NewEd25519PrivateKey("kid", rsaPriv)
+	assert.Error(t, err)
+}
+
+func TestParseRSAPublicKey_Ed25519Rejected(t *testing.T) {
+	_, edPub, err := GenerateEd25519Keypair()
+	require.NoError(t, err)
+	_, err = ParseRSAPublicKey(edPub)
+	assert.Error(t, err)
+}
+
+// Round-trip sign + verify with Ed25519.
+func TestSignAndVerify_Ed25519(t *testing.T) {
+	key, pub := newTestEd25519Key(t)
+	body := []byte(`{"type":"Create"}`)
+	digest := SHA256Digest(body)
+	req, _ := http.NewRequest(http.MethodPost, "https://remote.example/inbox", bytes.NewReader(body))
+	require.NoError(t, SignRequest(req, key, digest, []string{"(request-target)", "date", "host", "digest"}))
+
+	// Signature ヘッダに algorithm="ed25519" が出力されている
+	assert.Contains(t, req.Header.Get("Signature"), `algorithm="ed25519"`)
+
+	req.Header.Set("Host", "remote.example")
+	require.NoError(t, VerifyRequest(req, pub))
+}
+
+// Verify accepts hs2019 algorithm with RSA key (key-type-driven dispatch).
+func TestVerifyRequest_HS2019_RSA(t *testing.T) {
+	key, pub := newTestKey(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/users/bob", nil)
+	require.NoError(t, SignRequest(req, key, "", []string{"(request-target)", "date", "host"}))
+
+	// signed header の algorithm を hs2019 に書き換える
+	sig := req.Header.Get("Signature")
+	sig = strings.Replace(sig, `algorithm="rsa-sha256"`, `algorithm="hs2019"`, 1)
+	req.Header.Set("Signature", sig)
+	req.Header.Set("Host", "remote.example")
+	require.NoError(t, VerifyRequest(req, pub))
+}
+
+// Verify accepts hs2019 algorithm with Ed25519 key.
+func TestVerifyRequest_HS2019_Ed25519(t *testing.T) {
+	key, pub := newTestEd25519Key(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/users/bob", nil)
+	require.NoError(t, SignRequest(req, key, "", []string{"(request-target)", "date", "host"}))
+
+	sig := req.Header.Get("Signature")
+	sig = strings.Replace(sig, `algorithm="ed25519"`, `algorithm="hs2019"`, 1)
+	req.Header.Set("Signature", sig)
+	req.Header.Set("Host", "remote.example")
+	require.NoError(t, VerifyRequest(req, pub))
+}
+
+// Verify accepts ed25519-sha512 alias.
+func TestVerifyRequest_Ed25519SHA512Alias(t *testing.T) {
+	key, pub := newTestEd25519Key(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/users/bob", nil)
+	require.NoError(t, SignRequest(req, key, "", []string{"(request-target)", "date", "host"}))
+
+	sig := req.Header.Get("Signature")
+	sig = strings.Replace(sig, `algorithm="ed25519"`, `algorithm="ed25519-sha512"`, 1)
+	req.Header.Set("Signature", sig)
+	req.Header.Set("Host", "remote.example")
+	require.NoError(t, VerifyRequest(req, pub))
+}
+
+// Verify omits algorithm; key type drives dispatch.
+func TestVerifyRequest_AlgorithmOmitted_Ed25519(t *testing.T) {
+	key, pub := newTestEd25519Key(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/users/bob", nil)
+	require.NoError(t, SignRequest(req, key, "", []string{"(request-target)", "date", "host"}))
+
+	// algorithm パラメータを削除して送信されたケース。replace で algorithm=...
+	// 部分を削る (簡易ハック)。
+	sig := req.Header.Get("Signature")
+	idx := strings.Index(sig, `algorithm="ed25519",`)
+	require.GreaterOrEqual(t, idx, 0)
+	stripped := sig[:idx] + sig[idx+len(`algorithm="ed25519",`):]
+	req.Header.Set("Signature", stripped)
+	req.Header.Set("Host", "remote.example")
+	require.NoError(t, VerifyRequest(req, pub))
+}
+
+// rsa-sha512 verification path: sign manually with SHA-512 then verify.
+func TestVerifyRequest_RSA_SHA512(t *testing.T) {
+	key, pub := newTestKey(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/users/bob", nil)
+	require.NoError(t, SignRequest(req, key, "", []string{"(request-target)", "date", "host"}))
+
+	// 既存の rsa-sha256 署名を破棄して、SHA-512 で再署名し直す。
+	signingString, err := buildSigningString(req, []string{"(request-target)", "date", "host"})
+	require.NoError(t, err)
+	hashed := sha512.Sum512([]byte(signingString))
+	rsaKey, err := ParseRSAPrivateKey(key.PrivatePEM)
+	require.NoError(t, err)
+	sig, err := rsa.SignPKCS1v15(nil, rsaKey, crypto.SHA512, hashed[:])
+	require.NoError(t, err)
+
+	header := `keyId="` + key.KeyID + `",algorithm="rsa-sha512",headers="(request-target) date host",signature="` + base64.StdEncoding.EncodeToString(sig) + `"`
+	req.Header.Set("Signature", header)
+	req.Header.Set("Host", "remote.example")
+	require.NoError(t, VerifyRequest(req, pub))
+}
+
+// Mismatch: RSA key with algorithm=ed25519 must be rejected.
+func TestVerifyRequest_RSAKey_Ed25519AlgRejected(t *testing.T) {
+	_, pub := newTestKey(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/", nil)
+	req.Header.Set("Date", "Mon, 01 Jan 2024 00:00:00 GMT")
+	dummySig := base64.StdEncoding.EncodeToString(make([]byte, 64))
+	req.Header.Set("Signature", `keyId="x",algorithm="ed25519",headers="date",signature="`+dummySig+`"`)
+	err := VerifyRequest(req, pub)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Ed25519")
+}
+
+// Mismatch: Ed25519 key with algorithm=rsa-sha256 must be rejected.
+func TestVerifyRequest_Ed25519Key_RSAAlgRejected(t *testing.T) {
+	_, pub := newTestEd25519Key(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/", nil)
+	req.Header.Set("Date", "Mon, 01 Jan 2024 00:00:00 GMT")
+	dummySig := base64.StdEncoding.EncodeToString(make([]byte, 64))
+	req.Header.Set("Signature", `keyId="x",algorithm="rsa-sha256",headers="date",signature="`+dummySig+`"`)
+	err := VerifyRequest(req, pub)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RSA")
+}
+
+// Bad Ed25519 signature bytes -> verify fails.
+func TestVerifyRequest_Ed25519BadSignature(t *testing.T) {
+	key, pub := newTestEd25519Key(t)
+	req, _ := http.NewRequest(http.MethodGet, "https://remote.example/users/bob", nil)
+	require.NoError(t, SignRequest(req, key, "", []string{"(request-target)", "date", "host"}))
+
+	// signature を改竄
+	sig := req.Header.Get("Signature")
+	tamperedSig := strings.Replace(sig, `signature="`, `signature="AAAA`, 1)
+	req.Header.Set("Signature", tamperedSig)
+	req.Header.Set("Host", "remote.example")
+	assert.Error(t, VerifyRequest(req, pub))
 }
 
 // Test using httptest.NewRecorder so the verifier sees a real request from a server context.

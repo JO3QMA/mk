@@ -2,8 +2,10 @@ package activitypub
 
 import (
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -13,21 +15,42 @@ import (
 	"strings"
 )
 
-// PrivateKey bundles a parsed RSA private key with its public keyId URI.
-// keyId は他サーバーが公開鍵を取得するための URI (例: https://example.com/users/u1#main-key)。
+// PrivateKey wraps a parsed private key (RSA or Ed25519) and its keyId URI
+// used as the `keyId` parameter in outgoing Signature headers.
 type PrivateKey struct {
 	KeyID      string
 	PrivatePEM string
-	parsed     *rsa.PrivateKey
+	signer     crypto.Signer
+	keyType    KeyType
 }
 
 // NewPrivateKey wraps a PEM string into a PrivateKey, parsing it once.
+// 既存互換のためRSAを期待する。Ed25519鍵はNewEd25519PrivateKeyを使うこと。
 func NewPrivateKey(keyID, privatePEM string) (*PrivateKey, error) {
 	parsed, err := ParseRSAPrivateKey(privatePEM)
 	if err != nil {
 		return nil, err
 	}
-	return &PrivateKey{KeyID: keyID, PrivatePEM: privatePEM, parsed: parsed}, nil
+	return &PrivateKey{
+		KeyID:      keyID,
+		PrivatePEM: privatePEM,
+		signer:     parsed,
+		keyType:    KeyTypeRSA,
+	}, nil
+}
+
+// NewEd25519PrivateKey wraps an Ed25519 PKCS8 PEM into a PrivateKey.
+func NewEd25519PrivateKey(keyID, privatePEM string) (*PrivateKey, error) {
+	parsed, err := ParseEd25519PrivateKey(privatePEM)
+	if err != nil {
+		return nil, err
+	}
+	return &PrivateKey{
+		KeyID:      keyID,
+		PrivatePEM: privatePEM,
+		signer:     parsed,
+		keyType:    KeyTypeEd25519,
+	}, nil
 }
 
 // SHA256Digest returns the "SHA-256=<base64>" digest header value for body.
@@ -36,13 +59,24 @@ func SHA256Digest(body []byte) string {
 	return "SHA-256=" + base64.StdEncoding.EncodeToString(sum[:])
 }
 
+// algorithmForKeyType returns the Signature header `algorithm` value emitted
+// by SignRequest for the given key type.
+func algorithmForKeyType(kt KeyType) string {
+	if kt == KeyTypeEd25519 {
+		return "ed25519"
+	}
+	return "rsa-sha256"
+}
+
 // SignRequest mutates req to include the Date, Host, Digest (when bodyDigest!="")
 // and Signature headers required by the Cavage HTTP Signatures draft v12.
 //
 // includeHeaders はヘッダ名の小文字リスト。"(request-target)" を含めると
 // "(request-target): <method> <path>" が署名対象に追加される。
+//
+// algorithmは鍵種別から自動決定される (RSA→rsa-sha256, Ed25519→ed25519)。
 func SignRequest(req *http.Request, key *PrivateKey, bodyDigest string, includeHeaders []string) error {
-	if key == nil || key.parsed == nil {
+	if key == nil || key.signer == nil {
 		return errors.New("private key required")
 	}
 
@@ -61,13 +95,15 @@ func SignRequest(req *http.Request, key *PrivateKey, bodyDigest string, includeH
 		return err
 	}
 
-	hashed := sha256.Sum256([]byte(signingString))
-	// rsa.SignPKCS1v15 は PKCS1v15 では rand を使わないため失敗しない (RSA-PSS の場合は使う)。
-	sig, _ := rsa.SignPKCS1v15(randReader, key.parsed, crypto.SHA256, hashed[:])
+	sig, err := signWithKey(key, []byte(signingString))
+	if err != nil {
+		return err
+	}
 
 	header := fmt.Sprintf(
-		`keyId="%s",algorithm="rsa-sha256",headers="%s",signature="%s"`,
+		`keyId="%s",algorithm="%s",headers="%s",signature="%s"`,
 		key.KeyID,
+		algorithmForKeyType(key.keyType),
 		strings.Join(includeHeaders, " "),
 		base64.StdEncoding.EncodeToString(sig),
 	)
@@ -75,6 +111,23 @@ func SignRequest(req *http.Request, key *PrivateKey, bodyDigest string, includeH
 	// Hostヘッダはnet/httpがリクエストラインから自動付与するため取り除く。
 	req.Header.Del("Host")
 	return nil
+}
+
+// signWithKey produces a signature byte slice for the given signing input.
+// 鍵種別に応じてRSA-SHA256 / Ed25519を切り替える。
+func signWithKey(key *PrivateKey, signingInput []byte) ([]byte, error) {
+	switch key.keyType {
+	case KeyTypeRSA:
+		hashed := sha256.Sum256(signingInput)
+		// rsa.SignPKCS1v15はPKCS1v15ではrandを使わないため失敗しない。
+		return rsa.SignPKCS1v15(randReader, key.signer.(*rsa.PrivateKey), crypto.SHA256, hashed[:])
+	case KeyTypeEd25519:
+		// Ed25519は内部でSHA-512を使うため事前ハッシュ不要。Sign()の
+		// optsは必ずcrypto.Hash(0)を渡す (ed25519仕様)。
+		return key.signer.Sign(randReader, signingInput, crypto.Hash(0))
+	default:
+		return nil, fmt.Errorf("unsupported key type: %d", key.keyType)
+	}
 }
 
 // buildSigningString concatenates the canonical signing string for the
@@ -145,18 +198,19 @@ func ParseSignatureHeader(header string) (*ParsedSignature, error) {
 }
 
 // VerifyRequest verifies an incoming HTTP request signature against the
-// supplied PEM public key. requestURI overrides req.URL.RequestURI() to allow
-// callers to feed the original raw path (echo's c.Request().URL is normalized
-// in some cases).
+// supplied PEM public key. RSA / Ed25519 public keys are both supported,
+// dispatched on the parsed Signature `algorithm` parameter and the public
+// key type.
 func VerifyRequest(req *http.Request, publicKeyPEM string) error {
 	parsed, err := ParseSignatureHeader(req.Header.Get("Signature"))
 	if err != nil {
 		return err
 	}
-	if parsed.Algorithm != "" && !strings.EqualFold(parsed.Algorithm, "rsa-sha256") {
+	// 早期にalgorithm名を弾く (公開鍵PEMパースより前に判定したい)。
+	if !isKnownAlgorithm(parsed.Algorithm) {
 		return fmt.Errorf("unsupported algorithm %q", parsed.Algorithm)
 	}
-	pub, err := ParseRSAPublicKey(publicKeyPEM)
+	pub, kt, err := ParsePublicKey(publicKeyPEM)
 	if err != nil {
 		return err
 	}
@@ -168,8 +222,7 @@ func VerifyRequest(req *http.Request, publicKeyPEM string) error {
 	if err != nil {
 		return err
 	}
-	hashed := sha256.Sum256([]byte(signingString))
-	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, hashed[:], sig); err != nil {
+	if err := verifyAlgorithm(parsed.Algorithm, kt, pub, []byte(signingString), sig); err != nil {
 		return err
 	}
 	// Digest check (for POST bodies)
@@ -181,6 +234,75 @@ func VerifyRequest(req *http.Request, publicKeyPEM string) error {
 		}
 	}
 	return nil
+}
+
+// isKnownAlgorithm reports whether the algorithm name is one we accept.
+// Empty string is allowed (Cavage default behaviour: derive from key type).
+func isKnownAlgorithm(alg string) bool {
+	switch strings.ToLower(alg) {
+	case "", "hs2019", "rsa-sha256", "rsa-sha512", "ed25519", "ed25519-sha512":
+		return true
+	}
+	return false
+}
+
+// verifyAlgorithm dispatches the actual signature verification based on the
+// Signature header's `algorithm` parameter and the public key type.
+//
+// 対応マトリクス:
+//   - "" / "hs2019": 鍵種別から判定 (RSA→SHA-256, Ed25519→ed25519)
+//   - "rsa-sha256": RSA + SHA-256
+//   - "rsa-sha512": RSA + SHA-512
+//   - "ed25519" / "ed25519-sha512": Ed25519
+//
+// algorithmと鍵種別が合わないケース (RSA鍵でalgorithm=ed25519等) は
+// 明示的に拒否する。
+func verifyAlgorithm(alg string, kt KeyType, pub crypto.PublicKey, signingInput, sig []byte) error {
+	algLower := strings.ToLower(alg)
+	switch algLower {
+	case "", "hs2019":
+		// 鍵種別ベースで dispatch
+		return verifyByKeyType(kt, pub, signingInput, sig)
+	case "rsa-sha256":
+		if kt != KeyTypeRSA {
+			return fmt.Errorf("algorithm %q requires RSA key", alg)
+		}
+		hashed := sha256.Sum256(signingInput)
+		return rsa.VerifyPKCS1v15(pub.(*rsa.PublicKey), crypto.SHA256, hashed[:], sig)
+	case "rsa-sha512":
+		if kt != KeyTypeRSA {
+			return fmt.Errorf("algorithm %q requires RSA key", alg)
+		}
+		hashed := sha512.Sum512(signingInput)
+		return rsa.VerifyPKCS1v15(pub.(*rsa.PublicKey), crypto.SHA512, hashed[:], sig)
+	case "ed25519", "ed25519-sha512":
+		if kt != KeyTypeEd25519 {
+			return fmt.Errorf("algorithm %q requires Ed25519 key", alg)
+		}
+		if !ed25519.Verify(pub.(ed25519.PublicKey), signingInput, sig) {
+			return errors.New("ed25519 verification failed")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported algorithm %q", alg)
+	}
+}
+
+// verifyByKeyType is the key-type-driven fallback used for hs2019 and
+// algorithm-omitted signatures.
+func verifyByKeyType(kt KeyType, pub crypto.PublicKey, signingInput, sig []byte) error {
+	switch kt {
+	case KeyTypeRSA:
+		hashed := sha256.Sum256(signingInput)
+		return rsa.VerifyPKCS1v15(pub.(*rsa.PublicKey), crypto.SHA256, hashed[:], sig)
+	case KeyTypeEd25519:
+		if !ed25519.Verify(pub.(ed25519.PublicKey), signingInput, sig) {
+			return errors.New("ed25519 verification failed")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported key type: %d", kt)
+	}
 }
 
 // ResolveKeyURL extracts the actor URI from a key fragment URI by stripping
