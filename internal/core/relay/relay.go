@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -95,6 +96,10 @@ func (s *Service) SetCacheMaxAge(d time.Duration) {
 // Add creates a relay row (status=requesting), renders a Follow
 // activity signed by the relay actor, and enqueues it to the relay
 // inbox. Returns the persisted row.
+//
+// Follow 配信が失敗した場合は挿入済みの行をロールバックする。inbox 列は
+// unique index なので orphan 行が残ると同じ inbox での再 Add が
+// unique 制約で失敗してしまい、管理者が復旧できなくなるため。
 func (s *Service) Add(ctx context.Context, inbox string) (*model.Relay, error) {
 	if inbox == "" {
 		return nil, errors.New("relay: inbox is required")
@@ -108,6 +113,7 @@ func (s *Service) Add(ctx context.Context, inbox string) (*model.Relay, error) {
 		return nil, fmt.Errorf("relay: create row: %w", err)
 	}
 	if err := s.sendFollow(ctx, rel); err != nil {
+		_ = s.repo.Delete(rel.ID)
 		return nil, err
 	}
 	s.invalidateCache()
@@ -116,13 +122,18 @@ func (s *Service) Add(ctx context.Context, inbox string) (*model.Relay, error) {
 
 // Remove sends an Undo(Follow) to the relay inbox and deletes the row.
 // 行が無ければ nil (idempotent)。
+//
+// Undo 配信が失敗しても行自体は削除する: 行が残ると「削除したはずの relay が
+// admin UI から消えない」状態になり、管理者が二進も三進も行かなくなるため。
+// 失敗はログで警告するに留める。
 func (s *Service) Remove(ctx context.Context, id string) error {
 	rel, err := s.repo.FindByID(id)
 	if err != nil {
 		return nil
 	}
 	if err := s.sendUndoFollow(ctx, rel); err != nil {
-		return err
+		slog.Warn("relay: undo follow delivery failed; deleting row anyway",
+			"relayId", rel.ID, "inbox", rel.Inbox, "err", err)
 	}
 	if err := s.repo.Delete(id); err != nil {
 		return fmt.Errorf("relay: delete row: %w", err)

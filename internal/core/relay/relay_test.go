@@ -92,10 +92,13 @@ func TestAdd_EmptyInboxRejected(t *testing.T) {
 }
 
 func TestAdd_DelivererErrorBubbles(t *testing.T) {
-	svc, _, _, deliv := newService(t)
+	svc, repo, _, deliv := newService(t)
 	deliv.err = errors.New("network")
 	_, err := svc.Add(context.Background(), "https://r.example/inbox")
-	assert.Error(t, err)
+	require.Error(t, err)
+	// Follow 配信失敗時に挿入済み行がロールバックされる: unique inbox 制約を
+	// 避けるため次回 Add を可能にする重要な挙動 (Devin review #171 対応)。
+	assert.Empty(t, repo.Relays)
 }
 
 func TestRemove_SendsUndoAndDeletes(t *testing.T) {
@@ -208,13 +211,17 @@ func TestAdd_SysAccountErrorBubbles(t *testing.T) {
 	assert.Contains(t, err.Error(), "sys-down")
 }
 
-func TestRemove_SysAccountErrorBubbles(t *testing.T) {
-	svc, _, sys, _ := newService(t)
+// Remove は Undo 配信エラーが起きても行自体は削除する (Devin review #171):
+// 行が残ると admin UI から relay が消えず管理者が復旧できなくなるため、
+// 配信失敗は警告ログで済ませ delete は必ず実行する。
+func TestRemove_UndoDeliveryErrorStillDeletesRow(t *testing.T) {
+	svc, repo, sys, _ := newService(t)
 	rel, err := svc.Add(context.Background(), "https://r.example/inbox")
 	require.NoError(t, err)
 	sys.err = errors.New("sys-down")
-	err = svc.Remove(context.Background(), rel.ID)
-	require.Error(t, err)
+	require.NoError(t, svc.Remove(context.Background(), rel.ID))
+	// 行が削除されている
+	assert.Empty(t, repo.Relays)
 }
 
 // failingRepo lets tests exercise repository error branches.
