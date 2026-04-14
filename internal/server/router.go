@@ -149,6 +149,7 @@ func (s *Server) setupRoutes() {
 	roleAssignmentRepo := repository.NewRoleAssignmentRepository(s.db)
 	swSubRepo := repository.NewSwSubscriptionRepository(s.db)
 	noteFavoriteRepo := repository.NewNoteFavoriteRepository(s.db)
+	noteThreadMutingRepo := repository.NewNoteThreadMutingRepository(s.db)
 	userListRepo := repository.NewUserListRepository(s.db)
 	webhookRepo := repository.NewWebhookRepository(s.db)
 	systemWebhookRepo := repository.NewSystemWebhookRepository(s.db)
@@ -169,6 +170,8 @@ func (s *Server) setupRoutes() {
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
 	noteDeleteService := corenote.NewDeleteService(noteRepo)
 	noteQueryService := corenote.NewQueryService(noteRepo, followingRepo)
+	noteQueryService.SetFavoriteRepo(noteFavoriteRepo)
+	noteQueryService.SetThreadMutingRepo(noteThreadMutingRepo)
 	userService := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
 
@@ -187,6 +190,8 @@ func (s *Server) setupRoutes() {
 
 	// Antennas (Phase 4.3)
 	antennaService := coreantenna.NewService(antennaRepo, userRepo, s.redis.Default, idGen)
+	antennaService.SetFollowingRepo(followingRepo)
+	antennaService.SetUserListRepo(userListRepo)
 	noteCreateService.SetAntennaHook(coreantenna.NewNoteCreateHook(antennaService))
 
 	// Clips (Phase 4.4)
@@ -1685,7 +1690,10 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, map[string]any{})
 	})
 
-	// API catchall — 未実装エンドポイントに 200 を返してフロントエンドのクラッシュを防ぐ
+	// API catchall — 意図的に 200 + 空オブジェクトを返す。未登録エンドポイントへの
+	// 404 は Misskey 公式フロントの一部ページで例外を投げてしまうため、
+	// 互換性優先で pass-through にしている (本家 TS Misskey と同じ運用)。
+	// 実装漏れは warn ログで検知する。
 	api.Any("/*", func(c echo.Context) error {
 		slog.Warn("unimplemented API endpoint", "method", c.Request().Method, "path", c.Request().URL.Path)
 		return c.JSON(http.StatusOK, map[string]any{})

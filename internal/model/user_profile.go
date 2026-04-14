@@ -56,7 +56,9 @@ type UserProfile struct {
 	NotificationRecieveConfig datatypes.JSON      `gorm:"column:notificationRecieveConfig;type:jsonb;default:'{}'" json:"notificationRecieveConfig"`
 	LoggedInDates             pq.StringArray      `gorm:"column:loggedInDates;type:varchar(32)[];default:'{}'" json:"loggedInDates"`
 	Achievements              datatypes.JSON      `gorm:"column:achievements;type:jsonb;default:'[]'" json:"achievements"`
-	// 本家 Misskey 互換のため保持する。Go 側で読み書きする機能は未実装 (後続 issue)。
+	// ClientData / Room はクライアント固有の任意 JSON を pass-through 保存する
+	// フィールド。Go バックエンドは値を解釈せず、i/update で受け取ったものをそのまま
+	// 保存し、i で返却する。Go 側に解釈ロジックを追加する予定は現状なし。
 	ClientData datatypes.JSON `gorm:"column:clientData;type:jsonb;default:'{}'" json:"clientData"`
 	Room       datatypes.JSON `gorm:"column:room;type:jsonb;default:'{}'" json:"room"`
 	UserHost   *string        `gorm:"column:userHost;type:varchar(128)" json:"userHost"`

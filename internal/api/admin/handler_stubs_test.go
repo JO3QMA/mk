@@ -64,6 +64,17 @@ func TestAccountsFindByEmail_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, doPost(h.AccountsFindByEmail, `{"email":"ghost@example.com"}`, adminUser).Code)
 }
 
+func TestAccountsFindByEmail_Found(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	email := "alice@example.com"
+	userRepo.Users["alice"] = &model.User{ID: "alice", Username: "alice"}
+	userRepo.Profiles["alice"] = &model.UserProfile{UserID: "alice", Email: &email}
+
+	rec := doPost(h.AccountsFindByEmail, `{"email":"alice@example.com"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"alice"`)
+}
+
 // --- ad ---
 func TestAdCreate(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
