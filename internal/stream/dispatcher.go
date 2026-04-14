@@ -16,6 +16,7 @@ type PubSubBus interface {
 // list of pubsub topics.
 type channelEntry struct {
 	id      string
+	name    string // channel name from connect envelope (e.g. "homeTimeline")
 	channel Channel
 	topics  map[string]struct{}
 }
@@ -68,6 +69,7 @@ func (d *Dispatcher) handleConnect(body json.RawMessage) {
 		ID      string          `json:"id"`
 		Channel string          `json:"channel"`
 		Params  json.RawMessage `json:"params"`
+		Pong    bool            `json:"pong"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || req.ID == "" || req.Channel == "" {
 		return
@@ -84,7 +86,13 @@ func (d *Dispatcher) handleConnect(body json.RawMessage) {
 		d.mu.Unlock()
 		return
 	}
-	entry := &channelEntry{id: req.ID, topics: map[string]struct{}{}}
+	// shouldShare付きチャンネルで既に同名が接続済みなら新規作成しない
+	if d.hasShareableChannelLocked(req.Channel) {
+		d.mu.Unlock()
+		d.sendConnectedIfRequested(req.ID, req.Pong)
+		return
+	}
+	entry := &channelEntry{id: req.ID, name: req.Channel, topics: map[string]struct{}{}}
 	d.channels[req.ID] = entry
 	d.mu.Unlock()
 
@@ -92,6 +100,34 @@ func (d *Dispatcher) handleConnect(body json.RawMessage) {
 	ch := factory(ctx)
 	entry.channel = ch
 	ch.Init(req.Params)
+
+	d.sendConnectedIfRequested(req.ID, req.Pong)
+}
+
+// hasShareableChannelLocked checks if a shareable channel with the same name
+// already exists. mu must be held by the caller.
+func (d *Dispatcher) hasShareableChannelLocked(name string) bool {
+	for _, e := range d.channels {
+		if e.name != name || e.channel == nil {
+			continue
+		}
+		if sc, ok := e.channel.(ShareableChannel); ok && sc.ShouldShare() {
+			return true
+		}
+	}
+	return false
+}
+
+// sendConnectedIfRequested emits a `connected` envelope when the client
+// requested confirmation via pong=true in connect.
+func (d *Dispatcher) sendConnectedIfRequested(id string, pong bool) {
+	if !pong || d.conn == nil {
+		return
+	}
+	_ = d.conn.Send(map[string]any{
+		"type": "connected",
+		"body": map[string]any{"id": id},
+	})
 }
 
 // handleDisconnect tears down a previously-connected channel.

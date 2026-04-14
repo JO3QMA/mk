@@ -45,6 +45,19 @@ type ChannelContext interface {
 	Unsubscribe(topic string)
 }
 
+// ShareableChannel is an optional interface a Channel can implement to
+// signal that a single Connection should not hold multiple instances of the
+// same channel name simultaneously. 例: serverStats/queueStats のような
+// broadcast チャンネルは 1 接続につき 1 購読で十分。Dispatcher は connect
+// 時に既存の同名チャンネルを検出し、2 回目の接続を no-op にする。
+type ShareableChannel interface {
+	Channel
+	// ShouldShare reports whether this channel instance should be shared.
+	// true を返すと、同じ Connection 内の同名チャンネルへの追加 connect は
+	// 新しいエントリを作らずに無視される。
+	ShouldShare() bool
+}
+
 // ChannelFactory builds a new Channel for the given context. Channel name は
 // Misskey クライアントが connect.body.channel に指定する文字列 (e.g.
 // "homeTimeline").

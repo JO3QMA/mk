@@ -369,3 +369,122 @@ func TestChannelContext_SendQueuesEnvelope(t *testing.T) {
 
 	require.Eventually(t, func() bool { return fc.writeCount() >= 1 }, time.Second, 10*time.Millisecond)
 }
+
+// --- pong ack ---
+
+func TestDispatcher_ConnectPongAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test","pong":true}`))
+
+	// `connected` envelope should be queued on the connection
+	require.Eventually(t, func() bool { return fc.writeCount() >= 1 }, time.Second, 10*time.Millisecond)
+	fc.mu.Lock()
+	wrote := append([]byte(nil), fc.writes[0]...)
+	fc.mu.Unlock()
+	var env map[string]any
+	require.NoError(t, json.Unmarshal(wrote, &env))
+	assert.Equal(t, "connected", env["type"])
+	body := env["body"].(map[string]any)
+	assert.Equal(t, "abc", body["id"])
+}
+
+func TestDispatcher_ConnectNoPong_NoAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	// No `connected` envelope when pong is absent
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 0, fc.writeCount())
+}
+
+// --- ShouldShare ---
+
+type shareableFakeChannel struct {
+	fakeChannel
+}
+
+func (s *shareableFakeChannel) ShouldShare() bool { return true }
+
+func TestDispatcher_ShareableChannel_DuplicateIgnored(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("shared", func(ctx ChannelContext) Channel {
+		return &shareableFakeChannel{fakeChannel: fakeChannel{ctx: ctx}}
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"shared"}`))
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"shared"}`))
+
+	// 1回目の接続でtopic-aがsubscribeされ、2回目はスキップされるので
+	// subscribe回数は1のはず
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	count := 0
+	for _, t := range bus.subscribed {
+		if t == "topic-a" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count)
+}
+
+func TestDispatcher_NonShareableChannel_AllowsMultiple(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"test"}`))
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"test"}`))
+
+	// non-shareable なら2つのエントリが作られる
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 2)
+}
+
+func TestDispatcher_ShareablePongAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("shared", func(ctx ChannelContext) Channel {
+		return &shareableFakeChannel{fakeChannel: fakeChannel{ctx: ctx}}
+	})
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	// 1回目: 作成される
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"shared","pong":true}`))
+	// 2回目: 既存共有なのでエントリは作られないが、pongはACKされる
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"shared","pong":true}`))
+
+	require.Eventually(t, func() bool { return fc.writeCount() >= 2 }, time.Second, 10*time.Millisecond)
+}
