@@ -2,6 +2,8 @@
 // rendering local model entities into AP-compatible JSON-LD documents.
 package activitypub
 
+import "slices"
+
 // ContextURL is the standard ActivityStreams 2.0 JSON-LD context.
 const ContextURL = "https://www.w3.org/ns/activitystreams"
 
@@ -10,6 +12,25 @@ const SecurityContextURL = "https://w3id.org/security/v1"
 
 // Public is the magic IRI used to denote a publicly addressable activity.
 const Public = "https://www.w3.org/ns/activitystreams#Public"
+
+// ValidActorTypes lists the AP object types acceptable as an Actor.
+// Mirrors Misskey's `validActor` array in core/activitypub/type.ts so that
+// inbound documents of any other Object type are rejected at parse time.
+var ValidActorTypes = []string{
+	"Person", "Service", "Group", "Organization", "Application",
+}
+
+// IsValidActorType reports whether t is one of the recognized actor types.
+// Empty strings are rejected.
+func IsValidActorType(t string) bool {
+	return slices.Contains(ValidActorTypes, t)
+}
+
+// IsBotActorType reports whether the given actor type maps to an automated
+// (non-human) account. Misskey treats both Service and Application as bots.
+func IsBotActorType(t string) bool {
+	return t == "Service" || t == "Application"
+}
 
 // MimeType is the canonical Content-Type for ActivityPub objects.
 const MimeType = `application/activity+json`

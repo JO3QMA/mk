@@ -109,6 +109,16 @@ type NoteResolver interface {
 	FindByID(id string) (*model.Note, error)
 }
 
+// actorTypeForUser returns the AP actor `type` to emit for a local user.
+// 現状: IsBot=true なら Service、それ以外は Person。Application (system actor)
+// 出力は将来のシステムアカウント機能で別経路を追加する想定。
+func actorTypeForUser(u *model.User) string {
+	if u.IsBot {
+		return "Service"
+	}
+	return "Person"
+}
+
 // Renderer converts model entities into AS objects.
 type Renderer struct {
 	urls            *URLBuilder
@@ -156,10 +166,7 @@ func (r *Renderer) SetHost(host string) {
 func (r *Renderer) RenderPerson(u *model.User, profile *model.UserProfile, publicKeyPEM string) *Person {
 	uri := r.urls.UserURI(u.ID)
 
-	actorType := "Person"
-	if u.IsBot {
-		actorType = "Service"
-	}
+	actorType := actorTypeForUser(u)
 
 	p := &Person{
 		Object: Object{
