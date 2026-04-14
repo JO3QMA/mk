@@ -12,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/core/cache"
 	"github.com/shiroha-a/mk/internal/model"
+	mksentry "github.com/shiroha-a/mk/internal/sentry"
 	"github.com/shiroha-a/mk/internal/server"
 )
 
@@ -32,6 +33,14 @@ func main() {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	// Sentry init は他のサービスより前に走らせ、以降の起動エラーも捕捉対象にする。
+	flushSentry, err := mksentry.Init(cfg)
+	if err != nil {
+		slog.Error("failed to init sentry", "error", err)
+		os.Exit(1)
+	}
+	defer flushSentry()
 
 	// DB接続
 	db, err := model.NewDatabase(cfg)

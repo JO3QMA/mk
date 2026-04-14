@@ -638,3 +638,58 @@ func TestSlaveDSN_UnixSocket(t *testing.T) {
 	assert.Contains(t, dsn, "sslmode=disable")
 	assert.NotContains(t, dsn, "sslmode=require")
 }
+
+func TestLoad_SentryForBackend(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+sentryForBackend:
+  enableNodeProfiling: true
+  options:
+    dsn: 'https://public@o0.ingest.sentry.io/0'
+    environment: production
+    release: '2026.4.0'
+    sampleRate: 0.5
+    tracesSampleRate: 0.1
+    debug: false
+    serverName: 'mk-prod-1'
+sentryForFrontend:
+  vueIntegration:
+    tracingOptions:
+      trackComponents: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.SentryForBackend)
+	assert.True(t, cfg.SentryForBackend.EnableNodeProfiling)
+	assert.Equal(t, "https://public@o0.ingest.sentry.io/0", cfg.SentryForBackend.Options.DSN)
+	assert.Equal(t, "production", cfg.SentryForBackend.Options.Environment)
+	assert.Equal(t, "2026.4.0", cfg.SentryForBackend.Options.Release)
+	assert.InEpsilon(t, 0.5, cfg.SentryForBackend.Options.SampleRate, 1e-9)
+	assert.InEpsilon(t, 0.1, cfg.SentryForBackend.Options.TracesSampleRate, 1e-9)
+	assert.Equal(t, "mk-prod-1", cfg.SentryForBackend.Options.ServerName)
+
+	// SentryForFrontend は素通し格納 (Go バックエンドで参照しない)。
+	// viper は map のキーを小文字化するため正規化済みのキーで照合する。
+	require.NotNil(t, cfg.SentryForFrontend)
+	assert.Contains(t, cfg.SentryForFrontend, "vueintegration")
+}
+
+func TestLoad_SentryDisabledByDefault(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.SentryForBackend)
+	assert.Nil(t, cfg.SentryForFrontend)
+}

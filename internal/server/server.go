@@ -15,6 +15,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/chart"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/repository"
+	mksentry "github.com/shiroha-a/mk/internal/sentry"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"gorm.io/gorm"
 )
@@ -49,6 +50,9 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 
 	// Global middleware
 	e.Use(echomw.Recover())
+	// Sentry middleware は Recover の直後に置く: panic を hub に送ったあと
+	// Recover に巻き戻し、5xx の最終整形は echo に任せる。
+	e.Use(mksentry.Middleware(cfg))
 	e.Use(echomw.RequestID())
 	e.Use(echomw.LoggerWithConfig(echomw.LoggerConfig{
 		Format: "${time_rfc3339} ${method} ${uri} ${status} ${latency_human}\n",
