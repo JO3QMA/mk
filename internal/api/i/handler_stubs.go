@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreemail "github.com/shiroha-a/mk/internal/core/email"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
@@ -49,7 +50,7 @@ func (h *Handler) SigninHistory(c echo.Context) error {
 		UntilID *string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errEnvelope("Invalid param.", "INVALID_PARAM", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid param.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	limit := 10
@@ -73,7 +74,7 @@ func (h *Handler) SigninHistory(c echo.Context) error {
 
 	rows, err := h.signinRepo.ListByUserID(u.ID, limit, untilID, sinceID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errEnvelope("Internal error.", "INTERNAL_ERROR", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	result := make([]map[string]any, len(rows))
@@ -121,7 +122,7 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 
 	// パスワード検証
 	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(req.Password)); err != nil {
-		return c.JSON(http.StatusForbidden, errEnvelope("Incorrect password.", "INCORRECT_PASSWORD", "e86c14a4-0da8-4571-8f36-8a2e9f9b3a00"))
+		return c.JSON(http.StatusForbidden, apierr.Error("INCORRECT_PASSWORD", "Incorrect password.", "e86c14a4-0da8-4571-8f36-8a2e9f9b3a00"))
 	}
 
 	fields := map[string]any{
@@ -133,7 +134,7 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 		// email クリア。emailRequiredForSignup 時はクリア不可。
 		if h.metaRepo != nil {
 			if m, err := h.metaRepo.Fetch(); err == nil && m.EmailRequiredForSignup {
-				return c.JSON(http.StatusBadRequest, errEnvelope("Email is required.", "INVALID_PARAM", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+				return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 			}
 		}
 		fields["email"] = nil
@@ -144,7 +145,7 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 			if m, err := h.metaRepo.Fetch(); err == nil {
 				svc := coreemail.NewService(m)
 				if verr := svc.Validate(c.Request().Context(), addr); verr != nil {
-					return c.JSON(http.StatusBadRequest, errEnvelope("Email is not available.", "UNAVAILABLE", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+					return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 				}
 			}
 		}
@@ -179,7 +180,7 @@ func (h *Handler) VerifyEmail(c echo.Context) error {
 
 	profile, err := h.userService.FindProfileByVerifyCode(req.Code)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errEnvelope("No such code.", "NO_SUCH_CODE", "1e53842e-b7f4-4e1c-8f1e-8d0a2d9b0c7e"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_CODE", "No such code.", "1e53842e-b7f4-4e1c-8f1e-8d0a2d9b0c7e"))
 	}
 
 	if verr := h.userService.UpdateProfileFields(profile.UserID, map[string]any{

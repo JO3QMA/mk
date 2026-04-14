@@ -42,7 +42,7 @@ func (h *Handler) SetIDGen(g id.Generator) {
 func (h *Handler) List(c echo.Context) error {
 	roles, err := h.roleService.List()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	var result []any
 	for _, r := range roles {
@@ -62,11 +62,11 @@ func (h *Handler) Show(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	r, err := h.roleService.Show(req.RoleID)
 	if err != nil || !r.IsPublic {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	return c.JSON(http.StatusOK, packRole(r))
 }
@@ -77,10 +77,10 @@ func (h *Handler) Users(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.roleService.Show(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	return c.JSON(http.StatusOK, []any{})
 }
@@ -94,15 +94,15 @@ func (h *Handler) Notes(c echo.Context) error {
 		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	r, err := h.roleService.Show(req.RoleID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	if !r.IsPublic {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 
 	if h.notesQuery == nil {
@@ -119,7 +119,7 @@ func (h *Handler) Notes(c echo.Context) error {
 
 	notes, err := h.notesQuery.ListByRole(req.RoleID, limit, req.SinceID, req.UntilID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	out := make([]any, 0, len(notes))
@@ -143,8 +143,4 @@ func packRole(r *model.Role) map[string]any {
 		"asBadge":         r.AsBadge,
 		"displayOrder":    r.DisplayOrder,
 	}
-}
-
-func errResp(code, message, id string) map[string]any {
-	return apierr.Error(code, message, id)
 }

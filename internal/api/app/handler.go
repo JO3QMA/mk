@@ -25,10 +25,6 @@ func NewHandler(repo repository.AuthSessionRepository, idGen id.Generator) *Hand
 	return &Handler{repo: repo, idGen: idGen}
 }
 
-func apiError(code, message, errID string) map[string]any {
-	return apierr.Error(code, message, errID)
-}
-
 // Create handles POST /api/app/create.
 func (h *Handler) Create(c echo.Context) error {
 	var req struct {
@@ -38,7 +34,7 @@ func (h *Handler) Create(c echo.Context) error {
 		CallbackURL *string  `json:"callbackUrl"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" || req.Description == "" || req.Permission == nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "name, description, and permission are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name, description, and permission are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	// 認証済みユーザーのIDを取得（任意）
@@ -59,7 +55,7 @@ func (h *Handler) Create(c echo.Context) error {
 		CallbackURL: req.CallbackURL,
 	}
 	if err := h.repo.CreateApp(a); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, packApp(a, true))
@@ -71,12 +67,12 @@ func (h *Handler) Show(c echo.Context) error {
 		AppID string `json:"appId"`
 	}
 	if err := c.Bind(&req); err != nil || req.AppID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "appId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "appId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	a, err := h.repo.FindAppByID(req.AppID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_APP", "No such app.", "dce83913-2dc6-4093-8a7b-71dbb11718a3"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_APP", "No such app.", "dce83913-2dc6-4093-8a7b-71dbb11718a3"))
 	}
 
 	// 認証済み && 自分のアプリならsecretも返す
@@ -96,7 +92,7 @@ func (h *Handler) MyApps(c echo.Context) error {
 		Offset *int `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	limit := 10
@@ -116,7 +112,7 @@ func (h *Handler) MyApps(c echo.Context) error {
 
 	apps, err := h.repo.ListAppsByUserID(u.ID, limit, offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	result := make([]map[string]any, len(apps))

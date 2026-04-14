@@ -25,10 +25,6 @@ func NewHandler(repo repository.BubbleGameRepository, idGen id.Generator) *Handl
 	return &Handler{repo: repo, idGen: idGen}
 }
 
-func apiError(code, message, errID string) map[string]any {
-	return apierr.Error(code, message, errID)
-}
-
 // Register handles POST /api/bubble-game/register.
 func (h *Handler) Register(c echo.Context) error {
 	user := middleware.GetUser(c)
@@ -40,24 +36,24 @@ func (h *Handler) Register(c echo.Context) error {
 		GameVersion int     `json:"gameVersion"`
 	}
 	if err := c.Bind(&req); err != nil || req.Seed == "" || req.GameMode == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "score, seed, logs, gameMode, gameVersion are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "score, seed, logs, gameMode, gameVersion are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	// シード検証: seedはUnixタイムスタンプ文字列
 	seedMs, err := strconv.ParseInt(req.Seed, 10, 64)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_SEED", "Provided seed is invalid.", "eb627bc7-574b-4a52-a860-3c3eae772b88"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_SEED", "Provided seed is invalid.", "eb627bc7-574b-4a52-a860-3c3eae772b88"))
 	}
 	seedDate := time.UnixMilli(seedMs)
 	now := time.Now()
 
 	// 未来のシードは不正
 	if seedDate.After(now) {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_SEED", "Provided seed is invalid.", "eb627bc7-574b-4a52-a860-3c3eae772b88"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_SEED", "Provided seed is invalid.", "eb627bc7-574b-4a52-a860-3c3eae772b88"))
 	}
 	// 5時間以上前のシードは不正
 	if seedDate.Before(now.Add(-5 * time.Hour)) {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_SEED", "Provided seed is invalid.", "eb627bc7-574b-4a52-a860-3c3eae772b88"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_SEED", "Provided seed is invalid.", "eb627bc7-574b-4a52-a860-3c3eae772b88"))
 	}
 
 	logsJSON, _ := json.Marshal(req.Logs)
@@ -73,7 +69,7 @@ func (h *Handler) Register(c echo.Context) error {
 		IsVerified:  false,
 	}
 	if err := h.repo.Create(record); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -84,7 +80,7 @@ func (h *Handler) Ranking(c echo.Context) error {
 		GameMode string `json:"gameMode"`
 	}
 	if err := c.Bind(&req); err != nil || req.GameMode == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "gameMode is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "gameMode is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	records, err := h.repo.Ranking(req.GameMode, 10)

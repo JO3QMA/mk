@@ -31,7 +31,7 @@ func (h *Handler) List(c echo.Context) error {
 		IsActive *bool `json:"isActive"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	activeOnly := true
 	if req.IsActive != nil {
@@ -39,7 +39,7 @@ func (h *Handler) List(c echo.Context) error {
 	}
 	items, err := h.repo.List(activeOnly, req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// 認証ユーザーがいれば既読情報を付与
@@ -63,10 +63,10 @@ func (h *Handler) ReadAnnouncement(c echo.Context) error {
 		AnnouncementID string `json:"announcementId"`
 	}
 	if err := c.Bind(&req); err != nil || req.AnnouncementID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "announcementId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "announcementId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.repo.FindByID(req.AnnouncementID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
 	}
 	already, _ := h.repo.IsRead(user.ID, req.AnnouncementID)
 	if already {
@@ -78,7 +78,7 @@ func (h *Handler) ReadAnnouncement(c echo.Context) error {
 		AnnouncementID: req.AnnouncementID,
 	}
 	if err := h.repo.MarkRead(read); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -95,7 +95,7 @@ func (h *Handler) AdminCreate(c echo.Context) error {
 		Display  string  `json:"display"`
 	}
 	if err := c.Bind(&req); err != nil || req.Title == "" || req.Text == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "title and text are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "title and text are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Icon == "" {
 		req.Icon = "info"
@@ -113,7 +113,7 @@ func (h *Handler) AdminCreate(c echo.Context) error {
 		IsActive: true,
 	}
 	if err := h.repo.Create(a); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, a)
 }
@@ -127,7 +127,7 @@ func (h *Handler) AdminUpdate(c echo.Context) error {
 		IsActive *bool   `json:"isActive"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	fields := map[string]any{}
 	if req.Title != nil {
@@ -140,7 +140,7 @@ func (h *Handler) AdminUpdate(c echo.Context) error {
 		fields["isActive"] = *req.IsActive
 	}
 	if err := h.repo.UpdateFields(req.ID, fields); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -151,10 +151,10 @@ func (h *Handler) AdminDelete(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if err := h.repo.Delete(req.ID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -166,11 +166,11 @@ func (h *Handler) AdminList(c echo.Context) error {
 		Offset int `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	items, err := h.repo.List(false, req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, items)
 }
@@ -194,8 +194,4 @@ func packAnnouncement(a *model.Announcement, idGen id.Generator) map[string]any 
 		"forExistingUsers":       a.ForExistingUsers,
 		"isActive":               a.IsActive,
 	}
-}
-
-func errResp(code, message, id string) map[string]any {
-	return apierr.Error(code, message, id)
 }

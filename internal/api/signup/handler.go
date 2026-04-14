@@ -69,17 +69,17 @@ type signupRequest struct {
 func (h *Handler) Signup(c echo.Context) error {
 	var req signupRequest
 	if err := c.Bind(&req); err != nil || req.Username == "" || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	meta, err := h.metaRepo.Fetch()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// メール認証フローは未実装 (テストモードではスキップ)
 	if !h.testMode && meta.EmailRequiredForSignup {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Email-required signup is not yet supported.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Email-required signup is not yet supported.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	// 登録無効時はinvitation code必須 (テストモードではバイパス — 本家 TS 互換)
@@ -87,7 +87,7 @@ func (h *Handler) Signup(c echo.Context) error {
 	if !h.testMode && meta.DisableRegistration {
 		t, vErr := h.validateInvitationCode(req.InvitationCode)
 		if vErr != nil {
-			return c.JSON(http.StatusBadRequest, errResp("INVITATION_CODE_INVALID", "Invalid invitation code.", "11e71a03-43c4-4a99-92cf-bb7e2c581998"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVITATION_CODE_INVALID", "Invalid invitation code.", "11e71a03-43c4-4a99-92cf-bb7e2c581998"))
 		}
 		ticket = t
 	}
@@ -102,22 +102,22 @@ func (h *Handler) Signup(c echo.Context) error {
 			Testcaptcha: req.TestcaptchaResponse,
 		}
 		if err := h.captchaSvc.Verify(c.Request().Context(), tokens); err != nil {
-			return c.JSON(http.StatusBadRequest, errResp("CAPTCHA_FAILED", "Captcha verification failed.", "bdc32ef5-b0f4-40c0-b767-673b2e3e1f5a"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("CAPTCHA_FAILED", "Captcha verification failed.", "bdc32ef5-b0f4-40c0-b767-673b2e3e1f5a"))
 		}
 	}
 
 	result, err := h.signupService.Signup(req.Username, req.Password, false)
 	if err != nil {
 		if err == coresignup.ErrUsernameAlreadyExists {
-			return c.JSON(http.StatusConflict, errResp("USERNAME_ALREADY_EXISTS", "Username already exists.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 		}
 		if err == coresignup.ErrInvalidUsername {
-			return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 		}
 		if err == coresignup.ErrUsernameReserved {
-			return c.JSON(http.StatusBadRequest, errResp("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
 		}
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// invitation code使用済みにする
@@ -224,7 +224,3 @@ func packSignupResponse(u *model.User, token string, idGen id.Generator) map[str
 
 // defaultPolicies returns the Misskey default policies for a new user.
 var errInvalidCode = errors.New("invalid invitation code")
-
-func errResp(code, message, id string) map[string]any {
-	return apierr.Error(code, message, id)
-}

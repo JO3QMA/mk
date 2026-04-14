@@ -37,10 +37,6 @@ func (h *Handler) SetDispatcher(d TestDispatcher) {
 	h.dispatcher = d
 }
 
-func apiError(code, message, errID string) map[string]any {
-	return apierr.Error(code, message, errID)
-}
-
 func packWebhook(w *model.Webhook) map[string]any {
 	return map[string]any{
 		"id":           w.ID,
@@ -65,7 +61,7 @@ func (h *Handler) Create(c echo.Context) error {
 		On     []string `json:"on"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" || req.URL == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "name and url are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name and url are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	webhook := &model.Webhook{
@@ -78,7 +74,7 @@ func (h *Handler) Create(c echo.Context) error {
 		Active: true,
 	}
 	if err := h.repo.Create(webhook); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, packWebhook(webhook))
@@ -89,7 +85,7 @@ func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	webhooks, err := h.repo.ListByUserID(user.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	result := make([]map[string]any, len(webhooks))
 	for i, w := range webhooks {
@@ -105,12 +101,12 @@ func (h *Handler) Show(c echo.Context) error {
 		WebhookID string `json:"webhookId"`
 	}
 	if err := c.Bind(&req); err != nil || req.WebhookID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	w, err := h.repo.FindByIDAndUserID(req.WebhookID, user.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
 	}
 
 	return c.JSON(http.StatusOK, packWebhook(w))
@@ -128,12 +124,12 @@ func (h *Handler) Update(c echo.Context) error {
 		Active    *bool    `json:"active"`
 	}
 	if err := c.Bind(&req); err != nil || req.WebhookID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	w, err := h.repo.FindByIDAndUserID(req.WebhookID, user.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
 	}
 
 	if req.Name != "" {
@@ -153,7 +149,7 @@ func (h *Handler) Update(c echo.Context) error {
 	}
 
 	if err := h.repo.Update(w); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, packWebhook(w))
@@ -166,15 +162,15 @@ func (h *Handler) Delete(c echo.Context) error {
 		WebhookID string `json:"webhookId"`
 	}
 	if err := c.Bind(&req); err != nil || req.WebhookID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	if _, err := h.repo.FindByIDAndUserID(req.WebhookID, user.ID); err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
 	}
 
 	if err := h.repo.Delete(req.WebhookID, user.ID); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -190,12 +186,12 @@ func (h *Handler) Test(c echo.Context) error {
 		Type      string `json:"type"`
 	}
 	if err := c.Bind(&req); err != nil || req.WebhookID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "webhookId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	webhook, err := h.repo.FindByIDAndUserID(req.WebhookID, user.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_WEBHOOK", "No such webhook.", "50f614d9-3e73-4e43-8345-2e1e25012b7a"))
 	}
 
 	if h.dispatcher != nil {
