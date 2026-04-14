@@ -183,3 +183,38 @@ func TestSetClock_NilIgnored(t *testing.T) {
 	_, err := svc.Fetch("relay")
 	require.NoError(t, err)
 }
+
+// Previous Fetch が user 行は作れたが system_account 作成に失敗した状態を
+// 模し、次の Fetch で orphan を検出して残りの行を埋めて復旧できることを確認。
+// Devin review #171 対応。
+func TestFetch_RecoversFromOrphanUser(t *testing.T) {
+	svc, userRepo, keypairRepo, saRepo := newService(t)
+
+	// 1 回目: system_account の Create を失敗させる
+	originalRepo := saRepo.MockSystemAccountRepository
+	failing := &saFailCreate{saMock: saRepo, err: errors.New("tx rolled back")}
+	svc2 := systemaccount.NewService(userRepo, keypairRepo, failing, idGenFor(t))
+	svc2.SetClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() })
+	_, err := svc2.Fetch("relay")
+	require.Error(t, err)
+
+	// user 行だけ残っているが system_account は無い
+	require.Len(t, userRepo.Users, 1)
+	require.Empty(t, originalRepo.Accounts)
+
+	// 2 回目 (failing ではない普通の saRepo で) → orphan 検出 → recovery 成功
+	user, err := svc.Fetch("relay")
+	require.NoError(t, err)
+	assert.Equal(t, "relay.actor", user.Username)
+	// 新しい user は作られず既存を再利用
+	assert.Len(t, userRepo.Users, 1)
+	assert.Len(t, originalRepo.Accounts, 1)
+}
+
+// idGenFor は tests で idGen が必要な場合の小さなヘルパ。
+func idGenFor(t *testing.T) id.Generator {
+	t.Helper()
+	g, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	return g
+}

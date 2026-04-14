@@ -65,6 +65,14 @@ func (s *Service) Fetch(kind string) (*model.User, error) {
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
+	// 前回の create が途中で失敗して user 行だけ残っているかもしれない
+	// ("relay.actor" 等の usernameLower は unique WHERE host IS NULL 制約)。
+	// 素朴に再 create すると unique violation で永続的に復旧不能になるため、
+	// 既存 user を検出できたら再利用して欠けた行だけ埋めに行く。
+	username := kind + ".actor"
+	if orphan, oerr := s.userRepo.FindByUsernameLower(username, nil); oerr == nil && orphan != nil {
+		return s.completeFromOrphan(kind, orphan)
+	}
 	return s.create(kind)
 }
 
@@ -74,13 +82,6 @@ func (s *Service) Fetch(kind string) (*model.User, error) {
 func (s *Service) create(kind string) (*model.User, error) {
 	now := s.clock()
 	username := kind + ".actor"
-	// 鍵ペアを先に生成しておく (User 行を作ってから keypair 作成する順だが
-	// 鍵生成失敗時に user_profile を残さないよう先に作る)。
-	privPEM, pubPEM, err := activitypub.GenerateRSAKeypair()
-	if err != nil {
-		return nil, fmt.Errorf("systemaccount: generate keypair: %w", err)
-	}
-
 	user := &model.User{
 		ID:            s.idGen.Generate(now),
 		Username:      username,
@@ -93,20 +94,37 @@ func (s *Service) create(kind string) (*model.User, error) {
 	if err := s.userRepo.Create(user); err != nil {
 		return nil, fmt.Errorf("systemaccount: create user: %w", err)
 	}
-	// user_profile は本家互換のため最小行だけ入れる (email/password は nil)
-	profile := &model.UserProfile{UserID: user.ID}
-	if err := s.userRepo.CreateProfile(profile); err != nil {
-		return nil, fmt.Errorf("systemaccount: create profile: %w", err)
+	return s.completeFromOrphan(kind, user)
+}
+
+// completeFromOrphan fills in whatever follow-up rows are missing for an
+// already-existing user (either a freshly inserted one from create, or
+// an orphan left over from a previous partial failure). Each secondary
+// insert is idempotent: a pre-existing row is treated as success so a
+// second Fetch after a keypair-insert-succeeded-but-system_account-failed
+// crash completes on the second try.
+func (s *Service) completeFromOrphan(kind string, user *model.User) (*model.User, error) {
+	if _, err := s.userRepo.FindProfileByUserID(user.ID); err != nil {
+		profile := &model.UserProfile{UserID: user.ID}
+		if perr := s.userRepo.CreateProfile(profile); perr != nil {
+			return nil, fmt.Errorf("systemaccount: create profile: %w", perr)
+		}
 	}
-	if err := s.keypairRepo.Create(&model.UserKeypair{
-		UserID:     user.ID,
-		PublicKey:  pubPEM,
-		PrivateKey: privPEM,
-	}); err != nil {
-		return nil, fmt.Errorf("systemaccount: create keypair: %w", err)
+	if _, err := s.keypairRepo.FindByUserID(user.ID); err != nil {
+		privPEM, pubPEM, kerr := activitypub.GenerateRSAKeypair()
+		if kerr != nil {
+			return nil, fmt.Errorf("systemaccount: generate keypair: %w", kerr)
+		}
+		if kerr := s.keypairRepo.Create(&model.UserKeypair{
+			UserID:     user.ID,
+			PublicKey:  pubPEM,
+			PrivateKey: privPEM,
+		}); kerr != nil {
+			return nil, fmt.Errorf("systemaccount: create keypair: %w", kerr)
+		}
 	}
 	if err := s.saRepo.Create(&model.SystemAccount{
-		ID:     s.idGen.Generate(now),
+		ID:     s.idGen.Generate(s.clock()),
 		UserID: user.ID,
 		Type:   kind,
 	}); err != nil {
