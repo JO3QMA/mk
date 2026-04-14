@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -57,9 +58,7 @@ func (h *Handler) SetFederation(baseURL string, deliverer FederationDeliverer, f
 }
 
 func apiError(code, message, errID string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": errID},
-	}
+	return apierr.Error(code, message, errID)
 }
 
 func packGame(g *model.ReversiGame, idGen id.Generator) map[string]any {

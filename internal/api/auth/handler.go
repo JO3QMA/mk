@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -30,9 +31,7 @@ func NewHandler(repo repository.AuthSessionRepository, cfg *config.Config, idGen
 }
 
 func apiError(code, message, errID string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": errID},
-	}
+	return apierr.Error(code, message, errID)
 }
 
 // SessionGenerate handles POST /api/auth/session/generate.

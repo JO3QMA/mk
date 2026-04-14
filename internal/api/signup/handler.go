@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/captcha"
 	"github.com/shiroha-a/mk/internal/core/role"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
@@ -225,7 +226,5 @@ func packSignupResponse(u *model.User, token string, idGen id.Generator) map[str
 var errInvalidCode = errors.New("invalid invitation code")
 
 func errResp(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": id},
-	}
+	return apierr.Error(code, message, id)
 }

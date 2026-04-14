@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -191,11 +192,5 @@ func internalError(c echo.Context) error {
 }
 
 func errEnvelope(message, code, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"code":    code,
-			"id":      id,
-		},
-	}
+	return apierr.Error(code, message, id)
 }
