@@ -47,7 +47,7 @@ func (h *Handler) Create(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req CreateRequest
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	a, err := h.svc.Create(coreantenna.CreateInput{
 		OwnerID:         user.ID,
@@ -66,9 +66,9 @@ func (h *Handler) Create(c echo.Context) error {
 		// Name は事前 invalidParam で弾いているため、ここに来るのは
 		// ErrInvalidSource か repo エラーのみ。
 		if errors.Is(err, coreantenna.ErrInvalidSource) {
-			return invalidParam(c)
+			return apierr.JSONInvalidParam(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, antennaToMap(a))
 }
@@ -83,12 +83,12 @@ func (h *Handler) Show(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.AntennaID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	a, err := h.svc.Show(user.ID, req.AntennaID)
 	if err != nil {
 		if errors.Is(err, coreantenna.ErrAccessDenied) {
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		}
 		// Show は ErrAntennaNotFound 以外を返さない (未マップ含む)
 		return notFound(c)
@@ -117,7 +117,7 @@ func (h *Handler) Update(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req UpdateRequest
 	if err := c.Bind(&req); err != nil || req.AntennaID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	a, err := h.svc.Update(user.ID, req.AntennaID, coreantenna.UpdateInput{
 		Name:            req.Name,
@@ -137,12 +137,12 @@ func (h *Handler) Update(c echo.Context) error {
 		case errors.Is(err, coreantenna.ErrAntennaNotFound):
 			return notFound(c)
 		case errors.Is(err, coreantenna.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		case errors.Is(err, coreantenna.ErrAntennaNameRequired),
 			errors.Is(err, coreantenna.ErrInvalidSource):
-			return invalidParam(c)
+			return apierr.JSONInvalidParam(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, antennaToMap(a))
 }
@@ -157,16 +157,16 @@ func (h *Handler) Delete(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req DeleteRequest
 	if err := c.Bind(&req); err != nil || req.AntennaID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Delete(user.ID, req.AntennaID); err != nil {
 		switch {
 		case errors.Is(err, coreantenna.ErrAntennaNotFound):
 			return notFound(c)
 		case errors.Is(err, coreantenna.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -176,7 +176,7 @@ func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	rows, err := h.svc.ListByUser(user.ID)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, a := range rows {
@@ -196,7 +196,7 @@ func (h *Handler) Notes(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req NotesRequest
 	if err := c.Bind(&req); err != nil || req.AntennaID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	ids, err := h.svc.Notes(c.Request().Context(), user.ID, req.AntennaID, req.Limit)
 	if err != nil {
@@ -204,13 +204,13 @@ func (h *Handler) Notes(c echo.Context) error {
 		case errors.Is(err, coreantenna.ErrAntennaNotFound):
 			return notFound(c)
 		case errors.Is(err, coreantenna.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	notes, err := h.noteRepo.FindManyByIDsWithUser(ids)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]any, 0, len(notes))
 	for _, n := range notes {
@@ -238,18 +238,6 @@ func antennaToMap(a *model.Antenna) map[string]any {
 	}
 }
 
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
-}
-
 func notFound(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANTENNA", "No such antenna.", "3a1fb010-b54c-4f28-9a06-a5c7c7c1c33a"))
-}
-
-func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, apierr.AccessDenied())
 }

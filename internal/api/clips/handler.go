@@ -38,7 +38,7 @@ func (h *Handler) Create(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req CreateRequest
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	cl, err := h.svc.Create(coreclip.CreateInput{
 		OwnerID:     user.ID,
@@ -47,7 +47,7 @@ func (h *Handler) Create(c echo.Context) error {
 		IsPublic:    req.IsPublic,
 	})
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, clipToMap(cl))
 }
@@ -62,7 +62,7 @@ func (h *Handler) Show(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.ClipID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	requesterID := ""
 	if user != nil {
@@ -71,7 +71,7 @@ func (h *Handler) Show(c echo.Context) error {
 	cl, err := h.svc.Show(requesterID, req.ClipID)
 	if err != nil {
 		if errors.Is(err, coreclip.ErrAccessDenied) {
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		}
 		return notFound(c)
 	}
@@ -91,7 +91,7 @@ func (h *Handler) Update(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req UpdateRequest
 	if err := c.Bind(&req); err != nil || req.ClipID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	in := coreclip.UpdateInput{
 		Name:     req.Name,
@@ -107,11 +107,11 @@ func (h *Handler) Update(c echo.Context) error {
 		case errors.Is(err, coreclip.ErrClipNotFound):
 			return notFound(c)
 		case errors.Is(err, coreclip.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		case errors.Is(err, coreclip.ErrClipNameRequired):
-			return invalidParam(c)
+			return apierr.JSONInvalidParam(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, clipToMap(cl))
 }
@@ -126,16 +126,16 @@ func (h *Handler) Delete(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req DeleteRequest
 	if err := c.Bind(&req); err != nil || req.ClipID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Delete(user.ID, req.ClipID); err != nil {
 		switch {
 		case errors.Is(err, coreclip.ErrClipNotFound):
 			return notFound(c)
 		case errors.Is(err, coreclip.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -151,11 +151,11 @@ func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.ListByUser(user.ID, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, cl := range rows {
@@ -175,20 +175,20 @@ func (h *Handler) AddNote(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req AddNoteRequest
 	if err := c.Bind(&req); err != nil || req.ClipID == "" || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.AddNote(user.ID, req.ClipID, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, coreclip.ErrClipNotFound):
 			return notFound(c)
 		case errors.Is(err, coreclip.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		case errors.Is(err, coreclip.ErrNoteNotFound):
 			return notFoundNote(c)
 		case errors.Is(err, coreclip.ErrAlreadyClipped):
 			return alreadyClipped(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -204,18 +204,18 @@ func (h *Handler) RemoveNote(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req RemoveNoteRequest
 	if err := c.Bind(&req); err != nil || req.ClipID == "" || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.RemoveNote(user.ID, req.ClipID, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, coreclip.ErrClipNotFound):
 			return notFound(c)
 		case errors.Is(err, coreclip.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		case errors.Is(err, coreclip.ErrNotClipped):
 			return notClipped(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -233,7 +233,7 @@ func (h *Handler) Notes(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req NotesRequest
 	if err := c.Bind(&req); err != nil || req.ClipID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	requesterID := ""
 	if user != nil {
@@ -245,9 +245,9 @@ func (h *Handler) Notes(c echo.Context) error {
 		case errors.Is(err, coreclip.ErrClipNotFound):
 			return notFound(c)
 		case errors.Is(err, coreclip.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]any, 0, len(notes))
 	for _, n := range notes {
@@ -268,20 +268,8 @@ func clipToMap(cl *model.Clip) map[string]any {
 	}
 }
 
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
-}
-
 func notFound(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_CLIP", "No such clip.", "f4a9c0c6-a6c3-4a07-8e6b-0a4f2b1a27e9"))
-}
-
-func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, apierr.AccessDenied())
 }
 
 func notFoundNote(c echo.Context) error {

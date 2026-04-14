@@ -944,3 +944,15 @@ func TestRegistryRemove_InvalidParam(t *testing.T) {
 	rec := post(h.RegistryRemove, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+// --- Handler setters ---
+
+func TestSetServerURL(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetServerURL("https://example.com")
+}
+
+func TestSetEmailSender(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmailSender(func(to, subject, body string) {})
+}

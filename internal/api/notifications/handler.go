@@ -47,12 +47,12 @@ func (h *Handler) Show(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	rows, err := h.svc.List(c.Request().Context(), user.ID, req.Limit)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	// includeTypes / excludeTypes フィルタ
@@ -114,17 +114,9 @@ func (h *Handler) Show(c echo.Context) error {
 func (h *Handler) MarkAllAsRead(c echo.Context) error {
 	user := middleware.GetUser(c)
 	if err := h.svc.MarkAllAsRead(c.Request().Context(), user.ID); err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 // Create handles POST /api/notifications/create.

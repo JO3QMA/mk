@@ -465,7 +465,7 @@ func (h *Handler) Update(c echo.Context) error {
 
 	var req UpdateRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	in := user.UpdateInput{
@@ -514,7 +514,7 @@ func (h *Handler) Update(c echo.Context) error {
 		if errors.Is(err, user.ErrUserNotFound) {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
@@ -531,7 +531,7 @@ func (h *Handler) Pin(c echo.Context) error {
 
 	var req PinRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.userService.PinNote(me.ID, req.NoteID); err != nil {
@@ -543,7 +543,7 @@ func (h *Handler) Pin(c echo.Context) error {
 		case errors.Is(err, user.ErrPinLimitExceeded):
 			return c.JSON(http.StatusBadRequest, apierr.Error("PIN_LIMIT_EXCEEDED", "You can not pin notes any more.", "72dab508-c64d-498f-8740-a8eec1ba385a"))
 		default:
-			return internalError(c)
+			return apierr.JSONInternalError(c)
 		}
 	}
 
@@ -556,23 +556,15 @@ func (h *Handler) Unpin(c echo.Context) error {
 
 	var req PinRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.userService.UnpinNote(me.ID, req.NoteID); err != nil {
 		if errors.Is(err, user.ErrPinNotFound) {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return h.Me(c)
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }

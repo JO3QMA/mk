@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -29,7 +30,7 @@ func (h *Handler) Favorite(c echo.Context) error {
 		ClipID string `json:"clipId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ClipID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.favoriteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -48,7 +49,7 @@ func (h *Handler) Favorite(c echo.Context) error {
 		ClipID: req.ClipID,
 	}
 	if err := h.favoriteRepo.Create(fav); err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -60,13 +61,13 @@ func (h *Handler) Unfavorite(c echo.Context) error {
 		ClipID string `json:"clipId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ClipID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.favoriteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.favoriteRepo.Delete(user.ID, req.ClipID); err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -79,7 +80,7 @@ func (h *Handler) MyFavorites(c echo.Context) error {
 	}
 	favs, err := h.favoriteRepo.ListByUser(user.ID)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]map[string]any, 0, len(favs))
 	for _, f := range favs {

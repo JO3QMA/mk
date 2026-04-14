@@ -36,7 +36,7 @@ func (h *Handler) Create(c echo.Context) error {
 
 	var req CreateRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	// followeeを先に取得し、エラー時はNO_SUCH_USERを返す
@@ -54,7 +54,7 @@ func (h *Handler) Create(c echo.Context) error {
 		case errors.Is(err, corefollowing.ErrBlocked):
 			return c.JSON(http.StatusForbidden, apierr.Error("BLOCKED", "You are blocked by that user.", "c4ab57cc-4e41-45e9-bfd9-584f61e35ce0"))
 		default:
-			return internalError(c)
+			return apierr.JSONInternalError(c)
 		}
 	}
 
@@ -72,7 +72,7 @@ func (h *Handler) Delete(c echo.Context) error {
 
 	var req DeleteRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	bundle, err := h.userService.ShowByID(req.UserID)
@@ -87,7 +87,7 @@ func (h *Handler) Delete(c echo.Context) error {
 		case errors.Is(err, corefollowing.ErrNotFollowing):
 			return c.JSON(http.StatusBadRequest, apierr.Error("NOT_FOLLOWING", "You are not following that user.", "5dbf82f5-c92b-40b1-87d1-6c8c0741fd09"))
 		default:
-			return internalError(c)
+			return apierr.JSONInternalError(c)
 		}
 	}
 
@@ -105,14 +105,14 @@ func (h *Handler) AcceptRequest(c echo.Context) error {
 
 	var req RequestActionRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.followingService.AcceptRequest(me.ID, req.UserID); err != nil {
 		if errors.Is(err, corefollowing.ErrRequestNotFound) {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_FOLLOW_REQUEST", "No such follow request.", "bcde4f8b-0913-4614-8881-614e522fb041"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -123,14 +123,14 @@ func (h *Handler) RejectRequest(c echo.Context) error {
 
 	var req RequestActionRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.followingService.RejectRequest(me.ID, req.UserID); err != nil {
 		if errors.Is(err, corefollowing.ErrRequestNotFound) {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_FOLLOW_REQUEST", "No such follow request.", "abc2ffa6-25b2-4380-ba99-321ff3a94555"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -141,14 +141,14 @@ func (h *Handler) CancelRequest(c echo.Context) error {
 
 	var req RequestActionRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.followingService.CancelRequest(me.ID, req.UserID); err != nil {
 		if errors.Is(err, corefollowing.ErrRequestNotFound) {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_FOLLOW_REQUEST", "No such follow request.", "17447091-ea95-43eb-a7d4-c78cb2853c20"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -166,7 +166,7 @@ func (h *Handler) ListRequests(c echo.Context) error {
 
 	requests, err := h.followingService.ListReceivedRequests(me.ID, 100, 0)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	out := make([]ListRequestsResponseItem, 0, len(requests))
@@ -181,12 +181,4 @@ func (h *Handler) ListRequests(c echo.Context) error {
 		out = append(out, item)
 	}
 	return c.JSON(http.StatusOK, out)
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }

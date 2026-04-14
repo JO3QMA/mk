@@ -31,7 +31,7 @@ func (h *Handler) Create(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PairRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if _, err := h.svc.Mute(user.ID, req.UserID); err != nil {
 		switch {
@@ -44,7 +44,7 @@ func (h *Handler) Create(c echo.Context) error {
 				},
 			})
 		case errors.Is(err, coremuting.ErrMuteeNotFound):
-			return noSuchUser(c)
+			return apierr.JSONNoSuchUser(c)
 		case errors.Is(err, coremuting.ErrAlreadyMuting):
 			return c.JSON(http.StatusBadRequest, map[string]any{
 				"error": map[string]any{
@@ -54,7 +54,7 @@ func (h *Handler) Create(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -64,7 +64,7 @@ func (h *Handler) Delete(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PairRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Unmute(user.ID, req.UserID); err != nil {
 		switch {
@@ -85,7 +85,7 @@ func (h *Handler) Delete(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -101,7 +101,7 @@ func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 30
@@ -111,7 +111,7 @@ func (h *Handler) List(c echo.Context) error {
 	}
 	rows, err := h.svc.List(user.ID, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, m := range rows {
@@ -121,16 +121,4 @@ func (h *Handler) List(c echo.Context) error {
 		})
 	}
 	return c.JSON(http.StatusOK, out)
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
-}
-
-func noSuchUser(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, apierr.NoSuchUser())
 }

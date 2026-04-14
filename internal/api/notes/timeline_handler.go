@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/timeline"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -100,7 +101,7 @@ func (h *Handler) serveTimeline(
 ) error {
 	var req TimelineRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	req.normalize()
 
@@ -133,7 +134,7 @@ func (h *Handler) serveTimeline(
 	if err != nil {
 		// requireAuthでviewer nilチェックは事前に行っているので、Service層からの
 		// ErrUnauthenticatedはここには到達しない。残りはRedis等の障害のみ。
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }

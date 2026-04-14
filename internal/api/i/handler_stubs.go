@@ -112,12 +112,12 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 		Email    *string `json:"email"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	profile := h.userService.GetProfile(u.ID)
 	if profile == nil || profile.Password == nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	// パスワード検証
@@ -162,7 +162,7 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 	}
 
 	if err := h.userService.UpdateProfileFields(u.ID, fields); err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return h.Me(c)
@@ -175,7 +175,7 @@ func (h *Handler) VerifyEmail(c echo.Context) error {
 		Code string `json:"code"`
 	}
 	if err := c.Bind(&req); err != nil || req.Code == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	profile, err := h.userService.FindProfileByVerifyCode(req.Code)
@@ -187,7 +187,7 @@ func (h *Handler) VerifyEmail(c echo.Context) error {
 		"emailVerified":   true,
 		"emailVerifyCode": nil,
 	}); verr != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return c.NoContent(http.StatusNoContent)
