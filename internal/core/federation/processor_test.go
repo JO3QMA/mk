@@ -1,6 +1,7 @@
 package federation_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -907,4 +908,81 @@ func TestProcess_FlagWithoutRepo(t *testing.T) {
 		"object": ["https://example.com/users/bob"]
 	}`)
 	assert.ErrorIs(t, p.Process(body), federation.ErrUnsupportedActivity)
+}
+
+// fakeRelayMarker records MarkAccepted/MarkRejected calls for assertion.
+type fakeRelayMarker struct {
+	accepted []string
+	rejected []string
+	err      error
+}
+
+func (f *fakeRelayMarker) MarkAccepted(_ context.Context, id string) error {
+	f.accepted = append(f.accepted, id)
+	return f.err
+}
+
+func (f *fakeRelayMarker) MarkRejected(_ context.Context, id string) error {
+	f.rejected = append(f.rejected, id)
+	return f.err
+}
+
+func TestProcess_AcceptFollowRelay_MarksAccepted(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	marker := &fakeRelayMarker{}
+	p.SetRelayMarker(marker)
+
+	body := []byte(`{
+		"type": "Accept",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://example.com/activities/follow-relay/rel123",
+			"type": "Follow",
+			"actor": "https://example.com/users/relay.actor",
+			"object": "https://www.w3.org/ns/activitystreams#Public"
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Equal(t, []string{"rel123"}, marker.accepted)
+	assert.Empty(t, marker.rejected)
+}
+
+func TestProcess_RejectFollowRelay_MarksRejected(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	marker := &fakeRelayMarker{}
+	p.SetRelayMarker(marker)
+
+	body := []byte(`{
+		"type": "Reject",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://example.com/activities/follow-relay/rel456",
+			"type": "Follow"
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Equal(t, []string{"rel456"}, marker.rejected)
+}
+
+func TestProcess_AcceptNonRelay_IgnoresMarker(t *testing.T) {
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	marker := &fakeRelayMarker{}
+	p.SetRelayMarker(marker)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"type": "Accept",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://remote.example/activities/follow/xyz",
+			"type": "Follow",
+			"actor": "https://example.com/users/bob",
+			"object": "https://remote.example/users/alice"
+		}
+	}`)
+	// フォローリクエストが無いので内部的には ErrRequestNotFound を飲み込む
+	require.NoError(t, p.Process(body))
+	// relay marker は呼ばれない
+	assert.Empty(t, marker.accepted)
 }

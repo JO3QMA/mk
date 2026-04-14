@@ -268,6 +268,22 @@ func TestRenderer_RenderAccept(t *testing.T) {
 	assert.NotNil(t, a.Object)
 }
 
+func TestRenderer_RenderFollowRelay(t *testing.T) {
+	r := newRenderer()
+	f := r.RenderFollowRelay("rel123", "relay-user-id")
+	assert.Equal(t, "Follow", f.Type)
+	assert.Equal(t, "https://example.com/users/relay-user-id", f.Actor)
+	// id は /activities/follow-relay/{relayID} 固定 (processor 側が regex で検出)
+	assert.Equal(t, "https://example.com/activities/follow-relay/rel123", f.ID)
+	// object は AS Public (relay は全 public 投稿を購読するため)
+	assert.Equal(t, Public, f.Object)
+}
+
+func TestURLBuilder_FollowRelayURI(t *testing.T) {
+	b := NewURLBuilder("https://example.com")
+	assert.Equal(t, "https://example.com/activities/follow-relay/abc", b.FollowRelayURI("abc"))
+}
+
 func TestStringValue(t *testing.T) {
 	s := "x"
 	assert.Equal(t, "x", stringValue(&s))

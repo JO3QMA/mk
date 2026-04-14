@@ -1,10 +1,12 @@
 package federation
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,6 +31,14 @@ var (
 	ErrUnsupportedActivity = errors.New("unsupported activity type")
 )
 
+// RelayStatusMarker is the minimal interface needed from core/relay.Service
+// for the inbox processor to toggle relay status on Accept / Reject
+// activities whose id matches `/activities/follow-relay/{id}`.
+type RelayStatusMarker interface {
+	MarkAccepted(ctx context.Context, id string) error
+	MarkRejected(ctx context.Context, id string) error
+}
+
 // Processor dispatches inbound activities to the right handler.
 type Processor struct {
 	resolver         *Resolver
@@ -52,6 +62,9 @@ type Processor struct {
 	reversiRepo     repository.ReversiRepository
 	reversiIDGen    id.Generator
 	reversiFedCache *corereversi.FederationIDCache
+
+	// Relay follow-accept / -reject hook. nil 時は relay 特化処理をスキップ。
+	relayMarker RelayStatusMarker
 }
 
 // NewProcessor constructs a Processor. reactionService / noteDeleteSvc は省略
@@ -171,6 +184,28 @@ func (p *Processor) SetAbuseReportRepo(repo repository.AbuseReportRepository, id
 func (p *Processor) SetPinningRepo(repo repository.UserNotePiningRepository, idGen id.Generator) {
 	p.pinningRepo = repo
 	p.pinningIDGen = idGen
+}
+
+// SetRelayMarker wires a RelayStatusMarker so inbound Accept / Reject
+// activities whose id matches the follow-relay URI pattern can flip
+// the corresponding relay row to accepted / rejected.
+func (p *Processor) SetRelayMarker(m RelayStatusMarker) {
+	p.relayMarker = m
+}
+
+// followRelayIDPattern extracts the relay id embedded in
+// `.../activities/follow-relay/{id}` URIs. Must stay in lockstep with
+// activitypub.URLBuilder.FollowRelayURI.
+var followRelayIDPattern = regexp.MustCompile(`/activities/follow-relay/([\w-]+)$`)
+
+// matchFollowRelayID returns the relay id if uri is a follow-relay URI,
+// otherwise the empty string.
+func matchFollowRelayID(uri string) string {
+	m := followRelayIDPattern.FindStringSubmatch(uri)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
 }
 
 // SetReversi wires the reversi federation dependencies. When any of the
@@ -322,6 +357,8 @@ func (p *Processor) handleUndoAnnounce(act genericActivity, inner genericActivit
 
 // handleAccept processes an inbound Accept activity. リモートfolloweeがローカル
 // followerからのフォローリクエストを承認した場合に、フォロー関係を確立する。
+// inner.id が follow-relay パターンにマッチすれば relay の Accept とみなし、
+// RelayStatusMarker.MarkAccepted を呼び出す (upstream ApInboxService 互換)。
 func (p *Processor) handleAccept(act genericActivity) error {
 	var inner genericActivity
 	if err := json.Unmarshal(act.Object, &inner); err != nil {
@@ -330,6 +367,9 @@ func (p *Processor) handleAccept(act genericActivity) error {
 	}
 	if !strings.EqualFold(inner.Type, "follow") {
 		return nil
+	}
+	if relayID := matchFollowRelayID(inner.ID); relayID != "" && p.relayMarker != nil {
+		return p.relayMarker.MarkAccepted(context.Background(), relayID)
 	}
 	// actorはリモートfollowee（承認した側）
 	followee, err := p.resolver.ResolveActor(act.Actor)
@@ -564,7 +604,8 @@ func peekObjectType(raw json.RawMessage) string {
 //
 // 想定: 自分 (ローカル follower) が remote followee に対して Follow を送ったが
 // 拒否された場合に呼ばれる。inner.Follow.actor がローカル follower、object が
-// remote followee。
+// remote followee。inner.id が follow-relay パターンなら relay 関連として
+// RelayStatusMarker.MarkRejected を呼ぶ。
 func (p *Processor) handleReject(act genericActivity) error {
 	var inner genericActivity
 	if err := json.Unmarshal(act.Object, &inner); err != nil {
@@ -572,6 +613,9 @@ func (p *Processor) handleReject(act genericActivity) error {
 	}
 	if !strings.EqualFold(inner.Type, "follow") {
 		return ErrUnsupportedActivity
+	}
+	if relayID := matchFollowRelayID(inner.ID); relayID != "" && p.relayMarker != nil {
+		return p.relayMarker.MarkRejected(context.Background(), relayID)
 	}
 	followee, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
