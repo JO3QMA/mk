@@ -124,7 +124,7 @@ func (h *Handler) Create(c echo.Context) error {
 
 	var req CreateRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	in := note.CreateInput{
@@ -180,7 +180,7 @@ func (h *Handler) Create(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	packed := entity.PackNote(created, h.idGen)
@@ -201,13 +201,13 @@ type ShowRequest struct {
 func (h *Handler) Show(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	viewer := middleware.GetUser(c)
 	n, err := h.lookupVisible(viewer, req.NoteID)
 	if err != nil {
-		return noSuchNote(c)
+		return apierr.JSONNoSuchNote(c)
 	}
 
 	packed := entity.PackNote(n, h.idGen)
@@ -238,7 +238,7 @@ func (h *Handler) Delete(c echo.Context) error {
 
 	var req DeleteRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.deleteService.Delete(user, req.NoteID); err != nil {
@@ -260,7 +260,7 @@ func (h *Handler) Delete(c echo.Context) error {
 				},
 			})
 		default:
-			return internalError(c)
+			return apierr.JSONInternalError(c)
 		}
 	}
 
@@ -308,7 +308,7 @@ func (h *Handler) Children(c echo.Context) error {
 func (h *Handler) serveList(c echo.Context, fn func(*model.User, listRequest) ([]*model.Note, error)) error {
 	var req listRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	req.normalize()
 
@@ -316,9 +316,9 @@ func (h *Handler) serveList(c echo.Context, fn func(*model.User, listRequest) ([
 	notes, err := fn(viewer, req)
 	if err != nil {
 		if errors.Is(err, note.ErrNoteNotFound) {
-			return noSuchNote(c)
+			return apierr.JSONNoSuchNote(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
@@ -344,10 +344,10 @@ type SearchRequest struct {
 func (h *Handler) Search(c echo.Context) error {
 	var req SearchRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.searchService == nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -384,9 +384,9 @@ func (h *Handler) Search(c echo.Context) error {
 		// 空クエリは invalidParam として返す。
 		// それ以外のエラー (DB障害など) はinternalErrorで返す。
 		if errors.Is(err, search.ErrEmptyQuery) {
-			return invalidParam(c)
+			return apierr.JSONInvalidParam(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
@@ -395,13 +395,13 @@ func (h *Handler) Search(c echo.Context) error {
 func (h *Handler) State(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	viewer := middleware.GetUser(c)
 	st, err := h.queryService.State(viewer, req.NoteID)
 	if err != nil {
 		// 現状QueryService.StateはErrNoteNotFound以外を返さない
-		return noSuchNote(c)
+		return apierr.JSONNoSuchNote(c)
 	}
 	return c.JSON(http.StatusOK, st)
 }
@@ -416,7 +416,7 @@ type ConversationRequest struct {
 func (h *Handler) Conversation(c echo.Context) error {
 	var req ConversationRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -429,7 +429,7 @@ func (h *Handler) Conversation(c echo.Context) error {
 	notes, err := h.queryService.Conversation(viewer, req.NoteID, req.Limit)
 	if err != nil {
 		// 現状QueryService.ConversationはErrNoteNotFound以外を返さない
-		return noSuchNote(c)
+		return apierr.JSONNoSuchNote(c)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
@@ -536,16 +536,4 @@ func (h *Handler) resolveViewerFields(notes []entity.NoteEntity, viewer *model.U
 			}
 		}
 	}
-}
-
-func noSuchNote(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, apierr.NoSuchNote())
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }

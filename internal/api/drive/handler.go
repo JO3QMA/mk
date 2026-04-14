@@ -59,7 +59,7 @@ func (h *Handler) FilesCreate(c echo.Context) error {
 
 	body, filename, err := readMultipartFile(c)
 	if err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	in := coredrive.UploadInput{
@@ -91,7 +91,7 @@ func (h *Handler) FilesCreate(c echo.Context) error {
 		case errors.Is(err, coredrive.ErrAccessDenied):
 			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, entity.PackDriveFile(f, h.idGen))
 }
@@ -106,7 +106,7 @@ func (h *Handler) FilesShow(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FileIDRequest
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	f, err := h.svc.Show(user, req.FileID)
 	if err != nil {
@@ -131,7 +131,7 @@ func (h *Handler) FilesUpdate(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FilesUpdateRequest
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	in := coredrive.UpdateInput{
 		Name:        req.Name,
@@ -161,7 +161,7 @@ func (h *Handler) FilesDelete(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FileIDRequest
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Delete(user, req.FileID); err != nil {
 		return mapFileError(c, err)
@@ -179,7 +179,7 @@ func (h *Handler) FilesFindByHash(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FilesFindByHashRequest
 	if err := c.Bind(&req); err != nil || req.MD5 == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	f, err := h.svc.FindByHash(user, req.MD5)
 	if err != nil {
@@ -199,7 +199,7 @@ func (h *Handler) FoldersCreate(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FoldersCreateRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Name == "" {
 		req.Name = "Untitled"
@@ -221,7 +221,7 @@ func (h *Handler) FoldersShow(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FolderIDRequest
 	if err := c.Bind(&req); err != nil || req.FolderID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	f, err := h.svc.ShowFolder(user, req.FolderID)
 	if err != nil {
@@ -243,7 +243,7 @@ func (h *Handler) FoldersUpdate(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FoldersUpdateRequest
 	if err := c.Bind(&req); err != nil || req.FolderID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	in := coredrive.UpdateFolderInput{Name: req.Name}
 	if req.UnsetParent {
@@ -265,7 +265,7 @@ func (h *Handler) FoldersDelete(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FolderIDRequest
 	if err := c.Bind(&req); err != nil || req.FolderID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.DeleteFolder(user, req.FolderID); err != nil {
 		return mapFolderError(c, err)
@@ -284,7 +284,7 @@ func mapFileError(c echo.Context, err error) error {
 	case errors.Is(err, coredrive.ErrAccessDenied):
 		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 	}
-	return internalError(c)
+	return apierr.JSONInternalError(c)
 }
 
 func mapFolderError(c echo.Context, err error) error {
@@ -296,15 +296,7 @@ func mapFolderError(c echo.Context, err error) error {
 	case errors.Is(err, coredrive.ErrFolderNotEmpty):
 		return c.JSON(http.StatusBadRequest, apierr.Error("HAS_CHILD_FILES_OR_FOLDERS", "Folder is not empty.", "b0fc8a17-963c-405d-bfbc-859a487295e1"))
 	}
-	return internalError(c)
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
+	return apierr.JSONInternalError(c)
 }
 
 // --- Drive listing endpoints ---
@@ -333,7 +325,7 @@ func (h *Handler) FilesList(c echo.Context) error {
 		Type     string  `json:"type"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -360,7 +352,7 @@ func (h *Handler) FilesFind(c echo.Context) error {
 		FolderID *string `json:"folderId"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.fileRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -383,7 +375,7 @@ func (h *Handler) FilesCheckExistence(c echo.Context) error {
 		MD5 string `json:"md5"`
 	}
 	if err := c.Bind(&req); err != nil || req.MD5 == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.fileRepo == nil {
 		return c.JSON(http.StatusOK, false)
@@ -398,7 +390,7 @@ func (h *Handler) FilesAttachedNotes(c echo.Context) error {
 		FileID string `json:"fileId"`
 	}
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	// fileIds配列にfileIDを含むノートを検索 (PostgreSQL配列演算子)
 	if h.noteRepo == nil {
@@ -434,7 +426,7 @@ func (h *Handler) FilesMoveBulk(c echo.Context) error {
 		FolderID *string  `json:"folderId"`
 	}
 	if err := c.Bind(&req); err != nil || len(req.FileIDs) == 0 {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.fileRepo != nil {
 		_ = h.fileRepo.UpdateBulkFolder(req.FileIDs, req.FolderID)
@@ -452,7 +444,7 @@ func (h *Handler) Stream(c echo.Context) error {
 		Type    string `json:"type"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -481,7 +473,7 @@ func (h *Handler) FoldersList(c echo.Context) error {
 		FolderID *string `json:"folderId"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -512,7 +504,7 @@ func (h *Handler) FoldersFind(c echo.Context) error {
 		ParentID *string `json:"parentId"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.folderRepo == nil {
 		return c.JSON(http.StatusOK, []any{})

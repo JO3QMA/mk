@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -38,11 +39,11 @@ func (h *Handler) Achievements(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	bundle, err := h.userService.ShowByID(req.UserID)
 	if err != nil {
-		return noSuchUser(c)
+		return apierr.JSONNoSuchUser(c)
 	}
 	if bundle.Profile == nil || bundle.Profile.Achievements == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -93,7 +94,7 @@ func (h *Handler) UsersBulk(c echo.Context) error {
 		UserIDs []string `json:"userIds"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if len(req.UserIDs) == 0 {
 		return c.JSON(http.StatusOK, []any{})
@@ -119,7 +120,7 @@ func (h *Handler) ListsFavorite(c echo.Context) error {
 		ListID string `json:"listId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ListID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.userListFavoriteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -134,7 +135,7 @@ func (h *Handler) ListsFavorite(c echo.Context) error {
 		UserListID: req.ListID,
 	}
 	if err := h.userListFavoriteRepo.Create(fav); err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -146,13 +147,13 @@ func (h *Handler) ListsUnfavorite(c echo.Context) error {
 		ListID string `json:"listId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ListID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.userListFavoriteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.userListFavoriteRepo.Delete(user.ID, req.ListID); err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -166,7 +167,7 @@ func (h *Handler) ListsUpdate(c echo.Context) error {
 		IsPublic *bool  `json:"isPublic"`
 	}
 	if err := c.Bind(&req); err != nil || req.ListID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.userListRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -190,7 +191,7 @@ func (h *Handler) ListsUpdate(c echo.Context) error {
 	}
 	if len(fields) > 0 {
 		if err := h.userListRepo.UpdateList(req.ListID, fields); err != nil {
-			return internalError(c)
+			return apierr.JSONInternalError(c)
 		}
 	}
 	return c.JSON(http.StatusOK, list)
@@ -205,7 +206,7 @@ func (h *Handler) ListsUpdateMembership(c echo.Context) error {
 		WithReplies bool   `json:"withReplies"`
 	}
 	if err := c.Bind(&req); err != nil || req.ListID == "" || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.userListRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -222,7 +223,7 @@ func (h *Handler) ListsUpdateMembership(c echo.Context) error {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such user.", "code": "NO_SUCH_USER", "id": "588e7f72-c744-4a61-b180-d354e912bda2"}})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

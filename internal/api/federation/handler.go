@@ -37,7 +37,7 @@ type InstancesRequest struct {
 func (h *Handler) Instances(c echo.Context) error {
 	var req InstancesRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	filter := model.InstanceListFilter{
 		Host:          req.Host,
@@ -52,7 +52,7 @@ func (h *Handler) Instances(c echo.Context) error {
 	}
 	rows, err := h.svc.List(filter)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, inst := range rows {
@@ -70,7 +70,7 @@ type ShowInstanceRequest struct {
 func (h *Handler) ShowInstance(c echo.Context) error {
 	var req ShowInstanceRequest
 	if err := c.Bind(&req); err != nil || req.Host == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	inst, err := h.svc.FindByHost(req.Host)
 	if err != nil {
@@ -111,14 +111,6 @@ func instanceToMap(inst *model.Instance) map[string]any {
 		"infoUpdatedAt":           inst.InfoUpdatedAt,
 		"moderationNote":          inst.ModerationNote,
 	}
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func notFound(c echo.Context) error {

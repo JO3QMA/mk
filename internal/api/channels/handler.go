@@ -56,7 +56,7 @@ func (h *Handler) Create(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req CreateRequest
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	ch, err := h.svc.Create(corechannel.CreateInput{
 		OwnerID:     user.ID,
@@ -66,7 +66,7 @@ func (h *Handler) Create(c echo.Context) error {
 		IsSensitive: req.IsSensitive,
 	})
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, channelToMap(ch))
 }
@@ -80,7 +80,7 @@ type ShowRequest struct {
 func (h *Handler) Show(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	ch, err := h.svc.Show(req.ChannelID)
 	if err != nil {
@@ -104,7 +104,7 @@ func (h *Handler) Update(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req UpdateRequest
 	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	in := corechannel.UpdateInput{
 		Name:        req.Name,
@@ -122,11 +122,11 @@ func (h *Handler) Update(c echo.Context) error {
 		case errors.Is(err, corechannel.ErrChannelNotFound):
 			return notFound(c)
 		case errors.Is(err, corechannel.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		case errors.Is(err, corechannel.ErrChannelNameRequired):
-			return invalidParam(c)
+			return apierr.JSONInvalidParam(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, channelToMap(ch))
 }
@@ -141,7 +141,7 @@ func (h *Handler) Follow(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FollowRequest
 	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Follow(user.ID, req.ChannelID); err != nil {
 		switch {
@@ -150,7 +150,7 @@ func (h *Handler) Follow(c echo.Context) error {
 		case errors.Is(err, corechannel.ErrAlreadyFollowing):
 			return alreadyFollowing(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -160,13 +160,13 @@ func (h *Handler) Unfollow(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FollowRequest
 	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Unfollow(user.ID, req.ChannelID); err != nil {
 		if errors.Is(err, corechannel.ErrNotFollowing) {
 			return notFollowing(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -183,11 +183,11 @@ func (h *Handler) Followed(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginatedListRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.ListFollowed(user.ID, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, channelsToList(rows))
 }
@@ -197,11 +197,11 @@ func (h *Handler) Owned(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginatedListRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.ListOwned(user.ID, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, channelsToList(rows))
 }
@@ -210,11 +210,11 @@ func (h *Handler) Owned(c echo.Context) error {
 func (h *Handler) Featured(c echo.Context) error {
 	var req PaginatedListRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.ListFeatured(req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, channelsToList(rows))
 }
@@ -230,11 +230,11 @@ type SearchRequest struct {
 func (h *Handler) Search(c echo.Context) error {
 	var req SearchRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.Search(req.Query, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, channelsToList(rows))
 }
@@ -251,7 +251,7 @@ type TimelineRequest struct {
 func (h *Handler) Timeline(c echo.Context) error {
 	var req TimelineRequest
 	if err := c.Bind(&req); err != nil || req.ChannelID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	limit := req.Limit
 	if limit <= 0 {
@@ -265,7 +265,7 @@ func (h *Handler) Timeline(c echo.Context) error {
 		if errors.Is(err, corechannel.ErrChannelNotFound) {
 			return notFound(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]any, 0, len(notes))
 	for _, n := range notes {
@@ -300,20 +300,8 @@ func channelsToList(rows []*model.Channel) []map[string]any {
 	return out
 }
 
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
-}
-
 func notFound(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_CHANNEL", "No such channel.", "8ee5d9d4-9cb0-4f40-bba4-aaa31a3b48b9"))
-}
-
-func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, apierr.AccessDenied())
 }
 
 func alreadyFollowing(c echo.Context) error {

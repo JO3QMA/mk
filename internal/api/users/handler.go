@@ -108,7 +108,7 @@ type ShowRequest struct {
 func (h *Handler) Show(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if req.UserID == nil && req.Username == nil {
@@ -133,7 +133,7 @@ func (h *Handler) Show(c echo.Context) error {
 
 	if err != nil {
 		// Service.ShowByID/ShowByUsernameはErrUserNotFoundのみ返す
-		return noSuchUser(c)
+		return apierr.JSONNoSuchUser(c)
 	}
 
 	// チャート集計はベストエフォート。匿名訪問者は visitor key として
@@ -220,7 +220,7 @@ type SearchRequest struct {
 func (h *Handler) Search(c echo.Context) error {
 	var req SearchRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -228,7 +228,7 @@ func (h *Handler) Search(c echo.Context) error {
 
 	users, err := h.userService.Search(req.Query, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	out := make([]entity.UserDetailed, 0, len(users))
@@ -251,7 +251,7 @@ type NotesRequest struct {
 func (h *Handler) Notes(c echo.Context) error {
 	var req NotesRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -261,12 +261,12 @@ func (h *Handler) Notes(c echo.Context) error {
 	}
 
 	if _, err := h.userService.ShowByID(req.UserID); err != nil {
-		return noSuchUser(c)
+		return apierr.JSONNoSuchUser(c)
 	}
 
 	notes, err := h.noteRepo.ListByUserID(req.UserID, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	out := make([]entity.NoteEntity, 0, len(notes))
@@ -298,7 +298,7 @@ func (h *Handler) Following(c echo.Context) error {
 func (h *Handler) listRelations(c echo.Context, followers bool) error {
 	var req FollowersRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -308,7 +308,7 @@ func (h *Handler) listRelations(c echo.Context, followers bool) error {
 	}
 
 	if _, err := h.userService.ShowByID(req.UserID); err != nil {
-		return noSuchUser(c)
+		return apierr.JSONNoSuchUser(c)
 	}
 
 	var (
@@ -321,7 +321,7 @@ func (h *Handler) listRelations(c echo.Context, followers bool) error {
 		rows, err = h.collectFollowing(req)
 	}
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return c.JSON(http.StatusOK, rows)
@@ -381,16 +381,4 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		out = append(out, item)
 	}
 	return out, nil
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
-}
-
-func noSuchUser(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, apierr.NoSuchUser())
 }
