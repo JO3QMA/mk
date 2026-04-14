@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreclip "github.com/shiroha-a/mk/internal/core/clip"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -268,71 +269,29 @@ func clipToMap(cl *model.Clip) map[string]any {
 }
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
+	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func notFound(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such clip.",
-			"code":    "NO_SUCH_CLIP",
-			"id":      "f4a9c0c6-a6c3-4a07-8e6b-0a4f2b1a27e9",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_CLIP", "No such clip.", "f4a9c0c6-a6c3-4a07-8e6b-0a4f2b1a27e9"))
 }
 
 func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, map[string]any{
-		"error": map[string]any{
-			"message": "Access denied.",
-			"code":    "ACCESS_DENIED",
-			"id":      "1fb7cb09-d46a-4fff-b8df-057708cce513",
-		},
-	})
+	return c.JSON(http.StatusForbidden, apierr.AccessDenied())
 }
 
 func notFoundNote(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such note.",
-			"code":    "NO_SUCH_NOTE",
-			"id":      "24fcbfc6-2e37-42b6-8388-c29b32725715",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.NoSuchNote())
 }
 
 func alreadyClipped(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "The note has already been clipped.",
-			"code":    "ALREADY_CLIPPED",
-			"id":      "734806c4-542c-463a-9311-15c512803965",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_CLIPPED", "The note has already been clipped.", "734806c4-542c-463a-9311-15c512803965"))
 }
 
 func notClipped(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "The note is not clipped.",
-			"code":    "NOT_CLIPPED",
-			"id":      "aff017de-190e-434b-893e-33a9ff5049d8",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("NOT_CLIPPED", "The note is not clipped.", "aff017de-190e-434b-893e-33a9ff5049d8"))
 }
