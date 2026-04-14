@@ -19,14 +19,15 @@ func NewReversi(ctx stream.ChannelContext) stream.Channel {
 	return &ReversiChannel{ctx: ctx}
 }
 
-func (c *ReversiChannel) Init(_ json.RawMessage) {
+func (c *ReversiChannel) Init(_ json.RawMessage) error {
 	// 認証必須
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.connected = true
 	c.ctx.Subscribe("reversi:" + user.ID)
+	return nil
 }
 
 func (c *ReversiChannel) OnRedisEvent(payload []byte) {

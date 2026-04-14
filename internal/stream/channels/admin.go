@@ -34,17 +34,18 @@ func (f *AdminFactory) New(ctx stream.ChannelContext) stream.Channel {
 	return &AdminChannel{ctx: ctx, roleChecker: f.roleChecker}
 }
 
-func (c *AdminChannel) Init(_ json.RawMessage) {
+func (c *AdminChannel) Init(_ json.RawMessage) error {
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	// admin権限チェック
 	if c.roleChecker == nil || !c.roleChecker.IsAdministrator(user.ID) {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.connected = true
 	c.ctx.Subscribe("adminStream")
+	return nil
 }
 
 func (c *AdminChannel) OnRedisEvent(payload []byte) {

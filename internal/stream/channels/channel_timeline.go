@@ -18,19 +18,21 @@ func NewChannelTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &ChannelTimelineChannel{ctx: ctx}
 }
 
-func (c *ChannelTimelineChannel) Init(params json.RawMessage) {
+func (c *ChannelTimelineChannel) Init(params json.RawMessage) error {
 	var p struct {
 		ChannelID string `json:"channelId"`
 	}
 	if len(params) > 0 {
 		_ = json.Unmarshal(params, &p)
 	}
+	// TS本家のchannel.tsはchannelId欠如時にreturn (init自体は成功) するためerrorは返さない
 	if p.ChannelID == "" {
-		return
+		return nil
 	}
 	c.filter = parseNoteFilter(params)
 	c.topic = "channel:" + p.ChannelID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *ChannelTimelineChannel) OnRedisEvent(payload []byte) {

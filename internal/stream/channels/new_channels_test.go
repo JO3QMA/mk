@@ -60,7 +60,8 @@ func TestHashtag_Lifecycle(t *testing.T) {
 func TestHashtag_EmptyQ(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewHashtag(ctx)
-	ch.Init(json.RawMessage(`{}`))
+	err := ch.Init(json.RawMessage(`{}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 	ch.Dispose()
 }
@@ -83,14 +84,16 @@ func TestAntenna_Lifecycle(t *testing.T) {
 func TestAntenna_NoAuth(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewAntenna(ctx)
-	ch.Init(json.RawMessage(`{"antennaId":"a1"}`))
+	err := ch.Init(json.RawMessage(`{"antennaId":"a1"}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
 func TestAntenna_MissingID(t *testing.T) {
 	ctx := newCtx(&model.User{ID: "alice"})
 	ch := NewAntenna(ctx)
-	ch.Init(json.RawMessage(`{}`))
+	err := ch.Init(json.RawMessage(`{}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -112,7 +115,9 @@ func TestChannelTimeline_Lifecycle(t *testing.T) {
 func TestChannelTimeline_MissingID(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewChannelTimeline(ctx)
-	ch.Init(json.RawMessage(`{}`))
+	// TS本家はchannelId欠如時もinit成功とするため、errorは返さずno-op
+	err := ch.Init(json.RawMessage(`{}`))
+	assert.NoError(t, err)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -134,7 +139,16 @@ func TestUserList_Lifecycle(t *testing.T) {
 func TestUserList_NoAuth(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewUserList(ctx)
-	ch.Init(json.RawMessage(`{"listId":"l1"}`))
+	err := ch.Init(json.RawMessage(`{"listId":"l1"}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
+	assert.Empty(t, ctx.subs)
+}
+
+func TestUserList_MissingID(t *testing.T) {
+	ctx := newCtx(&model.User{ID: "alice"})
+	ch := NewUserList(ctx)
+	err := ch.Init(json.RawMessage(`{}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -167,7 +181,9 @@ func TestRoleTimeline_Lifecycle(t *testing.T) {
 func TestRoleTimeline_MissingID(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewRoleTimeline(ctx)
-	ch.Init(json.RawMessage(`{}`))
+	// TS本家はroleId欠如時もinit成功とするため、errorは返さずno-op
+	err := ch.Init(json.RawMessage(`{}`))
+	assert.NoError(t, err)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -191,14 +207,16 @@ func TestAdmin_Lifecycle(t *testing.T) {
 func TestAdmin_NoAuth(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := newAdminCh(ctx, false)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
 func TestAdmin_NotAdmin(t *testing.T) {
 	ctx := newCtx(&model.User{ID: "normaluser"})
 	ch := newAdminCh(ctx, false)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -263,7 +281,8 @@ func TestReversi_Lifecycle(t *testing.T) {
 func TestReversi_NoAuth(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewReversi(ctx)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 

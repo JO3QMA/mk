@@ -131,8 +131,9 @@ func TestChatRoomChannel_Init_NotMember(t *testing.T) {
 
 	ctx := newCtx(&model.User{ID: "carol"})
 	ch := NewChatRoomFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`{"roomId":"r1"}`))
+	err := ch.Init(json.RawMessage(`{"roomId":"r1"}`))
 
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs, "non-member should not subscribe")
 }
 
@@ -140,7 +141,8 @@ func TestChatRoomChannel_Init_Unauthenticated(t *testing.T) {
 	svc, _ := newChatSvc(t)
 	ctx := newCtx(nil)
 	ch := NewChatRoomFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`{"roomId":"r1"}`))
+	err := ch.Init(json.RawMessage(`{"roomId":"r1"}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -148,7 +150,8 @@ func TestChatRoomChannel_Init_MissingRoomID(t *testing.T) {
 	svc, _ := newChatSvc(t)
 	ctx := newCtx(&model.User{ID: "alice"})
 	ch := NewChatRoomFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`{}`))
+	err := ch.Init(json.RawMessage(`{}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -156,7 +159,8 @@ func TestChatRoomChannel_Init_BadJSON(t *testing.T) {
 	svc, _ := newChatSvc(t)
 	ctx := newCtx(&model.User{ID: "alice"})
 	ch := NewChatRoomFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`not-json`))
+	err := ch.Init(json.RawMessage(`not-json`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 

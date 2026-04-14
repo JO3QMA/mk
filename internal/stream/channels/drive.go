@@ -19,13 +19,14 @@ func NewDrive(ctx stream.ChannelContext) stream.Channel {
 	return &DriveChannel{ctx: ctx}
 }
 
-func (c *DriveChannel) Init(_ json.RawMessage) {
+func (c *DriveChannel) Init(_ json.RawMessage) error {
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.topic = "drive:" + user.ID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 // OnRedisEvent reads the embedded `type` (e.g. "fileCreated") and forwards

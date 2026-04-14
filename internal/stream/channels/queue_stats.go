@@ -17,9 +17,10 @@ func NewQueueStats(ctx stream.ChannelContext) stream.Channel {
 	return &QueueStatsChannel{ctx: ctx}
 }
 
-func (c *QueueStatsChannel) Init(_ json.RawMessage) {
+func (c *QueueStatsChannel) Init(_ json.RawMessage) error {
 	c.connected = true
 	c.ctx.Subscribe("queueStats")
+	return nil
 }
 
 func (c *QueueStatsChannel) OnRedisEvent(payload []byte) {

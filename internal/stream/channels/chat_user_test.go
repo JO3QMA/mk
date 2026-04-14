@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,8 @@ func TestChatUserChannel_Init_MissingOtherID(t *testing.T) {
 	svc, _ := newChatSvc(t)
 	ctx := newCtx(&model.User{ID: "alice"})
 	ch := NewChatUserFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`{}`))
+	err := ch.Init(json.RawMessage(`{}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -29,7 +31,8 @@ func TestChatUserChannel_Init_BadJSON(t *testing.T) {
 	svc, _ := newChatSvc(t)
 	ctx := newCtx(&model.User{ID: "alice"})
 	ch := NewChatUserFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`not-json`))
+	err := ch.Init(json.RawMessage(`not-json`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -37,7 +40,8 @@ func TestChatUserChannel_Init_Unauthenticated(t *testing.T) {
 	svc, _ := newChatSvc(t)
 	ctx := newCtx(nil)
 	ch := NewChatUserFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`{"otherId":"bob"}`))
+	err := ch.Init(json.RawMessage(`{"otherId":"bob"}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -45,7 +49,8 @@ func TestChatUserChannel_Init_SelfIsInvalid(t *testing.T) {
 	svc, _ := newChatSvc(t)
 	ctx := newCtx(&model.User{ID: "alice"})
 	ch := NewChatUserFactory(svc).New(ctx)
-	ch.Init(json.RawMessage(`{"otherId":"alice"}`))
+	err := ch.Init(json.RawMessage(`{"otherId":"alice"}`))
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 

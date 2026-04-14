@@ -2,8 +2,16 @@ package stream
 
 import (
 	"encoding/json"
+	"errors"
 	"sync"
 )
+
+// ErrInvalidParams indicates that a Channel.Init call received invalid or
+// missing parameters and cannot proceed. Dispatcher は Init がこのエラー
+// (または任意の non-nil error) を返した場合、channel 登録をロールバックし
+// pong ack も送らない。TS Misskey の init() が false を返したときの挙動に
+// 相当する。
+var ErrInvalidParams = errors.New("stream: invalid channel params")
 
 // Channel is the per-subscription state for one streaming channel attached to
 // a single Connection. Implementations are constructed by a ChannelFactory
@@ -11,8 +19,11 @@ import (
 // connection close.
 type Channel interface {
 	// Init is called once after the channel is registered. params は client が
-	// connect で渡した任意 JSON で、channel 実装ごとに解釈する。
-	Init(params json.RawMessage)
+	// connect で渡した任意 JSON で、channel 実装ごとに解釈する。非 nil の
+	// error を返すと Dispatcher は channel 登録をロールバックし、クライアント
+	// には (TS 互換の silent drop 方針に従い) 何も送らない。必須パラメータ
+	// 欠如などの典型的な拒否には ErrInvalidParams を返す。
+	Init(params json.RawMessage) error
 
 	// OnRedisEvent is called by the Manager when a subscribed Redis pub/sub
 	// channel produces a message. payload は Redis から受信した raw bytes。

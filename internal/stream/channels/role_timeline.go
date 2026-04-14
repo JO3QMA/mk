@@ -18,19 +18,21 @@ func NewRoleTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &RoleTimelineChannel{ctx: ctx}
 }
 
-func (c *RoleTimelineChannel) Init(params json.RawMessage) {
+func (c *RoleTimelineChannel) Init(params json.RawMessage) error {
 	var p struct {
 		RoleID string `json:"roleId"`
 	}
 	if len(params) > 0 {
 		_ = json.Unmarshal(params, &p)
 	}
+	// TS本家のrole-timeline.tsはroleId欠如時にreturn (init自体は成功) するためerrorは返さない
 	if p.RoleID == "" {
-		return
+		return nil
 	}
 	c.filter = parseNoteFilter(params)
 	c.topic = "roleTimeline:" + p.RoleID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *RoleTimelineChannel) OnRedisEvent(payload []byte) {

@@ -109,7 +109,14 @@ func (d *Dispatcher) handleConnect(body json.RawMessage) {
 	}
 
 	entry.channel = ch
-	ch.Init(req.Params)
+	if err := ch.Init(req.Params); err != nil {
+		// TS Misskey の init() が false を返したときと同じ挙動: ロールバックし
+		// pong ack も送らず、クライアントには通知しない (silent drop)。
+		// Init 中に Subscribe 済みの可能性があるため removeChannel で topic の
+		// refcount を整理する。
+		d.removeChannel(req.ID)
+		return
+	}
 
 	d.sendConnectedIfRequested(req.ID, req.Pong)
 }
