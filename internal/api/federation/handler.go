@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
 	"github.com/shiroha-a/mk/internal/model"
 )
@@ -113,31 +114,13 @@ func instanceToMap(inst *model.Instance) map[string]any {
 }
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
+	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func notFound(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such instance.",
-			"code":    "NO_SUCH_INSTANCE",
-			"id":      "8be60c3a-6f3a-4d3e-8a13-ba81b9b2c1c8",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_INSTANCE", "No such instance.", "8be60c3a-6f3a-4d3e-8a13-ba81b9b2c1c8"))
 }

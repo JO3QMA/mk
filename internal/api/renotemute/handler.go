@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -123,31 +124,13 @@ func (h *Handler) List(c echo.Context) error {
 }
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
+	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func noSuchUser(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such user.",
-			"code":    "NO_SUCH_USER",
-			"id":      "4362f8dc-731f-4ad8-a694-be5a88922a24",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.NoSuchUser())
 }

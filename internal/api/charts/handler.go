@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/chart"
 )
 
@@ -230,31 +231,13 @@ func (h *Handler) parseRequest(req *Request) (chart.Span, int, *time.Time, bool)
 // --- error helpers -----------------------------------------------------------
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "1d6f8c9b-a9b3-4d1f-94c0-7ecb2c1c7a02",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "9c2cb6b3-ec89-4ce4-9b3a-2f5c66c2af6b",
-		},
-	})
+	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func chartUnavailable(c echo.Context) error {
-	return c.JSON(http.StatusServiceUnavailable, map[string]any{
-		"error": map[string]any{
-			"message": "Chart not available.",
-			"code":    "CHART_UNAVAILABLE",
-			"id":      "5e3a8d12-6c4f-4d70-b3bc-1f3dd0c7a37a",
-		},
-	})
+	return c.JSON(http.StatusServiceUnavailable, apierr.Error("CHART_UNAVAILABLE", "Chart not available.", "5e3a8d12-6c4f-4d70-b3bc-1f3dd0c7a37a"))
 }

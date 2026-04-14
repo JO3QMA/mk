@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -300,61 +301,25 @@ func channelsToList(rows []*model.Channel) []map[string]any {
 }
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
+	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func notFound(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such channel.",
-			"code":    "NO_SUCH_CHANNEL",
-			"id":      "8ee5d9d4-9cb0-4f40-bba4-aaa31a3b48b9",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_CHANNEL", "No such channel.", "8ee5d9d4-9cb0-4f40-bba4-aaa31a3b48b9"))
 }
 
 func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, map[string]any{
-		"error": map[string]any{
-			"message": "Access denied.",
-			"code":    "ACCESS_DENIED",
-			"id":      "1fb7cb09-d46a-4fff-b8df-057708cce513",
-		},
-	})
+	return c.JSON(http.StatusForbidden, apierr.AccessDenied())
 }
 
 func alreadyFollowing(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "You are already following that channel.",
-			"code":    "ALREADY_FOLLOWING",
-			"id":      "35dbf050-f1cc-4da8-9322-87bb0acce8c7",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_FOLLOWING", "You are already following that channel.", "35dbf050-f1cc-4da8-9322-87bb0acce8c7"))
 }
 
 func notFollowing(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "You are not following that channel.",
-			"code":    "NOT_FOLLOWING",
-			"id":      "1f87a25b-7c72-4ed1-b3c3-bcaf57636a64",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("NOT_FOLLOWING", "You are not following that channel.", "1f87a25b-7c72-4ed1-b3c3-bcaf57636a64"))
 }

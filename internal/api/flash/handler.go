@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreflash "github.com/shiroha-a/mk/internal/core/flash"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -269,61 +270,25 @@ func flashToMap(f *model.Flash) map[string]any {
 }
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
+	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func notFound(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such flash.",
-			"code":    "NO_SUCH_FLASH",
-			"id":      "f0d34a1a-d29a-401d-90ba-1982122b5630",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FLASH", "No such flash.", "f0d34a1a-d29a-401d-90ba-1982122b5630"))
 }
 
 func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, map[string]any{
-		"error": map[string]any{
-			"message": "Access denied.",
-			"code":    "ACCESS_DENIED",
-			"id":      "1fb7cb09-d46a-4fff-b8df-057708cce513",
-		},
-	})
+	return c.JSON(http.StatusForbidden, apierr.AccessDenied())
 }
 
 func alreadyLiked(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "You already liked that flash.",
-			"code":    "ALREADY_LIKED",
-			"id":      "33106d32-22c2-4cdb-9c2e-29ddf92fd14c",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_LIKED", "You already liked that flash.", "33106d32-22c2-4cdb-9c2e-29ddf92fd14c"))
 }
 
 func notLiked(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "You have not liked that flash.",
-			"code":    "NOT_LIKED",
-			"id":      "f5eb37a7-72e4-4c2a-89e1-d56fbafe8b25",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("NOT_LIKED", "You have not liked that flash.", "f5eb37a7-72e4-4c2a-89e1-d56fbafe8b25"))
 }

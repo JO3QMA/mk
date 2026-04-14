@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -238,41 +239,17 @@ func antennaToMap(a *model.Antenna) map[string]any {
 }
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
+	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 }
 
 func notFound(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such antenna.",
-			"code":    "NO_SUCH_ANTENNA",
-			"id":      "3a1fb010-b54c-4f28-9a06-a5c7c7c1c33a",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANTENNA", "No such antenna.", "3a1fb010-b54c-4f28-9a06-a5c7c7c1c33a"))
 }
 
 func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, map[string]any{
-		"error": map[string]any{
-			"message": "Access denied.",
-			"code":    "ACCESS_DENIED",
-			"id":      "1fb7cb09-d46a-4fff-b8df-057708cce513",
-		},
-	})
+	return c.JSON(http.StatusForbidden, apierr.AccessDenied())
 }
