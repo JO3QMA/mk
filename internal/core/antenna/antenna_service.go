@@ -160,6 +160,7 @@ func (s *Service) Show(ownerID, antennaID string) (*model.Antenna, error) {
 type UpdateInput struct {
 	Name            *string
 	Src             *model.AntennaSource
+	UserListID      *string
 	Users           *[]string
 	Keywords        *[][]string
 	ExcludeKeywords *[][]string
@@ -192,6 +193,10 @@ func (s *Service) Update(ownerID, antennaID string, in UpdateInput) (*model.Ante
 			return nil, ErrInvalidSource
 		}
 		fields["src"] = *in.Src
+	}
+	if in.UserListID != nil {
+		// 空文字列での nullify を許すため ポインタ非 nil なら上書き対象扱い。
+		fields["userListId"] = in.UserListID
 	}
 	if in.Users != nil {
 		fields["users"] = *in.Users

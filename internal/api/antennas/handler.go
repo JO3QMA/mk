@@ -32,6 +32,7 @@ func NewHandler(svc *coreantenna.Service, noteRepo repository.NoteRepository, id
 type CreateRequest struct {
 	Name            string              `json:"name"`
 	Src             model.AntennaSource `json:"src"`
+	UserListID      *string             `json:"userListId"`
 	Users           []string            `json:"users"`
 	Keywords        [][]string          `json:"keywords"`
 	ExcludeKeywords [][]string          `json:"excludeKeywords"`
@@ -53,6 +54,7 @@ func (h *Handler) Create(c echo.Context) error {
 		OwnerID:         user.ID,
 		Name:            req.Name,
 		Src:             req.Src,
+		UserListID:      req.UserListID,
 		Users:           req.Users,
 		Keywords:        req.Keywords,
 		ExcludeKeywords: req.ExcludeKeywords,
@@ -101,6 +103,7 @@ type UpdateRequest struct {
 	AntennaID       string               `json:"antennaId"`
 	Name            *string              `json:"name"`
 	Src             *model.AntennaSource `json:"src"`
+	UserListID      *string              `json:"userListId"`
 	Users           *[]string            `json:"users"`
 	Keywords        *[][]string          `json:"keywords"`
 	ExcludeKeywords *[][]string          `json:"excludeKeywords"`
@@ -122,6 +125,7 @@ func (h *Handler) Update(c echo.Context) error {
 	a, err := h.svc.Update(user.ID, req.AntennaID, coreantenna.UpdateInput{
 		Name:            req.Name,
 		Src:             req.Src,
+		UserListID:      req.UserListID,
 		Users:           req.Users,
 		Keywords:        req.Keywords,
 		ExcludeKeywords: req.ExcludeKeywords,
@@ -226,6 +230,7 @@ func antennaToMap(a *model.Antenna) map[string]any {
 		"userId":          a.UserID,
 		"name":            a.Name,
 		"src":             a.Src,
+		"userListId":      a.UserListID,
 		"users":           a.Users,
 		"keywords":        a.Keywords,
 		"excludeKeywords": a.ExcludeKeywords,

@@ -49,7 +49,11 @@ func (h *Handler) AccountsFindByEmail(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 	}
-	return c.JSON(http.StatusOK, user)
+	// 他の admin エンドポイント (ShowUser 等) と同じ packAdminUser を通して
+	// Misskey 本家互換のレスポンス整形をする。生 model.User を返すと
+	// inbox / sharedInbox / usernameLower 等の内部フィールドが漏れ、
+	// createdAt / roles / policies 等のフロントが期待するフィールドが欠落する。
+	return c.JSON(http.StatusOK, h.packAdminUser(user, profile))
 }
 
 // --- single endpoints ---
