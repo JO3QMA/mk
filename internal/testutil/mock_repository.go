@@ -286,6 +286,14 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 			if s, ok := v.(*string); ok {
 				p.Lang = s
 			}
+		case "followedMessage":
+			if s, ok := v.(*string); ok {
+				p.FollowedMessage = s
+			}
+		case "publicReactions":
+			if b, ok := v.(bool); ok {
+				p.PublicReactions = b
+			}
 		case "alwaysMarkNsfw":
 			if b, ok := v.(bool); ok {
 				p.AlwaysMarkNsfw = b
