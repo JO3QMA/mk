@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -51,6 +52,7 @@ type CloseHandler func()
 type Connection struct {
 	id           string
 	user         *model.User
+	permissions  []string
 	conn         Conn
 	send         chan []byte
 	closeC       chan struct{}
@@ -90,6 +92,33 @@ func (c *Connection) ID() string { return c.id }
 
 // User returns the authenticated user, or nil for anonymous connections.
 func (c *Connection) User() *model.User { return c.user }
+
+// SetPermissions attaches OAuth2 permission scopes for this connection.
+// トークン経由で接続された場合に、AccessToken の permission 配列を渡す想定。
+// cookie/session 認証の場合は呼び出さない（空の permissions は権限ありとも無しとも区別できないため、
+// チャンネル側の要件チェックに委ねる）。
+func (c *Connection) SetPermissions(perms []string) {
+	c.permissions = perms
+}
+
+// Permissions returns the OAuth2 permission scopes attached to this connection.
+func (c *Connection) Permissions() []string {
+	return c.permissions
+}
+
+// HasPermission reports whether the connection is allowed to access the
+// given scope. session/cookie 認証ではトークン permission が無いため、
+// nil permissions は「制限なし (フルアクセス)」として扱う。
+// 空スライス ([]) は明示的にスコープなしのトークンを意味する。
+func (c *Connection) HasPermission(kind string) bool {
+	if kind == "" {
+		return true
+	}
+	if c.permissions == nil {
+		return true
+	}
+	return slices.Contains(c.permissions, kind)
+}
 
 // SetMessageHandler installs the callback invoked for each inbound client
 // message. Must be called before Start.

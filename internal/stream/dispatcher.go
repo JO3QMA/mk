@@ -98,10 +98,38 @@ func (d *Dispatcher) handleConnect(body json.RawMessage) {
 
 	ctx := &channelContext{dispatcher: d, id: req.ID}
 	ch := factory(ctx)
+
+	// OAuth2 スコープチェック。ch が PermittedChannel を実装していれば
+	// Connection のトークン permission 配列と照合する。
+	if !d.checkPermission(ch) {
+		d.mu.Lock()
+		delete(d.channels, req.ID)
+		d.mu.Unlock()
+		return
+	}
+
 	entry.channel = ch
 	ch.Init(req.Params)
 
 	d.sendConnectedIfRequested(req.ID, req.Pong)
+}
+
+// checkPermission verifies that the connection's token carries the scope
+// required by ch. Returns true when ch does not require any permission or
+// when the scope is present.
+func (d *Dispatcher) checkPermission(ch Channel) bool {
+	pc, ok := ch.(PermittedChannel)
+	if !ok {
+		return true
+	}
+	kind := pc.RequiredPermission()
+	if kind == "" {
+		return true
+	}
+	if d.conn == nil {
+		return false
+	}
+	return d.conn.HasPermission(kind)
 }
 
 // hasShareableChannelLocked checks if a shareable channel with the same name

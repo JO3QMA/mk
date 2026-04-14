@@ -45,6 +45,17 @@ type ChannelContext interface {
 	Unsubscribe(topic string)
 }
 
+// PermittedChannel is an optional interface a Channel can implement to
+// declare the OAuth2 permission scope required for subscription.
+// Dispatcher は connect 時にトークンの permission 配列と照合し、kind が
+// 含まれなければチャンネル作成を拒否する。
+type PermittedChannel interface {
+	Channel
+	// RequiredPermission returns the OAuth2 scope string (e.g. "read:account").
+	// An empty string means no permission is required.
+	RequiredPermission() string
+}
+
 // ShareableChannel is an optional interface a Channel can implement to
 // signal that a single Connection should not hold multiple instances of the
 // same channel name simultaneously. 例: serverStats/queueStats のような
