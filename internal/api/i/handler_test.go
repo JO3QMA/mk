@@ -338,12 +338,14 @@ func TestMe_AvatarAndBannerIDs(t *testing.T) {
 type stubRoleProvider struct {
 	admin     bool
 	moderator bool
+	silenced  bool
 	roles     []*model.Role
 	policies  map[string]any
 }
 
 func (s *stubRoleProvider) IsAdministrator(_ string) bool { return s.admin }
 func (s *stubRoleProvider) IsModerator(_ string) bool     { return s.moderator }
+func (s *stubRoleProvider) IsSilenced(_ string) bool      { return s.silenced }
 func (s *stubRoleProvider) GetUserRoles(_ string) ([]*model.Role, error) {
 	return s.roles, nil
 }

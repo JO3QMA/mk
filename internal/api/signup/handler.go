@@ -77,7 +77,9 @@ func (h *Handler) Signup(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	// メール認証フローは未実装 (テストモードではスキップ)
+	// メール認証フローは #165 (P4-5 admin/accounts + email) で実装予定。
+	// 現状は meta.EmailRequiredForSignup を真にすると INVALID_PARAM で登録を
+	// 拒否するのみで、実際の確認メール送信は行わない。testMode 下は完全バイパス。
 	if !h.testMode && meta.EmailRequiredForSignup {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Email-required signup is not yet supported.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}

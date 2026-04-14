@@ -24,6 +24,7 @@ type UserRepository interface {
 	ListUsers(filter model.UserListFilter) ([]*model.User, error)
 	ListRemoteInboxes() ([]string, error)
 	FindProfileByVerifyCode(code string) (*model.UserProfile, error)
+	FindProfileByEmail(email string) (*model.UserProfile, error)
 	CountOnlineUsers() (int64, error)
 }
 
@@ -138,6 +139,18 @@ func (r *userRepository) CreateProfile(profile *model.UserProfile) error {
 func (r *userRepository) FindProfileByVerifyCode(code string) (*model.UserProfile, error) {
 	var p model.UserProfile
 	if err := r.db.Where(`"emailVerifyCode" = ?`, code).First(&p).Error; err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// FindProfileByEmail looks up a user_profile by email. admin/accounts/
+// find-by-email で使う (本家 Misskey の accounts/find-by-email 相当)。
+// email 列は nullable + case-insensitive 検索にしたいが、本家 DB は
+// unique index を張っていないので「最初に見つかった 1 件」を返す。
+func (r *userRepository) FindProfileByEmail(email string) (*model.UserProfile, error) {
+	var p model.UserProfile
+	if err := r.db.Where(`"email" = ?`, email).First(&p).Error; err != nil {
 		return nil, err
 	}
 	return &p, nil

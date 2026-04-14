@@ -90,6 +90,15 @@ func (m *MockUserRepository) FindProfileByVerifyCode(code string) (*model.UserPr
 	return nil, ErrNotFound
 }
 
+func (m *MockUserRepository) FindProfileByEmail(email string) (*model.UserProfile, error) {
+	for _, p := range m.Profiles {
+		if p.Email != nil && *p.Email == email {
+			return p, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (m *MockUserRepository) IncrementFollowingCount(userID string, delta int) error {
 	if u, ok := m.Users[userID]; ok {
 		u.FollowingCount += delta

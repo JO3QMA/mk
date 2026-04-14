@@ -84,10 +84,12 @@ func TestCreate_InvalidSource(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidSource)
 }
 
-func TestCreate_ListSourceRejected(t *testing.T) {
+func TestCreate_ListSourceAccepted(t *testing.T) {
+	// #170 以降 list ソースも正規値として扱う (validSource に追加済み)。
 	svc, _ := newSvc(t)
-	_, err := svc.Create(CreateInput{OwnerID: "u1", Name: "alpha", Src: model.AntennaSourceList})
-	assert.ErrorIs(t, err, ErrInvalidSource)
+	listID := "ul1"
+	_, err := svc.Create(CreateInput{OwnerID: "u1", Name: "alpha", Src: model.AntennaSourceList, UserListID: &listID})
+	require.NoError(t, err)
 }
 
 func TestCreate_RepoError(t *testing.T) {
@@ -537,4 +539,66 @@ func TestSetClock(t *testing.T) {
 	a, err := svc.Create(CreateInput{OwnerID: "u1", Name: "alpha", Src: model.AntennaSourceAll})
 	require.NoError(t, err)
 	assert.Equal(t, fixed, a.LastUsedAt)
+}
+
+// Home source: owner follows author → match, otherwise miss.
+func TestMatchNote_HomeSource_Follows(t *testing.T) {
+	svc, _ := newSvc(t)
+	follows := testutil.NewMockFollowingRepository()
+	svc.SetFollowingRepo(follows)
+	// u1 → alice をフォロー
+	require.NoError(t, follows.Create(&model.Following{ID: "f1", FollowerID: "u1", FolloweeID: "alice"}))
+	a, err := svc.Create(CreateInput{OwnerID: "u1", Name: "homeA", Src: model.AntennaSourceHome})
+	require.NoError(t, err)
+	text := "hi"
+	n := &model.Note{ID: "n1", UserID: "alice", Text: &text}
+	assert.True(t, svc.matchNote(a, n, &model.User{ID: "alice", Username: "alice"}))
+}
+
+func TestMatchNote_HomeSource_NotFollowing(t *testing.T) {
+	svc, _ := newSvc(t)
+	svc.SetFollowingRepo(testutil.NewMockFollowingRepository())
+	a, err := svc.Create(CreateInput{OwnerID: "u1", Name: "homeB", Src: model.AntennaSourceHome})
+	require.NoError(t, err)
+	text := "hi"
+	n := &model.Note{ID: "n1", UserID: "bob", Text: &text}
+	assert.False(t, svc.matchNote(a, n, &model.User{ID: "bob", Username: "bob"}))
+}
+
+func TestMatchNote_HomeSource_NilRepoMisses(t *testing.T) {
+	// followingRepo 未注入なら home source は必ず miss (設定ミスを気付かせる)
+	svc, _ := newSvc(t)
+	a, err := svc.Create(CreateInput{OwnerID: "u1", Name: "homeC", Src: model.AntennaSourceHome})
+	require.NoError(t, err)
+	text := "hi"
+	n := &model.Note{ID: "n1", UserID: "alice", Text: &text}
+	assert.False(t, svc.matchNote(a, n, &model.User{ID: "alice", Username: "alice"}))
+}
+
+// List source: author が UserList に含まれていれば match。
+func TestMatchNote_ListSource_MemberMatches(t *testing.T) {
+	svc, _ := newSvc(t)
+	lists := testutil.NewMockUserListRepository()
+	svc.SetUserListRepo(lists)
+	listID := "ul1"
+	require.NoError(t, lists.Create(&model.UserList{ID: listID, UserID: "u1", Name: "friends"}))
+	require.NoError(t, lists.AddMember(&model.UserListMembership{UserListID: listID, UserID: "alice"}))
+	a, err := svc.Create(CreateInput{OwnerID: "u1", Name: "listA", Src: model.AntennaSourceList, UserListID: &listID})
+	require.NoError(t, err)
+	text := "hi"
+	n := &model.Note{ID: "n1", UserID: "alice", Text: &text}
+	assert.True(t, svc.matchNote(a, n, &model.User{ID: "alice", Username: "alice"}))
+}
+
+func TestMatchNote_ListSource_NonMember(t *testing.T) {
+	svc, _ := newSvc(t)
+	lists := testutil.NewMockUserListRepository()
+	svc.SetUserListRepo(lists)
+	listID := "ul1"
+	require.NoError(t, lists.Create(&model.UserList{ID: listID, UserID: "u1", Name: "friends"}))
+	a, err := svc.Create(CreateInput{OwnerID: "u1", Name: "listB", Src: model.AntennaSourceList, UserListID: &listID})
+	require.NoError(t, err)
+	text := "hi"
+	n := &model.Note{ID: "n1", UserID: "bob", Text: &text}
+	assert.False(t, svc.matchNote(a, n, &model.User{ID: "bob", Username: "bob"}))
 }

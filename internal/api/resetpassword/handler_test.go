@@ -76,6 +76,10 @@ func (m *mockUserRepo) FindProfileByVerifyCode(string) (*model.UserProfile, erro
 	return nil, errMock
 }
 
+func (m *mockUserRepo) FindProfileByEmail(string) (*model.UserProfile, error) {
+	return nil, errMock
+}
+
 func (m *mockUserRepo) UpdateProfile(userID string, fields map[string]any) error {
 	p, ok := m.profiles[userID]
 	if !ok {

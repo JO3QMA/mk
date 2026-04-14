@@ -83,6 +83,19 @@ func (s *Service) IsAdministrator(userID string) bool {
 	return false
 }
 
+// IsSilenced reports whether the user's merged role policies deny
+// `canPublicNote`. Mirrors upstream Misskey where silencing is not a
+// direct user flag but the outcome of a policy override on an assigned
+// role. Users without any overriding role fall back to DefaultPolicies
+// (canPublicNote=true) and are therefore not silenced.
+func (s *Service) IsSilenced(userID string) bool {
+	policies := s.GetUserPolicies(userID)
+	if canPublic, ok := policies["canPublicNote"].(bool); ok {
+		return !canPublic
+	}
+	return false
+}
+
 // IsModerator checks if the user has any moderator/admin role or is root.
 func (s *Service) IsModerator(userID string) bool {
 	if s.isRootUser(userID) {

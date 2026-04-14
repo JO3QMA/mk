@@ -42,16 +42,18 @@ func streamKey(antennaID string) string {
 
 // Service provides antenna CRUD plus matchNote / OnNoteCreated push.
 type Service struct {
-	repo     repository.AntennaRepository
-	userRepo repository.UserRepository
-	client   *redis.Client
-	idGen    id.Generator
-	clock    func() time.Time
+	repo          repository.AntennaRepository
+	userRepo      repository.UserRepository
+	followingRepo repository.FollowingRepository
+	userListRepo  repository.UserListRepository
+	client        *redis.Client
+	idGen         id.Generator
+	clock         func() time.Time
 }
 
-// NewService constructs an antenna Service. userRepo は home source の判定で
-// follower 情報が必要になる将来拡張のために受けるが、Phase 4.3 では使わない。
-// nil 渡し可能。
+// NewService constructs an antenna Service. userRepo は現状未使用だが、将来
+// 拡張のため受け取る (nil 許容)。home / list source を有効にするには、別途
+// SetFollowingRepo / SetUserListRepo で repository を注入する必要がある。
 func NewService(
 	repo repository.AntennaRepository,
 	userRepo repository.UserRepository,
@@ -67,6 +69,19 @@ func NewService(
 	}
 }
 
+// SetFollowingRepo enables the `home` antenna source by providing a
+// way to check whether the antenna owner follows the note author.
+// nil でも antenna service は動くが `home` は `all` にフォールバックする。
+func (s *Service) SetFollowingRepo(r repository.FollowingRepository) {
+	s.followingRepo = r
+}
+
+// SetUserListRepo enables the `list` antenna source. nil なら list sources は
+// 登録/マッチともに reject される。
+func (s *Service) SetUserListRepo(r repository.UserListRepository) {
+	s.userListRepo = r
+}
+
 // SetClock overrides the time source. Intended for tests.
 func (s *Service) SetClock(now func() time.Time) {
 	if now != nil {
@@ -79,6 +94,7 @@ type CreateInput struct {
 	OwnerID         string
 	Name            string
 	Src             model.AntennaSource
+	UserListID      *string
 	Users           []string
 	Keywords        [][]string
 	ExcludeKeywords [][]string
@@ -110,6 +126,7 @@ func (s *Service) Create(in CreateInput) (*model.Antenna, error) {
 		UserID:          in.OwnerID,
 		Name:            in.Name,
 		Src:             in.Src,
+		UserListID:      in.UserListID,
 		Users:           in.Users,
 		Keywords:        keywords,
 		ExcludeKeywords: exclude,
@@ -328,17 +345,44 @@ func (s *Service) matchNote(a *model.Antenna, n *model.Note, author *model.User)
 	return true
 }
 
-// matchSource applies the antenna's source filter (users / users_blacklist /
-// home / all). home は本来「フォローしている人」だが Phase 4.3 では未実装で
-// `all` と同等扱い (WithReplies / Keywords 等のフィルタで補う)。
+// matchSource applies the antenna's source filter.
+//
+//   - users: whitelist — author.username が a.Users に含まれていれば match
+//   - users_blacklist: blacklist — 含まれていなければ match
+//   - home: a の owner がフォロー中のユーザーのみ match (followingRepo 必須)
+//   - list: a.UserListID に紐づいた UserListMembership に author が含まれる
+//   - all: すべて match
+//
+// followingRepo / userListRepo が未注入のときは対応ソースを match 不成立
+// とみなす (all へのフォールバックではなく、設定ミスが検出しやすい側)。
 func (s *Service) matchSource(a *model.Antenna, author *model.User) bool {
 	switch a.Src {
 	case model.AntennaSourceUsers:
 		return slices.Contains(a.Users, author.Username)
 	case model.AntennaSourceUsersBlacklist:
 		return !slices.Contains(a.Users, author.Username)
+	case model.AntennaSourceHome:
+		if s.followingRepo == nil {
+			return false
+		}
+		ok, err := s.followingRepo.Exists(a.UserID, author.ID)
+		return err == nil && ok
+	case model.AntennaSourceList:
+		if s.userListRepo == nil || a.UserListID == nil || *a.UserListID == "" {
+			return false
+		}
+		members, err := s.userListRepo.ListMembers(*a.UserListID)
+		if err != nil {
+			return false
+		}
+		for _, m := range members {
+			if m.UserID == author.ID {
+				return true
+			}
+		}
+		return false
 	default:
-		// home / all / list は all と同等扱い
+		// all
 		return true
 	}
 }
@@ -422,11 +466,11 @@ func normalizeKeywords(in [][]string) [][]string {
 }
 
 // validSource reports whether s is one of the allowed antenna source values.
-// list はモデルにあるが Phase 4.3 では UserList が未実装のため reject する。
 func validSource(s model.AntennaSource) bool {
 	switch s {
 	case model.AntennaSourceAll, model.AntennaSourceHome,
-		model.AntennaSourceUsers, model.AntennaSourceUsersBlacklist:
+		model.AntennaSourceUsers, model.AntennaSourceUsersBlacklist,
+		model.AntennaSourceList:
 		return true
 	}
 	return false

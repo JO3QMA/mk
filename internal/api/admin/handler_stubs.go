@@ -32,6 +32,8 @@ func (h *Handler) AccountsDelete(c echo.Context) error {
 }
 
 // AccountsFindByEmail handles POST /api/admin/accounts/find-by-email.
+// user_profile.email 列を検索して、紐づく user を返す。本家 Misskey の
+// admin/accounts/find-by-email と同等。
 func (h *Handler) AccountsFindByEmail(c echo.Context) error {
 	var req struct {
 		Email string `json:"email"`
@@ -39,8 +41,15 @@ func (h *Handler) AccountsFindByEmail(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.Email == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	// メール検索は未実装 (user_profileテーブルのemail列検索が必要)
-	return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+	profile, err := h.userRepo.FindProfileByEmail(req.Email)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+	}
+	user, err := h.userRepo.FindByID(profile.UserID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+	}
+	return c.JSON(http.StatusOK, user)
 }
 
 // --- single endpoints ---

@@ -24,6 +24,7 @@ import (
 type RoleProvider interface {
 	IsAdministrator(userID string) bool
 	IsModerator(userID string) bool
+	IsSilenced(userID string) bool
 	GetUserRoles(userID string) ([]*model.Role, error)
 	GetUserPolicies(userID string) map[string]any
 }
@@ -46,6 +47,16 @@ type Handler struct {
 	emailSender      EmailSender
 	serverURL        string
 	signinRepo       repository.SigninRepository
+}
+
+// isSilenced returns whether the given user has any role whose merged
+// policies deny canPublicNote. Wraps roleProvider so a nil provider
+// (early boot / tests that skip role wiring) yields false.
+func (h *Handler) isSilenced(userID string) bool {
+	if h.roleProvider == nil {
+		return false
+	}
+	return h.roleProvider.IsSilenced(userID)
 }
 
 // SetServerURL sets the base URL used for email verification links.
@@ -242,7 +253,7 @@ func (h *Handler) Me(c echo.Context) error {
 		"bannerUrl":      detailed.BannerURL,
 		"bannerBlurhash": detailed.BannerBlurhash,
 		"isLocked":       detailed.IsLocked,
-		"isSilenced":     u.IsSuspended && false, // ロールベースで判定 (未実装)
+		"isSilenced":     h.isSilenced(u.ID),
 		"isSuspended":    detailed.IsSuspended,
 		"description":    detailed.Description,
 		"location":       detailed.Location,
