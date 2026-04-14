@@ -121,6 +121,8 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 		PinnedNoteIDs:       []string{},
 		PinnedNotes:         []any{},
 		Roles:               []any{},
+		// DBデフォルト値 (user_profileのpublicReactions DEFAULT true)
+		PublicReactions: true,
 	}
 
 	// IDからcreatedAtを抽出
