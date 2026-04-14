@@ -69,6 +69,27 @@ type FulltextSearchOptions struct {
 	Provider string `mapstructure:"provider"`
 }
 
+// SentryOptions mirrors the subset of `Sentry.NodeOptions` from the upstream
+// Misskey YAML schema that maps cleanly onto Go's sentry-go SDK. Fields not
+// covered (e.g. integration callbacks) are ignored on the Go backend.
+type SentryOptions struct {
+	DSN              string  `mapstructure:"dsn"`
+	Environment      string  `mapstructure:"environment"`
+	Release          string  `mapstructure:"release"`
+	SampleRate       float64 `mapstructure:"sampleRate"`
+	TracesSampleRate float64 `mapstructure:"tracesSampleRate"`
+	Debug            bool    `mapstructure:"debug"`
+	ServerName       string  `mapstructure:"serverName"`
+}
+
+// SentryBackendOptions mirrors `sentryForBackend` from Misskey config YAML.
+// EnableNodeProfiling refers to a Node-only Sentry integration; on the Go
+// backend it is parsed for compatibility but reported as a no-op at boot.
+type SentryBackendOptions struct {
+	EnableNodeProfiling bool          `mapstructure:"enableNodeProfiling"`
+	Options             SentryOptions `mapstructure:"options"`
+}
+
 // LoggingOptions represents logging configuration.
 type LoggingOptions struct {
 	SQL *SQLLoggingOptions `mapstructure:"sql"`
@@ -136,6 +157,15 @@ type Source struct {
 	// TestMode enables destructive test-only endpoints such as /api/reset-db.
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
 	TestMode bool `mapstructure:"testMode"`
+
+	// SentryForBackend enables Sentry error tracking for the Go server. Nil
+	// disables Sentry entirely (production default).
+	SentryForBackend *SentryBackendOptions `mapstructure:"sentryForBackend"`
+
+	// SentryForFrontend is captured for Misskey YAML compatibility but the Go
+	// backend itself does not consume it; downstream API handlers may forward
+	// it to the frontend bundle. map[string]any keeps the YAML shape as-is.
+	SentryForFrontend map[string]any `mapstructure:"sentryForFrontend"`
 }
 
 // Config represents the resolved application configuration.
@@ -214,6 +244,14 @@ type Config struct {
 	// TestMode enables destructive test-only endpoints such as /api/reset-db.
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
 	TestMode bool
+
+	// SentryForBackend, when non-nil, enables Sentry error tracking for the
+	// Go server.
+	SentryForBackend *SentryBackendOptions
+
+	// SentryForFrontend is forwarded as-is to clients that need it (parsed
+	// for YAML compatibility; the Go backend itself does not consume it).
+	SentryForFrontend map[string]any
 }
 
 const defaultMaxFileSize int64 = 262144000
@@ -381,6 +419,9 @@ func resolve(src *Source) (*Config, error) {
 		TrustProxy: resolveTrustProxy(src.TrustProxy),
 
 		TestMode: src.TestMode,
+
+		SentryForBackend:  src.SentryForBackend,
+		SentryForFrontend: src.SentryForFrontend,
 	}
 
 	if cfg.TestMode {
