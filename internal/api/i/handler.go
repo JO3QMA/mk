@@ -389,6 +389,8 @@ type UpdateRequest struct {
 	Location          *string `json:"location"`
 	Birthday          *string `json:"birthday"`
 	Lang              *string `json:"lang"`
+	FollowedMessage   *string `json:"followedMessage"`
+	PublicReactions   *bool   `json:"publicReactions"`
 	IsLocked          *bool   `json:"isLocked"`
 	IsBot             *bool   `json:"isBot"`
 	IsCat             *bool   `json:"isCat"`
@@ -501,6 +503,12 @@ func (h *Handler) Update(c echo.Context) error {
 	}
 	if req.Lang != nil {
 		in.Lang = &req.Lang
+	}
+	if req.FollowedMessage != nil {
+		in.FollowedMessage = &req.FollowedMessage
+	}
+	if req.PublicReactions != nil {
+		in.PublicReactions = req.PublicReactions
 	}
 	if len(req.Room) > 0 {
 		// json.RawMessage は親の Unmarshal が構文チェック済みの

@@ -553,6 +553,25 @@ func TestUpdate_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestUpdate_FollowedMessageAndPublicReactions(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+
+	rec := post(h.Update, `{"followedMessage":"thanks!","publicReactions":false}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	// profile had fields applied
+	p := repo.Profiles["user1"]
+	require.NotNil(t, p.FollowedMessage)
+	assert.Equal(t, "thanks!", *p.FollowedMessage)
+	assert.False(t, p.PublicReactions)
+}
+
 func TestUpdate_InvalidJSON(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	user := &model.User{ID: "user1"}
