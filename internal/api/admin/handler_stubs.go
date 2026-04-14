@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/serverstats"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
@@ -36,10 +37,10 @@ func (h *Handler) AccountsFindByEmail(c echo.Context) error {
 		Email string `json:"email"`
 	}
 	if err := c.Bind(&req); err != nil || req.Email == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// メール検索は未実装 (user_profileテーブルのemail列検索が必要)
-	return c.JSON(http.StatusNotFound, errResp("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+	return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 }
 
 // --- single endpoints ---
@@ -99,7 +100,7 @@ func (h *Handler) GetUserIPs(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	ips, err := h.userIPRepo.ListByUser(req.UserID, 30)
 	if err != nil {
@@ -121,7 +122,7 @@ func (h *Handler) ResetPassword(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// ランダムパスワード生成
 	b := make([]byte, 8)
@@ -281,14 +282,14 @@ func (h *Handler) DriveShowFile(c echo.Context) error {
 		FileID string `json:"fileId"`
 	}
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "fileId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "fileId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.driveFileRepo == nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
 	}
 	file, err := h.driveFileRepo.FindByID(req.FileID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
 	}
 	return c.JSON(http.StatusOK, entity.PackDriveFile(file, h.idGen))
 }
@@ -668,7 +669,7 @@ func (h *Handler) AbuseReportNotificationRecipientList(c echo.Context) error {
 
 // AbuseReportNotificationRecipientShow handles POST /api/admin/abuse-report/notification-recipient/show.
 func (h *Handler) AbuseReportNotificationRecipientShow(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 }
 
 // AbuseReportNotificationRecipientUpdate handles POST /api/admin/abuse-report/notification-recipient/update.
@@ -785,7 +786,7 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 		ExpiresAt int64  `json:"expiresAt"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	u := middleware.GetUser(c)
 	userID := ""
@@ -891,7 +892,7 @@ func (h *Handler) QueueRetryJob(c echo.Context) error {
 
 // QueueShowJob handles POST /api/admin/queue/show-job.
 func (h *Handler) QueueShowJob(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 }
 
 // QueueShowJobLogs handles POST /api/admin/queue/show-job-logs.
@@ -1011,7 +1012,7 @@ func (h *Handler) SystemWebhookList(c echo.Context) error {
 // SystemWebhookShow handles POST /api/admin/system-webhook/show.
 func (h *Handler) SystemWebhookShow(c echo.Context) error {
 	if h.adminDB == nil {
-		return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	var req struct {
 		ID string `json:"id"`
@@ -1019,7 +1020,7 @@ func (h *Handler) SystemWebhookShow(c echo.Context) error {
 	_ = c.Bind(&req)
 	var sw model.SystemWebhook
 	if err := h.adminDB.Where(`"id" = ?`, req.ID).First(&sw).Error; err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.JSON(http.StatusOK, sw)
 }

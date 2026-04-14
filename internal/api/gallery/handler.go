@@ -28,7 +28,7 @@ func NewHandler(db *gorm.DB, idGen id.Generator) *Handler {
 func (h *Handler) Featured(c echo.Context) error {
 	var posts []*model.GalleryPost
 	if err := h.db.Preload("User").Order("\"likedCount\" DESC").Limit(10).Find(&posts).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, h.packMany(posts))
 }
@@ -45,7 +45,7 @@ func (h *Handler) Posts(c echo.Context) error {
 		Offset int `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -56,7 +56,7 @@ func (h *Handler) Posts(c echo.Context) error {
 	}
 	var posts []*model.GalleryPost
 	if err := q.Find(&posts).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, h.packMany(posts))
 }
@@ -71,7 +71,7 @@ func (h *Handler) PostsCreate(c echo.Context) error {
 		IsSensitive bool     `json:"isSensitive"`
 	}
 	if err := c.Bind(&req); err != nil || req.Title == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "title is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "title is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.FileIDs == nil {
 		req.FileIDs = []string{}
@@ -88,7 +88,7 @@ func (h *Handler) PostsCreate(c echo.Context) error {
 		Tags:        []string{},
 	}
 	if err := h.db.Create(post).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	post.User = user
 	return c.JSON(http.StatusOK, h.packOne(post))
@@ -100,11 +100,11 @@ func (h *Handler) PostsShow(c echo.Context) error {
 		PostID string `json:"postId"`
 	}
 	if err := c.Bind(&req); err != nil || req.PostID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	var post model.GalleryPost
 	if err := h.db.Preload("User").Where("id = ?", req.PostID).First(&post).Error; err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_POST", "No such post.", "1137bf14-c27b-46e0-86d3-0cbbf8b0aca5"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_POST", "No such post.", "1137bf14-c27b-46e0-86d3-0cbbf8b0aca5"))
 	}
 	return c.JSON(http.StatusOK, h.packOne(&post))
 }
@@ -116,11 +116,11 @@ func (h *Handler) PostsDelete(c echo.Context) error {
 		PostID string `json:"postId"`
 	}
 	if err := c.Bind(&req); err != nil || req.PostID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	result := h.db.Where("id = ? AND \"userId\" = ?", req.PostID, user.ID).Delete(&model.GalleryPost{})
 	if result.RowsAffected == 0 {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_POST", "No such post.", "1137bf14-c27b-46e0-86d3-0cbbf8b0aca5"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_POST", "No such post.", "1137bf14-c27b-46e0-86d3-0cbbf8b0aca5"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -134,7 +134,7 @@ func (h *Handler) PostsUpdate(c echo.Context) error {
 		Description *string `json:"description"`
 	}
 	if err := c.Bind(&req); err != nil || req.PostID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	fields := map[string]any{}
 	if req.Title != nil {
@@ -145,7 +145,7 @@ func (h *Handler) PostsUpdate(c echo.Context) error {
 	}
 	result := h.db.Model(&model.GalleryPost{}).Where("id = ? AND \"userId\" = ?", req.PostID, user.ID).Updates(fields)
 	if result.RowsAffected == 0 {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_POST", "No such post.", "1137bf14-c27b-46e0-86d3-0cbbf8b0aca5"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_POST", "No such post.", "1137bf14-c27b-46e0-86d3-0cbbf8b0aca5"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -157,7 +157,7 @@ func (h *Handler) PostsLike(c echo.Context) error {
 		PostID string `json:"postId"`
 	}
 	if err := c.Bind(&req); err != nil || req.PostID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	like := &model.GalleryLike{
 		ID:     h.idGen.Generate(time.Now()),
@@ -165,7 +165,7 @@ func (h *Handler) PostsLike(c echo.Context) error {
 		PostID: req.PostID,
 	}
 	if err := h.db.Create(like).Error; err != nil {
-		return c.JSON(http.StatusConflict, errResp("ALREADY_LIKED", "Already liked.", "40e8fb37-7a93-4e2c-87fc-c1c25e4a68a1"))
+		return c.JSON(http.StatusConflict, apierr.Error("ALREADY_LIKED", "Already liked.", "40e8fb37-7a93-4e2c-87fc-c1c25e4a68a1"))
 	}
 	h.db.Model(&model.GalleryPost{}).Where("id = ?", req.PostID).UpdateColumn("\"likedCount\"", gorm.Expr("\"likedCount\" + 1"))
 	return c.NoContent(http.StatusNoContent)
@@ -178,7 +178,7 @@ func (h *Handler) PostsUnlike(c echo.Context) error {
 		PostID string `json:"postId"`
 	}
 	if err := c.Bind(&req); err != nil || req.PostID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "postId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	h.db.Where("\"userId\" = ? AND \"postId\" = ?", user.ID, req.PostID).Delete(&model.GalleryLike{})
 	h.db.Model(&model.GalleryPost{}).Where("id = ?", req.PostID).UpdateColumn("\"likedCount\"", gorm.Expr("GREATEST(\"likedCount\" - 1, 0)"))
@@ -215,8 +215,4 @@ func (h *Handler) packOne(p *model.GalleryPost) map[string]any {
 		resp["user"] = entity.PackUserLite(p.User)
 	}
 	return resp
-}
-
-func errResp(code, message, id string) map[string]any {
-	return apierr.Error(code, message, id)
 }

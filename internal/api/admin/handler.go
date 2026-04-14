@@ -123,12 +123,12 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 		SetupPassword *string `json:"setupPassword"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	meta, err := h.metaRepo.Fetch()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	user := middleware.GetUser(c)
@@ -137,25 +137,25 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 	if !isInitialSetup {
 		// 初回セットアップ以外はadmin権限必須
 		if user == nil {
-			return c.JSON(http.StatusForbidden, errResp("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 		}
 		if meta.RootUserID == nil || *meta.RootUserID != user.ID {
-			return c.JSON(http.StatusForbidden, errResp("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 		}
 	}
 
 	result, err := h.signupService.Signup(req.Username, req.Password, isInitialSetup)
 	if err != nil {
 		if err == signup.ErrUsernameAlreadyExists {
-			return c.JSON(http.StatusConflict, errResp("USERNAME_ALREADY_EXISTS", "Username already exists.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 		}
 		if err == signup.ErrInvalidUsername {
-			return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 		}
 		if err == signup.ErrUsernameReserved {
-			return c.JSON(http.StatusBadRequest, errResp("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
 		}
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	u := result.User
@@ -273,12 +273,12 @@ func (h *Handler) ShowUser(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	user, err := h.userRepo.FindByID(req.UserID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 	}
 
 	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
@@ -296,7 +296,7 @@ func (h *Handler) ShowUsers(c echo.Context) error {
 		Offset int    `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	users, err := h.userRepo.ListUsers(model.UserListFilter{
@@ -307,7 +307,7 @@ func (h *Handler) ShowUsers(c echo.Context) error {
 		Offset: req.Offset,
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	result := make([]map[string]any, 0, len(users))
@@ -401,15 +401,15 @@ func (h *Handler) SuspendUser(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true}); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -420,15 +420,15 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": false}); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -437,7 +437,7 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 func (h *Handler) AdminMeta(c echo.Context) error {
 	m, err := h.metaRepo.Fetch()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	resp := map[string]any{
 		// Basic
@@ -561,13 +561,13 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 func (h *Handler) UpdateMeta(c echo.Context) error {
 	var fields map[string]any
 	if err := c.Bind(&fields); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// "i" フィールドを除外 (auth token)
 	delete(fields, "i")
 
 	if err := h.metaRepo.Update(fields); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -587,7 +587,7 @@ func (h *Handler) RolesCreate(c echo.Context) error {
 		DisplayOrder    int    `json:"displayOrder"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	r, err := h.roleService.Create(req.Name, req.Description, role.CreateOptions{
 		IsModerator:     req.IsModerator,
@@ -598,7 +598,7 @@ func (h *Handler) RolesCreate(c echo.Context) error {
 		DisplayOrder:    req.DisplayOrder,
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, r)
 }
@@ -609,11 +609,11 @@ func (h *Handler) RolesShow(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	r, err := h.roleService.Show(req.RoleID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	return c.JSON(http.StatusOK, r)
 }
@@ -622,7 +622,7 @@ func (h *Handler) RolesShow(c echo.Context) error {
 func (h *Handler) RolesList(c echo.Context) error {
 	roles, err := h.roleService.List()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, roles)
 }
@@ -638,10 +638,10 @@ func (h *Handler) RolesUpdate(c echo.Context) error {
 		IsPublic        *bool   `json:"isPublic"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.roleService.Show(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	fields := map[string]any{}
 	if req.Name != nil {
@@ -670,10 +670,10 @@ func (h *Handler) RolesDelete(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if err := h.roleService.Delete(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -686,7 +686,7 @@ func (h *Handler) RolesAssign(c echo.Context) error {
 		ExpiresAt *string `json:"expiresAt"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	var expiresAt *time.Time
 	if req.ExpiresAt != nil {
@@ -696,12 +696,12 @@ func (h *Handler) RolesAssign(c echo.Context) error {
 	}
 	if err := h.roleService.Assign(req.UserID, req.RoleID, expiresAt); err != nil {
 		if err == role.ErrRoleNotFound {
-			return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 		}
 		if err == role.ErrAlreadyAssigned {
-			return c.JSON(http.StatusConflict, errResp("ALREADY_ASSIGNED", "Role already assigned.", "67d8689c-25c6-435f-8eed-6ea68e5e53e9"))
+			return c.JSON(http.StatusConflict, apierr.Error("ALREADY_ASSIGNED", "Role already assigned.", "67d8689c-25c6-435f-8eed-6ea68e5e53e9"))
 		}
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -713,13 +713,13 @@ func (h *Handler) RolesUnassign(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if err := h.roleService.Unassign(req.UserID, req.RoleID); err != nil {
 		if err == role.ErrNotAssigned {
-			return c.JSON(http.StatusNotFound, errResp("NOT_ASSIGNED", "Role not assigned.", "b9060ac7-5c94-4da4-9f55-2047140f5a68"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NOT_ASSIGNED", "Role not assigned.", "b9060ac7-5c94-4da4-9f55-2047140f5a68"))
 		}
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -732,10 +732,10 @@ func (h *Handler) RolesUsers(c echo.Context) error {
 		Offset int    `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.roleService.Show(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	limit := req.Limit
 	if limit <= 0 {
@@ -752,11 +752,11 @@ func (h *Handler) RolesUpdateDefaultPolicies(c echo.Context) error {
 		Policies map[string]any `json:"policies"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// Meta の policies フィールドを更新
 	if err := h.metaRepo.Update(map[string]any{"policies": req.Policies}); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -773,10 +773,10 @@ func (h *Handler) EmojiAdd(c echo.Context) error {
 		URL  string `json:"url"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	e := &model.Emoji{
 		ID:          h.idGen.Generate(time.Now()),
@@ -785,7 +785,7 @@ func (h *Handler) EmojiAdd(c echo.Context) error {
 		PublicURL:   req.URL,
 	}
 	if err := h.emojiRepo.Create(e); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, e)
 }
@@ -799,10 +799,10 @@ func (h *Handler) EmojiUpdate(c echo.Context) error {
 		Aliases  []string `json:"aliases"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	fields := map[string]any{}
 	if req.Name != nil {
@@ -815,7 +815,7 @@ func (h *Handler) EmojiUpdate(c echo.Context) error {
 		fields["aliases"] = req.Aliases
 	}
 	if err := h.emojiRepo.UpdateFields(req.ID, fields); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -826,13 +826,13 @@ func (h *Handler) EmojiDelete(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	if err := h.emojiRepo.Delete(req.ID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -846,14 +846,14 @@ func (h *Handler) EmojiList(c echo.Context) error {
 		Offset   int    `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	emojis, err := h.emojiRepo.ListWithFilter(req.Query, req.Category, true, req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, emojis)
 }
@@ -868,14 +868,14 @@ func (h *Handler) AbuseReports(c echo.Context) error {
 		Offset   int   `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.abuseRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	reports, err := h.abuseRepo.List(req.Resolved, req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, reports)
 }
@@ -886,10 +886,10 @@ func (h *Handler) ResolveAbuseReport(c echo.Context) error {
 		ReportID string `json:"reportId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ReportID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "reportId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "reportId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.abuseRepo == nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
 	}
 	resolvedAs := "accept"
 	err := h.abuseRepo.UpdateFields(req.ReportID, map[string]any{
@@ -897,7 +897,7 @@ func (h *Handler) ResolveAbuseReport(c echo.Context) error {
 		"resolvedAs": resolvedAs,
 	})
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -909,18 +909,14 @@ func (h *Handler) ShowModerationLogs(c echo.Context) error {
 		Offset int `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.modLogRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	logs, err := h.modLogRepo.List(req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, logs)
-}
-
-func errResp(code, message, id string) map[string]any {
-	return apierr.Error(code, message, id)
 }

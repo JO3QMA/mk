@@ -57,10 +57,6 @@ func (h *Handler) SetFederation(baseURL string, deliverer FederationDeliverer, f
 	h.userRepo = userRepo
 }
 
-func apiError(code, message, errID string) map[string]any {
-	return apierr.Error(code, message, errID)
-}
-
 func packGame(g *model.ReversiGame, idGen id.Generator) map[string]any {
 	result := map[string]any{
 		"id":                   g.ID,
@@ -179,11 +175,11 @@ func (h *Handler) ShowGame(c echo.Context) error {
 		GameID string `json:"gameId"`
 	}
 	if err := c.Bind(&req); err != nil || req.GameID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	game, err := h.repo.FindByID(req.GameID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	}
 	return c.JSON(http.StatusOK, packGame(game, h.idGen))
 }
@@ -204,7 +200,7 @@ func (h *Handler) Match(c echo.Context) error {
 	if strings.HasPrefix(req.UserID, "@") && h.userRepo != nil {
 		resolved, err := h.resolveAcct(req.UserID)
 		if err != nil {
-			return c.JSON(http.StatusNotFound, apiError("NO_SUCH_USER", "No such user.", "6cc579cc-885d-43d8-95c2-b8c7fc963280"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "6cc579cc-885d-43d8-95c2-b8c7fc963280"))
 		}
 		req.UserID = resolved
 	}
@@ -225,7 +221,7 @@ func (h *Handler) Match(c echo.Context) error {
 	}
 
 	if err := h.repo.Create(game); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// リモートユーザーの場合、federation session を Redis に保存 + Invite 送信。
@@ -269,7 +265,7 @@ func (h *Handler) Surrender(c echo.Context) error {
 		GameID string `json:"gameId"`
 	}
 	if err := c.Bind(&req); err != nil || req.GameID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	// federation Leave を送るために winner (= 相手) を先に引いておく。
@@ -277,10 +273,10 @@ func (h *Handler) Surrender(c echo.Context) error {
 	// lookup は handler のタイミングで必要なので preload する。
 	game, err := h.repo.FindByID(req.GameID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	}
 	if game.User1ID != user.ID && game.User2ID != user.ID {
-		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
 	}
 	var winnerID string
 	if game.User1ID == user.ID {
@@ -326,15 +322,15 @@ func (h *Handler) Surrender(c echo.Context) error {
 func surrenderErrorResponse(c echo.Context, err error) error {
 	switch {
 	case errors.Is(err, corereversi.ErrGameNotFound):
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	case errors.Is(err, corereversi.ErrNotPlayer):
-		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
 	case errors.Is(err, corereversi.ErrAlreadyEnded):
-		return c.JSON(http.StatusBadRequest, apiError("ALREADY_ENDED", "Game has already ended.", "2a3a7f72-bc06-4f4e-9f7c-b7f8d4f6a09e"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_ENDED", "Game has already ended.", "2a3a7f72-bc06-4f4e-9f7c-b7f8d4f6a09e"))
 	case errors.Is(err, corereversi.ErrNotStarted):
-		return c.JSON(http.StatusBadRequest, apiError("NOT_STARTED", "Game has not started yet.", "ac4bb45f-ea81-44d3-a5b3-fe5f30be2c8d"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("NOT_STARTED", "Game has not started yet.", "ac4bb45f-ea81-44d3-a5b3-fe5f30be2c8d"))
 	}
-	return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 }
 
 // Verify handles POST /api/reversi/verify — verify game integrity.
@@ -343,11 +339,11 @@ func (h *Handler) Verify(c echo.Context) error {
 		GameID string `json:"gameId"`
 	}
 	if err := c.Bind(&req); err != nil || req.GameID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	game, err := h.repo.FindByID(req.GameID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	}
 
 	// ゲームログを再生して検証

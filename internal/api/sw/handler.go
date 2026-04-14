@@ -24,10 +24,6 @@ func NewHandler(repo repository.SwSubscriptionRepository, metaRepo repository.Me
 	return &Handler{repo: repo, metaRepo: metaRepo, idGen: idGen}
 }
 
-func apiError(code, message, errID string) map[string]any {
-	return apierr.Error(code, message, errID)
-}
-
 // Register handles POST /api/sw/register.
 func (h *Handler) Register(c echo.Context) error {
 	user := middleware.GetUser(c)
@@ -38,7 +34,7 @@ func (h *Handler) Register(c echo.Context) error {
 		SendReadMessage bool   `json:"sendReadMessage"`
 	}
 	if err := c.Bind(&req); err != nil || req.Endpoint == "" || req.Auth == "" || req.PublicKey == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "endpoint, auth, and publickey are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "endpoint, auth, and publickey are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	var swPublicKey *string
@@ -68,7 +64,7 @@ func (h *Handler) Register(c echo.Context) error {
 		SendReadMessage: req.SendReadMessage,
 	}
 	if err := h.repo.Create(sub); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -87,7 +83,7 @@ func (h *Handler) ShowRegistration(c echo.Context) error {
 		Endpoint string `json:"endpoint"`
 	}
 	if err := c.Bind(&req); err != nil || req.Endpoint == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "endpoint is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "endpoint is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	sub, err := h.repo.FindByUserAndEndpoint(user.ID, req.Endpoint)
@@ -110,19 +106,19 @@ func (h *Handler) UpdateRegistration(c echo.Context) error {
 		SendReadMessage *bool  `json:"sendReadMessage"`
 	}
 	if err := c.Bind(&req); err != nil || req.Endpoint == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "endpoint is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "endpoint is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	sub, err := h.repo.FindByUserAndEndpoint(user.ID, req.Endpoint)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_REGISTRATION", "No such registration.", "b09d8066-8064-5613-efb6-0e963b21d012"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_REGISTRATION", "No such registration.", "b09d8066-8064-5613-efb6-0e963b21d012"))
 	}
 
 	if req.SendReadMessage != nil {
 		sub.SendReadMessage = *req.SendReadMessage
 	}
 	if err := h.repo.Update(sub); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -139,7 +135,7 @@ func (h *Handler) Unregister(c echo.Context) error {
 		Endpoint string `json:"endpoint"`
 	}
 	if err := c.Bind(&req); err != nil || req.Endpoint == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "endpoint is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "endpoint is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	if user != nil {

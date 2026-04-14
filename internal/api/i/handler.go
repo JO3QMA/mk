@@ -108,14 +108,14 @@ func (h *Handler) RegistryGet(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil || req.Key == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	item, err := h.registryRepo.Get(u.ID, req.Key, req.Scope, req.Domain)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_KEY", "No such key.", "ac3ed68a-62f0-422b-a7bc-d5e09e8f6a6a"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_KEY", "No such key.", "ac3ed68a-62f0-422b-a7bc-d5e09e8f6a6a"))
 	}
 	// value をそのまま返す (JSONBの中身)
 	return c.JSONBlob(http.StatusOK, item.Value)
@@ -131,7 +131,7 @@ func (h *Handler) RegistrySet(c echo.Context) error {
 		Domain *string         `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil || req.Key == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
@@ -146,7 +146,7 @@ func (h *Handler) RegistrySet(c echo.Context) error {
 		Domain:    req.Domain,
 	}
 	if err := h.registryRepo.Set(item); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -159,14 +159,14 @@ func (h *Handler) RegistryGetAll(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	items, err := h.registryRepo.GetAll(u.ID, req.Scope, req.Domain)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	result := make(map[string]json.RawMessage, len(items))
 	for _, item := range items {
@@ -183,14 +183,14 @@ func (h *Handler) RegistryKeysWithType(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	keys, err := h.registryRepo.KeysWithType(u.ID, req.Scope, req.Domain)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, keys)
 }
@@ -204,13 +204,13 @@ func (h *Handler) RegistryRemove(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil || req.Key == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	if err := h.registryRepo.Remove(u.ID, req.Key, req.Scope, req.Domain); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -485,7 +485,7 @@ func (h *Handler) Update(c echo.Context) error {
 		// クリアリクエストは検査対象外 (ユーザー体験上必要)。
 		if h.metaRepo != nil && *req.Name != "" {
 			if m, err := h.metaRepo.Fetch(); err == nil && containsProhibitedWord(*req.Name, m.ProhibitedWordsForNameOfUser) {
-				return c.JSON(http.StatusBadRequest, errEnvelope("Your new name contains prohibited words.", "NAME_CONTAINS_PROHIBITED_WORDS", "0b3f9f6a-2e7d-4c2c-9d7a-8c6f9b2e1a44"))
+				return c.JSON(http.StatusBadRequest, apierr.Error("NAME_CONTAINS_PROHIBITED_WORDS", "Your new name contains prohibited words.", "0b3f9f6a-2e7d-4c2c-9d7a-8c6f9b2e1a44"))
 			}
 		}
 		in.Name = &req.Name
@@ -512,7 +512,7 @@ func (h *Handler) Update(c echo.Context) error {
 	bundle, err := h.userService.UpdateProfile(me.ID, in)
 	if err != nil {
 		if errors.Is(err, user.ErrUserNotFound) {
-			return c.JSON(http.StatusNotFound, errEnvelope("No such user.", "NO_SUCH_USER", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
 		}
 		return internalError(c)
 	}
@@ -537,11 +537,11 @@ func (h *Handler) Pin(c echo.Context) error {
 	if err := h.userService.PinNote(me.ID, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, user.ErrNoteNotFound):
-			return c.JSON(http.StatusNotFound, errEnvelope("No such note.", "NO_SUCH_NOTE", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 		case errors.Is(err, user.ErrAlreadyPinned):
-			return c.JSON(http.StatusBadRequest, errEnvelope("That note has already been pinned.", "ALREADY_PINNED", "8b18c2b7-68fe-4edb-9892-c0cbaeb6c913"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_PINNED", "That note has already been pinned.", "8b18c2b7-68fe-4edb-9892-c0cbaeb6c913"))
 		case errors.Is(err, user.ErrPinLimitExceeded):
-			return c.JSON(http.StatusBadRequest, errEnvelope("You can not pin notes any more.", "PIN_LIMIT_EXCEEDED", "72dab508-c64d-498f-8740-a8eec1ba385a"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("PIN_LIMIT_EXCEEDED", "You can not pin notes any more.", "72dab508-c64d-498f-8740-a8eec1ba385a"))
 		default:
 			return internalError(c)
 		}
@@ -561,7 +561,7 @@ func (h *Handler) Unpin(c echo.Context) error {
 
 	if err := h.userService.UnpinNote(me.ID, req.NoteID); err != nil {
 		if errors.Is(err, user.ErrPinNotFound) {
-			return c.JSON(http.StatusNotFound, errEnvelope("No such note.", "NO_SUCH_NOTE", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 		}
 		return internalError(c)
 	}
@@ -570,17 +570,9 @@ func (h *Handler) Unpin(c echo.Context) error {
 }
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, errEnvelope("Invalid param.", "INVALID_PARAM", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid param.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, errEnvelope("Internal error.", "INTERNAL_ERROR", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
-}
-
-func errEnvelope(message, code, id string) map[string]any {
-	return apierr.Error(code, message, id)
-}
-
-func apiError(code, message, id string) map[string]any {
-	return apierr.Error(code, message, id)
+	return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 }

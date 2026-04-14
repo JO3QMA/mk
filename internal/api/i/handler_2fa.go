@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -37,19 +38,19 @@ func (h *Handler) TwoFARegister(c echo.Context) error {
 		Password string `json:"password"`
 	}
 	if err := c.Bind(&req); err != nil || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	profile := h.userService.GetProfile(user.ID)
 	if profile == nil || profile.Password == nil {
-		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "No password set.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "No password set.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(req.Password)); err != nil {
-		return c.JSON(http.StatusForbidden, apiError("INCORRECT_PASSWORD", "Incorrect password.", "932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+		return c.JSON(http.StatusForbidden, apierr.Error("INCORRECT_PASSWORD", "Incorrect password.", "932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 	}
 
 	secret, uri, err := twofactor.GenerateSecret("Misskey", user.Username)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// tempSecretに保存 (doneで確認後にsecretに移動)
@@ -73,23 +74,23 @@ func (h *Handler) TwoFADone(c echo.Context) error {
 		Token string `json:"token"`
 	}
 	if err := c.Bind(&req); err != nil || req.Token == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "token is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "token is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	profile := h.userService.GetProfile(user.ID)
 	if profile == nil || profile.TwoFactorTempSecret == nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "2FA registration not started.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "2FA registration not started.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	if !twofactor.Validate(req.Token, *profile.TwoFactorTempSecret) {
-		return c.JSON(http.StatusForbidden, apiError("INVALID_TOKEN", "Invalid token.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("INVALID_TOKEN", "Invalid token.", "00000000-0000-0000-0000-000000000000"))
 	}
 
 	// バックアップコードを生成。crypto/rand 失敗は実質起きないが、起きた場合は
 	// 2FA セットアップ自体を中断して 500 を返す。
 	backupCodes, err := twofactor.GenerateBackupCodes()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Failed to generate backup codes.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to generate backup codes.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// tempSecretをsecretに移動、2FAを有効化、backup codes を保存
@@ -113,14 +114,14 @@ func (h *Handler) TwoFAUnregister(c echo.Context) error {
 		Password string `json:"password"`
 	}
 	if err := c.Bind(&req); err != nil || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	profile := h.userService.GetProfile(user.ID)
 	if profile == nil || profile.Password == nil {
-		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "No password set.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "No password set.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(req.Password)); err != nil {
-		return c.JSON(http.StatusForbidden, apiError("INCORRECT_PASSWORD", "Incorrect password.", "932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+		return c.JSON(http.StatusForbidden, apierr.Error("INCORRECT_PASSWORD", "Incorrect password.", "932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 	}
 
 	_ = h.userService.UpdateProfileFields(user.ID, map[string]any{
@@ -143,21 +144,21 @@ func (h *Handler) TwoFAUnregister(c echo.Context) error {
 // nil を return する。
 func (h *Handler) requireWebAuthn(c echo.Context, password string) (*model.User, *model.UserProfile, bool) {
 	if h.webauthnSvc == nil || h.securityKeyRepo == nil {
-		_ = c.JSON(http.StatusServiceUnavailable, apiError("UNAVAILABLE", "WebAuthn is not configured.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		_ = c.JSON(http.StatusServiceUnavailable, apierr.Error("UNAVAILABLE", "WebAuthn is not configured.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		return nil, nil, false
 	}
 	user := middleware.GetUser(c)
 	if user == nil {
-		_ = c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+		_ = c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 		return nil, nil, false
 	}
 	profile := h.userService.GetProfile(user.ID)
 	if profile == nil || profile.Password == nil {
-		_ = c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "No password set.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+		_ = c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "No password set.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 		return nil, nil, false
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(password)); err != nil {
-		_ = c.JSON(http.StatusForbidden, apiError("INCORRECT_PASSWORD", "Incorrect password.", "932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+		_ = c.JSON(http.StatusForbidden, apierr.Error("INCORRECT_PASSWORD", "Incorrect password.", "932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 		return nil, nil, false
 	}
 	return user, profile, true
@@ -173,7 +174,7 @@ func (h *Handler) TwoFARegisterKey(c echo.Context) error {
 		Password string `json:"password"`
 	}
 	if err := c.Bind(&req); err != nil || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	user, _, ok := h.requireWebAuthn(c, req.Password)
 	if !ok {
@@ -182,11 +183,11 @@ func (h *Handler) TwoFARegisterKey(c echo.Context) error {
 
 	existing, err := h.securityKeyRepo.ListByUser(user.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	creation, sessionID, err := h.webauthnSvc.BeginRegistration(c.Request().Context(), user, existing)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Failed to begin registration.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to begin registration.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"sessionId": sessionID,
@@ -207,7 +208,7 @@ func (h *Handler) TwoFAKeyDone(c echo.Context) error {
 		Response  json.RawMessage `json:"response"`
 	}
 	if err := c.Bind(&req); err != nil || req.Password == "" || req.SessionID == "" || len(req.Response) == 0 {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "password / sessionId / response are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password / sessionId / response are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	if req.Name == "" {
 		req.Name = "Security Key"
@@ -219,23 +220,23 @@ func (h *Handler) TwoFAKeyDone(c echo.Context) error {
 
 	existing, err := h.securityKeyRepo.ListByUser(user.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// go-webauthn の FinishRegistration は *http.Request からボディを読むので、
 	// JSON-RPC 経由で受け取った response を新しい http.Request にラップして渡す。
 	httpReq, err := wrapWebAuthnRequest(c.Request(), req.Response)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "invalid response payload.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "invalid response payload.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	cred, err := h.webauthnSvc.FinishRegistration(c.Request().Context(), user, existing, req.SessionID, httpReq)
 	if err != nil {
-		return c.JSON(http.StatusForbidden, apiError("REGISTRATION_FAILED", "Failed to finish registration.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("REGISTRATION_FAILED", "Failed to finish registration.", "00000000-0000-0000-0000-000000000000"))
 	}
 
 	key := twofactor.CredentialToModel(cred, user.ID, req.Name)
 	if err := h.securityKeyRepo.Create(key); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Failed to persist key.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to persist key.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// 1 つ以上の鍵が登録されたら user_profile.securityKeysAvailable +
@@ -259,7 +260,7 @@ func (h *Handler) TwoFARemoveKey(c echo.Context) error {
 		CredentialID string `json:"credentialId"`
 	}
 	if err := c.Bind(&req); err != nil || req.Password == "" || req.CredentialID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "password and credentialId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password and credentialId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	user, _, ok := h.requireWebAuthn(c, req.Password)
 	if !ok {
@@ -267,7 +268,7 @@ func (h *Handler) TwoFARemoveKey(c echo.Context) error {
 	}
 
 	if err := h.securityKeyRepo.Delete(req.CredentialID, user.ID); err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_KEY", "Key not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_KEY", "Key not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 
 	if remaining, err := h.securityKeyRepo.CountByUser(user.ID); err == nil && remaining == 0 {
@@ -288,14 +289,14 @@ func (h *Handler) TwoFAUpdateKey(c echo.Context) error {
 		Name         string `json:"name"`
 	}
 	if err := c.Bind(&req); err != nil || req.Password == "" || req.CredentialID == "" || req.Name == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "password / credentialId / name are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password / credentialId / name are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	user, _, ok := h.requireWebAuthn(c, req.Password)
 	if !ok {
 		return nil
 	}
 	if err := h.securityKeyRepo.UpdateName(req.CredentialID, user.ID, req.Name); err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_KEY", "Key not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_KEY", "Key not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -309,7 +310,7 @@ func (h *Handler) TwoFAPasswordLess(c echo.Context) error {
 		Value    bool   `json:"value"`
 	}
 	if err := c.Bind(&req); err != nil || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	user, _, ok := h.requireWebAuthn(c, req.Password)
 	if !ok {
@@ -317,7 +318,7 @@ func (h *Handler) TwoFAPasswordLess(c echo.Context) error {
 	}
 	if req.Value {
 		if n, err := h.securityKeyRepo.CountByUser(user.ID); err != nil || n == 0 {
-			return c.JSON(http.StatusBadRequest, apiError("NO_SECURITY_KEYS", "Register at least one security key first.", "00000000-0000-0000-0000-000000000000"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SECURITY_KEYS", "Register at least one security key first.", "00000000-0000-0000-0000-000000000000"))
 		}
 	}
 	_ = h.userService.UpdateProfileFields(user.ID, map[string]any{

@@ -87,9 +87,9 @@ func (h *Handler) FilesCreate(c echo.Context) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, coredrive.ErrFolderNotFound):
-			return c.JSON(http.StatusNotFound, errEnvelope("No such folder.", "NO_SUCH_FOLDER", "d77545ec-1283-4b73-bbe1-e90e1da6a4e7"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FOLDER", "No such folder.", "d77545ec-1283-4b73-bbe1-e90e1da6a4e7"))
 		case errors.Is(err, coredrive.ErrAccessDenied):
-			return c.JSON(http.StatusForbidden, errEnvelope("Access denied.", "ACCESS_DENIED", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 		}
 		return internalError(c)
 	}
@@ -278,11 +278,11 @@ func (h *Handler) FoldersDelete(c echo.Context) error {
 func mapFileError(c echo.Context, err error) error {
 	switch {
 	case errors.Is(err, coredrive.ErrFileNotFound):
-		return c.JSON(http.StatusNotFound, errEnvelope("No such file.", "NO_SUCH_FILE", "067bc436-2718-4795-b0fb-ecbe43949e31"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "067bc436-2718-4795-b0fb-ecbe43949e31"))
 	case errors.Is(err, coredrive.ErrFolderNotFound):
-		return c.JSON(http.StatusNotFound, errEnvelope("No such folder.", "NO_SUCH_FOLDER", "ea8fb7a5-af77-4a08-b608-c0218176cd73"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FOLDER", "No such folder.", "ea8fb7a5-af77-4a08-b608-c0218176cd73"))
 	case errors.Is(err, coredrive.ErrAccessDenied):
-		return c.JSON(http.StatusForbidden, errEnvelope("Access denied.", "ACCESS_DENIED", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 	}
 	return internalError(c)
 }
@@ -290,25 +290,21 @@ func mapFileError(c echo.Context, err error) error {
 func mapFolderError(c echo.Context, err error) error {
 	switch {
 	case errors.Is(err, coredrive.ErrFolderNotFound):
-		return c.JSON(http.StatusNotFound, errEnvelope("No such folder.", "NO_SUCH_FOLDER", "ea8fb7a5-af77-4a08-b608-c0218176cd73"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FOLDER", "No such folder.", "ea8fb7a5-af77-4a08-b608-c0218176cd73"))
 	case errors.Is(err, coredrive.ErrAccessDenied):
-		return c.JSON(http.StatusForbidden, errEnvelope("Access denied.", "ACCESS_DENIED", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 	case errors.Is(err, coredrive.ErrFolderNotEmpty):
-		return c.JSON(http.StatusBadRequest, errEnvelope("Folder is not empty.", "HAS_CHILD_FILES_OR_FOLDERS", "b0fc8a17-963c-405d-bfbc-859a487295e1"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("HAS_CHILD_FILES_OR_FOLDERS", "Folder is not empty.", "b0fc8a17-963c-405d-bfbc-859a487295e1"))
 	}
 	return internalError(c)
 }
 
-func errEnvelope(message, code, id string) map[string]any {
-	return apierr.Error(code, message, id)
-}
-
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, errEnvelope("Invalid param.", "INVALID_PARAM", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid param.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, errEnvelope("Internal error.", "INTERNAL_ERROR", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 }
 
 // --- Drive listing endpoints ---

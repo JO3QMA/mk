@@ -37,10 +37,6 @@ func (h *Handler) SetEmailSender(s EmailSender) { h.email = s }
 // SetServerURL sets the base URL for reset links.
 func (h *Handler) SetServerURL(u string) { h.serverURL = u }
 
-func apiError(code, message, errID string) map[string]any {
-	return apierr.Error(code, message, errID)
-}
-
 // RequestReset handles POST /api/request-reset-password.
 // ユーザーが見つからない/email不一致/未認証でも成功レスポンスを返す（情報漏洩防止）。
 func (h *Handler) RequestReset(c echo.Context) error {
@@ -49,7 +45,7 @@ func (h *Handler) RequestReset(c echo.Context) error {
 		Email    string `json:"email"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" || req.Email == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "username and email are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "username and email are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	// ユーザー検索 (ローカルのみ)
@@ -93,41 +89,41 @@ func (h *Handler) Reset(c echo.Context) error {
 		Password string `json:"password"`
 	}
 	if err := c.Bind(&req); err != nil || req.Token == "" || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "token and password are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "token and password are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	// bcryptは72バイトまでしか受け付けない
 	if len(req.Password) > 72 {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Password too long.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Password too long.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	resetReq, err := h.resetRepo.FindByToken(req.Token)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid token.", "6382759e-0a0d-4e32-893e-0e1e66cec4d5"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid token.", "6382759e-0a0d-4e32-893e-0e1e66cec4d5"))
 	}
 
 	// 30分の有効期限チェック (IDからタイムスタンプを算出)
 	issuedAt, err := h.idGen.ParseTime(resetReq.ID)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid token.", "6382759e-0a0d-4e32-893e-0e1e66cec4d5"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid token.", "6382759e-0a0d-4e32-893e-0e1e66cec4d5"))
 	}
 
 	// Misskey本家: 30分経過で期限切れ
 	if time.Since(issuedAt) > 30*time.Minute {
 		_ = h.resetRepo.Delete(resetReq.ID)
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Token expired.", "6382759e-0a0d-4e32-893e-0e1e66cec4d5"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Token expired.", "6382759e-0a0d-4e32-893e-0e1e66cec4d5"))
 	}
 
 	// bcrypt hash (cost 8、Misskey本家と同じ)
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), 8)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// パスワード更新
 	pw := string(hashed)
 	if err := h.userRepo.UpdateProfile(resetReq.UserID, map[string]any{"password": pw}); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// トークン削除

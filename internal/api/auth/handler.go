@@ -30,22 +30,18 @@ func NewHandler(repo repository.AuthSessionRepository, cfg *config.Config, idGen
 	return &Handler{repo: repo, cfg: cfg, idGen: idGen}
 }
 
-func apiError(code, message, errID string) map[string]any {
-	return apierr.Error(code, message, errID)
-}
-
 // SessionGenerate handles POST /api/auth/session/generate.
 func (h *Handler) SessionGenerate(c echo.Context) error {
 	var req struct {
 		AppSecret string `json:"appSecret"`
 	}
 	if err := c.Bind(&req); err != nil || req.AppSecret == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "appSecret is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "appSecret is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	app, err := h.repo.FindAppBySecret(req.AppSecret)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_APP", "No such app.", "c5628b5a-3c9e-4e3f-b765-44952b2bfb0e"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_APP", "No such app.", "c5628b5a-3c9e-4e3f-b765-44952b2bfb0e"))
 	}
 
 	token := uuid.New().String()
@@ -57,7 +53,7 @@ func (h *Handler) SessionGenerate(c echo.Context) error {
 		AppID:     app.ID,
 	}
 	if err := h.repo.CreateSession(session); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -72,12 +68,12 @@ func (h *Handler) SessionShow(c echo.Context) error {
 		Token string `json:"token"`
 	}
 	if err := c.Bind(&req); err != nil || req.Token == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "token is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "token is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	session, err := h.repo.FindSessionByToken(req.Token)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_SESSION", "No such session.", "bd72c97d-eca4-4403-8269-7b9cc0b9a2c0"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_SESSION", "No such session.", "bd72c97d-eca4-4403-8269-7b9cc0b9a2c0"))
 	}
 
 	return c.JSON(http.StatusOK, packSession(session))
@@ -90,12 +86,12 @@ func (h *Handler) Accept(c echo.Context) error {
 		Token string `json:"token"`
 	}
 	if err := c.Bind(&req); err != nil || req.Token == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "token is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "token is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	session, err := h.repo.FindSessionByToken(req.Token)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_SESSION", "No such session.", "bd72c97d-eca4-4403-8269-7b9cc0b9a2c0"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_SESSION", "No such session.", "bd72c97d-eca4-4403-8269-7b9cc0b9a2c0"))
 	}
 
 	// アクセストークンが既に存在するか確認
@@ -115,13 +111,13 @@ func (h *Handler) Accept(c echo.Context) error {
 			LastUsedAt: &now,
 		}
 		if err := h.repo.CreateAccessToken(accessToken); err != nil {
-			return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
 	}
 
 	// セッションにユーザーIDを設定
 	if err := h.repo.UpdateSessionUserID(session.ID, user.ID); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -134,26 +130,26 @@ func (h *Handler) SessionUserkey(c echo.Context) error {
 		Token     string `json:"token"`
 	}
 	if err := c.Bind(&req); err != nil || req.AppSecret == "" || req.Token == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "appSecret and token are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "appSecret and token are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	app, err := h.repo.FindAppBySecret(req.AppSecret)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_APP", "No such app.", "c5628b5a-3c9e-4e3f-b765-44952b2bfb0e"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_APP", "No such app.", "c5628b5a-3c9e-4e3f-b765-44952b2bfb0e"))
 	}
 
 	session, err := h.repo.FindSessionByTokenAndAppID(req.Token, app.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_SESSION", "No such session.", "bd72c97d-eca4-4403-8269-7b9cc0b9a2c0"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_SESSION", "No such session.", "bd72c97d-eca4-4403-8269-7b9cc0b9a2c0"))
 	}
 
 	if session.UserID == nil {
-		return c.JSON(http.StatusForbidden, apiError("PENDING_SESSION", "This session is not yet approved.", "8c8a4145-02cc-4cca-8e66-29ba60445a8e"))
+		return c.JSON(http.StatusForbidden, apierr.Error("PENDING_SESSION", "This session is not yet approved.", "8c8a4145-02cc-4cca-8e66-29ba60445a8e"))
 	}
 
 	accessToken, err := h.repo.FindAccessTokenByAppAndUser(app.ID, *session.UserID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	// セッション削除（使い捨て）
@@ -178,7 +174,7 @@ func (h *Handler) GenToken(c echo.Context) error {
 		Permission  []string `json:"permission"`
 	}
 	if err := c.Bind(&req); err != nil || req.Permission == nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "permission is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "permission is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	tokenStr := misc.SecureRandomHex(32)
@@ -196,7 +192,7 @@ func (h *Handler) GenToken(c echo.Context) error {
 		Permission:  req.Permission,
 	}
 	if err := h.repo.CreateAccessToken(accessToken); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{"token": tokenStr})
