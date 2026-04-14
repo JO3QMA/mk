@@ -231,11 +231,11 @@ func (h *Handler) parseRequest(req *Request) (chart.Span, int, *time.Time, bool)
 // --- error helpers -----------------------------------------------------------
 
 func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
+	return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid param.", "1d6f8c9b-a9b3-4d1f-94c0-7ecb2c1c7a02"))
 }
 
 func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, apierr.InternalError())
+	return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "9c2cb6b3-ec89-4ce4-9b3a-2f5c66c2af6b"))
 }
 
 func chartUnavailable(c echo.Context) error {
