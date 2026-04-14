@@ -25,7 +25,7 @@ type PrivateKey struct {
 }
 
 // NewPrivateKey wraps a PEM string into a PrivateKey, parsing it once.
-// 既存互換のため RSA を期待する。Ed25519 鍵は NewEd25519PrivateKey を使うこと。
+// 既存互換のためRSAを期待する。Ed25519鍵はNewEd25519PrivateKeyを使うこと。
 func NewPrivateKey(keyID, privatePEM string) (*PrivateKey, error) {
 	parsed, err := ParseRSAPrivateKey(privatePEM)
 	if err != nil {
@@ -74,7 +74,7 @@ func algorithmForKeyType(kt KeyType) string {
 // includeHeaders はヘッダ名の小文字リスト。"(request-target)" を含めると
 // "(request-target): <method> <path>" が署名対象に追加される。
 //
-// algorithm は鍵種別から自動決定される (RSA→rsa-sha256, Ed25519→ed25519)。
+// algorithmは鍵種別から自動決定される (RSA→rsa-sha256, Ed25519→ed25519)。
 func SignRequest(req *http.Request, key *PrivateKey, bodyDigest string, includeHeaders []string) error {
 	if key == nil || key.signer == nil {
 		return errors.New("private key required")
@@ -114,16 +114,16 @@ func SignRequest(req *http.Request, key *PrivateKey, bodyDigest string, includeH
 }
 
 // signWithKey produces a signature byte slice for the given signing input.
-// 鍵種別に応じて RSA-SHA256 / Ed25519 を切り替える。
+// 鍵種別に応じてRSA-SHA256 / Ed25519を切り替える。
 func signWithKey(key *PrivateKey, signingInput []byte) ([]byte, error) {
 	switch key.keyType {
 	case KeyTypeRSA:
 		hashed := sha256.Sum256(signingInput)
-		// rsa.SignPKCS1v15 は PKCS1v15 では rand を使わないため失敗しない。
+		// rsa.SignPKCS1v15はPKCS1v15ではrandを使わないため失敗しない。
 		return rsa.SignPKCS1v15(randReader, key.signer.(*rsa.PrivateKey), crypto.SHA256, hashed[:])
 	case KeyTypeEd25519:
-		// Ed25519 は内部で SHA-512 を使うため事前ハッシュ不要。Sign() の
-		// opts は必ず crypto.Hash(0) を渡す (ed25519 仕様)。
+		// Ed25519は内部でSHA-512を使うため事前ハッシュ不要。Sign()の
+		// optsは必ずcrypto.Hash(0)を渡す (ed25519仕様)。
 		return key.signer.Sign(randReader, signingInput, crypto.Hash(0))
 	default:
 		return nil, fmt.Errorf("unsupported key type: %d", key.keyType)
@@ -200,15 +200,13 @@ func ParseSignatureHeader(header string) (*ParsedSignature, error) {
 // VerifyRequest verifies an incoming HTTP request signature against the
 // supplied PEM public key. RSA / Ed25519 public keys are both supported,
 // dispatched on the parsed Signature `algorithm` parameter and the public
-// key type. requestURI overrides req.URL.RequestURI() to allow callers to
-// feed the original raw path (echo's c.Request().URL is normalized in some
-// cases).
+// key type.
 func VerifyRequest(req *http.Request, publicKeyPEM string) error {
 	parsed, err := ParseSignatureHeader(req.Header.Get("Signature"))
 	if err != nil {
 		return err
 	}
-	// 早期に algorithm 名を弾く (公開鍵 PEM パースより前に判定したい)。
+	// 早期にalgorithm名を弾く (公開鍵PEMパースより前に判定したい)。
 	if !isKnownAlgorithm(parsed.Algorithm) {
 		return fmt.Errorf("unsupported algorithm %q", parsed.Algorithm)
 	}
@@ -257,7 +255,7 @@ func isKnownAlgorithm(alg string) bool {
 //   - "rsa-sha512": RSA + SHA-512
 //   - "ed25519" / "ed25519-sha512": Ed25519
 //
-// algorithm と鍵種別が合わないケース (RSA鍵で algorithm=ed25519 等) は
+// algorithmと鍵種別が合わないケース (RSA鍵でalgorithm=ed25519等) は
 // 明示的に拒否する。
 func verifyAlgorithm(alg string, kt KeyType, pub crypto.PublicKey, signingInput, sig []byte) error {
 	algLower := strings.ToLower(alg)

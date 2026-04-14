@@ -21,14 +21,14 @@ var randReader io.Reader = rand.Reader
 var nowFunc = time.Now
 
 // KeyType discriminates between supported HTTP Signature key algorithms.
-// RSA は Mastodon/Misskey の事実上の標準、Ed25519 は新世代 Fediverse 実装で
+// RSAはMastodon/Misskeyの事実上の標準、Ed25519は新世代Fediverse実装で
 // 採用されつつある軽量・高速な署名方式。
 type KeyType int
 
 const (
-	// KeyTypeRSA は RSA-SHA256 / RSA-SHA512 / hs2019(RSA) で使われる。
+	// KeyTypeRSAはRSA-SHA256 / RSA-SHA512 / hs2019(RSA)で使われる。
 	KeyTypeRSA KeyType = iota
-	// KeyTypeEd25519 は ed25519 / hs2019(Ed25519) で使われる。
+	// KeyTypeEd25519はed25519 / hs2019(Ed25519)で使われる。
 	KeyTypeEd25519
 )
 
@@ -50,8 +50,8 @@ func GenerateRSAKeypair() (privatePEM string, publicPEM string, err error) {
 }
 
 // GenerateEd25519Keypair returns a fresh Ed25519 keypair encoded as PEM
-// strings (private + public). 鍵生成は io エラーの時だけ失敗するため、
-// MarshalPKCS8PrivateKey / MarshalPKIXPublicKey 側のエラーチェックは省略。
+// strings (private + public). 鍵生成はioエラーの時だけ失敗するため、
+// MarshalPKCS8PrivateKey / MarshalPKIXPublicKey側のエラーチェックは省略。
 func GenerateEd25519Keypair() (privatePEM string, publicPEM string, err error) {
 	pub, priv, err := ed25519.GenerateKey(randReader)
 	if err != nil {
@@ -93,7 +93,7 @@ func ParseEd25519PrivateKey(pemStr string) (ed25519.PrivateKey, error) {
 }
 
 // ParseRSAPublicKey decodes a PEM-encoded RSA public key.
-// 既存呼び出し側の互換のため残す。新規コードは ParsePublicKey を使うこと。
+// 既存呼び出し側の互換のため残す。新規コードはParsePublicKeyを使うこと。
 func ParseRSAPublicKey(pemStr string) (*rsa.PublicKey, error) {
 	pub, kt, err := ParsePublicKey(pemStr)
 	if err != nil {
@@ -106,8 +106,8 @@ func ParseRSAPublicKey(pemStr string) (*rsa.PublicKey, error) {
 }
 
 // ParsePublicKey decodes a PEM-encoded public key and reports its type.
-// RSA / Ed25519 を識別できる。それ以外は "unsupported public key type" で
-// 拒否する (Misskey フェデレーションでは ECDSA 等は事実上使われていない)。
+// RSA / Ed25519を識別できる。それ以外は "unsupported public key type" で
+// 拒否する (Misskeyフェデレーションでは ECDSA等は事実上使われていない)。
 func ParsePublicKey(pemStr string) (crypto.PublicKey, KeyType, error) {
 	block, _ := pem.Decode([]byte(pemStr))
 	if block == nil {
