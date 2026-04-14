@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -25,9 +26,7 @@ func NewHandler(repo repository.AuthSessionRepository, idGen id.Generator) *Hand
 }
 
 func apiError(code, message, errID string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": errID},
-	}
+	return apierr.Error(code, message, errID)
 }
 
 // Create handles POST /api/app/create.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -299,13 +300,7 @@ func mapFolderError(c echo.Context, err error) error {
 }
 
 func errEnvelope(message, code, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"code":    code,
-			"id":      id,
-		},
-	}
+	return apierr.Error(code, message, id)
 }
 
 func invalidParam(c echo.Context) error {

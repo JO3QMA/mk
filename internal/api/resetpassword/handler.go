@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -37,9 +38,7 @@ func (h *Handler) SetEmailSender(s EmailSender) { h.email = s }
 func (h *Handler) SetServerURL(u string) { h.serverURL = u }
 
 func apiError(code, message, errID string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": errID},
-	}
+	return apierr.Error(code, message, errID)
 }
 
 // RequestReset handles POST /api/request-reset-password.

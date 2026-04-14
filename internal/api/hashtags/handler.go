@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
@@ -130,7 +131,5 @@ func packTag(t *model.Hashtag) map[string]any {
 }
 
 func errResp(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": id},
-	}
+	return apierr.Error(code, message, id)
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -145,7 +146,5 @@ func packRole(r *model.Role) map[string]any {
 }
 
 func errResp(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": id},
-	}
+	return apierr.Error(code, message, id)
 }
