@@ -43,6 +43,17 @@ type DBOptions struct {
 	Extra        map[string]string `mapstructure:"extra"`
 }
 
+// DBSlaveOptions represents a single read-replica PostgreSQL connection.
+// Mirrors Misskey's `dbSlaves: [{host, port, db, user, pass}]` YAML entries.
+// SSL/extra options are inherited from the primary DBOptions at DSN build time.
+type DBSlaveOptions struct {
+	Host string `mapstructure:"host"`
+	Port int    `mapstructure:"port"`
+	DB   string `mapstructure:"db"`
+	User string `mapstructure:"user"`
+	Pass string `mapstructure:"pass"`
+}
+
 // MeilisearchOptions represents Meilisearch configuration.
 type MeilisearchOptions struct {
 	Host   string `mapstructure:"host"`
@@ -79,6 +90,7 @@ type Source struct {
 	EnableIPRateLimit      *bool                  `mapstructure:"enableIpRateLimit"`
 	DB                     DBOptions              `mapstructure:"db"`
 	DBReplications         bool                   `mapstructure:"dbReplications"`
+	DBSlaves               []DBSlaveOptions       `mapstructure:"dbSlaves"`
 	Redis                  RedisOptions           `mapstructure:"redis"`
 	RedisForPubsub         *RedisOptions          `mapstructure:"redisForPubsub"`
 	RedisForJobQueue       *RedisOptions          `mapstructure:"redisForJobQueue"`
@@ -153,6 +165,7 @@ type Config struct {
 
 	DB             DBOptions
 	DBReplications bool
+	DBSlaves       []DBSlaveOptions
 
 	Redis             RedisOptions
 	RedisForPubsub    RedisOptions
@@ -322,6 +335,7 @@ func resolve(src *Source) (*Config, error) {
 
 		DB:             src.DB,
 		DBReplications: src.DBReplications,
+		DBSlaves:       src.DBSlaves,
 
 		Redis:             redis,
 		RedisForPubsub:    resolveRedisOrDefault(src.RedisForPubsub, redis, host),
@@ -466,6 +480,33 @@ func (c *Config) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		c.DB.Host, c.DB.Port, c.DB.User, c.DB.Pass, c.DB.DB, sslMode,
+	)
+}
+
+// SlaveDSN returns the PostgreSQL connection string for the idx-th read
+// replica declared in DBSlaves. idx が範囲外の場合は空文字列を返す。
+//
+// SSL/sslmode / Unix socket 判定は primary の DB 設定に合わせる。
+// Misskey 本家では dbSlaves エントリ内で sslmode を個別指定する API は無いため、
+// primary の extra.ssl を継承する (same-network / same-cluster replica を前提)。
+func (c *Config) SlaveDSN(idx int) string {
+	if idx < 0 || idx >= len(c.DBSlaves) {
+		return ""
+	}
+	s := c.DBSlaves[idx]
+	if IsUnixSocketPath(s.Host) {
+		return fmt.Sprintf(
+			"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+			s.Host, s.Port, s.User, s.Pass, s.DB,
+		)
+	}
+	sslMode := "disable"
+	if v, ok := c.DB.Extra["ssl"]; ok && v == "true" {
+		sslMode = "require"
+	}
+	return fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		s.Host, s.Port, s.User, s.Pass, s.DB, sslMode,
 	)
 }
 
