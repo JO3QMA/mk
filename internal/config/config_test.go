@@ -532,3 +532,109 @@ func TestParseTrustProxy_AllInvalid(t *testing.T) {
 	nets := ParseTrustProxy([]string{"not-a-cidr", "also-bad"})
 	assert.Empty(t, nets)
 }
+
+func TestLoad_DBSlaves(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+db:
+  host: primary.example.com
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+dbReplications: true
+dbSlaves:
+  - host: replica1.example.com
+    port: 5432
+    db: misskey
+    user: replica
+    pass: rpass1
+  - host: replica2.example.com
+    port: 5433
+    db: misskey
+    user: replica
+    pass: rpass2
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.DBReplications)
+	require.Len(t, cfg.DBSlaves, 2)
+	assert.Equal(t, "replica1.example.com", cfg.DBSlaves[0].Host)
+	assert.Equal(t, 5432, cfg.DBSlaves[0].Port)
+	assert.Equal(t, "rpass1", cfg.DBSlaves[0].Pass)
+	assert.Equal(t, "replica2.example.com", cfg.DBSlaves[1].Host)
+	assert.Equal(t, 5433, cfg.DBSlaves[1].Port)
+}
+
+func TestLoad_DBSlaves_Empty(t *testing.T) {
+	// dbSlaves 未指定 → 空スライス
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.DBSlaves)
+}
+
+func TestSlaveDSN(t *testing.T) {
+	cfg := &Config{
+		DB: DBOptions{Host: "primary", Port: 5432},
+		DBSlaves: []DBSlaveOptions{
+			{Host: "replica1", Port: 5432, DB: "misskey", User: "replica", Pass: "p1"},
+		},
+	}
+	dsn := cfg.SlaveDSN(0)
+	assert.Contains(t, dsn, "host=replica1")
+	assert.Contains(t, dsn, "port=5432")
+	assert.Contains(t, dsn, "dbname=misskey")
+	assert.Contains(t, dsn, "user=replica")
+	assert.Contains(t, dsn, "password=p1")
+	assert.Contains(t, dsn, "sslmode=disable")
+}
+
+func TestSlaveDSN_OutOfRange(t *testing.T) {
+	cfg := &Config{
+		DBSlaves: []DBSlaveOptions{
+			{Host: "replica1", Port: 5432, DB: "misskey", User: "u", Pass: "p"},
+		},
+	}
+	assert.Empty(t, cfg.SlaveDSN(-1))
+	assert.Empty(t, cfg.SlaveDSN(1))
+	assert.Empty(t, cfg.SlaveDSN(99))
+}
+
+func TestSlaveDSN_InheritsPrimarySSL(t *testing.T) {
+	cfg := &Config{
+		DB: DBOptions{
+			Host:  "primary",
+			Port:  5432,
+			Extra: map[string]string{"ssl": "true"},
+		},
+		DBSlaves: []DBSlaveOptions{
+			{Host: "replica1", Port: 5432, DB: "misskey", User: "u", Pass: "p"},
+		},
+	}
+	dsn := cfg.SlaveDSN(0)
+	assert.Contains(t, dsn, "sslmode=require")
+}
+
+func TestSlaveDSN_UnixSocket(t *testing.T) {
+	// Unix socket replica は SSL 不可
+	cfg := &Config{
+		DB: DBOptions{
+			Host:  "/var/run/postgresql",
+			Extra: map[string]string{"ssl": "true"},
+		},
+		DBSlaves: []DBSlaveOptions{
+			{Host: "/var/run/postgresql/replica", Port: 5433, DB: "misskey", User: "u", Pass: "p"},
+		},
+	}
+	dsn := cfg.SlaveDSN(0)
+	assert.Contains(t, dsn, "host=/var/run/postgresql/replica")
+	assert.Contains(t, dsn, "sslmode=disable")
+	assert.NotContains(t, dsn, "sslmode=require")
+}
