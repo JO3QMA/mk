@@ -774,3 +774,21 @@ func TestUniqueGroups_DuplicateAreCollapsed(t *testing.T) {
 	got := uniqueGroups(in)
 	assert.Equal(t, []string{"a", "b"}, got)
 }
+
+func TestChart_IsGrouped(t *testing.T) {
+	plain, err := New(Config{
+		Schema: Schema{Name: "plain", Columns: []ColumnDef{{Name: "x"}}},
+		Repo:   newFakeRepo(),
+		Lock:   NewMemoryLocker(),
+	})
+	require.NoError(t, err)
+	assert.False(t, plain.IsGrouped())
+
+	grouped, err := New(Config{
+		Schema: Schema{Name: "g", Grouped: true, Columns: []ColumnDef{{Name: "x"}}},
+		Repo:   newFakeRepo(),
+		Lock:   NewMemoryLocker(),
+	})
+	require.NoError(t, err)
+	assert.True(t, grouped.IsGrouped())
+}
