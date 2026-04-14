@@ -1551,7 +1551,7 @@ func (s *Server) setupRoutes() {
 				"error": map[string]any{
 					"message": "No such note.",
 					"code":    "NO_SUCH_NOTE",
-					"id":      "fc8c0b49-c7a3-4664-a0a6-b418d386bb8d",
+					"id":      "24fcbfc6-2e37-42b6-8388-c29b32725715",
 				},
 			})
 		}
