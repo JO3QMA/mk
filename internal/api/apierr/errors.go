@@ -25,7 +25,7 @@ func Error(code, message, id string) map[string]any {
 const (
 	UUIDInvalidParam  = "3d81ceae-475f-4600-b2a8-2bc116157532"
 	UUIDInternalError = "5d37dbcb-891e-41ca-a3d6-e690c97775ac"
-	UUIDNoSuchNote    = "24fcbfc6-2e37-42b6-8388-c29b3272571530"
+	UUIDNoSuchNote    = "24fcbfc6-2e37-42b6-8388-c29b32725715"
 	UUIDNoSuchUser    = "4362f8dc-731f-4ad8-a694-be5a88922a24"
 	UUIDAccessDenied  = "1fb7cb09-d46a-4fff-b8df-057708cce513"
 )
