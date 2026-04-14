@@ -26,9 +26,9 @@ var nowFunc = time.Now
 type KeyType int
 
 const (
-	// KeyTypeRSAはRSA-SHA256 / RSA-SHA512 / hs2019(RSA)で使われる。
+	// KeyTypeRSA is used for RSA-SHA256 / RSA-SHA512 / hs2019(RSA) signatures.
 	KeyTypeRSA KeyType = iota
-	// KeyTypeEd25519はed25519 / hs2019(Ed25519)で使われる。
+	// KeyTypeEd25519 is used for ed25519 / hs2019(Ed25519) signatures.
 	KeyTypeEd25519
 )
 
