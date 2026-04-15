@@ -3420,3 +3420,177 @@ func (m *MockRelayRepository) Delete(id string) error {
 	delete(m.Relays, id)
 	return nil
 }
+
+// MockSystemWebhookRepository is a test double for
+// repository.SystemWebhookRepository.
+type MockSystemWebhookRepository struct {
+	Webhooks  map[string]*model.SystemWebhook
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockSystemWebhookRepository creates an empty mock.
+func NewMockSystemWebhookRepository() *MockSystemWebhookRepository {
+	return &MockSystemWebhookRepository{Webhooks: make(map[string]*model.SystemWebhook)}
+}
+
+func (m *MockSystemWebhookRepository) Create(w *model.SystemWebhook) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Webhooks[w.ID] = w
+	return nil
+}
+
+func (m *MockSystemWebhookRepository) FindByID(id string) (*model.SystemWebhook, error) {
+	w, ok := m.Webhooks[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return w, nil
+}
+
+func (m *MockSystemWebhookRepository) List() ([]*model.SystemWebhook, error) {
+	rows := make([]*model.SystemWebhook, 0, len(m.Webhooks))
+	for _, w := range m.Webhooks {
+		rows = append(rows, w)
+	}
+	// id DESC で安定ソート (本実装と整合)
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockSystemWebhookRepository) ListActive() ([]*model.SystemWebhook, error) {
+	rows := make([]*model.SystemWebhook, 0)
+	for _, w := range m.Webhooks {
+		if w.IsActive {
+			rows = append(rows, w)
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockSystemWebhookRepository) Update(w *model.SystemWebhook) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if _, ok := m.Webhooks[w.ID]; !ok {
+		return ErrNotFound
+	}
+	m.Webhooks[w.ID] = w
+	return nil
+}
+
+func (m *MockSystemWebhookRepository) UpdateLatestStatus(id string, sentAt time.Time, status int) error {
+	w, ok := m.Webhooks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	w.LatestSentAt = &sentAt
+	w.LatestStatus = &status
+	return nil
+}
+
+func (m *MockSystemWebhookRepository) Delete(id string) error {
+	delete(m.Webhooks, id)
+	return nil
+}
+
+// MockAbuseReportNotificationRecipientRepository is a test double for
+// repository.AbuseReportNotificationRecipientRepository.
+type MockAbuseReportNotificationRecipientRepository struct {
+	Recipients map[string]*model.AbuseReportNotificationRecipient
+	CreateErr  error
+	UpdateErr  error
+}
+
+// NewMockAbuseReportNotificationRecipientRepository creates an empty mock.
+func NewMockAbuseReportNotificationRecipientRepository() *MockAbuseReportNotificationRecipientRepository {
+	return &MockAbuseReportNotificationRecipientRepository{
+		Recipients: make(map[string]*model.AbuseReportNotificationRecipient),
+	}
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) Create(r *model.AbuseReportNotificationRecipient) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Recipients[r.ID] = r
+	return nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) FindByID(id string) (*model.AbuseReportNotificationRecipient, error) {
+	r, ok := m.Recipients[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return r, nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) List() ([]*model.AbuseReportNotificationRecipient, error) {
+	rows := make([]*model.AbuseReportNotificationRecipient, 0, len(m.Recipients))
+	for _, r := range m.Recipients {
+		rows = append(rows, r)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) Update(id string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	r, ok := m.Recipients[id]
+	if !ok {
+		return ErrNotFound
+	}
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				r.Name = s
+			}
+		case "method":
+			if s, ok := v.(string); ok {
+				r.Method = s
+			}
+		case "isActive":
+			if b, ok := v.(bool); ok {
+				r.IsActive = b
+			}
+		case "userId":
+			if s, ok := v.(string); ok {
+				r.UserID = &s
+			} else if v == nil {
+				r.UserID = nil
+			}
+		case "systemWebhookId":
+			if s, ok := v.(string); ok {
+				r.SystemWebhookID = &s
+			} else if v == nil {
+				r.SystemWebhookID = nil
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) Delete(id string) error {
+	delete(m.Recipients, id)
+	return nil
+}

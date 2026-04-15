@@ -1259,6 +1259,7 @@ func (s *Server) setupRoutes() {
 	// Admin endpoints (Phase 5)
 	abuseReportRepo := repository.NewAbuseReportRepository(s.db)
 	modLogRepo := repository.NewModerationLogRepository(s.db)
+	recipientRepo := repository.NewAbuseReportNotificationRecipientRepository(s.db)
 	adminHandler := apiadmin.NewHandler(signupService, roleService, metaRepo, userRepo, idGen)
 	adminHandler.SetAbuseRepo(abuseReportRepo)
 	adminHandler.SetModLogRepo(modLogRepo)
@@ -1268,6 +1269,8 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetUserIPRepo(userIPRepo)
 	adminHandler.SetEmojiImportEnqueuer(s.queueClient)
 	adminHandler.SetRelayService(relaySvc)
+	adminHandler.SetSystemWebhookRepo(systemWebhookRepo)
+	adminHandler.SetRecipientRepo(recipientRepo)
 	if s.queueInspector != nil {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
 	}
