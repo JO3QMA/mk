@@ -208,7 +208,7 @@ func hashURL(u string) string {
 func isPrivateHost(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
-		// DNS名は解決してからチェック (Dialer段階でIPが確定している)
+		// DNS名は解決してからチェック(Dialer段階でIPが確定している)
 		return false
 	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
