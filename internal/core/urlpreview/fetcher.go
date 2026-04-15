@@ -81,8 +81,8 @@ func NewFetcher(cfg Config, rdb *redis.Client) *Fetcher {
 	}
 
 	return &Fetcher{
-		cfg:   cfg,
-		redis: rdb,
+		cfg:    cfg,
+		redis:  rdb,
 		client: client,
 		// proxyClient は SSRF 保護なしの専用クライアント。管理者が設定した
 		// 信頼済みプロキシ URL は localhost やプライベートネットワーク上に
