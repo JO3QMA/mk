@@ -16,6 +16,7 @@ type SystemWebhookRepository interface {
 	List() ([]*model.SystemWebhook, error)
 	ListActive() ([]*model.SystemWebhook, error)
 	Update(w *model.SystemWebhook) error
+	UpdateAdminFields(id string, fields map[string]any) error
 	UpdateLatestStatus(id string, sentAt time.Time, status int) error
 	Delete(id string) error
 }
@@ -59,6 +60,18 @@ func (r *systemWebhookRepository) ListActive() ([]*model.SystemWebhook, error) {
 
 func (r *systemWebhookRepository) Update(w *model.SystemWebhook) error {
 	return r.db.Save(w).Error
+}
+
+// UpdateAdminFields applies a partial update for admin-editable columns only.
+// latestSentAt/latestStatus は配送 processor 側で atomic に書き込まれるため、
+// admin 経路の Update で上書きしないようこちらを使う。
+func (r *systemWebhookRepository) UpdateAdminFields(id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.SystemWebhook{}).
+		Where(`"id" = ?`, id).
+		Updates(fields).Error
 }
 
 // UpdateLatestStatus atomically updates only latestSentAt/latestStatus on a

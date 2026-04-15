@@ -29,20 +29,33 @@ type RelayService interface {
 
 // Handler handles admin API endpoints.
 type Handler struct {
-	signupService  *signup.Service
-	roleService    *role.Service
-	metaRepo       repository.MetaRepository
-	userRepo       repository.UserRepository
-	abuseRepo      repository.AbuseReportRepository
-	modLogRepo     repository.ModerationLogRepository
-	emojiRepo      repository.EmojiRepository
-	driveFileRepo  repository.DriveFileRepository
-	adminDB        *gorm.DB
-	userIPRepo     repository.UserIPRepository
-	queueInspector QueueInspector
-	emojiEnqueuer  EmojiImportEnqueuer
-	relayService   RelayService
-	idGen          id.Generator
+	signupService     *signup.Service
+	roleService       *role.Service
+	metaRepo          repository.MetaRepository
+	userRepo          repository.UserRepository
+	abuseRepo         repository.AbuseReportRepository
+	modLogRepo        repository.ModerationLogRepository
+	emojiRepo         repository.EmojiRepository
+	driveFileRepo     repository.DriveFileRepository
+	adminDB           *gorm.DB
+	userIPRepo        repository.UserIPRepository
+	queueInspector    QueueInspector
+	emojiEnqueuer     EmojiImportEnqueuer
+	relayService      RelayService
+	systemWebhookRepo repository.SystemWebhookRepository
+	recipientRepo     repository.AbuseReportNotificationRecipientRepository
+	idGen             id.Generator
+}
+
+// SetSystemWebhookRepo attaches a SystemWebhookRepository for admin/system-webhook/*.
+func (h *Handler) SetSystemWebhookRepo(r repository.SystemWebhookRepository) {
+	h.systemWebhookRepo = r
+}
+
+// SetRecipientRepo attaches an AbuseReportNotificationRecipientRepository for
+// admin/abuse-report/notification-recipient/*.
+func (h *Handler) SetRecipientRepo(r repository.AbuseReportNotificationRecipientRepository) {
+	h.recipientRepo = r
 }
 
 // SetRelayService wires the relay service used by admin/relays endpoints.

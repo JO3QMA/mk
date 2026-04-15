@@ -103,6 +103,9 @@ func (r *stubSystemWebhookRepo) FindByID(id string) (*model.SystemWebhook, error
 func (r *stubSystemWebhookRepo) List() ([]*model.SystemWebhook, error)       { return nil, nil }
 func (r *stubSystemWebhookRepo) ListActive() ([]*model.SystemWebhook, error) { return nil, nil }
 func (r *stubSystemWebhookRepo) Update(_ *model.SystemWebhook) error         { return nil }
+func (r *stubSystemWebhookRepo) UpdateAdminFields(_ string, _ map[string]any) error {
+	return nil
+}
 func (r *stubSystemWebhookRepo) UpdateLatestStatus(id string, _ time.Time, status int) error {
 	if r.statusCalled == nil {
 		r.statusCalled = make(map[string]int)
