@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -167,15 +168,15 @@ func (f *Fetcher) fetchAndParse(ctx context.Context, rawURL string) (*Result, er
 }
 
 // fetchViaProxy delegates to an external summarizer service.
-// proxy は管理者が設定した信頼済み URL なので SSRF チェックを適用しない。
+// proxy は管理者が設定した信頼済み URL なので SSRF チェックを適用しないが、
+// rawURL はクエリパラメータとして安全にエスケープする。
 func (f *Fetcher) fetchViaProxy(ctx context.Context, rawURL string) (*Result, error) {
-	proxyURL := f.cfg.SummaryProxyURL + "?url=" + rawURL
+	proxyURL := f.cfg.SummaryProxyURL + "?url=" + url.QueryEscape(rawURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxyURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFetchFailed, err)
 	}
-	proxyClient := &http.Client{Timeout: f.client.Timeout}
-	resp, err := proxyClient.Do(req)
+	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFetchFailed, err)
 	}

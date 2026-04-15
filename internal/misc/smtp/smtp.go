@@ -9,12 +9,26 @@ import (
 	"log/slog"
 	"net"
 	gosmtp "net/smtp"
+	"strings"
 	"time"
 )
+
+// sanitizeHeaderValue strips CR and LF characters to prevent SMTP header
+// injection. 攻撃者がヘッダーフィールドに改行を仕込むと任意ヘッダー (BCC 等)
+// を注入できるため、ここで除去する。
+func sanitizeHeaderValue(s string) string {
+	r := strings.NewReplacer("\r", "", "\n", "")
+	return r.Replace(s)
+}
 
 // Send sends a plain-text email via SMTP.
 func Send(host string, port int, user, pass *string, from, to, subject, body string) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+
+	// ヘッダーフィールドの CRLF インジェクション対策
+	from = sanitizeHeaderValue(from)
+	to = sanitizeHeaderValue(to)
+	subject = sanitizeHeaderValue(subject)
 
 	var auth gosmtp.Auth
 	if user != nil && pass != nil && *user != "" {
