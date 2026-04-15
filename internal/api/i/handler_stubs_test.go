@@ -341,6 +341,39 @@ func TestRegistryGetDetail_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// 本家互換: JSON で scope を省略した場合でも、default の empty-scope アイテムに
+// マッチすること (nil スライスが SQL NULL に化けると常に miss する bug の
+// regression test — Devin review #175)。
+func TestRegistryGetDetail_OmittedScopeFindsDefaultItem(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	reg := testutil.NewMockRegistryRepository()
+	// Scope を明示せず作成 (Set は item.Scope をそのまま使う)。デフォルト
+	// の空スライス状態で保存することを mock で再現する。
+	require.NoError(t, reg.Set(&model.RegistryItem{
+		ID: "r1", UserID: stubUser.ID, Key: "theme", Value: datatypes.JSON(`"dark"`),
+		Scope: []string{},
+	}))
+	h.SetRegistryRepo(reg)
+	// scope 無しリクエスト
+	rec := postExtra(h.RegistryGetDetail, `{"key":"theme"}`, stubUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRegistryKeys_OmittedScopeFindsDefaultItem(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	reg := testutil.NewMockRegistryRepository()
+	require.NoError(t, reg.Set(&model.RegistryItem{
+		ID: "r1", UserID: stubUser.ID, Key: "alpha", Value: datatypes.JSON(`"x"`),
+		Scope: []string{},
+	}))
+	h.SetRegistryRepo(reg)
+	rec := postExtra(h.RegistryKeys, `{}`, stubUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var got []string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Contains(t, got, "alpha")
+}
+
 func TestRegistryKeys_ReturnsKeysArray(t *testing.T) {
 	h, _ := newExtraHandler(t)
 	reg := testutil.NewMockRegistryRepository()
