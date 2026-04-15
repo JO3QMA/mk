@@ -602,3 +602,208 @@ func TestMatchNote_ListSource_NonMember(t *testing.T) {
 	n := &model.Note{ID: "n1", UserID: "bob", Text: &text}
 	assert.False(t, svc.matchNote(a, n, &model.User{ID: "bob", Username: "bob"}))
 }
+
+// --- List source: end-to-end through OnNoteCreated → Notes -----------------
+
+// リストメンバーのノートだけがアンテナに届き、非メンバーのノートは除外される
+// ことを OnNoteCreated → Notes の完全フローで検証する。
+func TestOnNoteCreated_ListSource_OnlyMemberNotesAppear(t *testing.T) {
+	svc, repo := newSvc(t)
+	lists := testutil.NewMockUserListRepository()
+	svc.SetUserListRepo(lists)
+
+	// ユーザーリストを作成し、alice と carol をメンバーに追加
+	listID := "ul1"
+	require.NoError(t, lists.Create(&model.UserList{ID: listID, UserID: "owner", Name: "favorites"}))
+	require.NoError(t, lists.AddMember(&model.UserListMembership{UserListID: listID, UserID: "alice"}))
+	require.NoError(t, lists.AddMember(&model.UserListMembership{UserListID: listID, UserID: "carol"}))
+
+	// list ソースのアンテナを作成
+	a := makeAntenna(t, "ant1", "owner", nil, func(a *model.Antenna) {
+		a.Src = model.AntennaSourceList
+		a.UserListID = &listID
+	})
+	repo.Antennas["ant1"] = a
+
+	// リストメンバー alice のノート → アンテナに届くはず
+	text1 := "hello from alice"
+	n1 := &model.Note{ID: "n1", UserID: "alice", Text: &text1}
+	svc.OnNoteCreated(n1, &model.User{ID: "alice", Username: "alice"})
+
+	// 非メンバー bob のノート → アンテナに届かないはず
+	text2 := "hello from bob"
+	n2 := &model.Note{ID: "n2", UserID: "bob", Text: &text2}
+	svc.OnNoteCreated(n2, &model.User{ID: "bob", Username: "bob"})
+
+	// リストメンバー carol のノート → アンテナに届くはず
+	text3 := "hello from carol"
+	n3 := &model.Note{ID: "n3", UserID: "carol", Text: &text3}
+	svc.OnNoteCreated(n3, &model.User{ID: "carol", Username: "carol"})
+
+	// 非メンバー dave のノート → アンテナに届かないはず
+	text4 := "hello from dave"
+	n4 := &model.Note{ID: "n4", UserID: "dave", Text: &text4}
+	svc.OnNoteCreated(n4, &model.User{ID: "dave", Username: "dave"})
+
+	rows, err := svc.Notes(context.Background(), "owner", "ant1", 100)
+	require.NoError(t, err)
+	// alice と carol のノートだけが含まれ、bob と dave のノートは含まれない
+	assert.Len(t, rows, 2)
+	assert.Contains(t, rows, "n1")
+	assert.Contains(t, rows, "n3")
+	assert.NotContains(t, rows, "n2")
+	assert.NotContains(t, rows, "n4")
+}
+
+// キーワードフィルタとリストソースを組み合わせた場合、リストメンバーかつ
+// キーワードマッチするノートだけがアンテナに届く。
+func TestOnNoteCreated_ListSource_WithKeywords(t *testing.T) {
+	svc, repo := newSvc(t)
+	lists := testutil.NewMockUserListRepository()
+	svc.SetUserListRepo(lists)
+
+	listID := "ul2"
+	require.NoError(t, lists.Create(&model.UserList{ID: listID, UserID: "owner", Name: "devs"}))
+	require.NoError(t, lists.AddMember(&model.UserListMembership{UserListID: listID, UserID: "alice"}))
+
+	// list ソース + キーワード "golang" のアンテナ
+	a := makeAntenna(t, "ant2", "owner", [][]string{{"golang"}}, func(a *model.Antenna) {
+		a.Src = model.AntennaSourceList
+		a.UserListID = &listID
+	})
+	repo.Antennas["ant2"] = a
+
+	// alice のノートでキーワードマッチ → 届く
+	text1 := "I love golang"
+	svc.OnNoteCreated(
+		&model.Note{ID: "n1", UserID: "alice", Text: &text1},
+		&model.User{ID: "alice", Username: "alice"},
+	)
+
+	// alice のノートでキーワード不一致 → 届かない
+	text2 := "I love python"
+	svc.OnNoteCreated(
+		&model.Note{ID: "n2", UserID: "alice", Text: &text2},
+		&model.User{ID: "alice", Username: "alice"},
+	)
+
+	// 非メンバー bob のノートでキーワードマッチ → 届かない (リスト外)
+	text3 := "I love golang too"
+	svc.OnNoteCreated(
+		&model.Note{ID: "n3", UserID: "bob", Text: &text3},
+		&model.User{ID: "bob", Username: "bob"},
+	)
+
+	rows, err := svc.Notes(context.Background(), "owner", "ant2", 100)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"n1"}, rows)
+}
+
+// --- List source: edge cases -----------------------------------------------
+
+// userListRepo が未注入のとき list ソースは常に不一致になる。
+func TestMatchNote_ListSource_NilRepoMisses(t *testing.T) {
+	svc, _ := newSvc(t)
+	// SetUserListRepo を呼ばない
+	listID := "ul1"
+	a, err := svc.Create(CreateInput{OwnerID: "u1", Name: "noRepo", Src: model.AntennaSourceList, UserListID: &listID})
+	require.NoError(t, err)
+	text := "hi"
+	assert.False(t, svc.matchNote(a, &model.Note{Text: &text}, &model.User{ID: "alice", Username: "alice"}))
+}
+
+// UserListID が nil のとき list ソースは不一致になる。
+func TestMatchNote_ListSource_NilUserListID(t *testing.T) {
+	svc, repo := newSvc(t)
+	lists := testutil.NewMockUserListRepository()
+	svc.SetUserListRepo(lists)
+	a := makeAntenna(t, "ant-nil", "u1", nil, func(a *model.Antenna) {
+		a.Src = model.AntennaSourceList
+		a.UserListID = nil
+	})
+	repo.Antennas["ant-nil"] = a
+	text := "hi"
+	assert.False(t, svc.matchNote(a, &model.Note{Text: &text}, &model.User{ID: "alice", Username: "alice"}))
+}
+
+// UserListID が空文字列のとき list ソースは不一致になる。
+func TestMatchNote_ListSource_EmptyUserListID(t *testing.T) {
+	svc, repo := newSvc(t)
+	lists := testutil.NewMockUserListRepository()
+	svc.SetUserListRepo(lists)
+	empty := ""
+	a := makeAntenna(t, "ant-empty", "u1", nil, func(a *model.Antenna) {
+		a.Src = model.AntennaSourceList
+		a.UserListID = &empty
+	})
+	repo.Antennas["ant-empty"] = a
+	text := "hi"
+	assert.False(t, svc.matchNote(a, &model.Note{Text: &text}, &model.User{ID: "alice", Username: "alice"}))
+}
+
+// ListMembers がエラーを返す場合 list ソースは不一致になる。
+func TestMatchNote_ListSource_ListMembersError(t *testing.T) {
+	svc, repo := newSvc(t)
+	svc.SetUserListRepo(&failingUserListRepo{})
+	listID := "ul-err"
+	a := makeAntenna(t, "ant-err", "u1", nil, func(a *model.Antenna) {
+		a.Src = model.AntennaSourceList
+		a.UserListID = &listID
+	})
+	repo.Antennas["ant-err"] = a
+	text := "hi"
+	assert.False(t, svc.matchNote(a, &model.Note{Text: &text}, &model.User{ID: "alice", Username: "alice"}))
+}
+
+// failingUserListRepo は ListMembers でエラーを返すテスト用 stub。
+type failingUserListRepo struct{}
+
+func (r *failingUserListRepo) Create(_ *model.UserList) error { return nil }
+func (r *failingUserListRepo) FindByID(_ string) (*model.UserList, error) {
+	return nil, errors.New("boom")
+}
+func (r *failingUserListRepo) ListByUser(_ string) ([]*model.UserList, error) { return nil, nil }
+func (r *failingUserListRepo) Delete(_ string) error                          { return nil }
+func (r *failingUserListRepo) AddMember(_ *model.UserListMembership) error    { return nil }
+func (r *failingUserListRepo) RemoveMember(_, _ string) error                 { return nil }
+func (r *failingUserListRepo) ListMembers(_ string) ([]*model.UserListMembership, error) {
+	return nil, errors.New("list members error")
+}
+func (r *failingUserListRepo) UpdateList(_ string, _ map[string]any) error { return nil }
+func (r *failingUserListRepo) UpdateMembership(_, _ string, _ bool) error  { return nil }
+
+// リストメンバーを追加・削除した後のアンテナ動作を検証する。
+// メンバーを削除するとそのユーザーのノートはアンテナに届かなくなる。
+func TestOnNoteCreated_ListSource_MemberRemoved(t *testing.T) {
+	svc, repo := newSvc(t)
+	lists := testutil.NewMockUserListRepository()
+	svc.SetUserListRepo(lists)
+
+	listID := "ul-rm"
+	require.NoError(t, lists.Create(&model.UserList{ID: listID, UserID: "owner", Name: "team"}))
+	require.NoError(t, lists.AddMember(&model.UserListMembership{UserListID: listID, UserID: "alice"}))
+	require.NoError(t, lists.AddMember(&model.UserListMembership{UserListID: listID, UserID: "bob"}))
+
+	a := makeAntenna(t, "ant-rm", "owner", nil, func(a *model.Antenna) {
+		a.Src = model.AntennaSourceList
+		a.UserListID = &listID
+	})
+	repo.Antennas["ant-rm"] = a
+
+	// bob をリストから削除
+	require.NoError(t, lists.RemoveMember(listID, "bob"))
+
+	text := "post after removal"
+	svc.OnNoteCreated(
+		&model.Note{ID: "n-alice", UserID: "alice", Text: &text},
+		&model.User{ID: "alice", Username: "alice"},
+	)
+	svc.OnNoteCreated(
+		&model.Note{ID: "n-bob", UserID: "bob", Text: &text},
+		&model.User{ID: "bob", Username: "bob"},
+	)
+
+	rows, err := svc.Notes(context.Background(), "owner", "ant-rm", 100)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"n-alice"}, rows)
+}
