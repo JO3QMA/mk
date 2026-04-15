@@ -612,6 +612,16 @@ func TestOnNoteCreated_ListSource_OnlyMemberNotesAppear(t *testing.T) {
 	lists := testutil.NewMockUserListRepository()
 	svc.SetUserListRepo(lists)
 
+	// pushNoteはnow.UnixMilliからRedisストリームIDを生成するため、同一msで
+	// 2件以上ENTRYするとXADDが重複IDで失敗する。テスト決定性のため単調増加の
+	// 疑似クロックを注入する。
+	start := time.Unix(1_700_000_000, 0)
+	var tick int64
+	svc.SetClock(func() time.Time {
+		tick++
+		return start.Add(time.Duration(tick) * time.Millisecond)
+	})
+
 	// ユーザーリストを作成し、alice と carol をメンバーに追加
 	listID := "ul1"
 	require.NoError(t, lists.Create(&model.UserList{ID: listID, UserID: "owner", Name: "favorites"}))
@@ -755,7 +765,7 @@ func TestMatchNote_ListSource_ListMembersError(t *testing.T) {
 	assert.False(t, svc.matchNote(a, &model.Note{Text: &text}, &model.User{ID: "alice", Username: "alice"}))
 }
 
-// failingUserListRepo は ListMembers でエラーを返すテスト用 stub。
+// failingUserListRepo causes ListMembers and FindByID to fail.
 type failingUserListRepo struct{}
 
 func (r *failingUserListRepo) Create(_ *model.UserList) error { return nil }
