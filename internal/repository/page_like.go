@@ -11,6 +11,7 @@ type PageLikeRepository interface {
 	Delete(l *model.PageLike) error
 	FindByPair(userID, pageID string) (*model.PageLike, error)
 	Exists(userID, pageID string) (bool, error)
+	ListByUser(userID string, limit, offset int) ([]*model.PageLike, error)
 }
 
 type pageLikeRepository struct {
@@ -46,4 +47,19 @@ func (r *pageLikeRepository) Exists(userID, pageID string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// ListByUser returns page_like rows owned by userID, newest first.
+// i/page-likes で利用。
+func (r *pageLikeRepository) ListByUser(userID string, limit, offset int) ([]*model.PageLike, error) {
+	limit = clampLimit(limit)
+	q := r.db.Where(`"userId" = ?`, userID).Order(`"id" DESC`).Limit(limit)
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	var likes []*model.PageLike
+	if err := q.Find(&likes).Error; err != nil {
+		return nil, err
+	}
+	return likes, nil
 }

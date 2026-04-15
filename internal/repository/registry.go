@@ -20,6 +20,9 @@ type RegistryRepository interface {
 	KeysWithType(userID string, scope []string, domain *string) (map[string]string, error)
 	// Remove deletes a registry item.
 	Remove(userID, key string, scope []string, domain *string) error
+	// ScopesWithDomain returns the distinct (scope, domain) pairs that userID has.
+	// i/registry/scopes-with-domain で返す要素のベースになる。
+	ScopesWithDomain(userID string) ([]model.RegistryScopeDomain, error)
 }
 
 type registryRepository struct {
@@ -93,6 +96,21 @@ func (r *registryRepository) Remove(userID, key string, scope []string, domain *
 	q := r.db.Where("\"userId\" = ? AND key = ?", userID, key)
 	q = r.scopeQuery(q, scope, domain)
 	return q.Delete(&model.RegistryItem{}).Error
+}
+
+func (r *registryRepository) ScopesWithDomain(userID string) ([]model.RegistryScopeDomain, error) {
+	var items []*model.RegistryItem
+	if err := r.db.
+		Select(`DISTINCT "scope", "domain"`).
+		Where(`"userId" = ?`, userID).
+		Find(&items).Error; err != nil {
+		return nil, err
+	}
+	out := make([]model.RegistryScopeDomain, 0, len(items))
+	for _, it := range items {
+		out = append(out, model.RegistryScopeDomain{Scope: []string(it.Scope), Domain: it.Domain})
+	}
+	return out, nil
 }
 
 // detectJSONType returns the JSON type name for a value.

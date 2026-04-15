@@ -1012,6 +1012,35 @@ func (m *MockAccessTokenRepository) FindByHash(hash string) (*model.AccessToken,
 	return t, nil
 }
 
+func (m *MockAccessTokenRepository) FindByID(id string) (*model.AccessToken, error) {
+	for _, t := range m.Tokens {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAccessTokenRepository) ListByUserID(userID string) ([]*model.AccessToken, error) {
+	out := make([]*model.AccessToken, 0)
+	for _, t := range m.Tokens {
+		if t.UserID == userID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockAccessTokenRepository) DeleteByID(id string) error {
+	for k, t := range m.Tokens {
+		if t.ID == id {
+			delete(m.Tokens, k)
+			return nil
+		}
+	}
+	return nil
+}
+
 // MockUserNotePiningRepository is a test double for repository.UserNotePiningRepository.
 type MockUserNotePiningRepository struct {
 	Pinings map[string]*model.UserNotePining // keyed by ID
@@ -1894,6 +1923,24 @@ func (m *MockPageLikeRepository) Exists(userID, pageID string) (bool, error) {
 	return err == nil, nil
 }
 
+func (m *MockPageLikeRepository) ListByUser(userID string, limit, offset int) ([]*model.PageLike, error) {
+	out := make([]*model.PageLike, 0)
+	for _, l := range m.Likes {
+		if l.UserID == userID {
+			out = append(out, l)
+		}
+	}
+	// tiny in-memory paging; sort not necessary for unit tests
+	if offset >= len(out) {
+		return nil, nil
+	}
+	end := offset + limit
+	if limit <= 0 || end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
+}
+
 // MockAntennaRepository is a test double for repository.AntennaRepository.
 type MockAntennaRepository struct {
 	Antennas  map[string]*model.Antenna
@@ -2615,6 +2662,27 @@ func (m *MockRegistryRepository) KeysWithType(userID string, scope []string, dom
 func (m *MockRegistryRepository) Remove(userID, key string, scope []string, _ *string) error {
 	delete(m.Items, m.rkey(userID, key, scope))
 	return nil
+}
+
+func (m *MockRegistryRepository) ScopesWithDomain(userID string) ([]model.RegistryScopeDomain, error) {
+	seen := map[string]bool{}
+	out := make([]model.RegistryScopeDomain, 0)
+	for _, item := range m.Items {
+		if item.UserID != userID {
+			continue
+		}
+		d := ""
+		if item.Domain != nil {
+			d = *item.Domain
+		}
+		k := strings.Join(item.Scope, ",") + "|" + d
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, model.RegistryScopeDomain{Scope: []string(item.Scope), Domain: item.Domain})
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
