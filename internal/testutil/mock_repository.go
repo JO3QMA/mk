@@ -3487,6 +3487,50 @@ func (m *MockSystemWebhookRepository) Update(w *model.SystemWebhook) error {
 	return nil
 }
 
+func (m *MockSystemWebhookRepository) UpdateAdminFields(id string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	w, ok := m.Webhooks[id]
+	if !ok {
+		// GORM Updates(map) はレコード欠損で ErrRecordNotFound を返さず
+		// 0 行影響で nil を返す。本実装と整合させるためここも nil を返す。
+		return nil
+	}
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				w.Name = s
+			}
+		case "url":
+			if s, ok := v.(string); ok {
+				w.URL = s
+			}
+		case "secret":
+			if s, ok := v.(string); ok {
+				w.Secret = s
+			}
+		case "on":
+			if arr, ok := v.([]string); ok {
+				w.On = arr
+			}
+		case "isActive":
+			if b, ok := v.(bool); ok {
+				w.IsActive = b
+			}
+		case "updatedAt":
+			if ts, ok := v.(time.Time); ok {
+				w.UpdatedAt = ts
+			}
+		}
+	}
+	return nil
+}
+
 func (m *MockSystemWebhookRepository) UpdateLatestStatus(id string, sentAt time.Time, status int) error {
 	w, ok := m.Webhooks[id]
 	if !ok {
@@ -3557,7 +3601,9 @@ func (m *MockAbuseReportNotificationRecipientRepository) Update(id string, field
 	}
 	r, ok := m.Recipients[id]
 	if !ok {
-		return ErrNotFound
+		// GORM Updates(map) はレコード欠損で ErrRecordNotFound を返さず
+		// 0 行影響で nil を返す。本実装と整合させるためここも nil を返す。
+		return nil
 	}
 	for k, v := range fields {
 		switch k {

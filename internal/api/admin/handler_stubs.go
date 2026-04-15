@@ -750,8 +750,10 @@ func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
 	if req.SystemWebhookID != nil {
 		fields["systemWebhookId"] = *req.SystemWebhookID
 	}
+	// GORM Updates(map) は対象なしでも nil を返すため、ここでのエラーは DB 障害
+	// 等の真の失敗。NotFound は続く FindByID で検出する。
 	if err := h.recipientRepo.Update(req.ID, fields); err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	r, err := h.recipientRepo.FindByID(req.ID)
 	if err != nil {
@@ -1188,6 +1190,10 @@ func (h *Handler) SystemWebhookTest(c echo.Context) error {
 }
 
 // SystemWebhookUpdate handles POST /api/admin/system-webhook/update.
+//
+// 配送 processor が並行して latestSentAt/latestStatus を書き換えるため、
+// FindByID→Save で全列上書きすると配送ステータスを古い値で踏み潰す。partial
+// update (UpdateAdminFields) を使い admin 編集可能列のみ触る。
 func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
 	if h.systemWebhookRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -1203,27 +1209,31 @@ func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
 	}
-	sw, err := h.systemWebhookRepo.FindByID(req.ID)
-	if err != nil {
+	// 存在確認 (GORM Updates(map) は 0 行影響でも nil を返すため)
+	if _, err := h.systemWebhookRepo.FindByID(req.ID); err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
+	fields := map[string]any{"updatedAt": time.Now()}
 	if req.Name != nil {
-		sw.Name = *req.Name
+		fields["name"] = *req.Name
 	}
 	if req.URL != nil {
-		sw.URL = *req.URL
+		fields["url"] = *req.URL
 	}
 	if req.Secret != nil {
-		sw.Secret = *req.Secret
+		fields["secret"] = *req.Secret
 	}
 	if req.On != nil {
-		sw.On = *req.On
+		fields["on"] = *req.On
 	}
 	if req.IsActive != nil {
-		sw.IsActive = *req.IsActive
+		fields["isActive"] = *req.IsActive
 	}
-	sw.UpdatedAt = time.Now()
-	if err := h.systemWebhookRepo.Update(sw); err != nil {
+	if err := h.systemWebhookRepo.UpdateAdminFields(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	sw, err := h.systemWebhookRepo.FindByID(req.ID)
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.JSON(http.StatusOK, sw)

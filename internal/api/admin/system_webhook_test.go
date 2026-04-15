@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -102,6 +103,27 @@ func TestSystemWebhookUpdate_PartialFields(t *testing.T) {
 	assert.Equal(t, "new", repo.Webhooks["w1"].Name)
 	assert.Equal(t, "https://old", repo.Webhooks["w1"].URL)
 	assert.False(t, repo.Webhooks["w1"].IsActive)
+}
+
+func TestSystemWebhookUpdate_PreservesDeliveryStatus(t *testing.T) {
+	// 配送 processor が latestSentAt/latestStatus を書き込んだ後でも
+	// admin の Update がそれらを踏まないことを確認する。
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockSystemWebhookRepository()
+	require.NoError(t, repo.Create(&model.SystemWebhook{
+		ID: "w1", Name: "orig", URL: "https://o", IsActive: true,
+	}))
+	sentAt := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, repo.UpdateLatestStatus("w1", sentAt, 202))
+	h.SetSystemWebhookRepo(repo)
+
+	rec := doPost(h.SystemWebhookUpdate,
+		`{"id":"w1","name":"renamed"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	w := repo.Webhooks["w1"]
+	assert.Equal(t, "renamed", w.Name)
+	require.NotNil(t, w.LatestStatus)
+	assert.Equal(t, 202, *w.LatestStatus)
 }
 
 func TestSystemWebhookUpdate_NotFound(t *testing.T) {
