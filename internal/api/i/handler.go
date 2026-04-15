@@ -47,6 +47,31 @@ type Handler struct {
 	emailSender      EmailSender
 	serverURL        string
 	signinRepo       repository.SigninRepository
+	accessTokenRepo  repository.AccessTokenRepository
+	galleryRepo      GalleryRepository
+	pageLikeRepo     repository.PageLikeRepository
+}
+
+// GalleryRepository is the subset of repository.GalleryRepository used by
+// the i/gallery/* endpoints. Kept as a handler-local alias so we can
+// swap implementations in tests without pulling the full repository.
+type GalleryRepository interface {
+	ListByUser(userID string, limit, offset int) ([]*model.GalleryPost, error)
+	ListLikesByUser(userID string, limit, offset int) ([]*model.GalleryLike, error)
+}
+
+// SetAccessTokenRepo wires the access_token repo for i/authorized-apps and
+// i/revoke-token.
+func (h *Handler) SetAccessTokenRepo(r repository.AccessTokenRepository) {
+	h.accessTokenRepo = r
+}
+
+// SetGalleryRepo wires the gallery repo for i/gallery/*.
+func (h *Handler) SetGalleryRepo(r GalleryRepository) { h.galleryRepo = r }
+
+// SetPageLikeRepo wires the page_like repo for i/page-likes.
+func (h *Handler) SetPageLikeRepo(r repository.PageLikeRepository) {
+	h.pageLikeRepo = r
 }
 
 // isSilenced returns whether the given user has any role whose merged
