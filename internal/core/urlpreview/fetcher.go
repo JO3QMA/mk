@@ -41,9 +41,10 @@ type Config struct {
 
 // Fetcher fetches and parses URL previews with caching and SSRF protection.
 type Fetcher struct {
-	cfg    Config
-	redis  *redis.Client
-	client *http.Client
+	cfg         Config
+	redis       *redis.Client
+	client      *http.Client
+	proxyClient *http.Client
 }
 
 // SetHTTPClient replaces the HTTP client (for tests that need to bypass
@@ -79,7 +80,15 @@ func NewFetcher(cfg Config, rdb *redis.Client) *Fetcher {
 		}
 	}
 
-	return &Fetcher{cfg: cfg, redis: rdb, client: client}
+	return &Fetcher{
+		cfg:   cfg,
+		redis: rdb,
+		client: client,
+		// proxyClient は SSRF 保護なしの専用クライアント。管理者が設定した
+		// 信頼済みプロキシ URL は localhost やプライベートネットワーク上に
+		// 配置されることが多いため、プライベート IP ブロックを適用しない。
+		proxyClient: &http.Client{Timeout: timeout},
+	}
 }
 
 // Fetch returns the URL preview, using Redis cache when available.
@@ -176,7 +185,7 @@ func (f *Fetcher) fetchViaProxy(ctx context.Context, rawURL string) (*Result, er
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFetchFailed, err)
 	}
-	resp, err := f.client.Do(req)
+	resp, err := f.proxyClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFetchFailed, err)
 	}
