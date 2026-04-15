@@ -831,6 +831,10 @@ func (s *Server) setupRoutes() {
 		iHandler.SetWebAuthn(webauthnSvc, userSecurityKeyRepo)
 	}
 	iHandler.SetSigninRepo(signinRepo)
+	// P4-6 (#166): i/authorized-apps, i/revoke-token, i/gallery/*, i/page-likes
+	iHandler.SetAccessTokenRepo(repository.NewAccessTokenRepository(s.db))
+	iHandler.SetGalleryRepo(repository.NewGalleryRepository(s.db))
+	iHandler.SetPageLikeRepo(pageLikeRepo)
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
 	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
 	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())
