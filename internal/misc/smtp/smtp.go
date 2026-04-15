@@ -1,6 +1,8 @@
 // Package smtp provides a best-effort SMTP email sender shared by admin
-// and i handler packages. SMTP 設定エラーはログに出力し、呼び出し元にはエラーを
-// 返さない (ベストエフォート送信)。
+// and i handler packages.
+//
+// SMTP設定エラーはログに出力し、呼び出し元にはエラーを返さない
+// (ベストエフォート送信)。
 package smtp
 
 import (
@@ -9,12 +11,27 @@ import (
 	"log/slog"
 	"net"
 	gosmtp "net/smtp"
+	"strings"
 	"time"
 )
+
+// sanitizeHeaderValue strips CR and LF characters to prevent SMTP header
+// injection.
+func sanitizeHeaderValue(s string) string {
+	// 攻撃者がヘッダーフィールドに改行(CR/LF)を仕込むとBCC等の任意ヘッダーを
+	// 注入できてしまうため、ここで無害化する。
+	r := strings.NewReplacer("\r", "", "\n", "")
+	return r.Replace(s)
+}
 
 // Send sends a plain-text email via SMTP.
 func Send(host string, port int, user, pass *string, from, to, subject, body string) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+
+	// ヘッダーフィールドのCRLFインジェクション対策
+	from = sanitizeHeaderValue(from)
+	to = sanitizeHeaderValue(to)
+	subject = sanitizeHeaderValue(subject)
 
 	var auth gosmtp.Auth
 	if user != nil && pass != nil && *user != "" {
