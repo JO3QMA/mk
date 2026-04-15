@@ -319,6 +319,10 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 			"description": p.Description,
 			"userId":      p.UserID,
 			"fileIds":     []string(p.FileIDs),
+			// files は既存の gallery packOne と揃えて空配列を返す
+			// (フロントが post.files を前提にするため undefined を避ける)。
+			// 将来 gallery/posts と同じ展開ロジックを共通化する可能性あり。
+			"files":       []any{},
 			"isSensitive": p.IsSensitive,
 			"likedCount":  p.LikedCount,
 			"tags":        []string(p.Tags),
