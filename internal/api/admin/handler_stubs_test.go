@@ -2,14 +2,18 @@ package admin_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var adminUser = &model.User{ID: "admin1"}
@@ -73,6 +77,59 @@ func TestAccountsFindByEmail_Found(t *testing.T) {
 	rec := doPost(h.AccountsFindByEmail, `{"email":"alice@example.com"}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"alice"`)
+}
+
+// TestAccountsFindByEmail_ResponseShape verifies that AccountsFindByEmail
+// returns the packAdminUser format: frontend-expected fields (createdAt,
+// roles, policies) must be present, and internal model fields (inbox,
+// sharedInbox, usernameLower) must NOT leak.
+func TestAccountsFindByEmail_ResponseShape(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+
+	// aidxで生成したIDを使い、createdAtがパースされることを保証する
+	idGen, _ := id.NewGenerator("aidx")
+	uid := idGen.Generate(time.Now())
+
+	inbox := "https://remote.example/inbox"
+	sharedInbox := "https://remote.example/sharedInbox"
+	email := "bob@example.com"
+	userRepo.Users[uid] = &model.User{
+		ID:                uid,
+		Username:          "bob",
+		UsernameLower:     "bob",
+		Inbox:             &inbox,
+		SharedInbox:       &sharedInbox,
+		IsExplorable:      true,
+		AvatarDecorations: []byte("[]"),
+	}
+	userRepo.Profiles[uid] = &model.UserProfile{
+		UserID:          uid,
+		Email:           &email,
+		MutedWords:      []byte("[]"),
+		HardMutedWords:  []byte("[]"),
+		MutedInstances:  []byte("[]"),
+		PublicReactions: true,
+	}
+
+	rec := doPost(h.AccountsFindByEmail, `{"email":"bob@example.com"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	// packAdminUserが付与するフロントエンド必須フィールドの存在確認
+	assert.Equal(t, uid, resp["id"])
+	assert.NotNil(t, resp["createdAt"], "createdAt must be present")
+	assert.NotNil(t, resp["roles"], "roles must be present")
+	assert.NotNil(t, resp["policies"], "policies must be present")
+
+	// 内部フィールドがレスポンスに漏れていないことを確認
+	_, hasInbox := resp["inbox"]
+	assert.False(t, hasInbox, "inbox is an internal field and must not be exposed")
+	_, hasSharedInbox := resp["sharedInbox"]
+	assert.False(t, hasSharedInbox, "sharedInbox is an internal field and must not be exposed")
+	_, hasUsernameLower := resp["usernameLower"]
+	assert.False(t, hasUsernameLower, "usernameLower is an internal field and must not be exposed")
 }
 
 // --- ad ---
