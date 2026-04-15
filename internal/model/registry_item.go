@@ -20,3 +20,12 @@ type RegistryItem struct {
 }
 
 func (RegistryItem) TableName() string { return "registry_item" }
+
+// RegistryScopeDomain describes one (scope, domain) pair — scope は配列、
+// domain は nullable。i/registry/scopes-with-domain 返却値のビルディング
+// ブロック。model 層に置くのは repository ↔ testutil の循環 import を
+// 避けるため (testutil のモックが repository を import できない)。
+type RegistryScopeDomain struct {
+	Scope  []string
+	Domain *string
+}
