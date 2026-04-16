@@ -82,6 +82,9 @@ func (f *fakeDriveFileRepo) ListForAdmin(_, _, _, _, _ string, _ int) ([]*model.
 }
 func (f *fakeDriveFileRepo) DeleteOrphans() (int64, error)     { return 0, nil }
 func (f *fakeDriveFileRepo) DeleteRemoteCache() (int64, error) { return 0, nil }
+func (f *fakeDriveFileRepo) DeleteByUser(_ string) (int64, error) {
+	return 0, nil
+}
 
 // Ensure fakeDriveFileRepo implements the real repository interface so the
 // reader accepts it.

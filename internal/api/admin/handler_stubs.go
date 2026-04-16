@@ -4,12 +4,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/serverstats"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -74,8 +76,17 @@ func (h *Handler) DeleteAllFilesOfUser(c echo.Context) error {
 	var req struct {
 		UserID string `json:"userId"`
 	}
-	_ = c.Bind(&req)
-	// ファイル一括削除は将来対応 (バックグラウンドジョブが必要)
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.driveFileRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// 単一の DELETE 文で完結するため同期実行。大量ファイル (数万) の場合も
+	// PostgreSQL で 1 秒未満に収まる想定。将来バッチが必要なら queue へ。
+	if _, err := h.driveFileRepo.DeleteByUser(req.UserID); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -217,7 +228,7 @@ func (h *Handler) SendEmail(c echo.Context) error {
 			if m.SmtpPort != nil {
 				port = *m.SmtpPort
 			}
-			go sendEmailSMTP(*m.SmtpHost, port, m.SmtpUser, m.SmtpPass, *m.Email, req.To, req.Subject, req.Text)
+			go smtp.Send(*m.SmtpHost, port, m.SmtpUser, m.SmtpPass, *m.Email, req.To, req.Subject, req.Text)
 		}
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -269,11 +280,36 @@ func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
 }
 
 // UpdateProxyAccount handles POST /api/admin/update-proxy-account.
+//
+// username (local) を解決してその user.id を meta.proxyAccountId に保存する。
+// 空 / null を渡した場合は proxyAccountId を NULL に戻して proxy を無効化する。
 func (h *Handler) UpdateProxyAccount(c echo.Context) error {
 	var req struct {
-		Username string `json:"username"`
+		Username *string `json:"username"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.metaRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// 明示的な空文字 / null → 解除
+	if req.Username == nil || *req.Username == "" {
+		if err := h.metaRepo.Update(map[string]any{"proxyAccountId": nil}); err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.userRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	user, err := h.userRepo.FindByUsernameLower(strings.ToLower(*req.Username), nil)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if err := h.metaRepo.Update(map[string]any{"proxyAccountId": user.ID}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

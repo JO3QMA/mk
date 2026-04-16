@@ -1114,6 +1114,13 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 			if s, ok := v.(string); ok {
 				m.Meta.RootUserID = &s
 			}
+		case "proxyAccountId":
+			switch vv := v.(type) {
+			case string:
+				m.Meta.ProxyAccountID = &vv
+			case nil:
+				m.Meta.ProxyAccountID = nil
+			}
 		case "enableHcaptcha":
 			if b, ok := v.(bool); ok {
 				m.Meta.EnableHcaptcha = b

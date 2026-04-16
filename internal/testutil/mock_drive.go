@@ -341,3 +341,17 @@ func (m *MockDriveFileRepository) DeleteRemoteCache() (int64, error) {
 	}
 	return n, nil
 }
+
+func (m *MockDriveFileRepository) DeleteByUser(userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	n := int64(0)
+	for id, f := range m.Files {
+		if f.UserID != nil && *f.UserID == userID {
+			delete(m.Files, id)
+			n++
+		}
+	}
+	return n, nil
+}

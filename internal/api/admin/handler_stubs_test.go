@@ -207,7 +207,11 @@ func TestDeleteAccountAdmin(t *testing.T) {
 }
 func TestDeleteAllFilesOfUser(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
+	// userId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
+	// repo 未注入は 204
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser).Code)
 }
 func TestForwardAbuseUserReport(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
