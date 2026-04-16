@@ -1286,6 +1286,18 @@ func (h *Handler) QueueInboxDelayed(c echo.Context) error {
 	return h.listDelayedTasks(c, "inbox")
 }
 
+// delayedTasksMaxFetch is the upper bound on how many of each of scheduled /
+// retry we pull from asynq to build the virtual delayed list. asynq pages
+// scheduled and retry independently so we cannot naively forward the user's
+// page number to both (retry items before the scheduled boundary would
+// disappear). We instead fetch the first asynq page (up to 100 items) of each,
+// merge scheduled-first, then slice by the user's (page, limit).
+//
+// 想定: admin/queue/*-delayed は通常 "stuck な配送" を目視で確認する用途で、
+// 合計 200 件を超えるケースは運用上ほぼ存在しない。深いページングが必要なら
+// /admin/queue/jobs を state=scheduled / state=retry で使う。
+const delayedTasksMaxFetch = 100
+
 func (h *Handler) listDelayedTasks(c echo.Context, queueName string) error {
 	if h.queueInspector == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -1301,23 +1313,23 @@ func (h *Handler) listDelayedTasks(c echo.Context, queueName string) error {
 	if req.Page < 1 {
 		req.Page = 1
 	}
-	// Misskey 本家では deliver/inbox の delayed キューを統合して返している。
-	// asynq の scheduled + retry 両方を集めるが、結合後に req.Limit で切り詰めて
-	// ページネーション契約 (limit=N なら最大 N 件) を守る。scheduled を先に
-	// 詰めるので実質 scheduled 優先になる。
-	scheduled, _ := h.queueInspector.ListScheduledTasks(queueName, req.Page, req.Limit)
-	retry, _ := h.queueInspector.ListRetryTasks(queueName, req.Page, req.Limit)
-	out := make([]map[string]any, 0, req.Limit)
-	for _, t := range scheduled {
-		if len(out) >= req.Limit {
-			break
-		}
-		out = append(out, packTaskSummary(t))
+
+	scheduled, _ := h.queueInspector.ListScheduledTasks(queueName, 1, delayedTasksMaxFetch)
+	retry, _ := h.queueInspector.ListRetryTasks(queueName, 1, delayedTasksMaxFetch)
+	combined := make([]*QueueTaskSummary, 0, len(scheduled)+len(retry))
+	combined = append(combined, scheduled...)
+	combined = append(combined, retry...)
+
+	offset := (req.Page - 1) * req.Limit
+	if offset >= len(combined) {
+		return c.JSON(http.StatusOK, []map[string]any{})
 	}
-	for _, t := range retry {
-		if len(out) >= req.Limit {
-			break
-		}
+	end := offset + req.Limit
+	if end > len(combined) {
+		end = len(combined)
+	}
+	out := make([]map[string]any, 0, end-offset)
+	for _, t := range combined[offset:end] {
 		out = append(out, packTaskSummary(t))
 	}
 	return c.JSON(http.StatusOK, out)

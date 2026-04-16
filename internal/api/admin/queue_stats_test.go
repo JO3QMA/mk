@@ -265,6 +265,51 @@ func TestQueueDeliverDelayed_CappedAtLimit(t *testing.T) {
 	assert.Equal(t, "r1", rows[3]["id"])
 }
 
+// listDelayedTasks が scheduled/retry 境界を越えて正しくページングできること
+// を確認する。旧実装では同じ req.Page を両リストに forward していたため、
+// scheduled でページが埋まると retry 側の早い項目が永久に見えなくなる bug が
+// あった (Devin #183 review)。
+func TestQueueDeliverDelayed_PagingCrossesBoundary(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	scheduled := make([]*apiadmin.QueueTaskSummary, 0, 5)
+	for _, id := range []string{"s1", "s2", "s3", "s4", "s5"} {
+		scheduled = append(scheduled, &apiadmin.QueueTaskSummary{ID: id})
+	}
+	retry := make([]*apiadmin.QueueTaskSummary, 0, 3)
+	for _, id := range []string{"r1", "r2", "r3"} {
+		retry = append(retry, &apiadmin.QueueTaskSummary{ID: id})
+	}
+	insp := &stubQueueInspector{
+		scheduled: map[string][]*apiadmin.QueueTaskSummary{"deliver": scheduled},
+		retry:     map[string][]*apiadmin.QueueTaskSummary{"deliver": retry},
+	}
+	h.SetQueueInspector(insp)
+
+	// page 1 limit 3 → s1, s2, s3
+	rec := doPost(h.QueueDeliverDelayed, `{"limit":3,"page":1}`, adminUser)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 3)
+	assert.Equal(t, []any{"s1", "s2", "s3"}, []any{rows[0]["id"], rows[1]["id"], rows[2]["id"]})
+
+	// page 2 limit 3 → s4, s5, r1 (境界をまたぐ)
+	rec = doPost(h.QueueDeliverDelayed, `{"limit":3,"page":2}`, adminUser)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 3)
+	assert.Equal(t, []any{"s4", "s5", "r1"}, []any{rows[0]["id"], rows[1]["id"], rows[2]["id"]})
+
+	// page 3 limit 3 → r2, r3
+	rec = doPost(h.QueueDeliverDelayed, `{"limit":3,"page":3}`, adminUser)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 2)
+	assert.Equal(t, []any{"r2", "r3"}, []any{rows[0]["id"], rows[1]["id"]})
+
+	// page 4 → 空
+	rec = doPost(h.QueueDeliverDelayed, `{"limit":3,"page":4}`, adminUser)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	assert.Empty(t, rows)
+}
+
 // QueueJobs で queue 未指定時、複数キューを走査しても合計 limit を超えない
 // ことを確認する。
 func TestQueueJobs_MultiQueueCappedAtLimit(t *testing.T) {
