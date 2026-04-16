@@ -59,6 +59,54 @@ func TestAccountsDelete(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.AccountsDelete, `{}`, adminUser).Code)
 }
+
+type stubDeleteAccountEnqueuer struct {
+	lastUserID string
+	called     int
+	err        error
+}
+
+func (s *stubDeleteAccountEnqueuer) EnqueueDeleteAccount(payload queue.DeleteAccountPayload) error {
+	s.called++
+	s.lastUserID = payload.UserID
+	return s.err
+}
+
+func TestAccountsDelete_EnqueuesCascade(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubDeleteAccountEnqueuer{}
+	h.SetDeleteAccountEnqueuer(stub)
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.AccountsDelete, `{"userId":"u1"}`, adminUser).Code)
+	assert.Equal(t, 1, stub.called)
+	assert.Equal(t, "u1", stub.lastUserID)
+}
+
+func TestAccountsDelete_MissingUserIDSkipsEnqueue(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubDeleteAccountEnqueuer{}
+	h.SetDeleteAccountEnqueuer(stub)
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.AccountsDelete, `{}`, adminUser).Code)
+	assert.Equal(t, 0, stub.called)
+}
+
+func TestAccountsDelete_EnqueueFailureIsLogged(t *testing.T) {
+	// enqueue 失敗はログに残すだけで HTTP 応答は 204 のまま返ることを確認。
+	h, _, _, _ := newTestHandler(t)
+	h.SetDeleteAccountEnqueuer(&stubDeleteAccountEnqueuer{err: assertError{}})
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.AccountsDelete, `{"userId":"u1"}`, adminUser).Code)
+}
+
+func TestDeleteAccount_EnqueuesCascade(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubDeleteAccountEnqueuer{}
+	h.SetDeleteAccountEnqueuer(stub)
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.DeleteAccount, `{"userId":"u9"}`, adminUser).Code)
+	assert.Equal(t, "u9", stub.lastUserID)
+}
 func TestAccountsFindByEmail_Empty(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusBadRequest, doPost(h.AccountsFindByEmail, `{}`, adminUser).Code)

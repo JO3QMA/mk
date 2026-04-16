@@ -765,6 +765,39 @@ func TestNoteRepository_SearchByTag_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestNoteRepository_DeleteByUser_Batched verifies batched purge.
+func TestNoteRepository_DeleteByUser_Batched(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_dbu_v", "dbuviewer")
+	defer cleanupUser(t, user.ID)
+
+	ids := []string{"n_dbu_1", "n_dbu_2", "n_dbu_3"}
+	text := "hi"
+	for _, id := range ids {
+		n := &model.Note{
+			ID: id, UserID: user.ID, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, id)
+	}
+
+	n, err := repo.DeleteByUser(user.ID, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, n, "全3件が消えているはず")
+
+	// 再実行は 0 件
+	n, err = repo.DeleteByUser(user.ID, 100)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n)
+
+	// userId 空は no-op
+	n, err = repo.DeleteByUser("", 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n)
+}
+
 // TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence
 // guards against the SQL precedence bug where MutedChannelIDs would short
 // circuit other AND conditions via an unparenthesized OR. Places two notes

@@ -26,6 +26,10 @@ type FollowingRepository interface {
 	// UpdateAllByFollower applies partial updates to every Following row
 	// with the given follower. Used by following/update-all.
 	UpdateAllByFollower(followerID string, fields map[string]any) error
+	// DeleteAllByUser removes every Following row that involves userID as
+	// either the follower or the followee. Returns the total affected rows.
+	// Used by cascade account deletion.
+	DeleteAllByUser(userID string) (int64, error)
 	// ListRemoteFollowerInboxes returns the deduplicated list of inbox URLs for
 	// remote followers of userID. sharedInbox を持つフォロワーは sharedInbox
 	// に集約され、無いフォロワーは個別inboxを返す。
@@ -145,6 +149,14 @@ func (r *followingRepository) UpdateAllByFollower(followerID string, fields map[
 	return r.db.Model(&model.Following{}).
 		Where(`"followerId" = ?`, followerID).
 		Updates(fields).Error
+}
+
+// DeleteAllByUser removes every Following row whose follower or followee is
+// userID.
+func (r *followingRepository) DeleteAllByUser(userID string) (int64, error) {
+	tx := r.db.Where(`"followerId" = ? OR "followeeId" = ?`, userID, userID).
+		Delete(&model.Following{})
+	return tx.RowsAffected, tx.Error
 }
 
 // ListRemoteFollowerInboxes returns deduplicated inbox URLs for remote

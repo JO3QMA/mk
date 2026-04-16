@@ -35,30 +35,39 @@ type AbuseForwarder interface {
 	ForwardReport(reportID string) error
 }
 
+// DeleteAccountEnqueuer schedules the background cascade deletion of a
+// user's related rows (notes / drive files / follow graph) after the
+// admin/accounts/delete flag flip. narrow interface to keep admin handler
+// tests decoupled from the full queue stack.
+type DeleteAccountEnqueuer interface {
+	EnqueueDeleteAccount(payload queue.DeleteAccountPayload) error
+}
+
 // Handler handles admin API endpoints.
 type Handler struct {
-	signupService     *signup.Service
-	roleService       *role.Service
-	metaRepo          repository.MetaRepository
-	userRepo          repository.UserRepository
-	abuseRepo         repository.AbuseReportRepository
-	modLogRepo        repository.ModerationLogRepository
-	emojiRepo         repository.EmojiRepository
-	driveFileRepo     repository.DriveFileRepository
-	adminDB           *gorm.DB
-	userIPRepo        repository.UserIPRepository
-	queueInspector    QueueInspector
-	emojiEnqueuer     EmojiImportEnqueuer
-	relayService      RelayService
-	abuseForwarder    AbuseForwarder
-	systemWebhookRepo repository.SystemWebhookRepository
-	recipientRepo     repository.AbuseReportNotificationRecipientRepository
-	adRepo            repository.AdRepository
-	avatarDecoRepo    repository.AvatarDecorationRepository
-	inviteRepo        repository.RegistrationTicketRepository
-	promoNoteRepo     repository.PromoNoteRepository
-	noteFinder        NoteFinder
-	idGen             id.Generator
+	signupService         *signup.Service
+	roleService           *role.Service
+	metaRepo              repository.MetaRepository
+	userRepo              repository.UserRepository
+	abuseRepo             repository.AbuseReportRepository
+	modLogRepo            repository.ModerationLogRepository
+	emojiRepo             repository.EmojiRepository
+	driveFileRepo         repository.DriveFileRepository
+	adminDB               *gorm.DB
+	userIPRepo            repository.UserIPRepository
+	queueInspector        QueueInspector
+	emojiEnqueuer         EmojiImportEnqueuer
+	relayService          RelayService
+	abuseForwarder        AbuseForwarder
+	deleteAccountEnqueuer DeleteAccountEnqueuer
+	systemWebhookRepo     repository.SystemWebhookRepository
+	recipientRepo         repository.AbuseReportNotificationRecipientRepository
+	adRepo                repository.AdRepository
+	avatarDecoRepo        repository.AvatarDecorationRepository
+	inviteRepo            repository.RegistrationTicketRepository
+	promoNoteRepo         repository.PromoNoteRepository
+	noteFinder            NoteFinder
+	idGen                 id.Generator
 }
 
 // NoteFinder is the minimal subset of repository.NoteRepository that admin
@@ -110,6 +119,14 @@ func (h *Handler) SetRelayService(s RelayService) {
 // (pre-P4-5 behaviour).
 func (h *Handler) SetAbuseForwarder(f AbuseForwarder) {
 	h.abuseForwarder = f
+}
+
+// SetDeleteAccountEnqueuer wires the enqueuer that schedules cascade
+// deletion of related rows for admin/accounts/delete and admin/delete-account.
+// When nil the handlers still flip the soft-delete flags but no background
+// cleanup runs — useful in tests.
+func (h *Handler) SetDeleteAccountEnqueuer(e DeleteAccountEnqueuer) {
+	h.deleteAccountEnqueuer = e
 }
 
 // EmojiImportEnqueuer is the subset of queue.Enqueuer needed to schedule

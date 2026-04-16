@@ -49,6 +49,11 @@ const TaskTypeChartResync = "chart:resync"
 // job. Mirrors upstream `cleanCharts` (cron `0 0 * * *`).
 const TaskTypeChartClean = "chart:clean"
 
+// TaskTypeDeleteAccount is the asynq task type for the background cascade
+// deletion of a user account's related rows (notes / drive files / follow
+// graph entries etc.). Mirrors upstream `deleteAccount` queue job.
+const TaskTypeDeleteAccount = "maintenance:deleteAccount"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {
@@ -202,6 +207,27 @@ func DecodeWebhookPayload(body []byte) (WebhookPayload, error) {
 	var p WebhookPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return WebhookPayload{}, err
+	}
+	return p, nil
+}
+
+// DeleteAccountPayload carries the userID whose related rows should be
+// cascade-deleted by the background processor.
+type DeleteAccountPayload struct {
+	UserID string `json:"userId"`
+}
+
+// NewDeleteAccountTask serializes a DeleteAccountPayload into an asynq.Task.
+func NewDeleteAccountTask(payload DeleteAccountPayload) *asynq.Task {
+	body, _ := json.Marshal(payload)
+	return asynq.NewTask(TaskTypeDeleteAccount, body)
+}
+
+// DecodeDeleteAccountPayload extracts a DeleteAccountPayload from a task body.
+func DecodeDeleteAccountPayload(body []byte) (DeleteAccountPayload, error) {
+	var p DeleteAccountPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return DeleteAccountPayload{}, err
 	}
 	return p, nil
 }

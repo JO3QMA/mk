@@ -742,6 +742,17 @@ func (m *MockNoteRepository) DeleteExpiredRemoteNotes(_, _ int) (int64, error) {
 	return 0, nil
 }
 
+func (m *MockNoteRepository) DeleteByUser(userID string, _ int) (int64, error) {
+	n := int64(0)
+	for id, note := range m.Notes {
+		if note.UserID == userID {
+			delete(m.Notes, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MockNoteRepository) listPublic(limit int) ([]*model.Note, error) {
 	var result []*model.Note
 	for _, n := range m.Notes {
@@ -2539,6 +2550,17 @@ func NewMockFollowingRepository() *MockFollowingRepository {
 
 // ListRemoteFollowerInboxes returns the inbox URLs registered for the given
 // followee. テストでは MockFollowingRepository.RemoteInboxes を直接埋めて使う。
+func (m *MockFollowingRepository) DeleteAllByUser(userID string) (int64, error) {
+	n := int64(0)
+	for k, f := range m.Followings {
+		if f.FollowerID == userID || f.FolloweeID == userID {
+			delete(m.Followings, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MockFollowingRepository) ListRemoteFollowerInboxes(userID string) ([]string, error) {
 	return m.RemoteInboxes[userID], nil
 }

@@ -564,5 +564,29 @@ func TestClient_EnqueueReactionFlush(t *testing.T) {
 	require.NoError(t, c.EnqueueReactionFlush())
 }
 
+func TestClient_EnqueueDeleteAccount(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueDeleteAccount(queue.DeleteAccountPayload{UserID: "u1"}))
+}
+
+func TestNewDeleteAccountTask_RoundTrip(t *testing.T) {
+	payload := queue.DeleteAccountPayload{UserID: "u-delete"}
+	task := queue.NewDeleteAccountTask(payload)
+	require.Equal(t, queue.TaskTypeDeleteAccount, task.Type())
+	got, err := queue.DecodeDeleteAccountPayload(task.Payload())
+	require.NoError(t, err)
+	require.Equal(t, "u-delete", got.UserID)
+}
+
+func TestDecodeDeleteAccountPayload_MalformedReturnsError(t *testing.T) {
+	_, err := queue.DecodeDeleteAccountPayload([]byte(`not-json`))
+	require.Error(t, err)
+}
+
 // ensure errors package referenced for completeness in CI builds.
 var _ = errors.New
