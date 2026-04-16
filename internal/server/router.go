@@ -1278,6 +1278,20 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetAbuseRepo(abuseReportRepo)
 	adminHandler.SetAbuseForwarder(coreabuse.NewForwarder(abuseReportRepo, sysAcctSvc, apRenderer, deliverService))
 	adminHandler.SetDeleteAccountEnqueuer(s.queueClient)
+	adminHandler.SetPasswordResetRepo(resetReqRepo)
+	adminHandler.SetServerURL(s.config.URL)
+	if smtpMetaAdmin, err := metaRepo.Fetch(); err == nil && smtpMetaAdmin.EnableEmail && smtpMetaAdmin.Email != nil && smtpMetaAdmin.SmtpHost != nil {
+		fromAddr := *smtpMetaAdmin.Email
+		host := *smtpMetaAdmin.SmtpHost
+		port := 587
+		if smtpMetaAdmin.SmtpPort != nil {
+			port = *smtpMetaAdmin.SmtpPort
+		}
+		smtpUser, smtpPass := smtpMetaAdmin.SmtpUser, smtpMetaAdmin.SmtpPass
+		adminHandler.SetEmailSender(func(to, subject, body string) {
+			miscsmtp.Send(host, port, smtpUser, smtpPass, fromAddr, to, subject, body)
+		})
+	}
 	adminHandler.SetModLogRepo(modLogRepo)
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
