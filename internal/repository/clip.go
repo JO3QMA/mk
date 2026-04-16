@@ -12,6 +12,10 @@ type ClipRepository interface {
 	UpdateFields(clipID string, fields map[string]any) error
 	Delete(c *model.Clip) error
 	ListByUser(userID string, limit, offset int) ([]*model.Clip, error)
+	// ListPublicByUser returns only public clips owned by userID. Used by
+	// users/clips when the viewer is not the owner so LIMIT applies to the
+	// already-filtered set.
+	ListPublicByUser(userID string, limit, offset int) ([]*model.Clip, error)
 	IncrementCount(clipID, column string, delta int) error
 }
 
@@ -57,6 +61,24 @@ func (r *clipRepository) ListByUser(userID string, limit, offset int) ([]*model.
 	}
 	var rows []*model.Clip
 	if err := r.db.Where("\"userId\" = ?", userID).
+		Order("id DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *clipRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Clip
+	if err := r.db.Where("\"userId\" = ? AND \"isPublic\" = true", userID).
 		Order("id DESC").
 		Limit(limit).
 		Offset(offset).

@@ -66,26 +66,32 @@ func TestAchievements_InvalidParam(t *testing.T) {
 
 func TestClips(t *testing.T) {
 	h, _ := newTestHandler(t)
+	// userId 欠落は 400
 	rec := postStub(h.Clips, `{}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	// repo 未注入でも 200 空配列
+	assert.Equal(t, http.StatusOK, postStub(h.Clips, `{"userId":"u1"}`, nil).Code)
 }
 
 func TestFlashs(t *testing.T) {
 	h, _ := newTestHandler(t)
 	rec := postStub(h.Flashs, `{}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, postStub(h.Flashs, `{"userId":"u1"}`, nil).Code)
 }
 
 func TestGalleryPosts(t *testing.T) {
 	h, _ := newTestHandler(t)
 	rec := postStub(h.GalleryPosts, `{}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, postStub(h.GalleryPosts, `{"userId":"u1"}`, nil).Code)
 }
 
 func TestPages(t *testing.T) {
 	h, _ := newTestHandler(t)
 	rec := postStub(h.Pages, `{}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, postStub(h.Pages, `{"userId":"u1"}`, nil).Code)
 }
 
 func TestGetFrequentlyRepliedUsers(t *testing.T) {
@@ -108,8 +114,8 @@ func TestUserRecommendation(t *testing.T) {
 
 func TestListsGetMemberships(t *testing.T) {
 	h, _ := newTestHandler(t)
-	rec := postStub(h.ListsGetMemberships, `{}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// 認証は router.RequireAuth が 401 を返す責務。ここでは userId 欠落のみ検証。
+	assert.Equal(t, http.StatusBadRequest, postStub(h.ListsGetMemberships, `{}`, &model.User{ID: "u1"}).Code)
 }
 
 // --- NoContent endpoints ---

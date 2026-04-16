@@ -781,6 +781,9 @@ func (r *failingUserListRepo) ListMembers(_ string) ([]*model.UserListMembership
 }
 func (r *failingUserListRepo) UpdateList(_ string, _ map[string]any) error { return nil }
 func (r *failingUserListRepo) UpdateMembership(_, _ string, _ bool) error  { return nil }
+func (r *failingUserListRepo) ListsContainingMember(_, _ string) ([]*model.UserList, error) {
+	return nil, nil
+}
 
 // リストメンバーを追加・削除した後のアンテナ動作を検証する。
 // メンバーを削除するとそのユーザーのノートはアンテナに届かなくなる。
