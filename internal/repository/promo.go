@@ -12,6 +12,9 @@ import (
 type PromoNoteRepository interface {
 	Create(p *model.PromoNote) error
 	ListActive(now time.Time) ([]*model.PromoNote, error)
+	// Exists reports whether a promo row exists for noteID. Used by
+	// admin/promo/create to return ALREADY_PROMOTED on duplicates.
+	Exists(noteID string) (bool, error)
 }
 
 type promoNoteRepository struct {
@@ -33,6 +36,14 @@ func (r *promoNoteRepository) ListActive(now time.Time) ([]*model.PromoNote, err
 		return nil, err
 	}
 	return promos, nil
+}
+
+func (r *promoNoteRepository) Exists(noteID string) (bool, error) {
+	var count int64
+	if err := r.db.Model(&model.PromoNote{}).Where(`"noteId" = ?`, noteID).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // PromoReadRepository provides data access for the `promo_read` table.

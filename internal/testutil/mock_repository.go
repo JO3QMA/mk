@@ -3640,3 +3640,285 @@ func (m *MockAbuseReportNotificationRecipientRepository) Delete(id string) error
 	delete(m.Recipients, id)
 	return nil
 }
+
+// MockAdRepository is a test double for repository.AdRepository.
+type MockAdRepository struct {
+	Ads       map[string]*model.Ad
+	CreateErr error
+	ListErr   error
+}
+
+// NewMockAdRepository creates an empty MockAdRepository.
+func NewMockAdRepository() *MockAdRepository {
+	return &MockAdRepository{Ads: make(map[string]*model.Ad)}
+}
+
+func (m *MockAdRepository) ListActive(now time.Time) ([]*model.Ad, error) {
+	if m.ListErr != nil {
+		return nil, m.ListErr
+	}
+	rows := make([]*model.Ad, 0)
+	for _, a := range m.Ads {
+		if !a.StartsAt.After(now) && a.ExpiresAt.After(now) {
+			rows = append(rows, a)
+		}
+	}
+	sortAdsByIDDesc(rows)
+	return rows, nil
+}
+
+func (m *MockAdRepository) Create(a *model.Ad) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Ads[a.ID] = a
+	return nil
+}
+
+func (m *MockAdRepository) FindByID(id string) (*model.Ad, error) {
+	a, ok := m.Ads[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
+func (m *MockAdRepository) List(limit, offset int) ([]*model.Ad, error) {
+	if m.ListErr != nil {
+		return nil, m.ListErr
+	}
+	rows := make([]*model.Ad, 0, len(m.Ads))
+	for _, a := range m.Ads {
+		rows = append(rows, a)
+	}
+	sortAdsByIDDesc(rows)
+	if limit <= 0 {
+		limit = 30
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) {
+		return []*model.Ad{}, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
+}
+
+func (m *MockAdRepository) UpdateFields(id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	a, ok := m.Ads[id]
+	if !ok {
+		return nil // GORM Updates(map) は行欠損でも nil を返す
+	}
+	for k, v := range fields {
+		switch k {
+		case "url":
+			if s, ok := v.(string); ok {
+				a.URL = s
+			}
+		case "imageUrl":
+			if s, ok := v.(string); ok {
+				a.ImageURL = s
+			}
+		case "memo":
+			if s, ok := v.(string); ok {
+				a.Memo = s
+			}
+		case "place":
+			if s, ok := v.(string); ok {
+				a.Place = s
+			}
+		case "priority":
+			if s, ok := v.(string); ok {
+				a.Priority = s
+			}
+		case "ratio":
+			if n, ok := v.(int); ok {
+				a.Ratio = n
+			}
+		case "dayOfWeek":
+			if n, ok := v.(int); ok {
+				a.DayOfWeek = n
+			}
+		case "isSensitive":
+			if b, ok := v.(bool); ok {
+				a.IsSensitive = b
+			}
+		case "startsAt":
+			if ts, ok := v.(time.Time); ok {
+				a.StartsAt = ts
+			}
+		case "expiresAt":
+			if ts, ok := v.(time.Time); ok {
+				a.ExpiresAt = ts
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockAdRepository) Delete(id string) error {
+	delete(m.Ads, id)
+	return nil
+}
+
+func sortAdsByIDDesc(rows []*model.Ad) {
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+}
+
+// MockAvatarDecorationRepository is a test double for
+// repository.AvatarDecorationRepository.
+type MockAvatarDecorationRepository struct {
+	Decorations map[string]*model.AvatarDecoration
+	CreateErr   error
+}
+
+// NewMockAvatarDecorationRepository creates an empty mock.
+func NewMockAvatarDecorationRepository() *MockAvatarDecorationRepository {
+	return &MockAvatarDecorationRepository{Decorations: make(map[string]*model.AvatarDecoration)}
+}
+
+func (m *MockAvatarDecorationRepository) Create(d *model.AvatarDecoration) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Decorations[d.ID] = d
+	return nil
+}
+
+func (m *MockAvatarDecorationRepository) FindByID(id string) (*model.AvatarDecoration, error) {
+	d, ok := m.Decorations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return d, nil
+}
+
+func (m *MockAvatarDecorationRepository) List() ([]*model.AvatarDecoration, error) {
+	rows := make([]*model.AvatarDecoration, 0, len(m.Decorations))
+	for _, d := range m.Decorations {
+		rows = append(rows, d)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockAvatarDecorationRepository) UpdateFields(id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	d, ok := m.Decorations[id]
+	if !ok {
+		return nil
+	}
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				d.Name = s
+			}
+		case "description":
+			if s, ok := v.(string); ok {
+				d.Description = s
+			}
+		case "url":
+			if s, ok := v.(string); ok {
+				d.URL = s
+			}
+		case "roleIdsThatCanBeUsedThisDecoration":
+			if arr, ok := v.([]string); ok {
+				d.RoleIDs = arr
+			}
+		case "updatedAt":
+			if ts, ok := v.(time.Time); ok {
+				d.UpdatedAt = &ts
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockAvatarDecorationRepository) Delete(id string) error {
+	delete(m.Decorations, id)
+	return nil
+}
+
+// MockRegistrationTicketRepository is a test double for
+// repository.RegistrationTicketRepository.
+type MockRegistrationTicketRepository struct {
+	Tickets   map[string]*model.RegistrationTicket
+	CreateErr error
+}
+
+// NewMockRegistrationTicketRepository creates an empty mock.
+func NewMockRegistrationTicketRepository() *MockRegistrationTicketRepository {
+	return &MockRegistrationTicketRepository{Tickets: make(map[string]*model.RegistrationTicket)}
+}
+
+func (m *MockRegistrationTicketRepository) Create(t *model.RegistrationTicket) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Tickets[t.ID] = t
+	return nil
+}
+
+func (m *MockRegistrationTicketRepository) List(filter string, limit, offset int, now time.Time) ([]*model.RegistrationTicket, error) {
+	rows := make([]*model.RegistrationTicket, 0, len(m.Tickets))
+	for _, t := range m.Tickets {
+		switch filter {
+		case "unused":
+			if t.UsedByID != nil {
+				continue
+			}
+		case "used":
+			if t.UsedByID == nil {
+				continue
+			}
+		case "expired":
+			if t.ExpiresAt == nil || !t.ExpiresAt.Before(now) {
+				continue
+			}
+		}
+		rows = append(rows, t)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) {
+		return []*model.RegistrationTicket{}, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
+}

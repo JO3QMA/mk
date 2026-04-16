@@ -75,3 +75,22 @@ func TestPromoReadRepository_MarkAndCheck(t *testing.T) {
 	// idempotent
 	require.NoError(t, readRepo.MarkRead(&model.PromoRead{ID: "pr2", UserID: u.ID, NoteID: n.ID}))
 }
+
+func TestPromoNoteRepository_Exists(t *testing.T) {
+	repo := NewPromoNoteRepository(testDB)
+	u := insertTestUser(t, "promo_e", "pe")
+	defer cleanupUser(t, u.ID)
+	n := insertTestNote(t, "promo_en", u.ID)
+	defer cleanupNote(t, n.ID)
+
+	exists, err := repo.Exists(n.ID)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	require.NoError(t, repo.Create(&model.PromoNote{NoteID: n.ID, UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour)}))
+	defer cleanupPromo(t, n.ID)
+
+	exists, err = repo.Exists(n.ID)
+	require.NoError(t, err)
+	assert.True(t, exists)
+}
