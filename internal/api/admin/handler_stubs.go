@@ -1302,14 +1302,22 @@ func (h *Handler) listDelayedTasks(c echo.Context, queueName string) error {
 		req.Page = 1
 	}
 	// Misskey 本家では deliver/inbox の delayed キューを統合して返している。
-	// asynq の scheduled + retry 両方を集めて 1 ページに詰める。
+	// asynq の scheduled + retry 両方を集めるが、結合後に req.Limit で切り詰めて
+	// ページネーション契約 (limit=N なら最大 N 件) を守る。scheduled を先に
+	// 詰めるので実質 scheduled 優先になる。
 	scheduled, _ := h.queueInspector.ListScheduledTasks(queueName, req.Page, req.Limit)
 	retry, _ := h.queueInspector.ListRetryTasks(queueName, req.Page, req.Limit)
-	out := make([]map[string]any, 0, len(scheduled)+len(retry))
+	out := make([]map[string]any, 0, req.Limit)
 	for _, t := range scheduled {
+		if len(out) >= req.Limit {
+			break
+		}
 		out = append(out, packTaskSummary(t))
 	}
 	for _, t := range retry {
+		if len(out) >= req.Limit {
+			break
+		}
 		out = append(out, packTaskSummary(t))
 	}
 	return c.JSON(http.StatusOK, out)
@@ -1347,7 +1355,11 @@ func (h *Handler) QueueJobs(c echo.Context) error {
 	if state == "" {
 		state = "pending"
 	}
-	out := make([]map[string]any, 0)
+	// 複数キューを走査する場合でも合計で req.Limit を超えないように切り詰める
+	// (ページネーション契約の保持)。走査順序は Queues() の返り順に依存するため、
+	// 同じ state で全体ソートされない点は許容する。
+	out := make([]map[string]any, 0, req.Limit)
+outer:
 	for _, q := range queues {
 		var rows []*QueueTaskSummary
 		var err error
@@ -1365,6 +1377,9 @@ func (h *Handler) QueueJobs(c echo.Context) error {
 			continue
 		}
 		for _, t := range rows {
+			if len(out) >= req.Limit {
+				break outer
+			}
 			out = append(out, packTaskSummary(t))
 		}
 	}

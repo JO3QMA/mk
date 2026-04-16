@@ -237,6 +237,54 @@ func TestQueueDeliverDelayed_CombinesScheduledAndRetry(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
+// listDelayedTasks が scheduled と retry を結合する際に合計が limit を超え
+// ないことを確認する (regression guard)。
+func TestQueueDeliverDelayed_CappedAtLimit(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	scheduled := make([]*apiadmin.QueueTaskSummary, 0, 3)
+	for _, id := range []string{"s1", "s2", "s3"} {
+		scheduled = append(scheduled, &apiadmin.QueueTaskSummary{ID: id})
+	}
+	retry := make([]*apiadmin.QueueTaskSummary, 0, 3)
+	for _, id := range []string{"r1", "r2", "r3"} {
+		retry = append(retry, &apiadmin.QueueTaskSummary{ID: id})
+	}
+	insp := &stubQueueInspector{
+		scheduled: map[string][]*apiadmin.QueueTaskSummary{"deliver": scheduled},
+		retry:     map[string][]*apiadmin.QueueTaskSummary{"deliver": retry},
+	}
+	h.SetQueueInspector(insp)
+
+	rec := doPost(h.QueueDeliverDelayed, `{"limit":4}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	assert.Len(t, rows, 4, "combined output must not exceed requested limit")
+	// scheduled を先に詰めるので s1..s3 が最初の 3 件、続いて r1 が 4 件目
+	assert.Equal(t, "s1", rows[0]["id"])
+	assert.Equal(t, "r1", rows[3]["id"])
+}
+
+// QueueJobs で queue 未指定時、複数キューを走査しても合計 limit を超えない
+// ことを確認する。
+func TestQueueJobs_MultiQueueCappedAtLimit(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	insp := &stubQueueInspector{
+		queues: []string{"deliver", "inbox"},
+		pending: map[string][]*apiadmin.QueueTaskSummary{
+			"deliver": {{ID: "d1"}, {ID: "d2"}, {ID: "d3"}},
+			"inbox":   {{ID: "i1"}, {ID: "i2"}},
+		},
+	}
+	h.SetQueueInspector(insp)
+
+	rec := doPost(h.QueueJobs, `{"limit":2}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	assert.Len(t, rows, 2, "multi-queue fan-out must still respect limit")
+}
+
 // --- Captcha ------------------------------------------------------------------
 
 func TestCaptchaCurrent_WithHcaptchaEnabled(t *testing.T) {
