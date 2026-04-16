@@ -1021,7 +1021,45 @@ func (h *Handler) InviteCreate(c echo.Context) error {
 		}
 		tickets = append(tickets, t)
 	}
-	return c.JSON(http.StatusOK, tickets)
+	return c.JSON(http.StatusOK, h.packInviteTickets(tickets))
+}
+
+// packInviteTickets マッピング。Misskey 本家 InviteCodeEntityService.pack と
+// 同じ形 (createdAt は aidx ID から抽出、used は usedAt 有無で導出)。
+func (h *Handler) packInviteTickets(rows []*model.RegistrationTicket) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, t := range rows {
+		var createdAt *string
+		if h.idGen != nil {
+			if ts, err := h.idGen.ParseTime(t.ID); err == nil {
+				s := ts.UTC().Format("2006-01-02T15:04:05.000Z")
+				createdAt = &s
+			}
+		}
+		var expiresAt *string
+		if t.ExpiresAt != nil {
+			s := t.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000Z")
+			expiresAt = &s
+		}
+		var usedAt *string
+		if t.UsedAt != nil {
+			s := t.UsedAt.UTC().Format("2006-01-02T15:04:05.000Z")
+			usedAt = &s
+		}
+		out = append(out, map[string]any{
+			"id":          t.ID,
+			"code":        t.Code,
+			"expiresAt":   expiresAt,
+			"createdAt":   createdAt,
+			"createdBy":   nil,
+			"usedBy":      nil,
+			"usedAt":      usedAt,
+			"used":        t.UsedAt != nil,
+			"createdById": t.CreatedByID,
+			"usedById":    t.UsedByID,
+		})
+	}
+	return out
 }
 
 // InviteList handles POST /api/admin/invite/list.
@@ -1048,10 +1086,7 @@ func (h *Handler) InviteList(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
-	if rows == nil {
-		return c.JSON(http.StatusOK, []any{})
-	}
-	return c.JSON(http.StatusOK, rows)
+	return c.JSON(http.StatusOK, h.packInviteTickets(rows))
 }
 
 // --- promo ---

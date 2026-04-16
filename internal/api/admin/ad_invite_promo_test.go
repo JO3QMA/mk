@@ -223,10 +223,13 @@ func TestInviteCreate_Default(t *testing.T) {
 	h.SetInviteRepo(repo)
 	rec := doPost(h.InviteCreate, `{}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []model.RegistrationTicket
+	var rows []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	assert.Len(t, rows, 1)
-	assert.NotEmpty(t, rows[0].Code)
+	require.Len(t, rows, 1)
+	assert.NotEmpty(t, rows[0]["code"])
+	// createdAt が含まれる (Misskey 本家互換)
+	assert.NotNil(t, rows[0]["createdAt"])
+	assert.Equal(t, false, rows[0]["used"])
 }
 
 func TestInviteCreate_MultipleCount(t *testing.T) {
@@ -235,7 +238,7 @@ func TestInviteCreate_MultipleCount(t *testing.T) {
 	h.SetInviteRepo(repo)
 	rec := doPost(h.InviteCreate, `{"count":5}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []model.RegistrationTicket
+	var rows []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
 	assert.Len(t, rows, 5)
 }
@@ -246,7 +249,7 @@ func TestInviteCreate_CountClampedToMax(t *testing.T) {
 	h.SetInviteRepo(repo)
 	rec := doPost(h.InviteCreate, `{"count":250}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []model.RegistrationTicket
+	var rows []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
 	assert.Len(t, rows, 100)
 }
@@ -262,16 +265,18 @@ func TestInviteList_FilterUnused(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	repo := testutil.NewMockRegistrationTicketRepository()
 	usedBy := "u1"
+	usedAt := time.Now()
 	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "t1", Code: "c1"}))
-	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "t2", Code: "c2", UsedByID: &usedBy}))
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "t2", Code: "c2", UsedByID: &usedBy, UsedAt: &usedAt}))
 	h.SetInviteRepo(repo)
 
 	rec := doPost(h.InviteList, `{"type":"unused"}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []model.RegistrationTicket
+	var rows []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	assert.Len(t, rows, 1)
-	assert.Equal(t, "t1", rows[0].ID)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "t1", rows[0]["id"])
+	assert.Equal(t, false, rows[0]["used"])
 }
 
 // --- Promo ------------------------------------------------------------------
