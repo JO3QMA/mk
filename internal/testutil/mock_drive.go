@@ -1,6 +1,8 @@
 package testutil
 
 import (
+	"strings"
+
 	"github.com/shiroha-a/mk/internal/model"
 )
 
@@ -270,4 +272,72 @@ func (m *MockDriveFolderRepository) HasChildren(folderID string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (m *MockDriveFileRepository) ListForAdmin(origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
+	rows := make([]*model.DriveFile, 0, len(m.Files))
+	for _, f := range m.Files {
+		switch origin {
+		case "local":
+			if f.UserHost != nil {
+				continue
+			}
+		case "remote":
+			if f.UserHost == nil {
+				continue
+			}
+		}
+		if host != "" {
+			if f.UserHost == nil || *f.UserHost != host {
+				continue
+			}
+		}
+		if fileType != "" && !strings.HasPrefix(f.Type, fileType) {
+			continue
+		}
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		rows = append(rows, f)
+	}
+	// id DESC
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	return rows[:limit], nil
+}
+
+func (m *MockDriveFileRepository) DeleteOrphans() (int64, error) {
+	n := int64(0)
+	for id, f := range m.Files {
+		if f.UserID == nil {
+			delete(m.Files, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MockDriveFileRepository) DeleteRemoteCache() (int64, error) {
+	n := int64(0)
+	for id, f := range m.Files {
+		if f.IsLink && f.UserHost != nil {
+			delete(m.Files, id)
+			n++
+		}
+	}
+	return n, nil
 }

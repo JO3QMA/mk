@@ -13,10 +13,19 @@ type EmojiRepository interface {
 	// Admin CRUD
 	Create(e *model.Emoji) error
 	FindByID(id string) (*model.Emoji, error)
+	FindManyByIDs(ids []string) ([]*model.Emoji, error)
 	UpdateFields(id string, fields map[string]any) error
+	// UpdateFieldsMany applies the same field map to every row whose id is in
+	// ids. Used by admin bulk ops (category / license / isSensitive etc.).
+	UpdateFieldsMany(ids []string, fields map[string]any) error
 	Delete(id string) error
+	// DeleteMany removes rows matching any id in ids.
+	DeleteMany(ids []string) error
 	// ListWithFilter returns emojis matching search/category/host filters.
 	ListWithFilter(query, category string, local bool, limit, offset int) ([]*model.Emoji, error)
+	// ListRemoteWithFilter mirrors ListWithFilter for remote emojis. host empty
+	// matches any remote host.
+	ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error)
 }
 
 type emojiRepository struct {
@@ -52,8 +61,58 @@ func (r *emojiRepository) UpdateFields(id string, fields map[string]any) error {
 	return r.db.Model(&model.Emoji{}).Where("id = ?", id).Updates(fields).Error
 }
 
+func (r *emojiRepository) FindManyByIDs(ids []string) ([]*model.Emoji, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var emojis []*model.Emoji
+	if err := r.db.Where("id IN ?", ids).Find(&emojis).Error; err != nil {
+		return nil, err
+	}
+	return emojis, nil
+}
+
+func (r *emojiRepository) UpdateFieldsMany(ids []string, fields map[string]any) error {
+	if len(ids) == 0 || len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Emoji{}).Where("id IN ?", ids).Updates(fields).Error
+}
+
 func (r *emojiRepository) Delete(id string) error {
 	return r.db.Where("id = ?", id).Delete(&model.Emoji{}).Error
+}
+
+func (r *emojiRepository) DeleteMany(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.Where("id IN ?", ids).Delete(&model.Emoji{}).Error
+}
+
+func (r *emojiRepository) ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error) {
+	q := r.db.Where("host IS NOT NULL").Order("id DESC")
+	if query != "" {
+		q = q.Where("name ILIKE ?", "%"+query+"%")
+	}
+	if host != "" {
+		q = q.Where("host = ?", host)
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit)
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	var emojis []*model.Emoji
+	if err := q.Find(&emojis).Error; err != nil {
+		return nil, err
+	}
+	return emojis, nil
 }
 
 func (r *emojiRepository) ListWithFilter(query, category string, local bool, limit, offset int) ([]*model.Emoji, error) {

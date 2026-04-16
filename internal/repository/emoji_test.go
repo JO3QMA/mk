@@ -178,3 +178,94 @@ func TestEmojiRepository_ListLocal_Error(t *testing.T) {
 	_, err := repo.ListLocal()
 	assert.Error(t, err)
 }
+
+func TestEmojiRepository_FindManyByIDs(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e1 := &model.Emoji{ID: "em_m1", Name: "many1", OriginalURL: "https://x"}
+	e2 := &model.Emoji{ID: "em_m2", Name: "many2", OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(e1))
+	require.NoError(t, repo.Create(e2))
+	defer cleanupEmoji(t, e1.ID)
+	defer cleanupEmoji(t, e2.ID)
+
+	rows, err := repo.FindManyByIDs([]string{e1.ID, e2.ID, "missing"})
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+
+	empty, err := repo.FindManyByIDs(nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+func TestEmojiRepository_UpdateFieldsMany(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e1 := &model.Emoji{ID: "em_u1", Name: "up1", OriginalURL: "https://x"}
+	e2 := &model.Emoji{ID: "em_u2", Name: "up2", OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(e1))
+	require.NoError(t, repo.Create(e2))
+	defer cleanupEmoji(t, e1.ID)
+	defer cleanupEmoji(t, e2.ID)
+
+	require.NoError(t, repo.UpdateFieldsMany([]string{e1.ID, e2.ID}, map[string]any{
+		"category": "animals",
+	}))
+	after1, _ := repo.FindByID(e1.ID)
+	after2, _ := repo.FindByID(e2.ID)
+	require.NotNil(t, after1.Category)
+	require.NotNil(t, after2.Category)
+	assert.Equal(t, "animals", *after1.Category)
+	assert.Equal(t, "animals", *after2.Category)
+
+	// 空 ids / 空 fields は no-op
+	require.NoError(t, repo.UpdateFieldsMany(nil, map[string]any{"x": 1}))
+	require.NoError(t, repo.UpdateFieldsMany([]string{e1.ID}, map[string]any{}))
+}
+
+func TestEmojiRepository_DeleteMany(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e1 := &model.Emoji{ID: "em_d1", Name: "del1", OriginalURL: "https://x"}
+	e2 := &model.Emoji{ID: "em_d2", Name: "del2", OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(e1))
+	require.NoError(t, repo.Create(e2))
+	defer cleanupEmoji(t, e1.ID)
+	defer cleanupEmoji(t, e2.ID)
+
+	require.NoError(t, repo.DeleteMany([]string{e1.ID, e2.ID}))
+	_, err := repo.FindByID(e1.ID)
+	assert.Error(t, err)
+	_, err = repo.FindByID(e2.ID)
+	assert.Error(t, err)
+
+	// 空 slice は no-op
+	require.NoError(t, repo.DeleteMany(nil))
+}
+
+func TestEmojiRepository_ListRemoteWithFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	host := "remote.example"
+	e1 := &model.Emoji{ID: "em_r1", Name: "rcat", Host: &host, OriginalURL: "https://x"}
+	e2 := &model.Emoji{ID: "em_r2", Name: "rdog", Host: &host, OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(e1))
+	require.NoError(t, repo.Create(e2))
+	defer cleanupEmoji(t, e1.ID)
+	defer cleanupEmoji(t, e2.ID)
+
+	rows, err := repo.ListRemoteWithFilter("", host, 10, 0)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(rows), 2)
+
+	filtered, err := repo.ListRemoteWithFilter("cat", host, 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, filtered, 1)
+	assert.Equal(t, e1.ID, filtered[0].ID)
+
+	// limit default / cap
+	_, err = repo.ListRemoteWithFilter("", host, 0, 0) // default 30
+	require.NoError(t, err)
+	_, err = repo.ListRemoteWithFilter("", host, 1000, 0) // clamped to 100
+	require.NoError(t, err)
+}
