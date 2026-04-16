@@ -77,6 +77,11 @@ func (f *fakeDriveFileRepo) ExistsByMD5(_, _ string) (bool, error)              
 func (f *fakeDriveFileRepo) ListByFileIDs(_ []string) ([]*model.DriveFile, error) { return nil, nil }
 func (f *fakeDriveFileRepo) UsageByUser(_ string) (int64, error)                  { return 0, nil }
 func (f *fakeDriveFileRepo) UpdateBulkFolder(_ []string, _ *string) error         { return nil }
+func (f *fakeDriveFileRepo) ListForAdmin(_, _, _, _, _ string, _ int) ([]*model.DriveFile, error) {
+	return nil, nil
+}
+func (f *fakeDriveFileRepo) DeleteOrphans() (int64, error)     { return 0, nil }
+func (f *fakeDriveFileRepo) DeleteRemoteCache() (int64, error) { return 0, nil }
 
 // Ensure fakeDriveFileRepo implements the real repository interface so the
 // reader accepts it.

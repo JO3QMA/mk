@@ -14,11 +14,20 @@ type DriveFileRepository interface {
 	Update(id string, fields map[string]any) error
 	Delete(f *model.DriveFile) error
 	ListByUser(userID string, folderID *string, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
+	// ListForAdmin returns drive files across all users with optional origin
+	// / host / type filters. origin is "local" / "remote" / "combined"
+	// ("combined" is the default). Empty host / type are no-ops.
+	ListForAdmin(origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
 	FindByName(userID, name string, folderID *string) ([]*model.DriveFile, error)
 	ExistsByMD5(userID, md5 string) (bool, error)
 	ListByFileIDs(fileIDs []string) ([]*model.DriveFile, error)
 	UsageByUser(userID string) (int64, error)
 	UpdateBulkFolder(fileIDs []string, folderID *string) error
+	// DeleteOrphans removes rows whose userId is NULL. Returns affected count.
+	DeleteOrphans() (int64, error)
+	// DeleteRemoteCache removes remote cache rows (isLink=true with host set).
+	// Returns affected count.
+	DeleteRemoteCache() (int64, error)
 }
 
 type driveFileRepository struct {
@@ -141,4 +150,48 @@ func (r *driveFileRepository) UsageByUser(userID string) (int64, error) {
 
 func (r *driveFileRepository) UpdateBulkFolder(fileIDs []string, folderID *string) error {
 	return r.db.Model(&model.DriveFile{}).Where("id IN ?", fileIDs).Update("folderId", folderID).Error
+}
+
+func (r *driveFileRepository) ListForAdmin(origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
+	q := r.db.Model(&model.DriveFile{})
+	switch origin {
+	case "local":
+		q = q.Where(`"userHost" IS NULL`)
+	case "remote":
+		q = q.Where(`"userHost" IS NOT NULL`)
+	}
+	if host != "" {
+		q = q.Where(`"userHost" = ?`, host)
+	}
+	if fileType != "" {
+		// type is mimetype prefix match (e.g. "image/" matches image/png)
+		q = q.Where(`"type" LIKE ?`, fileType+"%")
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.DriveFile
+	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *driveFileRepository) DeleteOrphans() (int64, error) {
+	tx := r.db.Where(`"userId" IS NULL`).Delete(&model.DriveFile{})
+	return tx.RowsAffected, tx.Error
+}
+
+func (r *driveFileRepository) DeleteRemoteCache() (int64, error) {
+	tx := r.db.Where(`"isLink" = true AND "userHost" IS NOT NULL`).Delete(&model.DriveFile{})
+	return tx.RowsAffected, tx.Error
 }

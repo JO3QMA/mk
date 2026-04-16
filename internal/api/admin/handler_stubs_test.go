@@ -311,7 +311,8 @@ func TestEmojiAddAliasesBulk(t *testing.T) {
 }
 func TestEmojiCopy(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiCopy, `{}`, adminUser).Code)
+	// emojiId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.EmojiCopy, `{}`, adminUser).Code)
 }
 func TestEmojiDeleteBulk(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)

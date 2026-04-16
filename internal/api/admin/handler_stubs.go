@@ -293,25 +293,19 @@ func (h *Handler) UpdateUserNote(c echo.Context) error {
 // --- drive ---
 
 // DriveCleanRemoteFiles handles POST /api/admin/drive/clean-remote-files.
-// リモートキャッシュファイルの削除をキューに投入する。
 func (h *Handler) DriveCleanRemoteFiles(c echo.Context) error {
-	// リモートファイルキャッシュの削除 (バックグラウンドジョブとして実行)
-	// 実際のファイル削除はDriveServiceのバッチ処理で行う
-	if h.adminDB != nil {
-		go func() {
-			h.adminDB.Exec(`DELETE FROM "drive_file" WHERE "isLink" = true AND "userHost" IS NOT NULL`)
-		}()
+	// 単一 DELETE 文なので同期実行で十分。将来バッチ化が必要ならここを
+	// queue ジョブに差し替える。
+	if h.driveFileRepo != nil {
+		_, _ = h.driveFileRepo.DeleteRemoteCache()
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // DriveCleanup handles POST /api/admin/drive/cleanup.
-// ユーザーに紐づかない孤立ファイルを削除する。
 func (h *Handler) DriveCleanup(c echo.Context) error {
-	if h.adminDB != nil {
-		go func() {
-			h.adminDB.Exec(`DELETE FROM "drive_file" WHERE "userId" IS NULL`)
-		}()
+	if h.driveFileRepo != nil {
+		_, _ = h.driveFileRepo.DeleteOrphans()
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -325,15 +319,22 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 		Limit   int    `json:"limit"`
 		SinceID string `json:"sinceId"`
 		UntilID string `json:"untilId"`
+		Origin  string `json:"origin"`
+		Host    string `json:"host"`
+		Type    string `json:"type"`
 	}
 	_ = c.Bind(&req)
-	if req.Limit <= 0 {
-		req.Limit = 10
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
 	}
-	// 全ファイル一覧（管理者用）
-	files, err := h.driveFileRepo.ListByUser("", nil, req.UntilID, req.SinceID, req.Limit)
+	switch req.Origin {
+	case "", "combined", "local", "remote":
+	default:
+		req.Origin = "combined"
+	}
+	files, err := h.driveFileRepo.ListForAdmin(req.Origin, req.Host, req.Type, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
-		return c.JSON(http.StatusOK, []any{})
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	out := make([]entity.DriveFileEntity, 0, len(files))
 	for _, f := range files {
@@ -343,26 +344,48 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 }
 
 // DriveShowFile handles POST /api/admin/drive/show-file.
+// Accepts either a fileId or a url as identifier (Misskey 本家互換)。
 func (h *Handler) DriveShowFile(c echo.Context) error {
 	var req struct {
 		FileID string `json:"fileId"`
+		URL    string `json:"url"`
 	}
-	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "fileId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	if err := c.Bind(&req); err != nil || (req.FileID == "" && req.URL == "") {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "fileId or url is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.driveFileRepo == nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
 	}
-	file, err := h.driveFileRepo.FindByID(req.FileID)
-	if err != nil {
+	if req.FileID != "" {
+		file, err := h.driveFileRepo.FindByID(req.FileID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+		}
+		return c.JSON(http.StatusOK, entity.PackDriveFile(file, h.idGen))
+	}
+	// url 指定時は adminDB を使って url / thumbnailUrl / webpublicUrl いずれか
+	// に一致する 1 件を引く。 driveFileRepo には該当 API が無いため raw query で。
+	if h.adminDB == nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
 	}
-	return c.JSON(http.StatusOK, entity.PackDriveFile(file, h.idGen))
+	var file model.DriveFile
+	if err := h.adminDB.Where(
+		`"url" = ? OR "thumbnailUrl" = ? OR "webpublicUrl" = ?`,
+		req.URL, req.URL, req.URL,
+	).First(&file).Error; err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+	}
+	return c.JSON(http.StatusOK, entity.PackDriveFile(&file, h.idGen))
 }
 
 // --- emoji bulk ops ---
 
 // EmojiAddAliasesBulk handles POST /api/admin/emoji/add-aliases-bulk.
+//
+// 旧実装は id ごとに FindByID→UpdateFields を直列に呼んでいたが、件数が多いと
+// DB 往復が線形に増える。FindManyByIDs で一括取得 → 個別に alias を merge →
+// UpdateFields で書き戻す (alias はレコード毎に異なるため UpdateFieldsMany
+// では一括化できない)。
 func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
 	var req struct {
 		IDs     []string `json:"ids"`
@@ -371,35 +394,49 @@ func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			if e, err := h.emojiRepo.FindByID(eid); err == nil {
-				merged := append(e.Aliases, req.Aliases...)
-				_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": merged})
-			}
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	rows, err := h.emojiRepo.FindManyByIDs(req.IDs)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	for _, e := range rows {
+		merged := dedupe(append(append([]string{}, e.Aliases...), req.Aliases...))
+		_ = h.emojiRepo.UpdateFields(e.ID, map[string]any{"aliases": merged})
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiCopy handles POST /api/admin/emoji/copy.
+//
+// Misskey 本家は対象 name が既存ならば DUPLICATE_NAME を返す。サフィックス
+// _copy を付けても既存に衝突する可能性があるため、明示チェックを入れる。
 func (h *Handler) EmojiCopy(c echo.Context) error {
 	var req struct {
 		EmojiID string `json:"emojiId"`
 	}
-	_ = c.Bind(&req)
-	if req.EmojiID == "" || h.emojiRepo == nil {
+	if err := c.Bind(&req); err != nil || req.EmojiID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "emojiId is required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.emojiRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	src, err := h.emojiRepo.FindByID(req.EmojiID)
 	if err != nil {
-		return c.NoContent(http.StatusNoContent)
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "e2785b66-dca3-4087-9cac-b93c541cc425"))
 	}
-	// コピーを作成 (同じURLで新しいIDを生成)
+	newName := src.Name + "_copy"
+	if existing, err := h.emojiRepo.FindByNameAndHost(newName, nil); err == nil && existing != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("DUPLICATE_NAME", "Duplicate name.", "5abef7f4-b3d6-4be4-a08f-4c4b7cf4f5b0"))
+	}
 	copied := *src
 	copied.ID = h.idGen.Generate(time.Now())
-	copied.Name = src.Name + "_copy"
-	_ = h.emojiRepo.Create(&copied)
+	copied.Name = newName
+	copied.Host = nil
+	if err := h.emojiRepo.Create(&copied); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, map[string]any{"id": copied.ID})
 }
 
@@ -411,30 +448,46 @@ func (h *Handler) EmojiDeleteBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.Delete(eid)
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.DeleteMany(req.IDs); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
+// dedupe returns the slice with duplicates removed while preserving order.
+func dedupe(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
 // EmojiImportZip handles POST /api/admin/emoji/import-zip.
+//
 // fileId で Drive にアップロード済みの ZIP を指定し、非同期ジョブで展開して
 // ローカルカスタム絵文字として登録する。本家 Misskey 互換
-// (`QueueService.createImportCustomEmojisJob` 相当)。
+// (QueueService.createImportCustomEmojisJob 相当)。
 func (h *Handler) EmojiImportZip(c echo.Context) error {
 	var req struct {
 		FileID string `json:"fileId"`
 	}
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error": map[string]any{
-				"message": "fileId is required.",
-				"code":    "INVALID_PARAM",
-				"id":      "5f4c9d8a-7c39-4bfa-9dcb-09f17e0f7a25",
-			},
-		})
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "fileId is required.", "5f4c9d8a-7c39-4bfa-9dcb-09f17e0f7a25"))
+	}
+	// drive file の存在確認 (ジョブが後で失敗するよりここで早期に弾く)
+	if h.driveFileRepo != nil {
+		if _, err := h.driveFileRepo.FindByID(req.FileID); err != nil {
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+		}
 	}
 	if h.emojiEnqueuer == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -447,13 +500,7 @@ func (h *Handler) EmojiImportZip(c echo.Context) error {
 		UserID: user.ID,
 		FileID: req.FileID,
 	}); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
-			"error": map[string]any{
-				"message": "Failed to enqueue emoji import.",
-				"code":    "INTERNAL_ERROR",
-				"id":      "89a6d9fd-0fe6-4c3c-9daa-7c6b1f29f1a4",
-			},
-		})
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to enqueue emoji import.", "89a6d9fd-0fe6-4c3c-9daa-7c6b1f29f1a4"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -463,8 +510,21 @@ func (h *Handler) EmojiListRemote(c echo.Context) error {
 	if h.emojiRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	emojis, err := h.emojiRepo.ListWithFilter("", "", false, 20, 0)
+	var req struct {
+		Query  string `json:"query"`
+		Host   string `json:"host"`
+		Limit  int    `json:"limit"`
+		Offset int    `json:"offset"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	emojis, err := h.emojiRepo.ListRemoteWithFilter(req.Query, req.Host, req.Limit, req.Offset)
 	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if emojis == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	return c.JSON(http.StatusOK, emojis)
@@ -479,27 +539,33 @@ func (h *Handler) EmojiRemoveAliasesBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		removeSet := make(map[string]bool, len(req.Aliases))
-		for _, a := range req.Aliases {
-			removeSet[a] = true
-		}
-		for _, eid := range req.IDs {
-			if e, err := h.emojiRepo.FindByID(eid); err == nil {
-				var filtered []string
-				for _, a := range e.Aliases {
-					if !removeSet[a] {
-						filtered = append(filtered, a)
-					}
-				}
-				_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": filtered})
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	rows, err := h.emojiRepo.FindManyByIDs(req.IDs)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	removeSet := make(map[string]bool, len(req.Aliases))
+	for _, a := range req.Aliases {
+		removeSet[a] = true
+	}
+	for _, e := range rows {
+		filtered := make([]string, 0, len(e.Aliases))
+		for _, a := range e.Aliases {
+			if !removeSet[a] {
+				filtered = append(filtered, a)
 			}
 		}
+		_ = h.emojiRepo.UpdateFields(e.ID, map[string]any{"aliases": filtered})
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiSetAliasesBulk handles POST /api/admin/emoji/set-aliases-bulk.
+//
+// 全 id で同じ aliases 値を設定するため UpdateFieldsMany (WHERE IN UPDATE) で
+// 1 文に集約できる。
 func (h *Handler) EmojiSetAliasesBulk(c echo.Context) error {
 	var req struct {
 		IDs     []string `json:"ids"`
@@ -508,10 +574,11 @@ func (h *Handler) EmojiSetAliasesBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": req.Aliases})
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"aliases": req.Aliases}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -525,10 +592,11 @@ func (h *Handler) EmojiSetCategoryBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"category": req.Category})
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"category": req.Category}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -542,10 +610,11 @@ func (h *Handler) EmojiSetLicenseBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"license": req.License})
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"license": req.License}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }

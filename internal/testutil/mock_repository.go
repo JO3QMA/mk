@@ -897,12 +897,33 @@ func (m *MockEmojiRepository) FindByID(id string) (*model.Emoji, error) {
 func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) error {
 	for _, e := range m.Emojis {
 		if e.ID == id {
-			if v, ok := fields["name"]; ok {
-				e.Name = v.(string)
-			}
-			if v, ok := fields["category"]; ok {
-				s := v.(string)
-				e.Category = &s
+			for k, v := range fields {
+				switch k {
+				case "name":
+					if s, ok := v.(string); ok {
+						e.Name = s
+					}
+				case "category":
+					if s, ok := v.(string); ok {
+						e.Category = &s
+					}
+				case "license":
+					if s, ok := v.(string); ok {
+						e.License = &s
+					}
+				case "aliases":
+					if arr, ok := v.([]string); ok {
+						e.Aliases = arr
+					}
+				case "isSensitive":
+					if b, ok := v.(bool); ok {
+						e.IsSensitive = b
+					}
+				case "updatedAt":
+					if ts, ok := v.(time.Time); ok {
+						e.UpdatedAt = &ts
+					}
+				}
 			}
 			return nil
 		}
@@ -958,6 +979,113 @@ func (m *MockEmojiRepository) FindByNameAndHost(name string, host *string) (*mod
 		return nil, ErrNotFound
 	}
 	return e, nil
+}
+
+func (m *MockEmojiRepository) FindManyByIDs(ids []string) ([]*model.Emoji, error) {
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	out := make([]*model.Emoji, 0)
+	for _, e := range m.Emojis {
+		if _, ok := set[e.ID]; ok {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockEmojiRepository) UpdateFieldsMany(ids []string, fields map[string]any) error {
+	if len(ids) == 0 || len(fields) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	for _, e := range m.Emojis {
+		if _, ok := set[e.ID]; !ok {
+			continue
+		}
+		for k, v := range fields {
+			switch k {
+			case "category":
+				if s, ok := v.(string); ok {
+					e.Category = &s
+				}
+			case "license":
+				if s, ok := v.(string); ok {
+					e.License = &s
+				}
+			case "aliases":
+				if arr, ok := v.([]string); ok {
+					e.Aliases = arr
+				}
+			case "updatedAt":
+				if ts, ok := v.(time.Time); ok {
+					e.UpdatedAt = &ts
+				}
+			case "isSensitive":
+				if b, ok := v.(bool); ok {
+					e.IsSensitive = b
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockEmojiRepository) DeleteMany(ids []string) error {
+	for _, id := range ids {
+		// 各 emoji は name@ と name@host の両方のキーで参照されうる。
+		// Emojis[id] での逆引きは ID が key の場合にしか当たらないため、走査して削除する。
+		for k, e := range m.Emojis {
+			if e.ID == id {
+				delete(m.Emojis, k)
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockEmojiRepository) ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error) {
+	out := make([]*model.Emoji, 0)
+	seen := make(map[string]bool)
+	for _, e := range m.Emojis {
+		if seen[e.ID] {
+			continue
+		}
+		if e.Host == nil {
+			continue
+		}
+		if host != "" && *e.Host != host {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(e.Name), strings.ToLower(query)) {
+			continue
+		}
+		seen[e.ID] = true
+		out = append(out, e)
+	}
+	// id DESC で安定ソート
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[i].ID < out[j].ID {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	if offset >= len(out) {
+		return []*model.Emoji{}, nil
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
 }
 
 // MockMetaRepository is a test double for repository.MetaRepository.

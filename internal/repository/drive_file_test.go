@@ -128,3 +128,98 @@ func TestDriveFileRepository_QueryErrors(t *testing.T) {
 	_, err = repo.ListByUser("a", nil, "", "", 10)
 	assert.Error(t, err)
 }
+
+func TestDriveFileRepository_ListForAdmin(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	user := insertTestUser(t, "u_admin_list", "adlf")
+	defer cleanupUser(t, user.ID)
+
+	localFile := newTestDriveFile("adl_local", user.ID, "md5local", nil)
+	remoteHost := "remote.example"
+	remoteFile := newTestDriveFile("adl_remote", user.ID, "md5remote", nil)
+	remoteFile.UserHost = &remoteHost
+	remoteFile.Type = "image/png"
+	videoFile := newTestDriveFile("adl_video", user.ID, "md5video", nil)
+	videoFile.Type = "video/mp4"
+	require.NoError(t, repo.Create(localFile))
+	require.NoError(t, repo.Create(remoteFile))
+	require.NoError(t, repo.Create(videoFile))
+	defer cleanupDriveFile(t, localFile.ID)
+	defer cleanupDriveFile(t, remoteFile.ID)
+	defer cleanupDriveFile(t, videoFile.ID)
+
+	// origin = remote → only the remote-host file
+	rows, err := repo.ListForAdmin("remote", "", "", "", "", 10)
+	require.NoError(t, err)
+	ids := make(map[string]bool)
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[remoteFile.ID])
+	assert.False(t, ids[localFile.ID])
+
+	// type = image/ prefix
+	rows, err = repo.ListForAdmin("", "", "image/", "", "", 10)
+	require.NoError(t, err)
+	ids = make(map[string]bool)
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[remoteFile.ID])
+	assert.False(t, ids[videoFile.ID])
+
+	// host exact match
+	rows, err = repo.ListForAdmin("", remoteHost, "", "", "", 10)
+	require.NoError(t, err)
+	found := false
+	for _, r := range rows {
+		if r.ID == remoteFile.ID {
+			found = true
+		}
+	}
+	assert.True(t, found)
+
+	// default limit / clamp
+	_, err = repo.ListForAdmin("", "", "", "", "", 0)
+	require.NoError(t, err)
+	_, err = repo.ListForAdmin("", "", "", "", "", 1000)
+	require.NoError(t, err)
+}
+
+func TestDriveFileRepository_DeleteOrphansAndRemoteCache(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	user := insertTestUser(t, "u_del_src", "dels")
+	defer cleanupUser(t, user.ID)
+
+	// 孤立ファイル (userId NULL) と userId ありファイル
+	orphan := newTestDriveFile("orph1", user.ID, "md5o", nil)
+	orphan.UserID = nil
+	kept := newTestDriveFile("kept1", user.ID, "md5k", nil)
+
+	// remote cache (isLink=true, userHost set) と local link
+	host := "cache.example"
+	remoteCache := newTestDriveFile("rc1", user.ID, "md5rc", nil)
+	remoteCache.IsLink = true
+	remoteCache.UserHost = &host
+
+	require.NoError(t, repo.Create(orphan))
+	require.NoError(t, repo.Create(kept))
+	require.NoError(t, repo.Create(remoteCache))
+	defer cleanupDriveFile(t, orphan.ID)
+	defer cleanupDriveFile(t, kept.ID)
+	defer cleanupDriveFile(t, remoteCache.ID)
+
+	n, err := repo.DeleteOrphans()
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, int64(1))
+	_, err = repo.FindByID(orphan.ID)
+	assert.Error(t, err)
+	_, err = repo.FindByID(kept.ID)
+	assert.NoError(t, err)
+
+	n, err = repo.DeleteRemoteCache()
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, int64(1))
+	_, err = repo.FindByID(remoteCache.ID)
+	assert.Error(t, err)
+}
