@@ -78,11 +78,10 @@ func TestDeleteAccountProcessor_NilReposAreSkipped(t *testing.T) {
 	require.NoError(t, p.Handle(context.Background(), task))
 }
 
-// CanceledContext で途中から先がスキップされる挙動の確認。ここでは
-// ctx.Cancel() を手動で行い、最初の phase (notes) だけ実行 → drive/following
-// はスキップされることを期待する。ただし並行実行でなく単線なので、
-// note 削除自体は一度走る点に注意。
-func TestDeleteAccountProcessor_CanceledContextStopsEarly(t *testing.T) {
+// CanceledContext は asynq に retry させるため ctx.Err() を返す (部分実行で
+// 成功扱いにしない)。handle が error を返せば MaxRetry 設定が効いて再試行
+// されるので孤立した drive_file / following 行が残り続けない。
+func TestDeleteAccountProcessor_CanceledContextReturnsError(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
 	driveRepo := testutil.NewMockDriveFileRepository()
 	followingRepo := testutil.NewMockFollowingRepository()
@@ -91,11 +90,13 @@ func TestDeleteAccountProcessor_CanceledContextStopsEarly(t *testing.T) {
 	followingRepo.Followings["fo"] = &model.Following{ID: "fo", FollowerID: "target"}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 即キャンセル → すべての phase がスキップされる
+	cancel() // 即キャンセル
 
 	p := processors.NewDeleteAccountProcessor(noteRepo, driveRepo, followingRepo)
 	task := deleteAccountTask(t, queue.DeleteAccountPayload{UserID: "target"})
-	require.NoError(t, p.Handle(ctx, task))
+	err := p.Handle(ctx, task)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 
 	assert.Contains(t, driveRepo.Files, "f", "ctx canceled なら drive は触らない")
 	assert.Contains(t, followingRepo.Followings, "fo", "ctx canceled なら following は触らない")

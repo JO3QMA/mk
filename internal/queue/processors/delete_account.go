@@ -44,6 +44,11 @@ const deleteAccountNoteBatchSize = 100
 const deleteAccountBatchSleep = 250 * time.Millisecond
 
 // Handle implements asynq.Handler.
+//
+// 部分実行 (notes だけ消えた等) の状態で nil を返すと asynq は task 成功扱い
+// で MaxRetry が効かず、さらに Unique(24h) によって admin も 24 時間再エンキュー
+// できない。操作はすべて冪等 (既に消えた行は 0 件影響) なので、ctx 切れ / repo
+// エラーはそのまま返して asynq の retry に任せる。
 func (p *DeleteAccountProcessor) Handle(ctx context.Context, t *asynq.Task) error {
 	payload, err := queue.DecodeDeleteAccountPayload(t.Payload())
 	if err != nil {
@@ -57,7 +62,10 @@ func (p *DeleteAccountProcessor) Handle(ctx context.Context, t *asynq.Task) erro
 		return err
 	}
 
-	if p.driveFileRepo != nil && ctx.Err() == nil {
+	if p.driveFileRepo != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		deleted, err := p.driveFileRepo.DeleteByUser(payload.UserID)
 		if err != nil {
 			slog.Error("delete-account: drive purge failed",
@@ -70,7 +78,10 @@ func (p *DeleteAccountProcessor) Handle(ctx context.Context, t *asynq.Task) erro
 		}
 	}
 
-	if p.followingRepo != nil && ctx.Err() == nil {
+	if p.followingRepo != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		deleted, err := p.followingRepo.DeleteAllByUser(payload.UserID)
 		if err != nil {
 			slog.Error("delete-account: following purge failed",
@@ -87,17 +98,18 @@ func (p *DeleteAccountProcessor) Handle(ctx context.Context, t *asynq.Task) erro
 
 // deleteNotes loops DeleteByUserBatch so that cancellation checkpoints and
 // throttling live here instead of in the repository. 大量ノート保有ユーザー
-// (10万件規模) に備えて各 batch の後で ctx.Err() を見て中断する。
+// (10万件規模) に備えて各 batch の後で ctx.Err() を確認し、途中終了した場合は
+// その error を返して asynq に retry させる。
 func (p *DeleteAccountProcessor) deleteNotes(ctx context.Context, userID string) error {
 	if p.noteRepo == nil {
 		return nil
 	}
 	var total int64
 	for {
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
 			slog.Warn("delete-account: note purge interrupted",
-				"userId", userID, "deleted", total, "err", ctx.Err())
-			return nil
+				"userId", userID, "deleted", total, "err", err)
+			return err
 		}
 		deleted, err := p.noteRepo.DeleteByUserBatch(userID, deleteAccountNoteBatchSize)
 		if err != nil {
@@ -109,12 +121,13 @@ func (p *DeleteAccountProcessor) deleteNotes(ctx context.Context, userID string)
 		if deleted < int64(deleteAccountNoteBatchSize) {
 			break
 		}
-		// I/O 平準化の短い sleep。ctx が生きている間のみ効かせる。
+		// I/O 平準化の短い sleep。ctx が切れたら cancel error を返して retry 扱い。
 		select {
 		case <-ctx.Done():
+			err := ctx.Err()
 			slog.Warn("delete-account: note purge canceled during pacing",
-				"userId", userID, "deleted", total)
-			return nil
+				"userId", userID, "deleted", total, "err", err)
+			return err
 		case <-time.After(deleteAccountBatchSleep):
 		}
 	}
