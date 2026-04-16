@@ -720,6 +720,7 @@ func (s *Server) setupRoutes() {
 	notesHandler.SetDriveFileRepo(driveFileRepo)
 	notesHandler.SetNoteReactionRepo(reactionRepo)
 	notesHandler.SetChannelRepo(channelRepo)
+	notesHandler.SetChannelMutingRepo(channelMutingRepo)
 	if m, err := metaRepo.Fetch(); err == nil {
 		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
 		if m.DeeplAuthKey != nil && *m.DeeplAuthKey != "" {

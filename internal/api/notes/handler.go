@@ -22,24 +22,31 @@ import (
 
 // Handler handles note-related API endpoints.
 type Handler struct {
-	noteRepo         repository.NoteRepository
-	createService    *note.CreateService
-	deleteService    *note.DeleteService
-	queryService     *note.QueryService
-	timelineService  *timeline.Service
-	reactionService  *reaction.Service
-	pollService      *poll.Service
-	searchService    *search.Service
-	idGen            id.Generator
-	favoriteRepo     repository.NoteFavoriteRepository
-	driveFileRepo    repository.DriveFileRepository
-	draftRepo        repository.NoteDraftRepository
-	noteReactionRepo repository.NoteReactionRepository
-	channelRepo      repository.ChannelRepository
+	noteRepo          repository.NoteRepository
+	createService     *note.CreateService
+	deleteService     *note.DeleteService
+	queryService      *note.QueryService
+	timelineService   *timeline.Service
+	reactionService   *reaction.Service
+	pollService       *poll.Service
+	searchService     *search.Service
+	idGen             id.Generator
+	favoriteRepo      repository.NoteFavoriteRepository
+	driveFileRepo     repository.DriveFileRepository
+	draftRepo         repository.NoteDraftRepository
+	noteReactionRepo  repository.NoteReactionRepository
+	channelRepo       repository.ChannelRepository
+	channelMutingRepo repository.ChannelMutingRepository
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
 	translator    *translate.DeepLClient
+}
+
+// SetChannelMutingRepo attaches a ChannelMutingRepository so timeline handlers
+// can exclude notes posted to channels the viewer has muted.
+func (h *Handler) SetChannelMutingRepo(r repository.ChannelMutingRepository) {
+	h.channelMutingRepo = r
 }
 
 // SetTranslator attaches a DeepL translator for /api/notes/translate.

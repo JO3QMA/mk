@@ -156,6 +156,7 @@ func toDBFilter(f TimelineFilter, viewerID string) model.TimelineDBFilter {
 		IncludeRenotedMyNotes: f.IncludeRenotedMyNotes,
 		IncludeLocalRenotes:   f.IncludeLocalRenotes,
 		ViewerID:              viewerID,
+		MutedChannelIDs:       f.MutedChannelIDs,
 	}
 }
 

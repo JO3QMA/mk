@@ -162,3 +162,32 @@ func TestBoolDefault(t *testing.T) {
 	assert.True(t, boolDefault(boolPtr(true), false))
 	assert.False(t, boolDefault(boolPtr(false), true))
 }
+
+func withChannel(id string) func(*model.Note) {
+	return func(n *model.Note) { n.ChannelID = strPtr(id) }
+}
+
+func TestApplyFilter_MutedChannelsExcluded(t *testing.T) {
+	notes := []*model.Note{
+		makeNote("1"),                            // channelId なし → 残る
+		makeNote("2", withChannel("ch-muted")),   // mute 対象 → 除外
+		makeNote("3", withChannel("ch-allowed")), // 非 mute → 残る
+		makeNote("4", withChannel("ch-muted")),   // mute 対象 (重複) → 除外
+	}
+	out := ApplyFilter(notes, "viewer", TimelineFilter{
+		MutedChannelIDs: []string{"ch-muted"},
+	})
+	assert.Len(t, out, 2)
+	assert.Equal(t, "1", out[0].ID)
+	assert.Equal(t, "3", out[1].ID)
+}
+
+func TestApplyFilter_MutedChannelsEmptyIsNoop(t *testing.T) {
+	notes := []*model.Note{
+		makeNote("1", withChannel("any")),
+		makeNote("2"),
+	}
+	// 空 slice は全件通す (従来挙動の維持)
+	out := ApplyFilter(notes, "", TimelineFilter{})
+	assert.Len(t, out, 2)
+}

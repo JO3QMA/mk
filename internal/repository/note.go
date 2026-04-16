@@ -376,6 +376,10 @@ func applyTimelineFilter(q *gorm.DB, f model.TimelineDBFilter) *gorm.DB {
 	if f.IncludeLocalRenotes != nil && !*f.IncludeLocalRenotes {
 		q = q.Where(`NOT ("renoteId" IS NOT NULL AND text IS NULL AND "fileIds" = '{}' AND "renoteUserHost" IS NULL)`)
 	}
+	if len(f.MutedChannelIDs) > 0 {
+		// channel_muting に登録されたチャンネルのノートはタイムラインから除外する。
+		q = q.Where(`"channelId" IS NULL OR "channelId" NOT IN ?`, f.MutedChannelIDs)
+	}
 	return q
 }
 

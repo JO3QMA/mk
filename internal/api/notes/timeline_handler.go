@@ -46,6 +46,7 @@ func (h *Handler) Timeline(c echo.Context) error {
 			IncludeRenotedMyNotes: req.IncludeRenotedMyNotes,
 			IncludeLocalRenotes:   req.IncludeLocalRenotes,
 			AllowPartial:          req.AllowPartial,
+			MutedChannelIDs:       h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.HomeTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, true)
@@ -55,10 +56,11 @@ func (h *Handler) Timeline(c echo.Context) error {
 func (h *Handler) LocalTimeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
 		f := timeline.TimelineFilter{
-			WithFiles:    req.WithFiles,
-			WithRenotes:  req.WithRenotes,
-			WithReplies:  req.WithReplies,
-			AllowPartial: req.AllowPartial,
+			WithFiles:       req.WithFiles,
+			WithRenotes:     req.WithRenotes,
+			WithReplies:     req.WithReplies,
+			AllowPartial:    req.AllowPartial,
+			MutedChannelIDs: h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.LocalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, false)
@@ -68,9 +70,10 @@ func (h *Handler) LocalTimeline(c echo.Context) error {
 func (h *Handler) GlobalTimeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
 		f := timeline.TimelineFilter{
-			WithFiles:    req.WithFiles,
-			WithRenotes:  req.WithRenotes,
-			AllowPartial: req.AllowPartial,
+			WithFiles:       req.WithFiles,
+			WithRenotes:     req.WithRenotes,
+			AllowPartial:    req.AllowPartial,
+			MutedChannelIDs: h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.GlobalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, false)
@@ -87,9 +90,28 @@ func (h *Handler) HybridTimeline(c echo.Context) error {
 			IncludeRenotedMyNotes: req.IncludeRenotedMyNotes,
 			IncludeLocalRenotes:   req.IncludeLocalRenotes,
 			AllowPartial:          req.AllowPartial,
+			MutedChannelIDs:       h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.HybridTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, true)
+}
+
+// loadMutedChannelIDs returns the channel IDs that viewer has muted. Returns
+// nil for anonymous viewers or when the repo is not wired. Errors are logged
+// via returning an empty slice (timeline は best-effort でフィルタする)。
+func (h *Handler) loadMutedChannelIDs(viewer *model.User) []string {
+	if viewer == nil || h.channelMutingRepo == nil {
+		return nil
+	}
+	rows, err := h.channelMutingRepo.ListByUser(viewer.ID)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, m := range rows {
+		ids = append(ids, m.ChannelID)
+	}
+	return ids
 }
 
 // serveTimeline factors out the common parsing and error handling for the four
