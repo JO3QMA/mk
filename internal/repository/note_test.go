@@ -16,11 +16,12 @@ func cleanupNote(t *testing.T, id string) {
 	testDB.Exec(`DELETE FROM "note" WHERE id = ?`, id)
 }
 
-// TestNoteRepository_ListHomeTimeline_MutedChannelFilter は
-// model.TimelineDBFilter.MutedChannelIDs が SQL 側で正しく適用されることを
-// 検証する。特に "channelId IS NULL OR channelId NOT IN (...)" の OR 句が
-// 適切に括弧で囲まれていないと、他の AND 条件 (visibility / following) を
-// バイパスするバグが発生するため、regression として残す (Devin #191 review)。
+// TestNoteRepository_ListHomeTimeline_MutedChannelFilter verifies that
+// model.TimelineDBFilter.MutedChannelIDs is applied at the SQL layer without
+// short-circuiting other AND conditions. The OR clause
+// `channelId IS NULL OR channelId NOT IN (...)` must be wrapped in
+// parentheses; otherwise AND conditions (visibility / following) are bypassed.
+// Regression guard from Devin #191 review.
 func TestNoteRepository_ListHomeTimeline_MutedChannelFilter(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	chRepo := NewChannelRepository(testDB)
@@ -764,14 +765,13 @@ func TestNoteRepository_SearchByTag_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// MutedChannelIDs フィルタが SQL の AND/OR 優先順位で他条件をバイパス
-// しないことを検証する (Devin #191 review のリグレッションガード)。
-//
-// viewer 自身のノート 2 件 (1 件は muted channel) と、viewer がフォローして
-// いない other のノート 2 件 (1 件は open channel) を置く。home timeline で
-// は viewer は other をフォローしてないので 0 件、かつ muted channel は除外、
-// で viewer 自身の通常ノート 1 件のみ返ることを期待する。もし括弧不足バグが
-// あると AND 側の follow フィルタが OR で短絡されて other のノートも漏れる。
+// TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence
+// guards against the SQL precedence bug where MutedChannelIDs would short
+// circuit other AND conditions via an unparenthesized OR. Places two notes
+// by the viewer (one in a muted channel) and two notes by an unfollowed
+// user (one in an open channel). The home timeline must return only the
+// viewer's plain note. With missing parentheses the follow filter would be
+// bypassed and the unfollowed user's notes would leak through.
 func TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	viewer := insertTestUser(t, "u_mc_v", "mcviewer")
