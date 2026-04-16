@@ -1238,12 +1238,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/clips/favorite", clipsHandler.Favorite, middleware.RequireAuth())
 	api.POST("/clips/unfavorite", clipsHandler.Unfavorite, middleware.RequireAuth())
 	api.POST("/clips/my-favorites", clipsHandler.MyFavorites, middleware.RequireAuth())
-	// federation 残り
-	api.POST("/federation/followers", federationHandler.Followers)
-	api.POST("/federation/following", federationHandler.Following)
-	api.POST("/federation/users", federationHandler.Users)
-	api.POST("/federation/stats", federationHandler.Stats)
-	api.POST("/federation/update-remote-user", federationHandler.UpdateRemoteUser, middleware.RequireAuth())
+	// federation の残ルートは上で登録済 (federationHandler 初期化直後)
 
 	// Public roles (Phase 6)
 	rolesHandler := apiroles.NewHandler(roleService)

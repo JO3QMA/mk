@@ -33,7 +33,14 @@ func postStub(handler func(echo.Context) error) *httptest.ResponseRecorder {
 
 func TestFollowers_MissingHost(t *testing.T) {
 	h, _ := newHandler(t)
-	assert.Equal(t, http.StatusBadRequest, postStub(h.Followers).Code)
+	rec := postStub(h.Followers)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	// 400 エラーレスポンス直後に 200 を追記してしまう double-write バグの
+	// regression guard。body は単一の JSON オブジェクト (error wrapper) になる
+	// はずで、追加の [] が後続しないこと。
+	var single map[string]any
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &single),
+		"response body must be a single JSON object, not concatenated")
 }
 
 func TestFollowing_MissingHost(t *testing.T) {

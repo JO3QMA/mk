@@ -21,9 +21,9 @@ type hostPageRequest struct {
 // 指定リモートホストに属するユーザーが、このインスタンスのローカルユーザーを
 // フォローしている関係の一覧を返す。Misskey 本家互換。
 func (h *Handler) Followers(c echo.Context) error {
-	req, err := bindHostPage(c)
-	if err != nil {
-		return err
+	req, ok := parseHostPage(c)
+	if !ok {
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.followingRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -40,9 +40,9 @@ func (h *Handler) Followers(c echo.Context) error {
 // このインスタンスのローカルユーザーが、指定リモートホストに属するユーザーを
 // フォローしている関係の一覧を返す。
 func (h *Handler) Following(c echo.Context) error {
-	req, err := bindHostPage(c)
-	if err != nil {
-		return err
+	req, ok := parseHostPage(c)
+	if !ok {
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.followingRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -54,12 +54,13 @@ func (h *Handler) Following(c echo.Context) error {
 	return c.JSON(http.StatusOK, packFollowings(rows))
 }
 
-// bindHostPage parses + validates the common per-host page request, returning
-// a normalized body (limit defaulted to 30, clamped to 100).
-func bindHostPage(c echo.Context) (hostPageRequest, error) {
+// parseHostPage parses + validates the common per-host page request. Returns
+// (req, true) on success; on failure the caller must write the 400 response
+// itself to avoid double-writing the body.
+func parseHostPage(c echo.Context) (hostPageRequest, bool) {
 	var req hostPageRequest
 	if err := c.Bind(&req); err != nil || req.Host == "" {
-		return req, apierr.JSONInvalidParam(c)
+		return req, false
 	}
 	if req.Limit <= 0 {
 		req.Limit = 30
@@ -67,7 +68,7 @@ func bindHostPage(c echo.Context) (hostPageRequest, error) {
 	if req.Limit > 100 {
 		req.Limit = 100
 	}
-	return req, nil
+	return req, true
 }
 
 // Users handles POST /api/federation/users.
