@@ -198,3 +198,34 @@ func TestForwardReport_NilSystemActorReturnsError(t *testing.T) {
 	err := f.ForwardReport("r")
 	require.Error(t, err)
 }
+
+// Inbox 不在でも SharedInbox があれば配送される (preferredInbox 挙動)。
+func TestForwardReport_UsesSharedInboxWhenInboxNil(t *testing.T) {
+	host := "remote.example"
+	uri := "https://remote.example/users/alice"
+	shared := "https://remote.example/inbox"
+	target := &model.User{ID: "u-r", Host: &host, URI: &uri, SharedInbox: &shared}
+	report := &model.AbuseUserReport{ID: "r", Comment: "c", TargetUser: target}
+	deliver := &spyDeliverer{}
+
+	f := abuse.NewForwarder(&stubReportStore{report: report}, &stubSystemActor{actor: &model.User{ID: "instance"}}, &stubRenderer{}, deliver)
+	require.NoError(t, f.ForwardReport("r"))
+	assert.Equal(t, 1, deliver.called)
+	assert.Equal(t, []string{shared}, deliver.inboxes)
+}
+
+// SharedInbox が優先されて Inbox より先に選ばれる (本家と同じ挙動)。
+func TestForwardReport_PrefersSharedInbox(t *testing.T) {
+	host := "remote.example"
+	uri := "https://remote.example/users/alice"
+	inbox := "https://remote.example/users/alice/inbox"
+	shared := "https://remote.example/inbox"
+	target := &model.User{ID: "u-r", Host: &host, URI: &uri, Inbox: &inbox, SharedInbox: &shared}
+	report := &model.AbuseUserReport{ID: "r", Comment: "c", TargetUser: target}
+	deliver := &spyDeliverer{}
+
+	f := abuse.NewForwarder(&stubReportStore{report: report}, &stubSystemActor{actor: &model.User{ID: "instance"}}, &stubRenderer{}, deliver)
+	require.NoError(t, f.ForwardReport("r"))
+	assert.Equal(t, []string{shared}, deliver.inboxes,
+		"sharedInbox が inbox より優先されるべき")
+}

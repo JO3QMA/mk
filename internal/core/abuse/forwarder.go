@@ -81,7 +81,8 @@ func (f *Forwarder) ForwardReport(reportID string) error {
 	if target.URI == nil || *target.URI == "" {
 		return nil
 	}
-	if target.Inbox == nil || *target.Inbox == "" {
+	inbox := preferredInbox(target)
+	if inbox == "" {
 		return nil
 	}
 
@@ -98,5 +99,19 @@ func (f *Forwarder) ForwardReport(reportID string) error {
 	if err != nil {
 		return fmt.Errorf("marshal flag: %w", err)
 	}
-	return f.deliverer.DeliverActivity(actor.ID, body, []string{*target.Inbox})
+	return f.deliverer.DeliverActivity(actor.ID, body, []string{inbox})
+}
+
+// preferredInbox prefers sharedInbox over the individual inbox, matching the
+// unexported helper in core/federation/deliver_service.go. 小さい 5 行の
+// 重複なので、deliver_service.go 側を export するより inline する方が
+// patch surface が狭い。
+func preferredInbox(u *model.User) string {
+	if u.SharedInbox != nil && *u.SharedInbox != "" {
+		return *u.SharedInbox
+	}
+	if u.Inbox != nil && *u.Inbox != "" {
+		return *u.Inbox
+	}
+	return ""
 }
