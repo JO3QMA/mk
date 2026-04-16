@@ -16,6 +16,75 @@ func cleanupNote(t *testing.T, id string) {
 	testDB.Exec(`DELETE FROM "note" WHERE id = ?`, id)
 }
 
+// TestNoteRepository_ListHomeTimeline_MutedChannelFilter verifies that
+// model.TimelineDBFilter.MutedChannelIDs is applied at the SQL layer without
+// short-circuiting other AND conditions. The OR clause
+// `channelId IS NULL OR channelId NOT IN (...)` must be wrapped in
+// parentheses; otherwise AND conditions (visibility / following) are bypassed.
+// Regression guard from Devin #191 review.
+func TestNoteRepository_ListHomeTimeline_MutedChannelFilter(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	chRepo := NewChannelRepository(testDB)
+
+	viewer := insertTestUser(t, "u_mute_v", "muteviewer")
+	defer cleanupUser(t, viewer.ID)
+	author := insertTestUser(t, "u_mute_a", "muteauthor")
+	defer cleanupUser(t, author.ID)
+
+	// viewer は author をフォロー (home timeline に含める)
+	require.NoError(t, testDB.Exec(
+		`INSERT INTO "following" (id, "followerId", "followeeId") VALUES (?, ?, ?)`,
+		"flw_mute", viewer.ID, author.ID,
+	).Error)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "flw_mute")
+
+	mutedCh := newTestChannel("ch_mute_m", "muted-ch", nil)
+	require.NoError(t, chRepo.Create(mutedCh))
+	defer cleanupChannel(t, mutedCh.ID)
+	allowedCh := newTestChannel("ch_mute_a", "allowed-ch", nil)
+	require.NoError(t, chRepo.Create(allowedCh))
+	defer cleanupChannel(t, allowedCh.ID)
+
+	mkNote := func(id, chID string) *model.Note {
+		text := "hi"
+		n := &model.Note{
+			ID: id, UserID: author.ID, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+		if chID != "" {
+			n.ChannelID = &chID
+		}
+		return n
+	}
+	plain := mkNote("n_mute_1", "")
+	inMuted := mkNote("n_mute_2", mutedCh.ID)
+	inAllowed := mkNote("n_mute_3", allowedCh.ID)
+	require.NoError(t, repo.Create(plain))
+	require.NoError(t, repo.Create(inMuted))
+	require.NoError(t, repo.Create(inAllowed))
+	defer cleanupNote(t, plain.ID)
+	defer cleanupNote(t, inMuted.ID)
+	defer cleanupNote(t, inAllowed.ID)
+
+	filter := model.TimelineDBFilter{
+		ViewerID:        viewer.ID,
+		MutedChannelIDs: []string{mutedCh.ID},
+	}
+	rows, err := repo.ListHomeTimeline(viewer.ID, 50, "", "", filter)
+	require.NoError(t, err)
+
+	ids := make(map[string]bool, len(rows))
+	for _, n := range rows {
+		ids[n.ID] = true
+	}
+	assert.True(t, ids[plain.ID], "plain note must be included")
+	assert.True(t, ids[inAllowed.ID], "note in allowed channel must be included")
+	assert.False(t, ids[inMuted.ID], "note in muted channel must be excluded")
+	// OR 節のバグがあると、viewer が follow していない他ユーザーの note も
+	// 返ってしまう。ここでは他ユーザーがいないので fan-out テストは省略。
+}
+
 func TestNoteRepository_CreateAndFindByID(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	user := insertTestUser(t, "u_ncf_1", "noteuser1")
@@ -694,4 +763,47 @@ func TestNoteRepository_SearchByTag_Error(t *testing.T) {
 	repo := NewNoteRepository(testDB.WithContext(ctx))
 	_, err := repo.SearchByTag("x", 10, "", "")
 	assert.Error(t, err)
+}
+
+// TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence
+// guards against the SQL precedence bug where MutedChannelIDs would short
+// circuit other AND conditions via an unparenthesized OR. Places two notes
+// by the viewer (one in a muted channel) and two notes by an unfollowed
+// user (one in an open channel). The home timeline must return only the
+// viewer's plain note. With missing parentheses the follow filter would be
+// bypassed and the unfollowed user's notes would leak through.
+func TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	viewer := insertTestUser(t, "u_mc_v", "mcviewer")
+	defer cleanupUser(t, viewer.ID)
+	other := insertTestUser(t, "u_mc_o", "mcother")
+	defer cleanupUser(t, other.ID)
+
+	mutedChannel := "ch_mc_muted"
+	openChannel := "ch_mc_open"
+	selfText := "self note"
+	selfInMuted := "self in muted channel"
+	otherText := "other note (not followed)"
+	otherInOpen := "other in open channel (not followed)"
+
+	notes := []*model.Note{
+		{ID: "n_mc_1", UserID: viewer.ID, Text: &selfText, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_2", UserID: viewer.ID, Text: &selfInMuted, Visibility: model.NoteVisibilityPublic, ChannelID: &mutedChannel, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_3", UserID: other.ID, Text: &otherText, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_4", UserID: other.ID, Text: &otherInOpen, Visibility: model.NoteVisibilityPublic, ChannelID: &openChannel, Reactions: datatypes.JSON([]byte("{}"))},
+	}
+	for _, n := range notes {
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, n.ID)
+	}
+
+	rows, err := repo.ListHomeTimeline(viewer.ID, 100, "", "", model.TimelineDBFilter{
+		ViewerID:        viewer.ID,
+		MutedChannelIDs: []string{mutedChannel},
+	})
+	require.NoError(t, err)
+
+	ids := idsOf(rows)
+	assert.ElementsMatch(t, []string{"n_mc_1"}, ids,
+		"follow + mute フィルタが OR で短絡されていない (SQL precedence バグのリグレッション)")
 }

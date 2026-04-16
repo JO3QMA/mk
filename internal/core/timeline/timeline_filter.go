@@ -5,13 +5,14 @@ import "github.com/shiroha-a/mk/internal/model"
 // TimelineFilter holds filtering options for timeline queries.
 // *bool フィールドは nil のときデフォルト値として扱う。
 type TimelineFilter struct {
-	WithFiles             bool  // trueならファイル付きノートのみ
-	WithRenotes           *bool // nil=true。falseでpure renote除外
-	WithReplies           *bool // nil=false。local/hybridのみ
-	IncludeMyRenotes      *bool // nil=true。home/hybridのみ
-	IncludeRenotedMyNotes *bool // nil=true。home/hybridのみ
-	IncludeLocalRenotes   *bool // nil=true。home/hybridのみ
-	AllowPartial          bool  // trueならRedis結果が不足でもDBフォールバックしない
+	WithFiles             bool     // trueならファイル付きノートのみ
+	WithRenotes           *bool    // nil=true。falseでpure renote除外
+	WithReplies           *bool    // nil=false。local/hybridのみ
+	IncludeMyRenotes      *bool    // nil=true。home/hybridのみ
+	IncludeRenotedMyNotes *bool    // nil=true。home/hybridのみ
+	IncludeLocalRenotes   *bool    // nil=true。home/hybridのみ
+	AllowPartial          bool     // trueならRedis結果が不足でもDBフォールバックしない
+	MutedChannelIDs       []string // 指定があれば channelId が一致するノートを除外
 }
 
 // boolDefault returns *b if non-nil, else def.
@@ -36,6 +37,14 @@ func ApplyFilter(notes []*model.Note, viewerID string, f TimelineFilter) []*mode
 	includeRenotedMyNotes := boolDefault(f.IncludeRenotedMyNotes, true)
 	includeLocalRenotes := boolDefault(f.IncludeLocalRenotes, true)
 
+	var mutedChannels map[string]struct{}
+	if len(f.MutedChannelIDs) > 0 {
+		mutedChannels = make(map[string]struct{}, len(f.MutedChannelIDs))
+		for _, id := range f.MutedChannelIDs {
+			mutedChannels[id] = struct{}{}
+		}
+	}
+
 	out := make([]*model.Note, 0, len(notes))
 	for _, n := range notes {
 		if f.WithFiles && len(n.FileIDs) == 0 {
@@ -43,6 +52,11 @@ func ApplyFilter(notes []*model.Note, viewerID string, f TimelineFilter) []*mode
 		}
 		if !withRenotes && isPureRenote(n) {
 			continue
+		}
+		if mutedChannels != nil && n.ChannelID != nil {
+			if _, muted := mutedChannels[*n.ChannelID]; muted {
+				continue
+			}
 		}
 		// withReplies=false: 他人への返信を除外 (自分への返信は残す)
 		if !withReplies && n.ReplyID != nil {
