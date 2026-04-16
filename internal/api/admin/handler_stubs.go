@@ -606,11 +606,10 @@ func (h *Handler) AdList(c echo.Context) error {
 }
 
 // AdUpdate handles POST /api/admin/ad/update.
-//
-// 旧実装が `c.Request().Body` を `Updates` に直接渡しており部分更新が機能して
-// いなかった。partial field map に差し替え、リクエストで明示された項目のみ
-// 書き換える。
 func (h *Handler) AdUpdate(c echo.Context) error {
+	// 旧実装が `c.Request().Body` を `Updates` に直接渡しており部分更新が機能して
+	// いなかった。partial field map に差し替え、リクエストで明示された項目のみ
+	// 書き換える。
 	if h.adRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
@@ -976,9 +975,9 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 // --- invite ---
 
 // InviteCreate handles POST /api/admin/invite/create.
-// 本家 TS は count (1-100, default 1) 分のチケットを配列で返す。個々の Create
-// 失敗時でも既作成分はロールバックしない (本家も Promise.all で非原子的)。
 func (h *Handler) InviteCreate(c echo.Context) error {
+	// 本家 TS は count (1-100, default 1) 分のチケットを配列で返す。個々の Create
+	// 失敗時でも既作成分はロールバックしない (本家も Promise.all で非原子的)。
 	if h.inviteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
@@ -1024,9 +1023,11 @@ func (h *Handler) InviteCreate(c echo.Context) error {
 	return c.JSON(http.StatusOK, h.packInviteTickets(tickets))
 }
 
-// packInviteTickets マッピング。Misskey 本家 InviteCodeEntityService.pack と
-// 同じ形 (createdAt は aidx ID から抽出、used は usedAt 有無で導出)。
+// packInviteTickets transforms RegistrationTicket rows into the
+// Misskey-compatible InviteCodeEntityService.pack shape.
 func (h *Handler) packInviteTickets(rows []*model.RegistrationTicket) []map[string]any {
+	// Misskey 本家 InviteCodeEntityService.pack と同じ形にする。
+	// createdAt は aidx ID から抽出、used は usedAt の有無で導出する。
 	out := make([]map[string]any, 0, len(rows))
 	for _, t := range rows {
 		var createdAt *string
