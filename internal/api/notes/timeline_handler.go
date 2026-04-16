@@ -1,6 +1,7 @@
 package notes
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -97,14 +98,19 @@ func (h *Handler) HybridTimeline(c echo.Context) error {
 }
 
 // loadMutedChannelIDs returns the channel IDs that viewer has muted. Returns
-// nil for anonymous viewers or when the repo is not wired. Errors are logged
-// via returning an empty slice (timeline は best-effort でフィルタする)。
+// nil for anonymous viewers or when the repo is not wired. On repository
+// error the mute list is skipped (best-effort) and a warning is logged so
+// operators can see silent filter failures.
 func (h *Handler) loadMutedChannelIDs(viewer *model.User) []string {
 	if viewer == nil || h.channelMutingRepo == nil {
 		return nil
 	}
 	rows, err := h.channelMutingRepo.ListByUser(viewer.ID)
-	if err != nil || len(rows) == 0 {
+	if err != nil {
+		slog.Warn("timeline: failed to load muted channels", "userId", viewer.ID, "err", err)
+		return nil
+	}
+	if len(rows) == 0 {
 		return nil
 	}
 	ids := make([]string, 0, len(rows))
