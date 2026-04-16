@@ -38,7 +38,23 @@ type Handler struct {
 	instanceRepo         repository.InstanceRepository
 	userListFavoriteRepo UserListFavoriteRepository
 	userListRepo         repository.UserListRepository
+	clipRepo             repository.ClipRepository
+	flashRepo            repository.FlashRepository
+	galleryRepo          repository.GalleryRepository
+	pageRepo             repository.PageRepository
 }
+
+// SetClipRepo attaches a ClipRepository for users/clips.
+func (h *Handler) SetClipRepo(r repository.ClipRepository) { h.clipRepo = r }
+
+// SetFlashRepo attaches a FlashRepository for users/flashs.
+func (h *Handler) SetFlashRepo(r repository.FlashRepository) { h.flashRepo = r }
+
+// SetGalleryRepo attaches a GalleryRepository for users/gallery/posts.
+func (h *Handler) SetGalleryRepo(r repository.GalleryRepository) { h.galleryRepo = r }
+
+// SetPageRepo attaches a PageRepository for users/pages.
+func (h *Handler) SetPageRepo(r repository.PageRepository) { h.pageRepo = r }
 
 // SetMemoRepo attaches a UserMemoRepository for users/update-memo.
 func (h *Handler) SetMemoRepo(r repository.UserMemoRepository) {

@@ -2697,6 +2697,33 @@ func (m *MockUserListRepository) UpdateMembership(listID, userID string, withRep
 	return gorm.ErrRecordNotFound
 }
 
+func (m *MockUserListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {
+	listIDs := make(map[string]struct{})
+	for _, mem := range m.Members {
+		if mem.UserID == memberUserID {
+			listIDs[mem.UserListID] = struct{}{}
+		}
+	}
+	out := make([]*model.UserList, 0)
+	for _, list := range m.Lists {
+		if list.UserID != ownerID {
+			continue
+		}
+		if _, ok := listIDs[list.ID]; ok {
+			out = append(out, list)
+		}
+	}
+	// id DESC
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[i].ID < out[j].ID {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // MockAnnouncementRepository
 // ---------------------------------------------------------------------------
