@@ -104,7 +104,7 @@ func TestDeleteAccountProcessor_CanceledContextStopsEarly(t *testing.T) {
 // repo error は上に返る
 type failingNoteRepoForDelete struct{ *testutil.MockNoteRepository }
 
-func (f *failingNoteRepoForDelete) DeleteByUser(_ string, _ int) (int64, error) {
+func (f *failingNoteRepoForDelete) DeleteByUserBatch(_ string, _ int) (int64, error) {
 	return 0, errors.New("boom")
 }
 
@@ -114,4 +114,37 @@ func TestDeleteAccountProcessor_NoteDeleteErrorPropagates(t *testing.T) {
 	task := deleteAccountTask(t, queue.DeleteAccountPayload{UserID: "target"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
+}
+
+// 大量ノートを用意して processor が batch ループで全件処理することを検証。
+// ただし単線テストなので pacing sleep を避けるため 120 件 (100+20) にする
+// → 第 1 バッチで 100 削除、第 2 バッチで 20 削除 → 合計 120 件、pacing sleep
+// は 1 回だけ入る。
+type sliceNoteRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (s *sliceNoteRepo) DeleteByUserBatch(userID string, batchSize int) (int64, error) {
+	return s.MockNoteRepository.DeleteByUserBatch(userID, batchSize)
+}
+
+func TestDeleteAccountProcessor_NotesDeletedAcrossMultipleBatches(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	for i := 0; i < 120; i++ {
+		noteRepo.Notes[string(rune('a'+i%26))+"_"+string(rune('0'+i/26))] = &model.Note{
+			ID:     "n" + string(rune('A'+i%26)) + string(rune('0'+i/26)),
+			UserID: "target",
+		}
+	}
+	// 念のため正確な件数を確認
+	require.Len(t, noteRepo.Notes, 120)
+
+	p := processors.NewDeleteAccountProcessor(noteRepo, testutil.NewMockDriveFileRepository(), testutil.NewMockFollowingRepository())
+	task := deleteAccountTask(t, queue.DeleteAccountPayload{UserID: "target"})
+	require.NoError(t, p.Handle(context.Background(), task))
+
+	// target に紐づくノートはすべて消えている
+	for _, n := range noteRepo.Notes {
+		assert.NotEqual(t, "target", n.UserID)
+	}
 }
