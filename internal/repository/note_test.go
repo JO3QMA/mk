@@ -16,6 +16,74 @@ func cleanupNote(t *testing.T, id string) {
 	testDB.Exec(`DELETE FROM "note" WHERE id = ?`, id)
 }
 
+// TestNoteRepository_ListHomeTimeline_MutedChannelFilter は
+// model.TimelineDBFilter.MutedChannelIDs が SQL 側で正しく適用されることを
+// 検証する。特に "channelId IS NULL OR channelId NOT IN (...)" の OR 句が
+// 適切に括弧で囲まれていないと、他の AND 条件 (visibility / following) を
+// バイパスするバグが発生するため、regression として残す (Devin #191 review)。
+func TestNoteRepository_ListHomeTimeline_MutedChannelFilter(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	chRepo := NewChannelRepository(testDB)
+
+	viewer := insertTestUser(t, "u_mute_v", "muteviewer")
+	defer cleanupUser(t, viewer.ID)
+	author := insertTestUser(t, "u_mute_a", "muteauthor")
+	defer cleanupUser(t, author.ID)
+
+	// viewer は author をフォロー (home timeline に含める)
+	require.NoError(t, testDB.Exec(
+		`INSERT INTO "following" (id, "followerId", "followeeId") VALUES (?, ?, ?)`,
+		"flw_mute", viewer.ID, author.ID,
+	).Error)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "flw_mute")
+
+	mutedCh := newTestChannel("ch_mute_m", "muted-ch", nil)
+	require.NoError(t, chRepo.Create(mutedCh))
+	defer cleanupChannel(t, mutedCh.ID)
+	allowedCh := newTestChannel("ch_mute_a", "allowed-ch", nil)
+	require.NoError(t, chRepo.Create(allowedCh))
+	defer cleanupChannel(t, allowedCh.ID)
+
+	mkNote := func(id, chID string) *model.Note {
+		text := "hi"
+		n := &model.Note{
+			ID: id, UserID: author.ID, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+		if chID != "" {
+			n.ChannelID = &chID
+		}
+		return n
+	}
+	plain := mkNote("n_mute_1", "")
+	inMuted := mkNote("n_mute_2", mutedCh.ID)
+	inAllowed := mkNote("n_mute_3", allowedCh.ID)
+	require.NoError(t, repo.Create(plain))
+	require.NoError(t, repo.Create(inMuted))
+	require.NoError(t, repo.Create(inAllowed))
+	defer cleanupNote(t, plain.ID)
+	defer cleanupNote(t, inMuted.ID)
+	defer cleanupNote(t, inAllowed.ID)
+
+	filter := model.TimelineDBFilter{
+		ViewerID:        viewer.ID,
+		MutedChannelIDs: []string{mutedCh.ID},
+	}
+	rows, err := repo.ListHomeTimeline(viewer.ID, 50, "", "", filter)
+	require.NoError(t, err)
+
+	ids := make(map[string]bool, len(rows))
+	for _, n := range rows {
+		ids[n.ID] = true
+	}
+	assert.True(t, ids[plain.ID], "plain note must be included")
+	assert.True(t, ids[inAllowed.ID], "note in allowed channel must be included")
+	assert.False(t, ids[inMuted.ID], "note in muted channel must be excluded")
+	// OR 節のバグがあると、viewer が follow していない他ユーザーの note も
+	// 返ってしまう。ここでは他ユーザーがいないので fan-out テストは省略。
+}
+
 func TestNoteRepository_CreateAndFindByID(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	user := insertTestUser(t, "u_ncf_1", "noteuser1")

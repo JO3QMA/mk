@@ -378,7 +378,10 @@ func applyTimelineFilter(q *gorm.DB, f model.TimelineDBFilter) *gorm.DB {
 	}
 	if len(f.MutedChannelIDs) > 0 {
 		// channel_muting に登録されたチャンネルのノートはタイムラインから除外する。
-		q = q.Where(`"channelId" IS NULL OR "channelId" NOT IN ?`, f.MutedChannelIDs)
+		// GORM は連続 .Where を AND で繋ぐが raw SQL 側の OR はデフォルトでは
+		// 括弧で囲まれないので、明示的に囲まないと AND 側の他フィルタを
+		// バイパスしてしまう (SQL 優先順位: AND > OR)。
+		q = q.Where(`("channelId" IS NULL OR "channelId" NOT IN ?)`, f.MutedChannelIDs)
 	}
 	return q
 }
