@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,13 +17,18 @@ type MockUserRepository struct {
 	Tokens                map[string]*model.User        // keyed by token
 	Profiles              map[string]*model.UserProfile // keyed by userID
 	FindByUsernameLowerFn func(username string, host *string) (*model.User, error)
+	// RecommendationFollowing maps viewerID -> list of followeeIDs to exclude
+	// from ListUserRecommendations. Set by tests to emulate the "already
+	// following" filter.
+	RecommendationFollowing map[string][]string
 }
 
 func NewMockUserRepository() *MockUserRepository {
 	return &MockUserRepository{
-		Users:    make(map[string]*model.User),
-		Tokens:   make(map[string]*model.User),
-		Profiles: make(map[string]*model.UserProfile),
+		Users:                   make(map[string]*model.User),
+		Tokens:                  make(map[string]*model.User),
+		Profiles:                make(map[string]*model.UserProfile),
+		RecommendationFollowing: make(map[string][]string),
 	}
 }
 
@@ -207,6 +213,44 @@ func (m *MockUserRepository) ListRemoteInboxes() ([]string, error) {
 
 func (m *MockUserRepository) CountOnlineUsers() (int64, error) {
 	return 0, nil
+}
+
+// Followings はテスト側で MockUserRepository.Followings[viewerID] に followeeID
+// のリストを入れておくと、ListUserRecommendations から除外される。
+func (m *MockUserRepository) ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	excluded := make(map[string]struct{})
+	excluded[viewerID] = struct{}{}
+	for _, fid := range m.RecommendationFollowing[viewerID] {
+		excluded[fid] = struct{}{}
+	}
+	var rows []*model.User
+	for _, u := range m.Users {
+		if _, skip := excluded[u.ID]; skip {
+			continue
+		}
+		if u.Host != nil {
+			continue
+		}
+		if u.IsLocked || !u.IsExplorable {
+			continue
+		}
+		if u.UpdatedAt == nil || u.UpdatedAt.Before(activeSince) {
+			continue
+		}
+		rows = append(rows, u)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].FollowersCount > rows[j].FollowersCount })
+	if offset >= len(rows) {
+		return nil, nil
+	}
+	rows = rows[offset:]
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
 }
 
 func (m *MockUserRepository) UpdateProfile(userID string, fields map[string]any) error {
@@ -757,6 +801,31 @@ func (m *MockNoteRepository) DeleteByUserBatch(userID string, batchSize int) (in
 		}
 	}
 	return n, nil
+}
+
+func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	counts := make(map[string]int64)
+	for _, n := range m.Notes {
+		if n.UserID != userID || n.ReplyID == nil || n.ReplyUserID == nil {
+			continue
+		}
+		if *n.ReplyUserID == userID {
+			continue
+		}
+		counts[*n.ReplyUserID]++
+	}
+	rows := make([]model.ReplyTargetCount, 0, len(counts))
+	for uid, c := range counts {
+		rows = append(rows, model.ReplyTargetCount{UserID: uid, Count: c})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Count > rows[j].Count })
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
 }
 
 func (m *MockNoteRepository) listPublic(limit int) ([]*model.Note, error) {
@@ -2545,12 +2614,16 @@ type MockFollowingRepository struct {
 	// RemoteInboxes stores per-followee inbox lists used by
 	// ListRemoteFollowerInboxes. テスト側で明示的に登録する。
 	RemoteInboxes map[string][]string
+	// Birthdays maps followeeID -> "YYYY-MM-DD" string used by
+	// ListFollowingByBirthday. 未登録のユーザーは誕生日なしとして扱う。
+	Birthdays map[string]string
 }
 
 func NewMockFollowingRepository() *MockFollowingRepository {
 	return &MockFollowingRepository{
 		Followings:    make(map[string]*model.Following),
 		RemoteInboxes: make(map[string][]string),
+		Birthdays:     make(map[string]string),
 	}
 }
 
@@ -2655,6 +2728,50 @@ func (m *MockFollowingRepository) UpdateAllByFollower(followerID string, fields 
 		}
 	}
 	return nil
+}
+
+func (m *MockFollowingRepository) ListFollowingByBirthday(followerID string, beginMMDD, endMMDD, limit, offset int) ([]model.FollowingBirthday, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	wrap := beginMMDD > endMMDD
+	var out []model.FollowingBirthday
+	for _, f := range m.Followings {
+		if f.FollowerID != followerID {
+			continue
+		}
+		bd := m.Birthdays[f.FolloweeID]
+		if len(bd) != 10 {
+			continue
+		}
+		// bd は "YYYY-MM-DD" 形式。mmdd を抽出して範囲判定する。
+		mm := int(bd[5]-'0')*10 + int(bd[6]-'0')
+		dd := int(bd[8]-'0')*10 + int(bd[9]-'0')
+		mmdd := mm*100 + dd
+		in := false
+		if wrap {
+			in = mmdd >= beginMMDD || mmdd <= endMMDD
+		} else {
+			in = mmdd >= beginMMDD && mmdd <= endMMDD
+		}
+		if !in {
+			continue
+		}
+		out = append(out, model.FollowingBirthday{FolloweeID: f.FolloweeID, Birthday: bd})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a := out[i].Birthday[5:7] + out[i].Birthday[8:10]
+		b := out[j].Birthday[5:7] + out[j].Birthday[8:10]
+		return a < b
+	})
+	if offset >= len(out) {
+		return nil, nil
+	}
+	out = out[offset:]
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func applyFollowingFields(f *model.Following, fields map[string]any) {

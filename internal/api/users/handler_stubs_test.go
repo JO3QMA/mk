@@ -94,22 +94,29 @@ func TestPages(t *testing.T) {
 	assert.Equal(t, http.StatusOK, postStub(h.Pages, `{"userId":"u1"}`, nil).Code)
 }
 
-func TestGetFrequentlyRepliedUsers(t *testing.T) {
+func TestGetFrequentlyRepliedUsers_InvalidAndMissing(t *testing.T) {
 	h, _ := newTestHandler(t)
-	rec := postStub(h.GetFrequentlyRepliedUsers, `{}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// userId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, postStub(h.GetFrequentlyRepliedUsers, `{}`, nil).Code)
+	// 存在しない user は NO_SUCH_USER (404)
+	assert.Equal(t, http.StatusNotFound, postStub(h.GetFrequentlyRepliedUsers, `{"userId":"ghost"}`, nil).Code)
 }
 
-func TestGetFollowingUsersByBirthday(t *testing.T) {
+func TestGetFollowingUsersByBirthday_InvalidParams(t *testing.T) {
 	h, _ := newTestHandler(t)
-	rec := postStub(h.GetFollowingUsersByBirthday, `{}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// birthday 未指定は 400
+	assert.Equal(t, http.StatusBadRequest, postStub(h.GetFollowingUsersByBirthday, `{}`, &model.User{ID: "u1"}).Code)
+	// 単発指定で month/day が範囲外は 400
+	assert.Equal(t, http.StatusBadRequest, postStub(h.GetFollowingUsersByBirthday, `{"birthday":{"month":13,"day":1}}`, &model.User{ID: "u1"}).Code)
+	// begin/end いずれかが無効
+	assert.Equal(t, http.StatusBadRequest, postStub(h.GetFollowingUsersByBirthday, `{"birthday":{"begin":{"month":1,"day":1},"end":{"month":2,"day":40}}}`, &model.User{ID: "u1"}).Code)
 }
 
-func TestUserRecommendation(t *testing.T) {
+func TestUserRecommendation_EmptyDefault(t *testing.T) {
 	h, _ := newTestHandler(t)
-	rec := postStub(h.UserRecommendation, `{}`, nil)
+	rec := postStub(h.UserRecommendation, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
 }
 
 func TestListsGetMemberships(t *testing.T) {
@@ -120,10 +127,10 @@ func TestListsGetMemberships(t *testing.T) {
 
 // --- NoContent endpoints ---
 
-func TestListsCreateFromPublic(t *testing.T) {
+func TestListsCreateFromPublic_InvalidParam(t *testing.T) {
 	h, _ := newTestHandler(t)
 	rec := postStub(h.ListsCreateFromPublic, `{}`, &model.User{ID: "u1"})
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestListsFavorite(t *testing.T) {

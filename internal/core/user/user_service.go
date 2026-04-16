@@ -94,6 +94,12 @@ func (s *Service) GetProfile(userID string) *model.UserProfile {
 	return profile
 }
 
+// ListRecommendations returns locally-active explorable users the viewer does
+// not already follow. Thin wrapper over UserRepository.ListUserRecommendations.
+func (s *Service) ListRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
+	return s.userRepo.ListUserRecommendations(viewerID, activeSince, limit, offset)
+}
+
 // Search returns users whose username matches the prefix query.
 // 空のクエリは空のリストを返す。
 func (s *Service) Search(query string, limit, offset int) ([]*model.User, error) {

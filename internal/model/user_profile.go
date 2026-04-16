@@ -68,3 +68,12 @@ type UserProfile struct {
 }
 
 func (UserProfile) TableName() string { return "user_profile" }
+
+// FollowingBirthday is a (followeeID, birthday) pair returned by
+// FollowingRepository.ListFollowingByBirthday. repository と testutil の両方
+// から参照されるため model パッケージに置く (循環依存の回避)。
+type FollowingBirthday struct {
+	FolloweeID string `gorm:"column:followeeId"`
+	// Birthday is the raw "YYYY-MM-DD" string as stored in user_profile.
+	Birthday string `gorm:"column:birthday"`
+}

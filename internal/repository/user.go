@@ -26,6 +26,10 @@ type UserRepository interface {
 	FindProfileByVerifyCode(code string) (*model.UserProfile, error)
 	FindProfileByEmail(email string) (*model.UserProfile, error)
 	CountOnlineUsers() (int64, error)
+	// ListUserRecommendations returns locally-active explorable users the
+	// viewer does not already follow, ordered by followersCount descending.
+	// viewerID is excluded from results. Used by users/recommendation.
+	ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error)
 }
 
 type userRepository struct {
@@ -227,6 +231,30 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 
 	var users []*model.User
 	if err := q.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// ListUserRecommendations returns explorable, unlocked, active local users the
+// viewer is not yet following. Misskey 本家互換: isExplorable AND NOT isLocked
+// AND host IS NULL AND updatedAt >= activeSince AND id NOT IN (自分のfollowee)。
+func (r *userRepository) ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var users []*model.User
+	err := r.db.Model(&model.User{}).
+		Where(`"isLocked" = FALSE AND "isExplorable" = TRUE AND host IS NULL AND "updatedAt" >= ? AND id <> ?`, activeSince, viewerID).
+		Where(`id NOT IN (SELECT "followeeId" FROM "following" WHERE "followerId" = ?)`, viewerID).
+		Order(`"followersCount" DESC`).
+		Limit(limit).
+		Offset(offset).
+		Find(&users).Error
+	if err != nil {
 		return nil, err
 	}
 	return users, nil
