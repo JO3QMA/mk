@@ -614,6 +614,11 @@ func (r *Renderer) RenderFlag(actor *model.User, targetURI, content string) *Fla
 // srcURI, target == dstURI. ID is "{baseURL}/moves/{srcID}/{dstID}" where
 // dstID is derived from dstURI (final path segment) so that receiving
 // servers see a deterministic activity id per (src, dst) pair.
+//
+// To は follower collection URI を指す。DeliverToFollowers で各 follower の
+// inbox へ直接配送するため To だけでは配送経路は決まらないが、受信側の一部
+// AP 実装は to/cc を見て visibility を判定するため (Announce / Delete と同様)
+// 明示的に addressing を付ける。
 func (r *Renderer) RenderMove(src *model.User, dstURI string) *Move {
 	srcURI := r.urls.UserURI(src.ID)
 	m := &Move{
@@ -623,6 +628,7 @@ func (r *Renderer) RenderMove(src *model.User, dstURI string) *Move {
 				Type: "Move",
 			},
 			Actor: srcURI,
+			To:    []string{r.urls.UserFollowers(src.ID)},
 		},
 		Object: srcURI,
 		Target: dstURI,

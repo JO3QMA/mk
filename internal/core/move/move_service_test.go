@@ -99,6 +99,13 @@ func TestMove_Success(t *testing.T) {
 	assert.Equal(t, srcURI, body["actor"])
 	assert.Equal(t, srcURI, body["object"])
 	assert.Equal(t, dstURI, body["target"])
+	// To に follower collection URI が入る (一部 AP 実装が visibility 判定で参照)
+	if to, ok := body["to"].([]any); ok {
+		require.Len(t, to, 1)
+		assert.Equal(t, srcURI+"/followers", to[0])
+	} else {
+		t.Fatalf("Move activity has no to addressing: %v", body)
+	}
 }
 
 func TestMove_AlreadyMoved(t *testing.T) {
