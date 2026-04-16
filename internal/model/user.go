@@ -67,9 +67,10 @@ func (u *User) IsLocal() bool {
 
 // UserListFilter holds filter/sort/pagination for admin/show-users.
 type UserListFilter struct {
-	State  string // "all", "admin", "moderator", "suspended", "alive"
-	Origin string // "local", "remote", "combined"
-	Sort   string // "+createdAt", "-createdAt", "+updatedAt", "-updatedAt", etc.
-	Limit  int
-	Offset int
+	State    string // "all", "admin", "moderator", "suspended", "alive"
+	Origin   string // "local", "remote", "combined"
+	Hostname string // if non-empty, restricts to a specific remote host
+	Sort     string // "+createdAt", "-createdAt", "+updatedAt", "-updatedAt", etc.
+	Limit    int
+	Offset   int
 }

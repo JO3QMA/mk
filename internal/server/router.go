@@ -1065,9 +1065,17 @@ func (s *Server) setupRoutes() {
 
 	// Federation endpoints
 	federationHandler := apifederation.NewHandler(instanceService)
+	federationHandler.SetFollowingRepo(followingRepo)
+	federationHandler.SetUserRepo(userRepo)
+	federationHandler.SetResolver(federationResolver)
 	api.POST("/federation/instances", federationHandler.Instances)
 	api.GET("/federation/instances", federationHandler.Instances)
 	api.POST("/federation/show-instance", federationHandler.ShowInstance)
+	api.POST("/federation/followers", federationHandler.Followers)
+	api.POST("/federation/following", federationHandler.Following)
+	api.POST("/federation/users", federationHandler.Users)
+	api.POST("/federation/stats", federationHandler.Stats)
+	api.POST("/federation/update-remote-user", federationHandler.UpdateRemoteUser, middleware.RequireModerator(roleService))
 
 	// Channels endpoints (Phase 4.2)
 	channelsHandler := apichannels.NewHandler(channelService, idGen)
@@ -1215,7 +1223,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
 	// following 残り
-	api.POST("/following/invalidate", followingHandler.Invalidate, middleware.RequireAuth())
+	api.POST("/following/invalidate", followingHandler.Invalidate, middleware.RequireModerator(roleService))
 	api.POST("/following/update", followingHandler.UpdateFollow, middleware.RequireAuth())
 	api.POST("/following/update-all", followingHandler.UpdateFollowAll, middleware.RequireAuth())
 	api.POST("/following/requests/sent", followingHandler.RequestsSent, middleware.RequireAuth())

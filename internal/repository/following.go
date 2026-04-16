@@ -13,6 +13,19 @@ type FollowingRepository interface {
 	Exists(followerID, followeeID string) (bool, error)
 	ListFollowers(userID string, limit, offset int) ([]*model.Following, error)
 	ListFollowing(userID string, limit, offset int) ([]*model.Following, error)
+	// ListFollowersByHost returns Following rows whose followerHost matches
+	// host. Used by federation/followers (remote users who follow a local
+	// user on this instance are listed under the remote instance's name).
+	ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error)
+	// ListFollowingByHost returns Following rows whose followeeHost matches
+	// host. Used by federation/following.
+	ListFollowingByHost(host string, limit, offset int) ([]*model.Following, error)
+	// UpdateRelation applies partial updates to a Following row identified
+	// by (followerID, followeeID). Used by following/update.
+	UpdateRelation(followerID, followeeID string, fields map[string]any) error
+	// UpdateAllByFollower applies partial updates to every Following row
+	// with the given follower. Used by following/update-all.
+	UpdateAllByFollower(followerID string, fields map[string]any) error
 	// ListRemoteFollowerInboxes returns the deduplicated list of inbox URLs for
 	// remote followers of userID. sharedInbox を持つフォロワーは sharedInbox
 	// に集約され、無いフォロワーは個別inboxを返す。
@@ -85,6 +98,54 @@ func (r *followingRepository) ListFollowing(userID string, limit, offset int) ([
 //  1. follower がリモート (host IS NOT NULL) のフォロワーをjoin
 //  2. sharedInbox があれば sharedInbox、無ければ inbox を選択
 //  3. NULL/空文字列を除外し DISTINCT で重複排除
+func (r *followingRepository) ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Following
+	if err := r.db.Where(`"followerHost" = ?`, host).
+		Order("id DESC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *followingRepository) ListFollowingByHost(host string, limit, offset int) ([]*model.Following, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Following
+	if err := r.db.Where(`"followeeHost" = ?`, host).
+		Order("id DESC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *followingRepository) UpdateRelation(followerID, followeeID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Following{}).
+		Where(`"followerId" = ? AND "followeeId" = ?`, followerID, followeeID).
+		Updates(fields).Error
+}
+
+func (r *followingRepository) UpdateAllByFollower(followerID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Following{}).
+		Where(`"followerId" = ?`, followerID).
+		Updates(fields).Error
+}
+
 func (r *followingRepository) ListRemoteFollowerInboxes(userID string) ([]string, error) {
 	var inboxes []string
 	err := r.db.

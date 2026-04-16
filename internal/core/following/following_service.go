@@ -362,3 +362,16 @@ func (s *Service) ListReceivedFollowing(userID string, limit, offset int) ([]*mo
 func (s *Service) ListSentFollowing(userID string, limit, offset int) ([]*model.Following, error) {
 	return s.followingRepo.ListFollowing(userID, limit, offset)
 }
+
+// UpdateRelation applies partial updates to a single follower/followee pair.
+// Used by following/update to toggle per-relation flags (notify, withReplies).
+// Returns nil if the relation does not exist (no-op).
+func (s *Service) UpdateRelation(followerID, followeeID string, fields map[string]any) error {
+	return s.followingRepo.UpdateRelation(followerID, followeeID, fields)
+}
+
+// UpdateAllByFollower applies partial updates to every Following row whose
+// followerId matches. Used by following/update-all.
+func (s *Service) UpdateAllByFollower(followerID string, fields map[string]any) error {
+	return s.followingRepo.UpdateAllByFollower(followerID, fields)
+}
