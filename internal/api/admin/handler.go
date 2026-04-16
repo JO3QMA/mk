@@ -67,8 +67,16 @@ type Handler struct {
 	inviteRepo            repository.RegistrationTicketRepository
 	promoNoteRepo         repository.PromoNoteRepository
 	noteFinder            NoteFinder
+	resetReqRepo          repository.PasswordResetRequestRepository
+	emailSender           EmailSender
+	serverURL             string
 	idGen                 id.Generator
 }
+
+// EmailSender sends a plain-text email (to, subject, body). Same signature
+// as the one used by internal/api/resetpassword so the router can share its
+// SMTP closure with admin.
+type EmailSender func(to, subject, body string)
 
 // NoteFinder is the minimal subset of repository.NoteRepository that admin
 // handlers need to validate a noteId. Kept narrow so tests can supply a tiny
@@ -107,6 +115,20 @@ func (h *Handler) SetPromoNoteRepo(r repository.PromoNoteRepository) { h.promoNo
 
 // SetNoteFinder attaches a NoteFinder used to validate noteId inputs.
 func (h *Handler) SetNoteFinder(r NoteFinder) { h.noteFinder = r }
+
+// SetPasswordResetRepo attaches the repository used by admin/reset-password
+// to persist reset tokens.
+func (h *Handler) SetPasswordResetRepo(r repository.PasswordResetRequestRepository) {
+	h.resetReqRepo = r
+}
+
+// SetEmailSender attaches the closure used to deliver admin-issued password
+// reset emails. If nil, admin/reset-password falls back to returning a
+// temporary password.
+func (h *Handler) SetEmailSender(s EmailSender) { h.emailSender = s }
+
+// SetServerURL sets the base URL used inside password-reset email bodies.
+func (h *Handler) SetServerURL(u string) { h.serverURL = u }
 
 // SetRelayService wires the relay service used by admin/relays endpoints.
 // nil を渡せば Admin API が DB fallback (create/update/delete のみ) に戻る。
