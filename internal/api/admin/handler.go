@@ -27,6 +27,14 @@ type RelayService interface {
 	List(ctx context.Context) ([]*model.Relay, error)
 }
 
+// AbuseForwarder encapsulates the full "render a Flag activity for the
+// report and deliver it to the target user's origin inbox" flow used by
+// admin/forward-abuse-user-report. Kept as an interface so the handler
+// stays testable without dragging in the full activitypub + queue stack.
+type AbuseForwarder interface {
+	ForwardReport(reportID string) error
+}
+
 // Handler handles admin API endpoints.
 type Handler struct {
 	signupService     *signup.Service
@@ -42,6 +50,7 @@ type Handler struct {
 	queueInspector    QueueInspector
 	emojiEnqueuer     EmojiImportEnqueuer
 	relayService      RelayService
+	abuseForwarder    AbuseForwarder
 	systemWebhookRepo repository.SystemWebhookRepository
 	recipientRepo     repository.AbuseReportNotificationRecipientRepository
 	adRepo            repository.AdRepository
@@ -94,6 +103,13 @@ func (h *Handler) SetNoteFinder(r NoteFinder) { h.noteFinder = r }
 // nil を渡せば Admin API が DB fallback (create/update/delete のみ) に戻る。
 func (h *Handler) SetRelayService(s RelayService) {
 	h.relayService = s
+}
+
+// SetAbuseForwarder wires a forwarder for admin/forward-abuse-user-report.
+// When nil the handler falls back to just flipping the DB forwarded flag
+// (pre-P4-5 behaviour).
+func (h *Handler) SetAbuseForwarder(f AbuseForwarder) {
+	h.abuseForwarder = f
 }
 
 // EmojiImportEnqueuer is the subset of queue.Enqueuer needed to schedule

@@ -664,3 +664,15 @@ func TestRenderer_SetResolvers(t *testing.T) {
 	r.SetHost("example.com")
 	assert.Equal(t, "example.com", r.host)
 }
+
+func TestRenderer_RenderFlag(t *testing.T) {
+	r := newRenderer()
+	actor := &model.User{ID: "instance"}
+	flag := r.RenderFlag(actor, "https://remote.example/users/alice", "spam comment")
+	assert.Equal(t, "Flag", flag.Type)
+	assert.Equal(t, "https://example.com/users/instance", flag.Actor)
+	assert.Equal(t, "https://remote.example/users/alice", flag.Object)
+	assert.Equal(t, "spam comment", flag.Content)
+	// AddContext 済 (Context が設定される)
+	assert.NotNil(t, flag.Context)
+}
