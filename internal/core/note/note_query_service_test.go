@@ -195,7 +195,6 @@ func TestQueryService_State_OK(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, st.IsFavorited)
 	assert.False(t, st.IsMutedThread)
-	assert.False(t, st.IsWatching)
 }
 
 func TestQueryService_State_NotFound(t *testing.T) {
@@ -270,7 +269,6 @@ func TestQueryService_State_AnonymousIsAllFalse(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, state.IsFavorited)
 	assert.False(t, state.IsMutedThread)
-	assert.False(t, state.IsWatching)
 }
 
 func TestQueryService_State_FavoritedTrue(t *testing.T) {
