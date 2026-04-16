@@ -116,6 +116,12 @@ type QueueInspector interface {
 	DeleteTask(qname, taskID string) error
 	DeleteAllPendingTasks(qname string) (int, error)
 	RunTask(qname, taskID string) error
+	// Task listing APIs. page is 1-indexed.
+	ListPendingTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	ListActiveTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	ListScheduledTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	ListRetryTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	GetTaskInfo(qname, taskID string) (*QueueTaskSummary, error)
 }
 
 // QueueInfoResult holds basic queue statistics.
@@ -128,6 +134,22 @@ type QueueInfoResult struct {
 	Failed    int
 	Scheduled int
 	Retry     int
+}
+
+// QueueTaskSummary mirrors queue.TaskSummary for handler responses without
+// taking a compile-time dependency on the queue package.
+type QueueTaskSummary struct {
+	ID            string
+	Queue         string
+	Type          string
+	State         string
+	Payload       []byte
+	Retried       int
+	MaxRetry      int
+	LastErr       string
+	LastFailedAt  time.Time
+	NextProcessAt time.Time
+	CompletedAt   time.Time
 }
 
 // SetDriveFileRepo attaches a DriveFileRepository for admin drive operations.

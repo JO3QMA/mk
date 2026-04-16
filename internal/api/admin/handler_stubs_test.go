@@ -442,15 +442,21 @@ func TestQueueQueues(t *testing.T) {
 }
 func TestQueueRemoveJob(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRemoveJob, `{}`, adminUser).Code)
+	// queue/id 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueRemoveJob, `{}`, adminUser).Code)
+	// inspector 未注入は 204
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRemoveJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
 }
 func TestQueueRetryJob(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRetryJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueRetryJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRetryJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
 }
 func TestQueueShowJob(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNotFound, doPost(h.QueueShowJob, `{}`, adminUser).Code)
+	// queue/id 欠落は 400、inspector 未注入 + 正規 bind は 404
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueShowJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusNotFound, doPost(h.QueueShowJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
 }
 func TestQueueShowJobLogs(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
