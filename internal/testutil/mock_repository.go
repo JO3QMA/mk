@@ -2590,6 +2590,60 @@ func (m *MockFollowingRepository) ListFollowing(userID string, limit, offset int
 	return paginate(rows, limit, offset), nil
 }
 
+func (m *MockFollowingRepository) ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error) {
+	var rows []*model.Following
+	for _, f := range m.Followings {
+		if f.FollowerHost != nil && *f.FollowerHost == host {
+			rows = append(rows, f)
+		}
+	}
+	return paginate(rows, limit, offset), nil
+}
+
+func (m *MockFollowingRepository) ListFollowingByHost(host string, limit, offset int) ([]*model.Following, error) {
+	var rows []*model.Following
+	for _, f := range m.Followings {
+		if f.FolloweeHost != nil && *f.FolloweeHost == host {
+			rows = append(rows, f)
+		}
+	}
+	return paginate(rows, limit, offset), nil
+}
+
+func (m *MockFollowingRepository) UpdateRelation(followerID, followeeID string, fields map[string]any) error {
+	for _, f := range m.Followings {
+		if f.FollowerID == followerID && f.FolloweeID == followeeID {
+			applyFollowingFields(f, fields)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *MockFollowingRepository) UpdateAllByFollower(followerID string, fields map[string]any) error {
+	for _, f := range m.Followings {
+		if f.FollowerID == followerID {
+			applyFollowingFields(f, fields)
+		}
+	}
+	return nil
+}
+
+func applyFollowingFields(f *model.Following, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "notify":
+			if s, ok := v.(string); ok {
+				f.Notify = &s
+			}
+		case "withReplies":
+			if b, ok := v.(bool); ok {
+				f.WithReplies = b
+			}
+		}
+	}
+}
+
 // MockFollowRequestRepository is a test double for repository.FollowRequestRepository.
 type MockFollowRequestRepository struct {
 	Requests map[string]*model.FollowRequest

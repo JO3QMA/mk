@@ -8,16 +8,42 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 )
+
+// ActorResolver is the narrow subset of core/federation.Resolver that
+// federation/update-remote-user needs. Kept as an interface so unit tests can
+// swap in a fake without pulling in HTTP transports.
+type ActorResolver interface {
+	ForceResolveActor(uri string) (*model.User, error)
+}
 
 // Handler handles federation-related API endpoints.
 type Handler struct {
-	svc *coreinstance.Service
+	svc           *coreinstance.Service
+	followingRepo repository.FollowingRepository
+	userRepo      repository.UserRepository
+	resolver      ActorResolver
 }
 
 // NewHandler creates a new federation Handler.
 func NewHandler(svc *coreinstance.Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetFollowingRepo attaches a FollowingRepository for followers/following lookup.
+func (h *Handler) SetFollowingRepo(r repository.FollowingRepository) {
+	h.followingRepo = r
+}
+
+// SetUserRepo attaches a UserRepository for the users-per-host listing.
+func (h *Handler) SetUserRepo(r repository.UserRepository) {
+	h.userRepo = r
+}
+
+// SetResolver attaches an ActorResolver for update-remote-user.
+func (h *Handler) SetResolver(r ActorResolver) {
+	h.resolver = r
 }
 
 // InstancesRequest is the request body for federation/instances.

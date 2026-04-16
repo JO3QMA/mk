@@ -185,6 +185,9 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 	case "remote":
 		q = q.Where("host IS NOT NULL")
 	}
+	if filter.Hostname != "" {
+		q = q.Where("host = ?", filter.Hostname)
+	}
 
 	switch filter.State {
 	case "suspended":

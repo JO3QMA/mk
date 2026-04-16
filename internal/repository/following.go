@@ -13,6 +13,19 @@ type FollowingRepository interface {
 	Exists(followerID, followeeID string) (bool, error)
 	ListFollowers(userID string, limit, offset int) ([]*model.Following, error)
 	ListFollowing(userID string, limit, offset int) ([]*model.Following, error)
+	// ListFollowersByHost returns Following rows whose followerHost matches
+	// host. Used by federation/followers (remote users who follow a local
+	// user on this instance are listed under the remote instance's name).
+	ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error)
+	// ListFollowingByHost returns Following rows whose followeeHost matches
+	// host. Used by federation/following.
+	ListFollowingByHost(host string, limit, offset int) ([]*model.Following, error)
+	// UpdateRelation applies partial updates to a Following row identified
+	// by (followerID, followeeID). Used by following/update.
+	UpdateRelation(followerID, followeeID string, fields map[string]any) error
+	// UpdateAllByFollower applies partial updates to every Following row
+	// with the given follower. Used by following/update-all.
+	UpdateAllByFollower(followerID string, fields map[string]any) error
 	// ListRemoteFollowerInboxes returns the deduplicated list of inbox URLs for
 	// remote followers of userID. sharedInbox を持つフォロワーは sharedInbox
 	// に集約され、無いフォロワーは個別inboxを返す。
@@ -76,6 +89,62 @@ func (r *followingRepository) ListFollowing(userID string, limit, offset int) ([
 		return nil, err
 	}
 	return rows, nil
+}
+
+// ListFollowersByHost returns Following rows whose followerHost matches the
+// given remote host.
+func (r *followingRepository) ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Following
+	if err := r.db.Where(`"followerHost" = ?`, host).
+		Order("id DESC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// ListFollowingByHost returns Following rows whose followeeHost matches the
+// given remote host.
+func (r *followingRepository) ListFollowingByHost(host string, limit, offset int) ([]*model.Following, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Following
+	if err := r.db.Where(`"followeeHost" = ?`, host).
+		Order("id DESC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// UpdateRelation applies a partial field update to a single (follower, followee)
+// Following row.
+func (r *followingRepository) UpdateRelation(followerID, followeeID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Following{}).
+		Where(`"followerId" = ? AND "followeeId" = ?`, followerID, followeeID).
+		Updates(fields).Error
+}
+
+// UpdateAllByFollower applies a partial field update to every Following row
+// authored by the given follower.
+func (r *followingRepository) UpdateAllByFollower(followerID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Following{}).
+		Where(`"followerId" = ?`, followerID).
+		Updates(fields).Error
 }
 
 // ListRemoteFollowerInboxes returns deduplicated inbox URLs for remote
