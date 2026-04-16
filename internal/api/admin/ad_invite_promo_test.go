@@ -111,6 +111,27 @@ func TestAdUpdate_MissingID(t *testing.T) {
 		doPost(h.AdUpdate, `{}`, adminUser).Code)
 }
 
+// Explicit expiresAt:0 in Update はクライアントが明示的に 1970-01-01 を指定した
+// ケースとして扱う (nil なら変更なし)。handler 側の millisOrNow 適用で now に
+// 読み替えてしまう regression を防ぐ。
+func TestAdUpdate_ExplicitZeroExpiresAtStays1970(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockAdRepository()
+	require.NoError(t, repo.Create(&model.Ad{
+		ID: "a1", URL: "u", Place: "square", Priority: "middle", Ratio: 1, ImageURL: "i",
+		StartsAt:  time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	h.SetAdRepo(repo)
+
+	rec := doPost(h.AdUpdate, `{"id":"a1","expiresAt":0}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	// time.UnixMilli(0) は UTC 1970-01-01。time.Now() と大きく異なること。
+	got := repo.Ads["a1"].ExpiresAt
+	assert.Equal(t, int64(0), got.UnixMilli(),
+		"explicit expiresAt:0 should map to UNIX epoch, not time.Now()")
+}
+
 func TestAdDelete_WithRepo(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	repo := testutil.NewMockAdRepository()

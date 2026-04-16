@@ -658,11 +658,14 @@ func (h *Handler) AdUpdate(c echo.Context) error {
 	if req.IsSensitive != nil {
 		fields["isSensitive"] = *req.IsSensitive
 	}
+	// pointer 型フィールドは nil (未指定) と 0 (明示的に 0) を区別できるので、
+	// 受け取った値をそのまま UnixMilli に変換する。Create 側と違い 0 を now に
+	// 読み替えない。
 	if req.StartsAt != nil {
-		fields["startsAt"] = millisOrNow(*req.StartsAt)
+		fields["startsAt"] = time.UnixMilli(*req.StartsAt)
 	}
 	if req.ExpiresAt != nil {
-		fields["expiresAt"] = millisOrNow(*req.ExpiresAt)
+		fields["expiresAt"] = time.UnixMilli(*req.ExpiresAt)
 	}
 	if err := h.adRepo.UpdateFields(req.ID, fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
