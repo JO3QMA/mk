@@ -117,6 +117,76 @@ func TestDeleteAccountProcessor_NoteDeleteErrorPropagates(t *testing.T) {
 	require.Error(t, err)
 }
 
+// drive phase でエラーが起きたら Handle は err を返す。
+type failingDriveRepo struct {
+	*testutil.MockDriveFileRepository
+}
+
+func (f *failingDriveRepo) DeleteByUser(_ string) (int64, error) {
+	return 0, errors.New("drive boom")
+}
+
+func TestDeleteAccountProcessor_DriveErrorPropagates(t *testing.T) {
+	p := processors.NewDeleteAccountProcessor(
+		testutil.NewMockNoteRepository(),
+		&failingDriveRepo{testutil.NewMockDriveFileRepository()},
+		testutil.NewMockFollowingRepository(),
+	)
+	task := deleteAccountTask(t, queue.DeleteAccountPayload{UserID: "target"})
+	require.Error(t, p.Handle(context.Background(), task))
+}
+
+// following phase でエラーが起きたら Handle は err を返す。
+type failingFollowingRepo struct {
+	*testutil.MockFollowingRepository
+}
+
+func (f *failingFollowingRepo) DeleteAllByUser(_ string) (int64, error) {
+	return 0, errors.New("following boom")
+}
+
+func TestDeleteAccountProcessor_FollowingErrorPropagates(t *testing.T) {
+	p := processors.NewDeleteAccountProcessor(
+		testutil.NewMockNoteRepository(),
+		testutil.NewMockDriveFileRepository(),
+		&failingFollowingRepo{testutil.NewMockFollowingRepository()},
+	)
+	task := deleteAccountTask(t, queue.DeleteAccountPayload{UserID: "target"})
+	require.Error(t, p.Handle(context.Background(), task))
+}
+
+// note batch の途中 (pacing sleep 中) にキャンセルされたら ctx.Err() が返る。
+// 最初のバッチで deleteAccountNoteBatchSize 件きっかり返す stub を使って
+// sleep 分岐を踏ませ、そこで ctx.Cancel() → select が ctx.Done() に落ちる。
+type oneFullBatchNoteRepo struct {
+	*testutil.MockNoteRepository
+	calls int
+}
+
+func (o *oneFullBatchNoteRepo) DeleteByUserBatch(_ string, batchSize int) (int64, error) {
+	o.calls++
+	// 最初の 1 回だけ batchSize 件返してループを継続させる
+	if o.calls == 1 {
+		return int64(batchSize), nil
+	}
+	return 0, nil
+}
+
+func TestDeleteAccountProcessor_CanceledDuringPacingReturnsError(t *testing.T) {
+	noteRepo := &oneFullBatchNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// 別 goroutine で即キャンセルして pacing sleep の select を ctx.Done() に
+	// 倒す (第 1 バッチ後 250ms 以内に cancel)。
+	go cancel()
+
+	p := processors.NewDeleteAccountProcessor(noteRepo, testutil.NewMockDriveFileRepository(), testutil.NewMockFollowingRepository())
+	task := deleteAccountTask(t, queue.DeleteAccountPayload{UserID: "target"})
+	err := p.Handle(ctx, task)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
 // 大量ノートを用意して processor が batch ループで全件処理することを検証。
 // ただし単線テストなので pacing sleep を避けるため 120 件 (100+20) にする
 // → 第 1 バッチで 100 削除、第 2 バッチで 20 削除 → 合計 120 件、pacing sleep
