@@ -14,7 +14,6 @@ import (
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm/clause"
 )
 
 // --- accounts ---
@@ -524,18 +523,24 @@ func (h *Handler) CaptchaSave(c echo.Context) error {
 
 // AdCreate handles POST /api/admin/ad/create.
 func (h *Handler) AdCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.adRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		URL      string `json:"url"`
-		ImageURL string `json:"imageUrl"`
-		Place    string `json:"place"`
-		Memo     string `json:"memo"`
-		Priority string `json:"priority"`
-		Ratio    int    `json:"ratio"`
+		URL         string `json:"url"`
+		ImageURL    string `json:"imageUrl"`
+		Place       string `json:"place"`
+		Memo        string `json:"memo"`
+		Priority    string `json:"priority"`
+		Ratio       int    `json:"ratio"`
+		DayOfWeek   int    `json:"dayOfWeek"`
+		ExpiresAt   int64  `json:"expiresAt"`
+		StartsAt    int64  `json:"startsAt"`
+		IsSensitive bool   `json:"isSensitive"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil || req.URL == "" || req.ImageURL == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
 	if req.Place == "" {
 		req.Place = "square"
 	}
@@ -546,98 +551,237 @@ func (h *Handler) AdCreate(c echo.Context) error {
 		req.Ratio = 1
 	}
 	ad := &model.Ad{
-		ID: h.idGen.Generate(time.Now()), URL: req.URL, ImageURL: req.ImageURL,
-		Place: req.Place, Memo: req.Memo, Priority: req.Priority, Ratio: req.Ratio,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour), StartsAt: time.Now(),
+		ID:          h.idGen.Generate(time.Now()),
+		URL:         req.URL,
+		ImageURL:    req.ImageURL,
+		Place:       req.Place,
+		Memo:        req.Memo,
+		Priority:    req.Priority,
+		Ratio:       req.Ratio,
+		DayOfWeek:   req.DayOfWeek,
+		IsSensitive: req.IsSensitive,
+		StartsAt:    millisOrNow(req.StartsAt),
+		ExpiresAt:   millisOrDefault(req.ExpiresAt, time.Now().Add(30*24*time.Hour)),
 	}
-	h.adminDB.Create(ad)
+	if err := h.adRepo.Create(ad); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, ad)
 }
 
 // AdDelete handles POST /api/admin/ad/delete.
 func (h *Handler) AdDelete(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.adRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.Ad{})
+	_ = h.adRepo.Delete(req.ID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // AdList handles POST /api/admin/ad/list.
 func (h *Handler) AdList(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.adRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	var ads []*model.Ad
-	h.adminDB.Order(`"id" DESC`).Limit(20).Find(&ads)
-	return c.JSON(http.StatusOK, ads)
+	var req struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	rows, err := h.adRepo.List(req.Limit, req.Offset)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if rows == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // AdUpdate handles POST /api/admin/ad/update.
 func (h *Handler) AdUpdate(c echo.Context) error {
-	if h.adminDB == nil {
+	// 旧実装が `c.Request().Body` を `Updates` に直接渡しており部分更新が機能して
+	// いなかった。partial field map に差し替え、リクエストで明示された項目のみ
+	// 書き換える。
+	if h.adRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		ID string `json:"id"`
+		ID          string  `json:"id"`
+		URL         *string `json:"url"`
+		ImageURL    *string `json:"imageUrl"`
+		Place       *string `json:"place"`
+		Memo        *string `json:"memo"`
+		Priority    *string `json:"priority"`
+		Ratio       *int    `json:"ratio"`
+		DayOfWeek   *int    `json:"dayOfWeek"`
+		ExpiresAt   *int64  `json:"expiresAt"`
+		StartsAt    *int64  `json:"startsAt"`
+		IsSensitive *bool   `json:"isSensitive"`
 	}
-	_ = c.Bind(&req)
-	if req.ID != "" {
-		h.adminDB.Model(&model.Ad{}).Where(`"id" = ?`, req.ID).Updates(c.Request().Body)
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if _, err := h.adRepo.FindByID(req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	fields := map[string]any{}
+	if req.URL != nil {
+		fields["url"] = *req.URL
+	}
+	if req.ImageURL != nil {
+		fields["imageUrl"] = *req.ImageURL
+	}
+	if req.Place != nil {
+		fields["place"] = *req.Place
+	}
+	if req.Memo != nil {
+		fields["memo"] = *req.Memo
+	}
+	if req.Priority != nil {
+		fields["priority"] = *req.Priority
+	}
+	if req.Ratio != nil {
+		fields["ratio"] = *req.Ratio
+	}
+	if req.DayOfWeek != nil {
+		fields["dayOfWeek"] = *req.DayOfWeek
+	}
+	if req.IsSensitive != nil {
+		fields["isSensitive"] = *req.IsSensitive
+	}
+	// pointer 型フィールドは nil (未指定) と 0 (明示的に 0) を区別できるので、
+	// 受け取った値をそのまま UnixMilli に変換する。Create 側と違い 0 を now に
+	// 読み替えない。
+	if req.StartsAt != nil {
+		fields["startsAt"] = time.UnixMilli(*req.StartsAt)
+	}
+	if req.ExpiresAt != nil {
+		fields["expiresAt"] = time.UnixMilli(*req.ExpiresAt)
+	}
+	if err := h.adRepo.UpdateFields(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// millisOrNow converts a UNIX millisecond timestamp to time.Time; 0 falls back
+// to the current wall clock.
+func millisOrNow(ms int64) time.Time {
+	if ms == 0 {
+		return time.Now()
+	}
+	return time.UnixMilli(ms)
+}
+
+// millisOrDefault converts a UNIX millisecond timestamp to time.Time; 0 falls
+// back to the provided default.
+func millisOrDefault(ms int64, def time.Time) time.Time {
+	if ms == 0 {
+		return def
+	}
+	return time.UnixMilli(ms)
 }
 
 // --- avatar-decorations ---
 
 // AvatarDecorationsCreate handles POST /api/admin/avatar-decorations/create.
 func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.avatarDecoRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		URL         string `json:"url"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		URL         string   `json:"url"`
+		RoleIDs     []string `json:"roleIdsThatCanBeUsedThisDecoration"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil || req.Name == "" || req.URL == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
 	d := &model.AvatarDecoration{
-		ID: h.idGen.Generate(time.Now()), Name: req.Name, Description: req.Description, URL: req.URL,
+		ID:          h.idGen.Generate(time.Now()),
+		Name:        req.Name,
+		Description: req.Description,
+		URL:         req.URL,
+		RoleIDs:     req.RoleIDs,
 	}
-	h.adminDB.Create(d)
+	if err := h.avatarDecoRepo.Create(d); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, d)
 }
 
 // AvatarDecorationsDelete handles POST /api/admin/avatar-decorations/delete.
 func (h *Handler) AvatarDecorationsDelete(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.avatarDecoRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.AvatarDecoration{})
+	_ = h.avatarDecoRepo.Delete(req.ID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // AvatarDecorationsList handles POST /api/admin/avatar-decorations/list.
 func (h *Handler) AvatarDecorationsList(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.avatarDecoRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	var decorations []*model.AvatarDecoration
-	h.adminDB.Order(`"id" DESC`).Find(&decorations)
-	return c.JSON(http.StatusOK, decorations)
+	rows, err := h.avatarDecoRepo.List()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if rows == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // AvatarDecorationsUpdate handles POST /api/admin/avatar-decorations/update.
 func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent) // 更新ロジックは将来対応
+	if h.avatarDecoRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID          string    `json:"id"`
+		Name        *string   `json:"name"`
+		Description *string   `json:"description"`
+		URL         *string   `json:"url"`
+		RoleIDs     *[]string `json:"roleIdsThatCanBeUsedThisDecoration"`
+	}
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if _, err := h.avatarDecoRepo.FindByID(req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	fields := map[string]any{"updatedAt": time.Now()}
+	if req.Name != nil {
+		fields["name"] = *req.Name
+	}
+	if req.Description != nil {
+		fields["description"] = *req.Description
+	}
+	if req.URL != nil {
+		fields["url"] = *req.URL
+	}
+	if req.RoleIDs != nil {
+		fields["roleIdsThatCanBeUsedThisDecoration"] = *req.RoleIDs
+	}
+	if err := h.avatarDecoRepo.UpdateFields(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // --- abuse-report/notification-recipient ---
@@ -832,38 +976,125 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 
 // InviteCreate handles POST /api/admin/invite/create.
 func (h *Handler) InviteCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	// 本家 TS は count (1-100, default 1) 分のチケットを配列で返す。個々の Create
+	// 失敗時でも既作成分はロールバックしない (本家も Promise.all で非原子的)。
+	if h.inviteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	user := middleware.GetUser(c)
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	code := hex.EncodeToString(b)
-	ticket := &model.RegistrationTicket{
-		ID: h.idGen.Generate(time.Now()), Code: code, CreatedByID: &user.ID,
+	var req struct {
+		Count     int     `json:"count"`
+		ExpiresAt *string `json:"expiresAt"`
 	}
-	h.adminDB.Create(ticket)
-	return c.JSON(http.StatusOK, map[string]any{
-		"id": ticket.ID, "code": ticket.Code, "expiresAt": ticket.ExpiresAt,
-		"createdAt": time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-	})
+	_ = c.Bind(&req)
+	if req.Count <= 0 {
+		req.Count = 1
+	}
+	if req.Count > 100 {
+		req.Count = 100
+	}
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
+		parsed, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_DATE_TIME", "Invalid date-time format", "f1380b15-3760-4c6c-a1db-5c3aaf1cbd49"))
+		}
+		expiresAt = &parsed
+	}
+	user := middleware.GetUser(c)
+	var createdByID *string
+	if user != nil {
+		createdByID = &user.ID
+	}
+	tickets := make([]*model.RegistrationTicket, 0, req.Count)
+	for i := 0; i < req.Count; i++ {
+		b := make([]byte, 16)
+		_, _ = rand.Read(b)
+		t := &model.RegistrationTicket{
+			ID:          h.idGen.Generate(time.Now()),
+			Code:        hex.EncodeToString(b),
+			ExpiresAt:   expiresAt,
+			CreatedByID: createdByID,
+		}
+		if err := h.inviteRepo.Create(t); err != nil {
+			continue
+		}
+		tickets = append(tickets, t)
+	}
+	return c.JSON(http.StatusOK, h.packInviteTickets(tickets))
+}
+
+// packInviteTickets transforms RegistrationTicket rows into the
+// Misskey-compatible InviteCodeEntityService.pack shape.
+func (h *Handler) packInviteTickets(rows []*model.RegistrationTicket) []map[string]any {
+	// Misskey 本家 InviteCodeEntityService.pack と同じ形にする。
+	// createdAt は aidx ID から抽出、used は usedAt の有無で導出する。
+	out := make([]map[string]any, 0, len(rows))
+	for _, t := range rows {
+		var createdAt *string
+		if h.idGen != nil {
+			if ts, err := h.idGen.ParseTime(t.ID); err == nil {
+				s := ts.UTC().Format("2006-01-02T15:04:05.000Z")
+				createdAt = &s
+			}
+		}
+		var expiresAt *string
+		if t.ExpiresAt != nil {
+			s := t.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000Z")
+			expiresAt = &s
+		}
+		var usedAt *string
+		if t.UsedAt != nil {
+			s := t.UsedAt.UTC().Format("2006-01-02T15:04:05.000Z")
+			usedAt = &s
+		}
+		out = append(out, map[string]any{
+			"id":          t.ID,
+			"code":        t.Code,
+			"expiresAt":   expiresAt,
+			"createdAt":   createdAt,
+			"createdBy":   nil,
+			"usedBy":      nil,
+			"usedAt":      usedAt,
+			"used":        t.UsedAt != nil,
+			"createdById": t.CreatedByID,
+			"usedById":    t.UsedByID,
+		})
+	}
+	return out
 }
 
 // InviteList handles POST /api/admin/invite/list.
 func (h *Handler) InviteList(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.inviteRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	var tickets []*model.RegistrationTicket
-	h.adminDB.Order(`"id" DESC`).Limit(20).Find(&tickets)
-	return c.JSON(http.StatusOK, tickets)
+	var req struct {
+		Limit  int    `json:"limit"`
+		Offset int    `json:"offset"`
+		Type   string `json:"type"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	filter := req.Type
+	switch filter {
+	case "unused", "used", "expired", "all":
+	default:
+		filter = "all"
+	}
+	rows, err := h.inviteRepo.List(filter, req.Limit, req.Offset, time.Now())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, h.packInviteTickets(rows))
 }
 
 // --- promo ---
 
 // PromoCreate handles POST /api/admin/promo/create.
 func (h *Handler) PromoCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.promoNoteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
@@ -873,17 +1104,40 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	u := middleware.GetUser(c)
-	userID := ""
-	if u != nil {
-		userID = u.ID
+
+	// 対象 note の存在確認 → 既に promote 済みでないか確認
+	var targetUserID string
+	if h.noteFinder != nil {
+		note, err := h.noteFinder.FindByID(req.NoteID)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_NOTE", "No such note.", "ee449fbe-af2a-453b-9cae-cf2fe7c895fc"))
+		}
+		targetUserID = note.UserID
 	}
+
+	exists, err := h.promoNoteRepo.Exists(req.NoteID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if exists {
+		return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_PROMOTED", "The note has already promoted.", "ae427aa2-7a41-484f-a18c-2c1104051604"))
+	}
+
+	// note 情報が取れなかった場合は呼び出し admin を userId として記録 (最低限の整合)
+	if targetUserID == "" {
+		if u := middleware.GetUser(c); u != nil {
+			targetUserID = u.ID
+		}
+	}
+
 	promo := &model.PromoNote{
 		NoteID:    req.NoteID,
-		ExpiresAt: time.Unix(req.ExpiresAt/1000, 0),
-		UserID:    userID,
+		ExpiresAt: time.UnixMilli(req.ExpiresAt),
+		UserID:    targetUserID,
 	}
-	h.adminDB.Clauses(clause.OnConflict{DoNothing: true}).Create(promo)
+	if err := h.promoNoteRepo.Create(promo); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

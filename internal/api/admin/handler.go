@@ -44,7 +44,19 @@ type Handler struct {
 	relayService      RelayService
 	systemWebhookRepo repository.SystemWebhookRepository
 	recipientRepo     repository.AbuseReportNotificationRecipientRepository
+	adRepo            repository.AdRepository
+	avatarDecoRepo    repository.AvatarDecorationRepository
+	inviteRepo        repository.RegistrationTicketRepository
+	promoNoteRepo     repository.PromoNoteRepository
+	noteFinder        NoteFinder
 	idGen             id.Generator
+}
+
+// NoteFinder is the minimal subset of repository.NoteRepository that admin
+// handlers need to validate a noteId. Kept narrow so tests can supply a tiny
+// fake without implementing the full NoteRepository surface.
+type NoteFinder interface {
+	FindByID(id string) (*model.Note, error)
 }
 
 // SetSystemWebhookRepo attaches a SystemWebhookRepository for admin/system-webhook/*.
@@ -57,6 +69,26 @@ func (h *Handler) SetSystemWebhookRepo(r repository.SystemWebhookRepository) {
 func (h *Handler) SetRecipientRepo(r repository.AbuseReportNotificationRecipientRepository) {
 	h.recipientRepo = r
 }
+
+// SetAdRepo attaches an AdRepository for admin/ad/*.
+func (h *Handler) SetAdRepo(r repository.AdRepository) { h.adRepo = r }
+
+// SetAvatarDecorationRepo attaches an AvatarDecorationRepository for
+// admin/avatar-decorations/*.
+func (h *Handler) SetAvatarDecorationRepo(r repository.AvatarDecorationRepository) {
+	h.avatarDecoRepo = r
+}
+
+// SetInviteRepo attaches a RegistrationTicketRepository for admin/invite/*.
+func (h *Handler) SetInviteRepo(r repository.RegistrationTicketRepository) {
+	h.inviteRepo = r
+}
+
+// SetPromoNoteRepo attaches a PromoNoteRepository for admin/promo/*.
+func (h *Handler) SetPromoNoteRepo(r repository.PromoNoteRepository) { h.promoNoteRepo = r }
+
+// SetNoteFinder attaches a NoteFinder used to validate noteId inputs.
+func (h *Handler) SetNoteFinder(r NoteFinder) { h.noteFinder = r }
 
 // SetRelayService wires the relay service used by admin/relays endpoints.
 // nil を渡せば Admin API が DB fallback (create/update/delete のみ) に戻る。

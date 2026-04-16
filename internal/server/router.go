@@ -1271,6 +1271,11 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetRelayService(relaySvc)
 	adminHandler.SetSystemWebhookRepo(systemWebhookRepo)
 	adminHandler.SetRecipientRepo(recipientRepo)
+	adminHandler.SetAdRepo(repository.NewAdRepository(s.db))
+	adminHandler.SetAvatarDecorationRepo(repository.NewAvatarDecorationRepository(s.db))
+	adminHandler.SetInviteRepo(repository.NewRegistrationTicketRepository(s.db))
+	adminHandler.SetPromoNoteRepo(repository.NewPromoNoteRepository(s.db))
+	adminHandler.SetNoteFinder(noteRepo)
 	if s.queueInspector != nil {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
 	}
