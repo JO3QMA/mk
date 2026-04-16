@@ -88,6 +88,15 @@ func (b *URLBuilder) FollowRelayURI(relayID string) string {
 	return b.baseURL + "/activities/follow-relay/" + relayID
 }
 
+// MoveURI returns the URI for a Move activity from srcID to dstURI.
+// 本家は `${baseURL}/moves/${src.id}/${dst.id}` を使うが、dstURI はリモートで
+// 内部 ID を持たないため、URI を SHA-256 で 16 bytes にハッシュ化して path
+// に使う。一意性とショート URL 表現を両立する。
+func (b *URLBuilder) MoveURI(srcID, dstURI string) string {
+	h := sha256.Sum256([]byte(dstURI))
+	return b.baseURL + "/moves/" + srcID + "/" + hex.EncodeToString(h[:16])
+}
+
 // MentionResolver resolves a note.Mentions entry (user ID) into the data
 // required to build an AS Mention tag. 実装は server/router.go 側で
 // UserRepository を wrap する形で提供される。解決に失敗したら ok=false を
@@ -598,6 +607,28 @@ func (r *Renderer) RenderFlag(actor *model.User, targetURI, content string) *Fla
 	}
 	AddContext(f)
 	return f
+}
+
+// RenderMove returns a Move activity announcing that src has migrated to
+// dstURI. Matches upstream ApRendererService.renderMove: actor == object ==
+// srcURI, target == dstURI. ID is "{baseURL}/moves/{srcID}/{dstID}" where
+// dstID is derived from dstURI (final path segment) so that receiving
+// servers see a deterministic activity id per (src, dst) pair.
+func (r *Renderer) RenderMove(src *model.User, dstURI string) *Move {
+	srcURI := r.urls.UserURI(src.ID)
+	m := &Move{
+		Activity: Activity{
+			Object: Object{
+				ID:   r.urls.MoveURI(src.ID, dstURI),
+				Type: "Move",
+			},
+			Actor: srcURI,
+		},
+		Object: srcURI,
+		Target: dstURI,
+	}
+	AddContext(m)
+	return m
 }
 
 // addressing computes to/cc lists for a note based on visibility.

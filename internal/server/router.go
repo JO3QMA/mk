@@ -72,6 +72,7 @@ import (
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
 	coremediaproxy "github.com/shiroha-a/mk/internal/core/mediaproxy"
+	coremove "github.com/shiroha-a/mk/internal/core/move"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
@@ -846,6 +847,9 @@ func (s *Server) setupRoutes() {
 	iHandler.SetAccessTokenRepo(repository.NewAccessTokenRepository(s.db))
 	iHandler.SetGalleryRepo(repository.NewGalleryRepository(s.db))
 	iHandler.SetPageLikeRepo(pageLikeRepo)
+	// P4-6 followup (#174): i/move は federation resolver + deliverService を使って
+	// 宛先 actor 解決 → alsoKnownAs 検証 → MovedTo 書き込み → Move activity 配送。
+	iHandler.SetAccountMover(coremove.NewService(userRepo, followingRepo, apURLs, apRenderer, federationResolver, deliverService))
 	api.POST("/i", iHandler.Me, middleware.RequireAuth())
 	api.POST("/i/update", iHandler.Update, middleware.RequireAuth())
 	api.POST("/i/pin", iHandler.Pin, middleware.RequireAuth())

@@ -33,6 +33,13 @@ type RoleProvider interface {
 // 実装側が Meta から読み取る。テストではスタブを注入する。
 type EmailSender func(to, subject, body string)
 
+// AccountMover performs the i/move workflow (AP delivery + user row updates).
+// 具体実装は core/move.Service。循環依存を避けるため handler 側には narrow
+// interface として置く。
+type AccountMover interface {
+	Move(src *model.User, dstURI string) error
+}
+
 // Handler handles account-related API endpoints.
 type Handler struct {
 	userService      *user.Service
@@ -50,6 +57,7 @@ type Handler struct {
 	accessTokenRepo  repository.AccessTokenRepository
 	galleryRepo      GalleryRepository
 	pageLikeRepo     repository.PageLikeRepository
+	mover            AccountMover
 }
 
 // GalleryRepository is the subset of repository.GalleryRepository used by
@@ -118,6 +126,12 @@ func (h *Handler) SetSigninRepo(r repository.SigninRepository) {
 // SetFavoriteRepo attaches a NoteFavoriteRepository for i/favorites.
 func (h *Handler) SetFavoriteRepo(r repository.NoteFavoriteRepository) {
 	h.favoriteRepo = r
+}
+
+// SetAccountMover attaches an AccountMover used by i/move. If unset, i/move
+// returns 501 so the endpoint fails loudly instead of silently no-oping.
+func (h *Handler) SetAccountMover(m AccountMover) {
+	h.mover = m
 }
 
 // NewHandler creates a new account Handler.

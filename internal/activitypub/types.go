@@ -265,6 +265,15 @@ type Flag struct {
 	Object  string `json:"object"`
 }
 
+// Move represents an account-migration activity. Per Mastodon / Misskey
+// convention, actor == object (the old account URI) and target is the new
+// account URI. Follower instances use this signal to re-follow the target.
+type Move struct {
+	Activity
+	Object string `json:"object"`
+	Target string `json:"target"`
+}
+
 // MisskeyContext は Misskey/Mastodon/schema.org 拡張語彙を含むコンテキストオブジェクト。
 // TS版 contexts.ts と同等。
 var MisskeyContext = map[string]any{
@@ -330,6 +339,8 @@ func AddContext(o any) {
 	case *Announce:
 		v.Context = ctx
 	case *Flag:
+		v.Context = ctx
+	case *Move:
 		v.Context = ctx
 	}
 }
