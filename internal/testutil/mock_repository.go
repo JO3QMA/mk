@@ -980,9 +980,48 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 	if m.Meta == nil {
 		m.Meta = &model.Meta{ID: "x"}
 	}
-	if v, ok := fields["rootUserId"]; ok {
-		if s, ok := v.(string); ok {
-			m.Meta.RootUserID = &s
+	for k, v := range fields {
+		switch k {
+		case "rootUserId":
+			if s, ok := v.(string); ok {
+				m.Meta.RootUserID = &s
+			}
+		case "enableHcaptcha":
+			if b, ok := v.(bool); ok {
+				m.Meta.EnableHcaptcha = b
+			}
+		case "enableRecaptcha":
+			if b, ok := v.(bool); ok {
+				m.Meta.EnableRecaptcha = b
+			}
+		case "enableTurnstile":
+			if b, ok := v.(bool); ok {
+				m.Meta.EnableTurnstile = b
+			}
+		case "hcaptchaSiteKey":
+			if s, ok := v.(string); ok {
+				m.Meta.HcaptchaSiteKey = &s
+			}
+		case "hcaptchaSecretKey":
+			if s, ok := v.(string); ok {
+				m.Meta.HcaptchaSecretKey = &s
+			}
+		case "recaptchaSiteKey":
+			if s, ok := v.(string); ok {
+				m.Meta.RecaptchaSiteKey = &s
+			}
+		case "recaptchaSecretKey":
+			if s, ok := v.(string); ok {
+				m.Meta.RecaptchaSecretKey = &s
+			}
+		case "turnstileSiteKey":
+			if s, ok := v.(string); ok {
+				m.Meta.TurnstileSiteKey = &s
+			}
+		case "turnstileSecretKey":
+			if s, ok := v.(string); ok {
+				m.Meta.TurnstileSecretKey = &s
+			}
 		}
 	}
 	return nil

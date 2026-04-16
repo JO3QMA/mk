@@ -94,13 +94,67 @@ func (h *Handler) ForwardAbuseUserReport(c echo.Context) error {
 }
 
 // GetIndexStats handles POST /api/admin/get-index-stats.
+//
+// Returns per-index row counts from pg_stat_user_indexes so the admin UI can
+// spot hot or unused indexes.
 func (h *Handler) GetIndexStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	type row struct {
+		Relname      string `json:"tablename" gorm:"column:relname"`
+		Indexrelname string `json:"indexname" gorm:"column:indexrelname"`
+		IdxScan      int64  `json:"idx_scan" gorm:"column:idx_scan"`
+		IdxTupRead   int64  `json:"idx_tup_read" gorm:"column:idx_tup_read"`
+	}
+	var rows []row
+	if err := h.adminDB.Raw(`
+		SELECT relname, indexrelname, idx_scan, idx_tup_read
+		FROM pg_stat_user_indexes
+		ORDER BY relname, indexrelname
+	`).Scan(&rows).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // GetTableStats handles POST /api/admin/get-table-stats.
+//
+// Returns per-table size and row estimate via pg_stat_user_tables joined with
+// pg_relation_size for quick capacity planning.
 func (h *Handler) GetTableStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{})
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, map[string]any{})
+	}
+	type row struct {
+		Relname  string `gorm:"column:relname"`
+		Count    int64  `gorm:"column:row_count"`
+		SizeBase int64  `gorm:"column:size_base"`
+		SizeIdx  int64  `gorm:"column:size_idx"`
+	}
+	var rows []row
+	if err := h.adminDB.Raw(`
+		SELECT c.relname,
+		       COALESCE(s.n_live_tup, 0) AS row_count,
+		       pg_relation_size(c.oid) AS size_base,
+		       COALESCE(pg_indexes_size(c.oid), 0) AS size_idx
+		FROM pg_class c
+		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+		WHERE c.relkind = 'r'
+		  AND c.relnamespace IN (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+		ORDER BY c.relname
+	`).Scan(&rows).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	// Misskey 本家は { tableName: { count, size } } の map 形式で返すのでそれに合わせる。
+	result := make(map[string]any, len(rows))
+	for _, r := range rows {
+		result[r.Relname] = map[string]any{
+			"count": r.Count,
+			"size":  r.SizeBase + r.SizeIdx,
+		}
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 // GetUserIPs handles POST /api/admin/get-user-ips.
@@ -499,22 +553,84 @@ func (h *Handler) EmojiSetLicenseBulk(c echo.Context) error {
 // --- captcha ---
 
 // CaptchaCurrent handles POST /api/admin/captcha/current.
+//
+// Returns which captcha provider (if any) is currently enabled and its public
+// site key so the admin UI can render the correct configuration form.
 func (h *Handler) CaptchaCurrent(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{"provider": nil})
+	if h.metaRepo == nil {
+		return c.JSON(http.StatusOK, map[string]any{"provider": nil})
+	}
+	meta, err := h.metaRepo.Fetch()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	var provider any
+	var siteKey *string
+	switch {
+	case meta.EnableHcaptcha:
+		provider = "hcaptcha"
+		siteKey = meta.HcaptchaSiteKey
+	case meta.EnableRecaptcha:
+		provider = "recaptcha"
+		siteKey = meta.RecaptchaSiteKey
+	case meta.EnableTurnstile:
+		provider = "turnstile"
+		siteKey = meta.TurnstileSiteKey
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"provider": provider,
+		"siteKey":  siteKey,
+	})
 }
 
 // CaptchaSave handles POST /api/admin/captcha/save.
 func (h *Handler) CaptchaSave(c echo.Context) error {
 	var req struct {
-		Provider string `json:"provider"`
+		Provider    string  `json:"provider"`
+		HcaptchaSK  *string `json:"hcaptchaSiteKey"`
+		HcaptchaSS  *string `json:"hcaptchaSecretKey"`
+		RecaptchaSK *string `json:"recaptchaSiteKey"`
+		RecaptchaSS *string `json:"recaptchaSecretKey"`
+		TurnstileSK *string `json:"turnstileSiteKey"`
+		TurnstileSS *string `json:"turnstileSecretKey"`
 	}
-	_ = c.Bind(&req)
-	if h.metaRepo != nil {
-		_ = h.metaRepo.Update(map[string]any{
-			"enableHcaptcha":  req.Provider == "hcaptcha",
-			"enableRecaptcha": req.Provider == "recaptcha",
-			"enableTurnstile": req.Provider == "turnstile",
-		})
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	// provider が空 or "none" の場合は captcha 無効化として扱う。
+	switch req.Provider {
+	case "", "none", "hcaptcha", "recaptcha", "turnstile":
+	default:
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Unknown captcha provider.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.metaRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	fields := map[string]any{
+		"enableHcaptcha":  req.Provider == "hcaptcha",
+		"enableRecaptcha": req.Provider == "recaptcha",
+		"enableTurnstile": req.Provider == "turnstile",
+	}
+	if req.HcaptchaSK != nil {
+		fields["hcaptchaSiteKey"] = *req.HcaptchaSK
+	}
+	if req.HcaptchaSS != nil {
+		fields["hcaptchaSecretKey"] = *req.HcaptchaSS
+	}
+	if req.RecaptchaSK != nil {
+		fields["recaptchaSiteKey"] = *req.RecaptchaSK
+	}
+	if req.RecaptchaSS != nil {
+		fields["recaptchaSecretKey"] = *req.RecaptchaSS
+	}
+	if req.TurnstileSK != nil {
+		fields["turnstileSiteKey"] = *req.TurnstileSK
+	}
+	if req.TurnstileSS != nil {
+		fields["turnstileSecretKey"] = *req.TurnstileSS
+	}
+	if err := h.metaRepo.Update(fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -1145,35 +1261,201 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 
 // QueueClear handles POST /api/admin/queue/clear.
 func (h *Handler) QueueClear(c echo.Context) error {
-	if h.queueInspector != nil {
-		queues, _ := h.queueInspector.Queues()
-		for _, q := range queues {
-			_, _ = h.queueInspector.DeleteAllPendingTasks(q)
-		}
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	queues, err := h.queueInspector.Queues()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	for _, q := range queues {
+		_, _ = h.queueInspector.DeleteAllPendingTasks(q)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // QueueDeliverDelayed handles POST /api/admin/queue/deliver-delayed.
-func (h *Handler) QueueDeliverDelayed(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+// Returns scheduled/retry tasks on the `deliver` queue.
+func (h *Handler) QueueDeliverDelayed(c echo.Context) error {
+	return h.listDelayedTasks(c, "deliver")
+}
 
 // QueueInboxDelayed handles POST /api/admin/queue/inbox-delayed.
-func (h *Handler) QueueInboxDelayed(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+// Returns scheduled/retry tasks on the `inbox` queue.
+func (h *Handler) QueueInboxDelayed(c echo.Context) error {
+	return h.listDelayedTasks(c, "inbox")
+}
+
+// delayedTasksMaxFetch is the upper bound on how many of each of scheduled /
+// retry we pull from asynq to build the virtual delayed list. asynq pages
+// scheduled and retry independently so we cannot naively forward the user's
+// page number to both (retry items before the scheduled boundary would
+// disappear). We instead fetch the first asynq page (up to 100 items) of each,
+// merge scheduled-first, then slice by the user's (page, limit).
+//
+// 想定: admin/queue/*-delayed は通常 "stuck な配送" を目視で確認する用途で、
+// 合計 200 件を超えるケースは運用上ほぼ存在しない。深いページングが必要なら
+// /admin/queue/jobs を state=scheduled / state=retry で使う。
+const delayedTasksMaxFetch = 100
+
+func (h *Handler) listDelayedTasks(c echo.Context, queueName string) error {
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var req struct {
+		Limit int `json:"limit"`
+		Page  int `json:"page"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	if req.Page < 1 {
+		req.Page = 1
+	}
+
+	scheduled, _ := h.queueInspector.ListScheduledTasks(queueName, 1, delayedTasksMaxFetch)
+	retry, _ := h.queueInspector.ListRetryTasks(queueName, 1, delayedTasksMaxFetch)
+	combined := make([]*QueueTaskSummary, 0, len(scheduled)+len(retry))
+	combined = append(combined, scheduled...)
+	combined = append(combined, retry...)
+
+	offset := (req.Page - 1) * req.Limit
+	if offset >= len(combined) {
+		return c.JSON(http.StatusOK, []map[string]any{})
+	}
+	end := offset + req.Limit
+	if end > len(combined) {
+		end = len(combined)
+	}
+	out := make([]map[string]any, 0, end-offset)
+	for _, t := range combined[offset:end] {
+		out = append(out, packTaskSummary(t))
+	}
+	return c.JSON(http.StatusOK, out)
+}
 
 // QueueJobs handles POST /api/admin/queue/jobs.
-func (h *Handler) QueueJobs(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+func (h *Handler) QueueJobs(c echo.Context) error {
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var req struct {
+		Queue string `json:"queue"`
+		State string `json:"state"`
+		Limit int    `json:"limit"`
+		Page  int    `json:"page"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	// Queue 名は Misskey の deliver/inbox 以外にも ap/relay など様々あるため、
+	// 明示指定が無い場合は全キューを走査して pending を返す。
+	queues := []string{req.Queue}
+	if req.Queue == "" {
+		qs, err := h.queueInspector.Queues()
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		}
+		queues = qs
+	}
+	state := req.State
+	if state == "" {
+		state = "pending"
+	}
+	// 複数キューを走査する場合でも合計で req.Limit を超えないように切り詰める
+	// (ページネーション契約の保持)。走査順序は Queues() の返り順に依存するため、
+	// 同じ state で全体ソートされない点は許容する。
+	out := make([]map[string]any, 0, req.Limit)
+outer:
+	for _, q := range queues {
+		var rows []*QueueTaskSummary
+		var err error
+		switch state {
+		case "active":
+			rows, err = h.queueInspector.ListActiveTasks(q, req.Page, req.Limit)
+		case "scheduled":
+			rows, err = h.queueInspector.ListScheduledTasks(q, req.Page, req.Limit)
+		case "retry":
+			rows, err = h.queueInspector.ListRetryTasks(q, req.Page, req.Limit)
+		default:
+			rows, err = h.queueInspector.ListPendingTasks(q, req.Page, req.Limit)
+		}
+		if err != nil {
+			continue
+		}
+		for _, t := range rows {
+			if len(out) >= req.Limit {
+				break outer
+			}
+			out = append(out, packTaskSummary(t))
+		}
+	}
+	return c.JSON(http.StatusOK, out)
+}
 
 // QueuePromoteJobs handles POST /api/admin/queue/promote-jobs.
-// スケジュール済みジョブを即座に実行可能状態にプロモートする。
 func (h *Handler) QueuePromoteJobs(c echo.Context) error {
-	// asynqにはbulk promote APIがないため、NoContentを返す。
-	// 個別のジョブプロモートはqueue/retry-job (RunTask) で代替可能。
-	return c.NoContent(http.StatusNoContent)
+	// asynq に bulk promote API が無いため、全キューの scheduled/retry を 1 ページ
+	// 分ずつ拾って RunTask で逐次 promote する。大量投入時は後続のページを
+	// クライアント側で再呼び出しする運用。
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	queues, err := h.queueInspector.Queues()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	promoted := 0
+	for _, q := range queues {
+		for _, state := range []string{"scheduled", "retry"} {
+			var rows []*QueueTaskSummary
+			if state == "scheduled" {
+				rows, _ = h.queueInspector.ListScheduledTasks(q, 1, 100)
+			} else {
+				rows, _ = h.queueInspector.ListRetryTasks(q, 1, 100)
+			}
+			for _, t := range rows {
+				if err := h.queueInspector.RunTask(q, t.ID); err == nil {
+					promoted++
+				}
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]any{"promoted": promoted})
 }
 
 // QueueQueueStats handles POST /api/admin/queue/queue-stats.
 func (h *Handler) QueueQueueStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{})
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, map[string]any{})
+	}
+	queues, err := h.queueInspector.Queues()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	out := map[string]any{}
+	for _, q := range queues {
+		info, err := h.queueInspector.GetQueueInfo(q)
+		if err != nil {
+			continue
+		}
+		out[q] = map[string]any{
+			"queue":     info.Queue,
+			"size":      info.Size,
+			"active":    info.Active,
+			"pending":   info.Pending,
+			"completed": info.Completed,
+			"failed":    info.Failed,
+			"scheduled": info.Scheduled,
+			"retry":     info.Retry,
+		}
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // QueueQueues handles POST /api/admin/queue/queues.
@@ -1183,22 +1465,24 @@ func (h *Handler) QueueQueues(c echo.Context) error {
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
-		return c.JSON(http.StatusOK, []any{})
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
-	var result []map[string]any
+	result := make([]map[string]any, 0, len(queues))
 	for _, q := range queues {
 		info, err := h.queueInspector.GetQueueInfo(q)
 		if err != nil {
 			continue
 		}
 		result = append(result, map[string]any{
-			"queue": info.Queue, "size": info.Size,
-			"active": info.Active, "pending": info.Pending,
-			"completed": info.Completed, "failed": info.Failed,
+			"queue":     info.Queue,
+			"size":      info.Size,
+			"active":    info.Active,
+			"pending":   info.Pending,
+			"completed": info.Completed,
+			"failed":    info.Failed,
+			"scheduled": info.Scheduled,
+			"retry":     info.Retry,
 		})
-	}
-	if result == nil {
-		result = []map[string]any{}
 	}
 	return c.JSON(http.StatusOK, result)
 }
@@ -1209,9 +1493,14 @@ func (h *Handler) QueueRemoveJob(c echo.Context) error {
 		Queue string `json:"queue"`
 		ID    string `json:"id"`
 	}
-	_ = c.Bind(&req)
-	if h.queueInspector != nil && req.Queue != "" && req.ID != "" {
-		_ = h.queueInspector.DeleteTask(req.Queue, req.ID)
+	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.queueInspector.DeleteTask(req.Queue, req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -1222,20 +1511,71 @@ func (h *Handler) QueueRetryJob(c echo.Context) error {
 		Queue string `json:"queue"`
 		ID    string `json:"id"`
 	}
-	_ = c.Bind(&req)
-	if h.queueInspector != nil && req.Queue != "" && req.ID != "" {
-		_ = h.queueInspector.RunTask(req.Queue, req.ID)
+	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.queueInspector.RunTask(req.Queue, req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // QueueShowJob handles POST /api/admin/queue/show-job.
 func (h *Handler) QueueShowJob(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	var req struct {
+		Queue string `json:"queue"`
+		ID    string `json:"id"`
+	}
+	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	t, err := h.queueInspector.GetTaskInfo(req.Queue, req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, packTaskSummary(t))
 }
 
 // QueueShowJobLogs handles POST /api/admin/queue/show-job-logs.
+// asynq does not persist per-task log output. Returns an empty array to keep
+// the admin UI usable without extra infra.
 func (h *Handler) QueueShowJobLogs(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+
+// packTaskSummary normalizes a QueueTaskSummary into the Misskey-compatible
+// JSON shape.
+func packTaskSummary(t *QueueTaskSummary) map[string]any {
+	if t == nil {
+		return nil
+	}
+	pack := map[string]any{
+		"id":       t.ID,
+		"queue":    t.Queue,
+		"type":     t.Type,
+		"state":    t.State,
+		"payload":  string(t.Payload),
+		"retried":  t.Retried,
+		"maxRetry": t.MaxRetry,
+	}
+	if t.LastErr != "" {
+		pack["lastErr"] = t.LastErr
+	}
+	if !t.LastFailedAt.IsZero() {
+		pack["lastFailedAt"] = t.LastFailedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !t.NextProcessAt.IsZero() {
+		pack["nextProcessAt"] = t.NextProcessAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !t.CompletedAt.IsZero() {
+		pack["completedAt"] = t.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return pack
+}
 
 // QueueStats handles POST /api/admin/queue/stats.
 func (h *Handler) QueueStats(c echo.Context) error {
