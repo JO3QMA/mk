@@ -74,12 +74,21 @@ func TestMove_Success(t *testing.T) {
 
 	require.NoError(t, svc.Move(me, dstURI))
 
-	// DB fields were updated.
+	// In-place struct was updated so the caller sees the new state.
 	assert.NotNil(t, me.MovedToURI)
 	assert.Equal(t, dstURI, *me.MovedToURI)
 	assert.NotNil(t, me.MovedAt)
 	require.NotNil(t, me.AlsoKnownAs)
 	assert.Equal(t, dstURI, *me.AlsoKnownAs)
+
+	// UpdateUser was persisted to the repo row (not just the in-place struct).
+	// これを検証しないと UpdateUser 呼び出しが消えたリグレッションを検出できない。
+	persisted := userRepo.Users["me"]
+	require.NotNil(t, persisted.MovedToURI)
+	assert.Equal(t, dstURI, *persisted.MovedToURI)
+	assert.NotNil(t, persisted.MovedAt)
+	require.NotNil(t, persisted.AlsoKnownAs)
+	assert.Equal(t, dstURI, *persisted.AlsoKnownAs)
 
 	// Delivery was enqueued with a Move-shaped body.
 	require.Equal(t, 1, deliverer.called)

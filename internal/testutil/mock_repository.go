@@ -316,6 +316,19 @@ func applyUserFields(u *model.User, fields map[string]any) {
 			if s, ok := v.(string); ok {
 				u.Token = &s
 			}
+		case "movedToUri":
+			// core/move が string を直接渡す運用。nil は未対応 (現状の要件にない)。
+			if s, ok := v.(string); ok {
+				u.MovedToURI = &s
+			}
+		case "movedAt":
+			if t, ok := v.(time.Time); ok {
+				u.MovedAt = &t
+			}
+		case "alsoKnownAs":
+			if s, ok := v.(string); ok {
+				u.AlsoKnownAs = &s
+			}
 		}
 	}
 }
