@@ -1223,7 +1223,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())
 	api.POST("/following/requests/cancel", followingHandler.CancelRequest, middleware.RequireAuth())
 	// following 残り
-	api.POST("/following/invalidate", followingHandler.Invalidate, middleware.RequireModerator(roleService))
+	api.POST("/following/invalidate", followingHandler.Invalidate, middleware.RequireAuth())
 	api.POST("/following/update", followingHandler.UpdateFollow, middleware.RequireAuth())
 	api.POST("/following/update-all", followingHandler.UpdateFollowAll, middleware.RequireAuth())
 	api.POST("/following/requests/sent", followingHandler.RequestsSent, middleware.RequireAuth())

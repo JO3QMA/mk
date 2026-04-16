@@ -13,9 +13,9 @@ import (
 
 // Invalidate handles POST /api/following/invalidate.
 //
-// Admin / moderator 経路。指定ユーザー (follower) を呼び出し管理者 (followee)
-// の followers から外す。嫌がらせを受けている admin が follower 側の同意
-// なしに follow 関係を切るための窓口。ルート側で RequireModerator 済み。
+// 認証ユーザーが自分のフォロワーのうち userId 指定の相手を強制的に外す。
+// Misskey 本家互換で RequireAuth レベル (moderator 不要) のため、嫌がらせ
+// フォロワーに対して本人がいつでも解除できる。
 func (h *Handler) Invalidate(c echo.Context) error {
 	me := middleware.GetUser(c)
 	var req struct {

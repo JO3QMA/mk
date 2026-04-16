@@ -91,13 +91,8 @@ func (r *followingRepository) ListFollowing(userID string, limit, offset int) ([
 	return rows, nil
 }
 
-// ListRemoteFollowerInboxes returns deduplicated inbox URLs for remote
-// followers. sharedInbox を優先し、無い場合のみ個別 inbox を使う。
-//
-// SQLは以下の流れ:
-//  1. follower がリモート (host IS NOT NULL) のフォロワーをjoin
-//  2. sharedInbox があれば sharedInbox、無ければ inbox を選択
-//  3. NULL/空文字列を除外し DISTINCT で重複排除
+// ListFollowersByHost returns Following rows whose followerHost matches the
+// given remote host.
 func (r *followingRepository) ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error) {
 	if limit <= 0 {
 		limit = 30
@@ -113,6 +108,8 @@ func (r *followingRepository) ListFollowersByHost(host string, limit, offset int
 	return rows, nil
 }
 
+// ListFollowingByHost returns Following rows whose followeeHost matches the
+// given remote host.
 func (r *followingRepository) ListFollowingByHost(host string, limit, offset int) ([]*model.Following, error) {
 	if limit <= 0 {
 		limit = 30
@@ -128,6 +125,8 @@ func (r *followingRepository) ListFollowingByHost(host string, limit, offset int
 	return rows, nil
 }
 
+// UpdateRelation applies a partial field update to a single (follower, followee)
+// Following row.
 func (r *followingRepository) UpdateRelation(followerID, followeeID string, fields map[string]any) error {
 	if len(fields) == 0 {
 		return nil
@@ -137,6 +136,8 @@ func (r *followingRepository) UpdateRelation(followerID, followeeID string, fiel
 		Updates(fields).Error
 }
 
+// UpdateAllByFollower applies a partial field update to every Following row
+// authored by the given follower.
 func (r *followingRepository) UpdateAllByFollower(followerID string, fields map[string]any) error {
 	if len(fields) == 0 {
 		return nil
@@ -146,6 +147,13 @@ func (r *followingRepository) UpdateAllByFollower(followerID string, fields map[
 		Updates(fields).Error
 }
 
+// ListRemoteFollowerInboxes returns deduplicated inbox URLs for remote
+// followers. sharedInbox を優先し、無い場合のみ個別 inbox を使う。
+//
+// SQLは以下の流れ:
+//  1. follower がリモート (host IS NOT NULL) のフォロワーをjoin
+//  2. sharedInbox があれば sharedInbox、無ければ inbox を選択
+//  3. NULL/空文字列を除外し DISTINCT で重複排除
 func (r *followingRepository) ListRemoteFollowerInboxes(userID string) ([]string, error) {
 	var inboxes []string
 	err := r.db.
