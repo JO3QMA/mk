@@ -586,6 +586,9 @@ func (f *failingNoteRepo) ListGlobalTimeline(_ int, _, _ string, _ model.Timelin
 }
 func (f *failingNoteRepo) DeleteExpiredRemoteNotes(_, _ int) (int64, error) { return 0, nil }
 func (f *failingNoteRepo) DeleteByUserBatch(_ string, _ int) (int64, error) { return 0, nil }
+func (f *failingNoteRepo) CountReplyTargets(_ string, _ int) ([]model.ReplyTargetCount, error) {
+	return nil, nil
+}
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct {

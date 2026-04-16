@@ -46,6 +46,9 @@ func (m *mockUserRepo) CreateProfile(*model.UserProfile) error                { 
 func (m *mockUserRepo) ListUsers(model.UserListFilter) ([]*model.User, error) { return nil, nil }
 func (m *mockUserRepo) ListRemoteInboxes() ([]string, error)                  { return nil, nil }
 func (m *mockUserRepo) CountOnlineUsers() (int64, error)                      { return 0, nil }
+func (m *mockUserRepo) ListUserRecommendations(string, time.Time, int, int) ([]*model.User, error) {
+	return nil, nil
+}
 
 func (m *mockUserRepo) findByID(id string) (*model.User, error) {
 	u, ok := m.users[id]

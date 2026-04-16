@@ -847,3 +847,52 @@ func TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence(t 
 	assert.ElementsMatch(t, []string{"n_mc_1"}, ids,
 		"follow + mute フィルタが OR で短絡されていない (SQL precedence バグのリグレッション)")
 }
+
+func TestNoteRepository_CountReplyTargets(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	author := insertTestUser(t, "u_crt_a", "crtA")
+	defer cleanupUser(t, author.ID)
+	t1 := insertTestUser(t, "u_crt_t1", "crtT1")
+	defer cleanupUser(t, t1.ID)
+	t2 := insertTestUser(t, "u_crt_t2", "crtT2")
+	defer cleanupUser(t, t2.ID)
+
+	// author から t1 に 3 件、t2 に 1 件返信。author 自身への返信は除外される。
+	replyID := "n_crt_src"
+	require.NoError(t, testDB.Create(&model.Note{ID: replyID, UserID: t1.ID, Visibility: model.NoteVisibilityPublic}).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, replyID)
+	mk := func(id, target string) *model.Note {
+		return &model.Note{ID: id, UserID: author.ID, ReplyID: &replyID, ReplyUserID: &target, Visibility: model.NoteVisibilityPublic}
+	}
+	for _, n := range []*model.Note{
+		mk("n_crt_1", t1.ID),
+		mk("n_crt_2", t1.ID),
+		mk("n_crt_3", t1.ID),
+		mk("n_crt_4", t2.ID),
+		mk("n_crt_5", author.ID), // 自己返信は無視
+	} {
+		require.NoError(t, testDB.Create(n).Error)
+		defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
+	}
+
+	rows, err := repo.CountReplyTargets(author.ID, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, t1.ID, rows[0].UserID)
+	assert.EqualValues(t, 3, rows[0].Count)
+	assert.Equal(t, t2.ID, rows[1].UserID)
+	assert.EqualValues(t, 1, rows[1].Count)
+
+	// limit <= 0 は 10 にデフォルト。
+	rows2, err := repo.CountReplyTargets(author.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, rows2, 2)
+}
+
+func TestNoteRepository_CountReplyTargets_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewNoteRepository(testDB.WithContext(ctx))
+	_, err := repo.CountReplyTargets("me", 10)
+	assert.Error(t, err)
+}

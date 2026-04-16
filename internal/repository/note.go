@@ -40,6 +40,10 @@ type NoteRepository interface {
 	// drive the loop themselves so that cancellation checkpoints and sleep
 	// pacing live in the processor (see DeleteAccountProcessor).
 	DeleteByUserBatch(userID string, batchSize int) (int64, error)
+	// CountReplyTargets returns the users that userID most frequently replies
+	// to, ordered by reply count descending. Used by
+	// users/get-frequently-replied-users.
+	CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error)
 }
 
 type noteRepository struct {
@@ -494,4 +498,23 @@ func (r *noteRepository) DeleteByUserBatch(userID string, batchSize int) (int64,
 		return 0, res.Error
 	}
 	return res.RowsAffected, nil
+}
+
+func (r *noteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	var rows []model.ReplyTargetCount
+	// replyUserIdがNULLのもの (通常起こり得ないが防御)と自己返信は集計から除外する。
+	err := r.db.Model(&model.Note{}).
+		Select(`"replyUserId", COUNT(*) AS count`).
+		Where(`"userId" = ? AND "replyId" IS NOT NULL AND "replyUserId" IS NOT NULL AND "replyUserId" <> ?`, userID, userID).
+		Group(`"replyUserId"`).
+		Order(`count DESC`).
+		Limit(limit).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
