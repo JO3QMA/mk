@@ -214,19 +214,24 @@ func TestMove_AppendAlsoKnownAsDedup(t *testing.T) {
 	assert.Equal(t, dstURI, *me.AlsoKnownAs)
 }
 
-func TestMove_DelivererError(t *testing.T) {
+// アカウント移行は不可逆なので、DB コミット後の配送失敗は握り潰して nil を
+// 返す (そうしないとクライアントが再試行した際に ErrAlreadyMoved で詰む)。
+func TestMove_DelivererErrorIsSwallowedAfterDBCommit(t *testing.T) {
 	srcURI := "https://local.example/users/me"
 	dstURI := "https://other.example/users/new"
 	dst := &model.User{ID: "dst", URI: strPtr(dstURI), AlsoKnownAs: strPtr(srcURI)}
 	resolver := &fakeResolver{byURI: map[string]*model.User{dstURI: dst}}
-	boom := errors.New("enqueue boom")
-	deliverer := &fakeDeliverer{returnErr: boom}
+	deliverer := &fakeDeliverer{returnErr: errors.New("enqueue boom")}
 	svc, userRepo, _ := newService(resolver, deliverer)
 	me := &model.User{ID: "me", URI: strPtr(srcURI)}
 	userRepo.Users[me.ID] = me
 
-	err := svc.Move(me, dstURI)
-	assert.ErrorIs(t, err, boom)
+	require.NoError(t, svc.Move(me, dstURI))
+	assert.Equal(t, 1, deliverer.called, "配送は実行されているべき")
+	// DB は確実に更新されている。
+	persisted := userRepo.Users["me"]
+	require.NotNil(t, persisted.MovedToURI)
+	assert.Equal(t, dstURI, *persisted.MovedToURI)
 }
 
 func TestMove_NilSource(t *testing.T) {

@@ -7,6 +7,7 @@ package move
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -151,7 +152,14 @@ func (s *Service) Move(src *model.User, dstURI string) error {
 	if err != nil {
 		return err
 	}
-	return s.deliverer.DeliverToFollowers(src.ID, body)
+	// DB は既にコミット済みなので、配送失敗で handler がエラーを返して再試行
+	// されると次回 ErrAlreadyMoved で詰む。follower 通知は best-effort にし、
+	// 失敗は log に落として握り潰す (note_delivery_hook と同じパターン)。
+	if err := s.deliverer.DeliverToFollowers(src.ID, body); err != nil {
+		slog.Warn("move: deliver to followers failed (DB already committed)",
+			"srcID", src.ID, "dstURI", dstCanonical, "err", err)
+	}
+	return nil
 }
 
 // alsoKnownAsIncludes returns true if the csv alsoKnownAs field contains uri.
