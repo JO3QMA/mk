@@ -1589,6 +1589,33 @@ func (m *MockClipRepository) ListByUser(userID string, limit, offset int) ([]*mo
 	return rows[offset:end], nil
 }
 
+func (m *MockClipRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+	var rows []*model.Clip
+	for _, c := range m.Clips {
+		if c.UserID == userID && c.IsPublic {
+			rows = append(rows, c)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset >= len(rows) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
+}
+
 func (m *MockClipRepository) IncrementCount(clipID, column string, delta int) error {
 	c, ok := m.Clips[clipID]
 	if !ok {
@@ -1758,6 +1785,24 @@ func (m *MockPageRepository) ListByUser(userID string, limit, offset int) ([]*mo
 	return paginatePages(rows, limit, offset), nil
 }
 
+func (m *MockPageRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Page, error) {
+	var rows []*model.Page
+	for _, p := range m.Pages {
+		if p.UserID == userID && p.Visibility == model.PageVisibilityPublic {
+			rows = append(rows, p)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].UpdatedAt.Before(rows[j].UpdatedAt) ||
+				(rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) && rows[i].ID < rows[j].ID) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return paginatePages(rows, limit, offset), nil
+}
+
 func (m *MockPageRepository) ListFeatured(limit, offset int) ([]*model.Page, error) {
 	var rows []*model.Page
 	for _, p := range m.Pages {
@@ -1905,6 +1950,17 @@ func (m *MockFlashRepository) ListByUser(userID string, limit, offset int) ([]*m
 	var rows []*model.Flash
 	for _, f := range m.Flashes {
 		if f.UserID == userID {
+			rows = append(rows, f)
+		}
+	}
+	sortFlashesByUpdatedDesc(rows)
+	return paginateFlashes(rows, limit, offset), nil
+}
+
+func (m *MockFlashRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Flash, error) {
+	var rows []*model.Flash
+	for _, f := range m.Flashes {
+		if f.UserID == userID && f.Visibility == "public" {
 			rows = append(rows, f)
 		}
 	}

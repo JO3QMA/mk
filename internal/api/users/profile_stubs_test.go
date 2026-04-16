@@ -44,6 +44,28 @@ func TestClips_FiltersNonPublicForStranger(t *testing.T) {
 	assert.Equal(t, "c1", rows[0]["id"])
 }
 
+// 非所有者向けのクエリが SQL 側で public 絞り込みされるため、
+// private が多くても LIMIT が有意味 (旧 post-fetch filter だと空結果になる)。
+func TestClips_PublicFilterPushedDown(t *testing.T) {
+	h, _ := newTestHandler(t)
+	repo := testutil.NewMockClipRepository()
+	// private 5 件 + public 2 件。limit=2 で non-owner は public 2 件を得たい。
+	for i := 0; i < 5; i++ {
+		require.NoError(t, repo.Create(&model.Clip{
+			ID: "priv-" + string(rune('a'+i)), UserID: "owner", IsPublic: false,
+		}))
+	}
+	require.NoError(t, repo.Create(&model.Clip{ID: "pub-1", UserID: "owner", IsPublic: true}))
+	require.NoError(t, repo.Create(&model.Clip{ID: "pub-2", UserID: "owner", IsPublic: true}))
+	h.SetClipRepo(repo)
+
+	rec := postStub(h.Clips, `{"userId":"owner","limit":2}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	assert.Len(t, rows, 2, "LIMIT must apply to already-public-filtered set")
+}
+
 func TestClips_OwnerSeesPrivate(t *testing.T) {
 	h, _ := newTestHandler(t)
 	repo := testutil.NewMockClipRepository()

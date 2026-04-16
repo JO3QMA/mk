@@ -114,9 +114,7 @@ func TestUserRecommendation(t *testing.T) {
 
 func TestListsGetMemberships(t *testing.T) {
 	h, _ := newTestHandler(t)
-	// 認証なしは 403
-	assert.Equal(t, http.StatusForbidden, postStub(h.ListsGetMemberships, `{"userId":"u2"}`, nil).Code)
-	// userId 欠落は 400
+	// 認証は router.RequireAuth が 401 を返す責務。ここでは userId 欠落のみ検証。
 	assert.Equal(t, http.StatusBadRequest, postStub(h.ListsGetMemberships, `{}`, &model.User{ID: "u1"}).Code)
 }
 

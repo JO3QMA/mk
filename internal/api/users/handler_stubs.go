@@ -54,6 +54,10 @@ func (h *Handler) Achievements(c echo.Context) error {
 }
 
 // Clips handles POST /api/users/clips.
+//
+// 非所有者視点では public のみ返す。LIMIT は絞り込み後に適用されるよう SQL
+// 側で WHERE isPublic = true を通す (ListPublicByUser) — 古い post-fetch
+// filter 方式だと private が多いユーザーで空の結果を返してしまう bug になる。
 func (h *Handler) Clips(c echo.Context) error {
 	var req struct {
 		UserID string `json:"userId"`
@@ -67,18 +71,20 @@ func (h *Handler) Clips(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	clampListLimit(&req.Limit)
-	rows, err := h.clipRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	viewer := middleware.GetUser(c)
+	isSelf := viewer != nil && viewer.ID == req.UserID
+	var rows []*model.Clip
+	var err error
+	if isSelf {
+		rows, err = h.clipRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	} else {
+		rows, err = h.clipRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+	}
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	// 他人のプロフィールから見えるのは public のみ (本家 Misskey 同仕様)。
-	viewer := middleware.GetUser(c)
-	isSelf := viewer != nil && viewer.ID == req.UserID
 	out := make([]map[string]any, 0, len(rows))
 	for _, cl := range rows {
-		if !isSelf && !cl.IsPublic {
-			continue
-		}
 		out = append(out, map[string]any{
 			"id":            cl.ID,
 			"userId":        cl.UserID,
@@ -106,17 +112,20 @@ func (h *Handler) Flashs(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	clampListLimit(&req.Limit)
-	rows, err := h.flashRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	viewer := middleware.GetUser(c)
+	isSelf := viewer != nil && viewer.ID == req.UserID
+	var rows []*model.Flash
+	var err error
+	if isSelf {
+		rows, err = h.flashRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	} else {
+		rows, err = h.flashRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+	}
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	viewer := middleware.GetUser(c)
-	isSelf := viewer != nil && viewer.ID == req.UserID
 	out := make([]map[string]any, 0, len(rows))
 	for _, f := range rows {
-		if !isSelf && f.Visibility != "public" {
-			continue
-		}
 		out = append(out, map[string]any{
 			"id":          f.ID,
 			"updatedAt":   f.UpdatedAt,
@@ -183,17 +192,20 @@ func (h *Handler) Pages(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	clampListLimit(&req.Limit)
-	rows, err := h.pageRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	viewer := middleware.GetUser(c)
+	isSelf := viewer != nil && viewer.ID == req.UserID
+	var rows []*model.Page
+	var err error
+	if isSelf {
+		rows, err = h.pageRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	} else {
+		rows, err = h.pageRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+	}
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	viewer := middleware.GetUser(c)
-	isSelf := viewer != nil && viewer.ID == req.UserID
 	out := make([]map[string]any, 0, len(rows))
 	for _, p := range rows {
-		if !isSelf && p.Visibility != model.PageVisibilityPublic {
-			continue
-		}
 		out = append(out, map[string]any{
 			"id":        p.ID,
 			"updatedAt": p.UpdatedAt,
@@ -380,12 +392,10 @@ func (h *Handler) ListsUpdateMembership(c echo.Context) error {
 // ListsGetMemberships handles POST /api/users/lists/get-memberships.
 //
 // 認証ユーザが所有する UserList のうち、指定された userId を member として含む
-// ものの一覧を返す。Misskey 本家互換。
+// ものの一覧を返す。Misskey 本家互換。認証は router の RequireAuth middleware
+// が 401 CREDENTIAL_REQUIRED で弾くため viewer は常に非 nil。
 func (h *Handler) ListsGetMemberships(c echo.Context) error {
 	viewer := middleware.GetUser(c)
-	if viewer == nil {
-		return apierr.JSONAccessDenied(c)
-	}
 	var req struct {
 		UserID string `json:"userId"`
 	}

@@ -804,7 +804,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/users/get-frequently-replied-users", usersHandler.GetFrequentlyRepliedUsers)
 	api.POST("/users/get-following-users-by-birthday", usersHandler.GetFollowingUsersByBirthday)
 	api.POST("/users/recommendation", usersHandler.UserRecommendation)
-	api.POST("/users/lists/get-memberships", usersHandler.ListsGetMemberships)
+	api.POST("/users/lists/get-memberships", usersHandler.ListsGetMemberships, middleware.RequireAuth())
 	api.POST("/users/lists/create-from-public", usersHandler.ListsCreateFromPublic, middleware.RequireAuth())
 	api.POST("/users/lists/favorite", usersHandler.ListsFavorite, middleware.RequireAuth())
 	api.POST("/users/lists/unfavorite", usersHandler.ListsUnfavorite, middleware.RequireAuth())
