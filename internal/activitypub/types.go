@@ -256,6 +256,15 @@ type Announce struct {
 	Object string `json:"object"` // target note URI
 }
 
+// Flag represents an abuse-report forwarding activity delivered from the
+// local instance's system actor to the origin instance of a reported user.
+// Content is the moderator-visible comment; Object is the target user's URI.
+type Flag struct {
+	Activity
+	Content string `json:"content"`
+	Object  string `json:"object"`
+}
+
 // MisskeyContext は Misskey/Mastodon/schema.org 拡張語彙を含むコンテキストオブジェクト。
 // TS版 contexts.ts と同等。
 var MisskeyContext = map[string]any{
@@ -319,6 +328,8 @@ func AddContext(o any) {
 	case *Like:
 		v.Context = ctx
 	case *Announce:
+		v.Context = ctx
+	case *Flag:
 		v.Context = ctx
 	}
 }

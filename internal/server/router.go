@@ -55,6 +55,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/users"
 	apiwebhooks "github.com/shiroha-a/mk/internal/api/webhooks"
 	"github.com/shiroha-a/mk/internal/api/wellknown"
+	coreabuse "github.com/shiroha-a/mk/internal/core/abuse"
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corecaptcha "github.com/shiroha-a/mk/internal/core/captcha"
@@ -1270,6 +1271,7 @@ func (s *Server) setupRoutes() {
 	recipientRepo := repository.NewAbuseReportNotificationRecipientRepository(s.db)
 	adminHandler := apiadmin.NewHandler(signupService, roleService, metaRepo, userRepo, idGen)
 	adminHandler.SetAbuseRepo(abuseReportRepo)
+	adminHandler.SetAbuseForwarder(coreabuse.NewForwarder(abuseReportRepo, sysAcctSvc, apRenderer, deliverService))
 	adminHandler.SetModLogRepo(modLogRepo)
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)

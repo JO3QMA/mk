@@ -582,6 +582,24 @@ func (r *Renderer) RenderDelete(author *model.User, noteURI string) *Delete {
 	return d
 }
 
+// RenderFlag returns a Flag activity that forwards an abuse report to the
+// origin instance of a remote user. Mirrors upstream ApRendererService
+// renderFlag — the actor is the local instance's system account (to
+// anonymize the reporter), object is the target user's canonical URI, and
+// content is the moderator-visible comment.
+func (r *Renderer) RenderFlag(actor *model.User, targetURI, content string) *Flag {
+	f := &Flag{
+		Activity: Activity{
+			Object: Object{Type: "Flag"},
+			Actor:  r.urls.UserURI(actor.ID),
+		},
+		Object:  targetURI,
+		Content: content,
+	}
+	AddContext(f)
+	return f
+}
+
 // addressing computes to/cc lists for a note based on visibility.
 func (r *Renderer) addressing(n *model.Note) (to []string, cc []string) {
 	switch n.Visibility {

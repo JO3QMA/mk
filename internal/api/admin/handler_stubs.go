@@ -91,16 +91,29 @@ func (h *Handler) DeleteAllFilesOfUser(c echo.Context) error {
 }
 
 // ForwardAbuseUserReport handles POST /api/admin/forward-abuse-user-report.
-// 通報をリモートサーバーにActivityPub Flagアクティビティで転送する。
+//
+// 対象ユーザーがリモートの場合、system actor 署名で origin インスタンス
+// の inbox へ ActivityPub Flag を配送し、DB 側 forwarded=true も立てる。
+// ローカル通報の場合は配送スキップで DB フラグのみ更新する。
 func (h *Handler) ForwardAbuseUserReport(c echo.Context) error {
 	var req struct {
 		ReportID string `json:"reportId"`
 	}
 	_ = c.Bind(&req)
-	if req.ReportID != "" && h.abuseRepo != nil {
+	if req.ReportID == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.abuseForwarder != nil {
+		if err := h.abuseForwarder.ForwardReport(req.ReportID); err != nil {
+			return apierr.JSONInternalError(c)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+	// forwarder 未配線時のフォールバック: DB フラグだけ更新する (テストや
+	// federation stack 未初期化パスで有効)。
+	if h.abuseRepo != nil {
 		_ = h.abuseRepo.UpdateFields(req.ReportID, map[string]any{"forwarded": true})
 	}
-	// 実際のAP Flag送信は将来対応 (DeliverServiceのFlag送信メソッドが必要)
 	return c.NoContent(http.StatusNoContent)
 }
 
