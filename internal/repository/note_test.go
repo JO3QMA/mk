@@ -763,3 +763,47 @@ func TestNoteRepository_SearchByTag_Error(t *testing.T) {
 	_, err := repo.SearchByTag("x", 10, "", "")
 	assert.Error(t, err)
 }
+
+// MutedChannelIDs フィルタが SQL の AND/OR 優先順位で他条件をバイパス
+// しないことを検証する (Devin #191 review のリグレッションガード)。
+//
+// viewer 自身のノート 2 件 (1 件は muted channel) と、viewer がフォローして
+// いない other のノート 2 件 (1 件は open channel) を置く。home timeline で
+// は viewer は other をフォローしてないので 0 件、かつ muted channel は除外、
+// で viewer 自身の通常ノート 1 件のみ返ることを期待する。もし括弧不足バグが
+// あると AND 側の follow フィルタが OR で短絡されて other のノートも漏れる。
+func TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	viewer := insertTestUser(t, "u_mc_v", "mcviewer")
+	defer cleanupUser(t, viewer.ID)
+	other := insertTestUser(t, "u_mc_o", "mcother")
+	defer cleanupUser(t, other.ID)
+
+	mutedChannel := "ch_mc_muted"
+	openChannel := "ch_mc_open"
+	selfText := "self note"
+	selfInMuted := "self in muted channel"
+	otherText := "other note (not followed)"
+	otherInOpen := "other in open channel (not followed)"
+
+	notes := []*model.Note{
+		{ID: "n_mc_1", UserID: viewer.ID, Text: &selfText, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_2", UserID: viewer.ID, Text: &selfInMuted, Visibility: model.NoteVisibilityPublic, ChannelID: &mutedChannel, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_3", UserID: other.ID, Text: &otherText, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_4", UserID: other.ID, Text: &otherInOpen, Visibility: model.NoteVisibilityPublic, ChannelID: &openChannel, Reactions: datatypes.JSON([]byte("{}"))},
+	}
+	for _, n := range notes {
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, n.ID)
+	}
+
+	rows, err := repo.ListHomeTimeline(viewer.ID, 100, "", "", model.TimelineDBFilter{
+		ViewerID:        viewer.ID,
+		MutedChannelIDs: []string{mutedChannel},
+	})
+	require.NoError(t, err)
+
+	ids := idsOf(rows)
+	assert.ElementsMatch(t, []string{"n_mc_1"}, ids,
+		"follow + mute フィルタが OR で短絡されていない (SQL precedence バグのリグレッション)")
+}
