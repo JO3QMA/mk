@@ -95,7 +95,10 @@ type Meta struct {
 	EnableFanoutTimeline           bool `gorm:"column:enableFanoutTimeline;default:true" json:"enableFanoutTimeline"`
 	EnableFanoutTimelineDbFallback bool `gorm:"column:enableFanoutTimelineDbFallback;default:true" json:"enableFanoutTimelineDbFallback"`
 	ProxyRemoteFiles               bool `gorm:"column:proxyRemoteFiles;default:true" json:"proxyRemoteFiles"`
-	SignToActivityPubGet           bool `gorm:"column:signToActivityPubGet;default:true" json:"signToActivityPubGet"`
+	// ProxyAccountID is the user.id designated for instance proxy operations.
+	// Managed via admin/update-proxy-account.
+	ProxyAccountID       *string `gorm:"column:proxyAccountId;type:varchar(32)" json:"proxyAccountId"`
+	SignToActivityPubGet bool    `gorm:"column:signToActivityPubGet;default:true" json:"signToActivityPubGet"`
 
 	// -----------------------------------------------------------------
 	// 本家 Misskey 互換のために追加したフィールド群 (issue #21)。

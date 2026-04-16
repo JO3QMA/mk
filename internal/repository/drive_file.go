@@ -28,6 +28,9 @@ type DriveFileRepository interface {
 	// DeleteRemoteCache removes remote cache rows (isLink=true with host set).
 	// Returns affected count.
 	DeleteRemoteCache() (int64, error)
+	// DeleteByUser removes every drive_file owned by userID. Returns affected
+	// count. Used by admin/delete-all-files-of-a-user.
+	DeleteByUser(userID string) (int64, error)
 }
 
 type driveFileRepository struct {
@@ -193,5 +196,13 @@ func (r *driveFileRepository) DeleteOrphans() (int64, error) {
 
 func (r *driveFileRepository) DeleteRemoteCache() (int64, error) {
 	tx := r.db.Where(`"isLink" = true AND "userHost" IS NOT NULL`).Delete(&model.DriveFile{})
+	return tx.RowsAffected, tx.Error
+}
+
+func (r *driveFileRepository) DeleteByUser(userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	tx := r.db.Where(`"userId" = ?`, userID).Delete(&model.DriveFile{})
 	return tx.RowsAffected, tx.Error
 }
