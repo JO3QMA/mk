@@ -424,6 +424,11 @@ func (s *Server) setupRoutes() {
 	// Reaction flush (issue #57): buffered writer 使用時は 30 秒ごとに flush。
 	flushProcessor := processors.NewReactionFlushProcessor(reactionCountWriter)
 	s.queueServer.Handle(queue.TaskTypeReactionFlush, flushProcessor.Handle)
+
+	// Account cascade deletion (issue #187): admin/accounts/delete の後続
+	// バックグラウンド処理。note / drive_file / following 関連行を掃除する。
+	deleteAccountProcessor := processors.NewDeleteAccountProcessor(noteRepo, driveFileRepo, followingRepo)
+	s.queueServer.Handle(queue.TaskTypeDeleteAccount, deleteAccountProcessor.Handle)
 	if bufMeta, err := metaRepo.Fetch(); err == nil && bufMeta.EnableReactionsBuffering {
 		go func() {
 			ticker := time.NewTicker(30 * time.Second)
@@ -1272,6 +1277,7 @@ func (s *Server) setupRoutes() {
 	adminHandler := apiadmin.NewHandler(signupService, roleService, metaRepo, userRepo, idGen)
 	adminHandler.SetAbuseRepo(abuseReportRepo)
 	adminHandler.SetAbuseForwarder(coreabuse.NewForwarder(abuseReportRepo, sysAcctSvc, apRenderer, deliverService))
+	adminHandler.SetDeleteAccountEnqueuer(s.queueClient)
 	adminHandler.SetModLogRepo(modLogRepo)
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)

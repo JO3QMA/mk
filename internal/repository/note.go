@@ -35,6 +35,11 @@ type NoteRepository interface {
 	// DeleteExpiredRemoteNotes deletes remote notes older than expiryDays
 	// in batches of batchSize. Returns the total count of deleted notes.
 	DeleteExpiredRemoteNotes(expiryDays, batchSize int) (int64, error)
+	// DeleteByUserBatch deletes up to batchSize notes authored by userID in a
+	// single DELETE statement. Returns the count actually removed. Callers
+	// drive the loop themselves so that cancellation checkpoints and sleep
+	// pacing live in the processor (see DeleteAccountProcessor).
+	DeleteByUserBatch(userID string, batchSize int) (int64, error)
 }
 
 type noteRepository struct {
@@ -470,4 +475,23 @@ func (r *noteRepository) DeleteExpiredRemoteNotes(expiryDays, batchSize int) (in
 		}
 	}
 	return total, nil
+}
+
+func (r *noteRepository) DeleteByUserBatch(userID string, batchSize int) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	res := r.db.Exec(`
+		DELETE FROM "note" WHERE id IN (
+			SELECT id FROM "note"
+			WHERE "userId" = ?
+			LIMIT ?
+		)`, userID, batchSize)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
 }

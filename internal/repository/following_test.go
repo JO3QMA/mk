@@ -188,6 +188,36 @@ func TestUserRepository_IncrementFollowingCount(t *testing.T) {
 	assert.Equal(t, 0, found.FollowingCount)
 }
 
+// DeleteAllByUser は target が follower か followee のどちらに入っていても
+// 消え、target と無関係な行には触らないことを確認する。
+func TestFollowingRepository_DeleteAllByUser(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	target := insertTestUser(t, "u_dab_target", "dabtarget")
+	other := insertTestUser(t, "u_dab_other", "dabother")
+	bystander := insertTestUser(t, "u_dab_by", "dabby")
+	defer cleanupUser(t, target.ID)
+	defer cleanupUser(t, other.ID)
+	defer cleanupUser(t, bystander.ID)
+
+	insertFollowing(t, "fl_dab_1", target.ID, other.ID)
+	insertFollowing(t, "fl_dab_2", other.ID, target.ID)
+	insertFollowing(t, "fl_dab_3", other.ID, bystander.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id IN (?, ?, ?)`, "fl_dab_1", "fl_dab_2", "fl_dab_3")
+
+	n, err := repo.DeleteAllByUser(target.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, n)
+
+	// target 絡みの 2 件は消え、無関係は残る
+	_, err = repo.FindByPair(target.ID, other.ID)
+	assert.Error(t, err)
+	_, err = repo.FindByPair(other.ID, target.ID)
+	assert.Error(t, err)
+	found, err := repo.FindByPair(other.ID, bystander.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "fl_dab_3", found.ID)
+}
+
 func TestUserRepository_IncrementFollowersCount(t *testing.T) {
 	repo := NewUserRepository(testDB)
 	user := insertTestUser(t, "u_inc_2", "incuser2")

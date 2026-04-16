@@ -132,6 +132,19 @@ func (c *Client) EnqueueReactionFlush() error {
 	return err
 }
 
+// EnqueueDeleteAccount schedules a cascade deletion of the user's related
+// rows. Uniqueness over a 24h window prevents duplicate jobs if the admin
+// clicks delete multiple times while the previous run is still processing.
+func (c *Client) EnqueueDeleteAccount(payload DeleteAccountPayload) error {
+	task := NewDeleteAccountTask(payload)
+	_, err := c.inner.Enqueue(task,
+		asynq.Queue(QueueName),
+		asynq.MaxRetry(2),
+		asynq.Unique(24*time.Hour),
+	)
+	return err
+}
+
 // Close releases the underlying client connection.
 func (c *Client) Close() error {
 	return c.inner.Close()

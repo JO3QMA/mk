@@ -765,6 +765,46 @@ func TestNoteRepository_SearchByTag_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestNoteRepository_DeleteByUserBatch verifies that one call deletes up to
+// batchSize rows and callers are expected to loop.
+func TestNoteRepository_DeleteByUserBatch(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_dbu_v", "dbuviewer")
+	defer cleanupUser(t, user.ID)
+
+	ids := []string{"n_dbu_1", "n_dbu_2", "n_dbu_3"}
+	text := "hi"
+	for _, id := range ids {
+		n := &model.Note{
+			ID: id, UserID: user.ID, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, id)
+	}
+
+	// 1 バッチで 2 件だけ消える。
+	n, err := repo.DeleteByUserBatch(user.ID, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, n)
+
+	// 残りの 1 件は次のバッチで消える。
+	n, err = repo.DeleteByUserBatch(user.ID, 100)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n)
+
+	// 以降はすべて 0 件 (呼び出し側の break 条件)。
+	n, err = repo.DeleteByUserBatch(user.ID, 100)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n)
+
+	// userId 空は no-op
+	n, err = repo.DeleteByUserBatch("", 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n)
+}
+
 // TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence
 // guards against the SQL precedence bug where MutedChannelIDs would short
 // circuit other AND conditions via an unparenthesized OR. Places two notes

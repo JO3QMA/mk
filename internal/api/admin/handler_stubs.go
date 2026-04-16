@@ -3,6 +3,7 @@ package admin
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ func (h *Handler) AccountsDelete(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
+	h.scheduleAccountCascade(req.UserID)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -68,7 +70,21 @@ func (h *Handler) DeleteAccount(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
+	h.scheduleAccountCascade(req.UserID)
 	return c.NoContent(http.StatusNoContent)
+}
+
+// scheduleAccountCascade queues the background cascade deletion. Errors
+// from the enqueuer are logged but never surfaced — the admin flag flip
+// is the user-visible source of truth, so a failed enqueue only delays
+// the cleanup until the next manual retry.
+func (h *Handler) scheduleAccountCascade(userID string) {
+	if h.deleteAccountEnqueuer == nil || userID == "" {
+		return
+	}
+	if err := h.deleteAccountEnqueuer.EnqueueDeleteAccount(queue.DeleteAccountPayload{UserID: userID}); err != nil {
+		slog.Warn("admin: enqueue delete-account failed", "userId", userID, "err", err)
+	}
 }
 
 // DeleteAllFilesOfUser handles POST /api/admin/delete-all-files-of-a-user.
