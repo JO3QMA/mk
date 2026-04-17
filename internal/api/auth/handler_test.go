@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -120,6 +121,30 @@ func (m *mockAuthSessionRepo) CreateAccessToken(token *model.AccessToken) error 
 	}
 	m.accessTokens[key] = token
 	return nil
+}
+
+func (m *mockAuthSessionRepo) FindAppByID(appID string) (*model.App, error) {
+	if app := m.findAppByID(appID); app != nil {
+		return app, nil
+	}
+	return nil, errNotFound
+}
+
+func (m *mockAuthSessionRepo) ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error) {
+	var apps []*model.App
+	for _, a := range m.apps {
+		if a.UserID != nil && *a.UserID == userID {
+			apps = append(apps, a)
+		}
+	}
+	if offset >= len(apps) {
+		return []*model.App{}, nil
+	}
+	apps = apps[offset:]
+	if len(apps) > limit {
+		apps = apps[:limit]
+	}
+	return apps, nil
 }
 
 func (m *mockAuthSessionRepo) findAppByID(appID string) *model.App {
@@ -351,10 +376,10 @@ func TestSessionUserkey_TokenNotFound(t *testing.T) {
 // --- Helper functions ---
 
 func TestSecureRandomHex(t *testing.T) {
-	s := secureRandomHex(32)
+	s := misc.SecureRandomHex(32)
 	assert.Len(t, s, 32)
 	// 2回呼ぶと異なる値
-	s2 := secureRandomHex(32)
+	s2 := misc.SecureRandomHex(32)
 	assert.NotEqual(t, s, s2)
 }
 
@@ -376,4 +401,66 @@ func TestPackSession_NilApp(t *testing.T) {
 func TestPackUser_Nil(t *testing.T) {
 	result := packUser(nil)
 	assert.Empty(t, result)
+}
+
+// --- GenToken ---
+
+func TestGenToken_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{"permission":["read:account","write:notes"]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp["token"])
+
+	// DB上にアクセストークンが作成されている
+	assert.Len(t, repo.accessTokens, 1)
+	for _, at := range repo.accessTokens {
+		assert.Equal(t, "u1", at.UserID)
+		assert.Nil(t, at.AppID)
+		assert.Equal(t, resp["token"], at.Token)
+		// SHA-256ハッシュ化の検証: HashはTokenと異なり、sha256Hexの結果と一致する
+		assert.NotEqual(t, at.Token, at.Hash, "Hash should differ from raw Token")
+		assert.Equal(t, sha256Hex(at.Token), at.Hash, "Hash should be SHA-256 of Token")
+	}
+}
+
+func TestGenToken_WithOptionalFields(t *testing.T) {
+	h, repo := newTestHandler()
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{"permission":["read:account"],"name":"MyApp","description":"desc","iconUrl":"https://example.com/icon.png","session":"sess1"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Len(t, repo.accessTokens, 1)
+	for _, at := range repo.accessTokens {
+		assert.NotNil(t, at.Name)
+		assert.Equal(t, "MyApp", *at.Name)
+		assert.NotNil(t, at.Description)
+		assert.Equal(t, "desc", *at.Description)
+		assert.NotNil(t, at.IconURL)
+		assert.Equal(t, "https://example.com/icon.png", *at.IconURL)
+		assert.NotNil(t, at.Session)
+		assert.Equal(t, "sess1", *at.Session)
+	}
+}
+
+func TestGenToken_MissingPermission(t *testing.T) {
+	h, _ := newTestHandler()
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGenToken_CreateError(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.createErr = errNotFound
+	user := &model.User{ID: "u1", Username: "testuser"}
+
+	rec := post(h.GenToken, `{"permission":["read:account"]}`, user)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

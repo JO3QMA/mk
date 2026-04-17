@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
@@ -22,6 +24,12 @@ type UserRepository interface {
 	ListUsers(filter model.UserListFilter) ([]*model.User, error)
 	ListRemoteInboxes() ([]string, error)
 	FindProfileByVerifyCode(code string) (*model.UserProfile, error)
+	FindProfileByEmail(email string) (*model.UserProfile, error)
+	CountOnlineUsers() (int64, error)
+	// ListUserRecommendations returns locally-active explorable users the
+	// viewer does not already follow, ordered by followersCount descending.
+	// viewerID is excluded from results. Used by users/recommendation.
+	ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error)
 }
 
 type userRepository struct {
@@ -140,6 +148,18 @@ func (r *userRepository) FindProfileByVerifyCode(code string) (*model.UserProfil
 	return &p, nil
 }
 
+// FindProfileByEmail looks up a user_profile by email. admin/accounts/
+// find-by-email で使う (本家 Misskey の accounts/find-by-email 相当)。
+// email 列は nullable + case-insensitive 検索にしたいが、本家 DB は
+// unique index を張っていないので「最初に見つかった 1 件」を返す。
+func (r *userRepository) FindProfileByEmail(email string) (*model.UserProfile, error) {
+	var p model.UserProfile
+	if err := r.db.Where(`"email" = ?`, email).First(&p).Error; err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // ListRemoteInboxes returns a deduplicated list of inbox URLs belonging to
 // every known remote user. sharedInbox を優先し、無ければ個別 inbox を採用
 // する。Public なアクティビティ (Delete 等) の broadcast に使う。
@@ -168,6 +188,9 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 		q = q.Where("host IS NULL")
 	case "remote":
 		q = q.Where("host IS NOT NULL")
+	}
+	if filter.Hostname != "" {
+		q = q.Where("host = ?", filter.Hostname)
 	}
 
 	switch filter.State {
@@ -211,4 +234,39 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 		return nil, err
 	}
 	return users, nil
+}
+
+// ListUserRecommendations returns explorable, unlocked, active local users the
+// viewer is not yet following. Misskey 本家互換: isExplorable AND NOT isLocked
+// AND host IS NULL AND updatedAt >= activeSince AND id NOT IN (自分のfollowee)。
+func (r *userRepository) ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var users []*model.User
+	err := r.db.Model(&model.User{}).
+		Where(`"isLocked" = FALSE AND "isExplorable" = TRUE AND host IS NULL AND "updatedAt" >= ? AND id <> ?`, activeSince, viewerID).
+		Where(`id NOT IN (SELECT "followeeId" FROM "following" WHERE "followerId" = ?)`, viewerID).
+		Order(`"followersCount" DESC`).
+		Limit(limit).
+		Offset(offset).
+		Find(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// CountOnlineUsers returns the number of local users active within the last 10 minutes.
+func (r *userRepository) CountOnlineUsers() (int64, error) {
+	var count int64
+	threshold := time.Now().Add(-10 * time.Minute)
+	err := r.db.Model(&model.User{}).
+		Where("host IS NULL").
+		Where(`"lastActiveDate" > ?`, threshold).
+		Count(&count).Error
+	return count, err
 }

@@ -2,6 +2,8 @@
 // rendering local model entities into AP-compatible JSON-LD documents.
 package activitypub
 
+import "slices"
+
 // ContextURL is the standard ActivityStreams 2.0 JSON-LD context.
 const ContextURL = "https://www.w3.org/ns/activitystreams"
 
@@ -10,6 +12,25 @@ const SecurityContextURL = "https://w3id.org/security/v1"
 
 // Public is the magic IRI used to denote a publicly addressable activity.
 const Public = "https://www.w3.org/ns/activitystreams#Public"
+
+// ValidActorTypes lists the AP object types acceptable as an Actor.
+// Mirrors Misskey's `validActor` array in core/activitypub/type.ts so that
+// inbound documents of any other Object type are rejected at parse time.
+var ValidActorTypes = []string{
+	"Person", "Service", "Group", "Organization", "Application",
+}
+
+// IsValidActorType reports whether t is one of the recognized actor types.
+// Empty strings are rejected.
+func IsValidActorType(t string) bool {
+	return slices.Contains(ValidActorTypes, t)
+}
+
+// IsBotActorType reports whether the given actor type maps to an automated
+// (non-human) account. Misskey treats both Service and Application as bots.
+func IsBotActorType(t string) bool {
+	return t == "Service" || t == "Application"
+}
 
 // MimeType is the canonical Content-Type for ActivityPub objects.
 const MimeType = `application/activity+json`
@@ -46,29 +67,32 @@ type Image struct {
 // Person represents a user actor.
 type Person struct {
 	Object
-	Inbox                  string    `json:"inbox"`
-	Outbox                 string    `json:"outbox"`
-	Followers              string    `json:"followers"`
-	Following              string    `json:"following"`
-	PreferredUsername      string    `json:"preferredUsername"`
-	Summary                string    `json:"summary,omitempty"`
-	URL                    string    `json:"url,omitempty"`
-	Endpoints              Endpoints `json:"endpoints,omitzero"`
-	PublicKey              PublicKey `json:"publicKey"`
-	Icon                   *Image    `json:"icon,omitempty"`
-	Image                  *Image    `json:"image,omitempty"`
-	Attachment             []any     `json:"attachment,omitempty"`
-	Tag                    []any     `json:"tag,omitempty"`
-	Featured               string    `json:"featured,omitempty"`
-	ManuallyApproves       bool      `json:"manuallyApprovesFollowers,omitempty"`
-	Discoverable           bool      `json:"discoverable,omitempty"`
-	IsCat                  bool      `json:"isCat,omitempty"`
-	VcardBday              string    `json:"vcard:bday,omitempty"`
-	VcardAddress           string    `json:"vcard:Address,omitempty"`
-	MisskeySummary         string    `json:"_misskey_summary,omitempty"`
-	MisskeyFollowedMessage string    `json:"_misskey_followedMessage,omitempty"`
-	MovedTo                string    `json:"movedTo,omitempty"`
-	AlsoKnownAs            []string  `json:"alsoKnownAs,omitempty"`
+	Inbox                               string    `json:"inbox"`
+	Outbox                              string    `json:"outbox"`
+	Followers                           string    `json:"followers"`
+	Following                           string    `json:"following"`
+	PreferredUsername                   string    `json:"preferredUsername"`
+	Summary                             string    `json:"summary,omitempty"`
+	URL                                 string    `json:"url,omitempty"`
+	Endpoints                           Endpoints `json:"endpoints,omitzero"`
+	PublicKey                           PublicKey `json:"publicKey"`
+	Icon                                *Image    `json:"icon,omitempty"`
+	Image                               *Image    `json:"image,omitempty"`
+	Attachment                          []any     `json:"attachment,omitempty"`
+	Tag                                 []any     `json:"tag,omitempty"`
+	Featured                            string    `json:"featured,omitempty"`
+	ManuallyApproves                    bool      `json:"manuallyApprovesFollowers,omitempty"`
+	Discoverable                        bool      `json:"discoverable,omitempty"`
+	IsCat                               bool      `json:"isCat,omitempty"`
+	VcardBday                           string    `json:"vcard:bday,omitempty"`
+	VcardAddress                        string    `json:"vcard:Address,omitempty"`
+	MisskeySummary                      string    `json:"_misskey_summary,omitempty"`
+	MisskeyFollowedMessage              string    `json:"_misskey_followedMessage,omitempty"`
+	MisskeyRequireSigninToViewContents  bool      `json:"_misskey_requireSigninToViewContents,omitempty"`
+	MisskeyMakeNotesFollowersOnlyBefore *int      `json:"_misskey_makeNotesFollowersOnlyBefore,omitempty"`
+	MisskeyMakeNotesHiddenBefore        *int      `json:"_misskey_makeNotesHiddenBefore,omitempty"`
+	MovedTo                             string    `json:"movedTo,omitempty"`
+	AlsoKnownAs                         []string  `json:"alsoKnownAs,omitempty"`
 }
 
 // Note represents a note object (microblog post).
@@ -88,6 +112,24 @@ type Note struct {
 	MisskeyContent string   `json:"_misskey_content,omitempty"`
 	MisskeyQuote   string   `json:"_misskey_quote,omitempty"`
 	QuoteURL       string   `json:"quoteUrl,omitempty"`
+	// Question (poll) fields — AP Question typeで使用
+	OneOf   []QuestionChoice `json:"oneOf,omitempty"`
+	AnyOf   []QuestionChoice `json:"anyOf,omitempty"`
+	EndTime string           `json:"endTime,omitempty"`
+	Closed  string           `json:"closed,omitempty"`
+}
+
+// QuestionChoice represents a single choice in an AP Question (poll).
+type QuestionChoice struct {
+	Type    string                 `json:"type"` // "Note"
+	Name    string                 `json:"name"`
+	Replies *QuestionChoiceReplies `json:"replies,omitempty"`
+}
+
+// QuestionChoiceReplies holds the vote count for a poll choice.
+type QuestionChoiceReplies struct {
+	Type       string `json:"type"` // "Collection"
+	TotalItems int    `json:"totalItems"`
 }
 
 // Mention is an ActivityStreams Mention tag used inside Note.tag to inform
@@ -217,29 +259,66 @@ type Announce struct {
 	Object string `json:"object"` // target note URI
 }
 
+// Flag represents an abuse-report forwarding activity delivered from the
+// local instance's system actor to the origin instance of a reported user.
+// Content is the moderator-visible comment; Object is the target user's URI.
+type Flag struct {
+	Activity
+	Content string `json:"content"`
+	Object  string `json:"object"`
+}
+
+// Move represents an account-migration activity. Per Mastodon / Misskey
+// convention, actor == object (the old account URI) and target is the new
+// account URI. Follower instances use this signal to re-follow the target.
+type Move struct {
+	Activity
+	Object string `json:"object"`
+	Target string `json:"target"`
+}
+
+// ChatMessageActivity represents a CherryPick-compatible `Misskey:ChatMessage`
+// activity used for 1-on-1 DM federation with Misskey v12 and compatible forks.
+// ActivityではなくObjectを埋め込みつつ、Actorを独立フィールドで持つ。
+// To はCherryPick互換のため string (配列ではない)。
+type ChatMessageActivity struct {
+	Object
+	Actor        string `json:"actor"`
+	AttributedTo string `json:"attributedTo"`
+	To           string `json:"to"`
+	Content      string `json:"content,omitempty"`
+	Tag          []any  `json:"tag,omitempty"`
+	Attachment   []any  `json:"attachment,omitempty"`
+}
+
 // MisskeyContext は Misskey/Mastodon/schema.org 拡張語彙を含むコンテキストオブジェクト。
 // TS版 contexts.ts と同等。
 var MisskeyContext = map[string]any{
-	"misskey":                  "https://misskey-hub.net/ns#",
-	"toot":                     "http://joinmastodon.org/ns#",
-	"schema":                   "http://schema.org/",
-	"vcard":                    "http://www.w3.org/2006/vcard/ns#",
-	"Key":                      SecurityContextURL + "#Key",
-	"Hashtag":                  ContextURL + "#Hashtag",
-	"sensitive":                ContextURL + "#sensitive",
-	"quoteUrl":                 "https://misskey-hub.net/ns#quoteUrl",
-	"Emoji":                    "toot:Emoji",
-	"featured":                 "toot:featured",
-	"discoverable":             "toot:discoverable",
-	"PropertyValue":            "schema:PropertyValue",
-	"value":                    "schema:value",
-	"isCat":                    "misskey:isCat",
-	"_misskey_content":         "misskey:_misskey_content",
-	"_misskey_quote":           "misskey:_misskey_quote",
-	"_misskey_reaction":        "misskey:_misskey_reaction",
-	"_misskey_votes":           "misskey:_misskey_votes",
-	"_misskey_summary":         "misskey:_misskey_summary",
-	"_misskey_followedMessage": "misskey:_misskey_followedMessage",
+	"misskey":                               "https://misskey-hub.net/ns#",
+	"toot":                                  "http://joinmastodon.org/ns#",
+	"schema":                                "http://schema.org/",
+	"vcard":                                 "http://www.w3.org/2006/vcard/ns#",
+	"Key":                                   SecurityContextURL + "#Key",
+	"Hashtag":                               ContextURL + "#Hashtag",
+	"sensitive":                             ContextURL + "#sensitive",
+	"quoteUrl":                              "https://misskey-hub.net/ns#quoteUrl",
+	"Emoji":                                 "toot:Emoji",
+	"featured":                              "toot:featured",
+	"discoverable":                          "toot:discoverable",
+	"PropertyValue":                         "schema:PropertyValue",
+	"value":                                 "schema:value",
+	"isCat":                                 "misskey:isCat",
+	"_misskey_content":                      "misskey:_misskey_content",
+	"_misskey_quote":                        "misskey:_misskey_quote",
+	"_misskey_reaction":                     "misskey:_misskey_reaction",
+	"_misskey_votes":                        "misskey:_misskey_votes",
+	"_misskey_summary":                      "misskey:_misskey_summary",
+	"_misskey_followedMessage":              "misskey:_misskey_followedMessage",
+	"_misskey_requireSigninToViewContents":  "misskey:_misskey_requireSigninToViewContents",
+	"_misskey_makeNotesFollowersOnlyBefore": "misskey:_misskey_makeNotesFollowersOnlyBefore",
+	"_misskey_makeNotesHiddenBefore":        "misskey:_misskey_makeNotesHiddenBefore",
+	"_misskey_license":                      "misskey:_misskey_license",
+	"freeText":                              map[string]string{"@id": "misskey:freeText", "@type": "schema:text"},
 }
 
 // fullContext は全AP出力で使われる完全なJSON-LDコンテキスト。
@@ -280,6 +359,12 @@ func AddContext(o any) {
 	case *Like:
 		v.Context = ctx
 	case *Announce:
+		v.Context = ctx
+	case *Flag:
+		v.Context = ctx
+	case *Move:
+		v.Context = ctx
+	case *ChatMessageActivity:
 		v.Context = ctx
 	}
 }

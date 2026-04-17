@@ -178,5 +178,21 @@ func (r *failingEmojiRepo) ListWithFilter(q, c string, l bool, lim, off int) ([]
 
 func (r *failingEmojiRepo) ListLocal() ([]*model.Emoji, error) { return r.inner.ListLocal() }
 
+func (r *failingEmojiRepo) FindManyByIDs(ids []string) ([]*model.Emoji, error) {
+	return r.inner.FindManyByIDs(ids)
+}
+
+func (r *failingEmojiRepo) UpdateFieldsMany(ids []string, fields map[string]any) error {
+	return r.inner.UpdateFieldsMany(ids, fields)
+}
+
+func (r *failingEmojiRepo) DeleteMany(ids []string) error {
+	return r.inner.DeleteMany(ids)
+}
+
+func (r *failingEmojiRepo) ListRemoteWithFilter(q, host string, limit, offset int) ([]*model.Emoji, error) {
+	return r.inner.ListRemoteWithFilter(q, host, limit, offset)
+}
+
 // sanity: time import stay
 var _ = time.Now

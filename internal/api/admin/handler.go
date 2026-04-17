@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -16,21 +18,137 @@ import (
 	"gorm.io/gorm"
 )
 
+// RelayService is the subset of core/relay.Service needed by the
+// admin/relays endpoints. Kept as an interface so tests can inject a
+// fake without the rest of the federation pipeline.
+type RelayService interface {
+	Add(ctx context.Context, inbox string) (*model.Relay, error)
+	Remove(ctx context.Context, id string) error
+	List(ctx context.Context) ([]*model.Relay, error)
+}
+
+// AbuseForwarder encapsulates the full "render a Flag activity for the
+// report and deliver it to the target user's origin inbox" flow used by
+// admin/forward-abuse-user-report. Kept as an interface so the handler
+// stays testable without dragging in the full activitypub + queue stack.
+type AbuseForwarder interface {
+	ForwardReport(reportID string) error
+}
+
+// DeleteAccountEnqueuer schedules the background cascade deletion of a
+// user's related rows (notes / drive files / follow graph) after the
+// admin/accounts/delete flag flip. narrow interface to keep admin handler
+// tests decoupled from the full queue stack.
+type DeleteAccountEnqueuer interface {
+	EnqueueDeleteAccount(payload queue.DeleteAccountPayload) error
+}
+
 // Handler handles admin API endpoints.
 type Handler struct {
-	signupService  *signup.Service
-	roleService    *role.Service
-	metaRepo       repository.MetaRepository
-	userRepo       repository.UserRepository
-	abuseRepo      repository.AbuseReportRepository
-	modLogRepo     repository.ModerationLogRepository
-	emojiRepo      repository.EmojiRepository
-	driveFileRepo  repository.DriveFileRepository
-	adminDB        *gorm.DB
-	userIPRepo     repository.UserIPRepository
-	queueInspector QueueInspector
-	emojiEnqueuer  EmojiImportEnqueuer
-	idGen          id.Generator
+	signupService         *signup.Service
+	roleService           *role.Service
+	metaRepo              repository.MetaRepository
+	userRepo              repository.UserRepository
+	abuseRepo             repository.AbuseReportRepository
+	modLogRepo            repository.ModerationLogRepository
+	emojiRepo             repository.EmojiRepository
+	driveFileRepo         repository.DriveFileRepository
+	adminDB               *gorm.DB
+	userIPRepo            repository.UserIPRepository
+	queueInspector        QueueInspector
+	emojiEnqueuer         EmojiImportEnqueuer
+	relayService          RelayService
+	abuseForwarder        AbuseForwarder
+	deleteAccountEnqueuer DeleteAccountEnqueuer
+	systemWebhookRepo     repository.SystemWebhookRepository
+	recipientRepo         repository.AbuseReportNotificationRecipientRepository
+	adRepo                repository.AdRepository
+	avatarDecoRepo        repository.AvatarDecorationRepository
+	inviteRepo            repository.RegistrationTicketRepository
+	promoNoteRepo         repository.PromoNoteRepository
+	noteFinder            NoteFinder
+	resetReqRepo          repository.PasswordResetRequestRepository
+	emailSender           EmailSender
+	serverURL             string
+	idGen                 id.Generator
+}
+
+// EmailSender sends a plain-text email (to, subject, body). Same signature
+// as the one used by internal/api/resetpassword so the router can share its
+// SMTP closure with admin.
+type EmailSender func(to, subject, body string)
+
+// NoteFinder is the minimal subset of repository.NoteRepository that admin
+// handlers need to validate a noteId. Kept narrow so tests can supply a tiny
+// fake without implementing the full NoteRepository surface.
+type NoteFinder interface {
+	FindByID(id string) (*model.Note, error)
+}
+
+// SetSystemWebhookRepo attaches a SystemWebhookRepository for admin/system-webhook/*.
+func (h *Handler) SetSystemWebhookRepo(r repository.SystemWebhookRepository) {
+	h.systemWebhookRepo = r
+}
+
+// SetRecipientRepo attaches an AbuseReportNotificationRecipientRepository for
+// admin/abuse-report/notification-recipient/*.
+func (h *Handler) SetRecipientRepo(r repository.AbuseReportNotificationRecipientRepository) {
+	h.recipientRepo = r
+}
+
+// SetAdRepo attaches an AdRepository for admin/ad/*.
+func (h *Handler) SetAdRepo(r repository.AdRepository) { h.adRepo = r }
+
+// SetAvatarDecorationRepo attaches an AvatarDecorationRepository for
+// admin/avatar-decorations/*.
+func (h *Handler) SetAvatarDecorationRepo(r repository.AvatarDecorationRepository) {
+	h.avatarDecoRepo = r
+}
+
+// SetInviteRepo attaches a RegistrationTicketRepository for admin/invite/*.
+func (h *Handler) SetInviteRepo(r repository.RegistrationTicketRepository) {
+	h.inviteRepo = r
+}
+
+// SetPromoNoteRepo attaches a PromoNoteRepository for admin/promo/*.
+func (h *Handler) SetPromoNoteRepo(r repository.PromoNoteRepository) { h.promoNoteRepo = r }
+
+// SetNoteFinder attaches a NoteFinder used to validate noteId inputs.
+func (h *Handler) SetNoteFinder(r NoteFinder) { h.noteFinder = r }
+
+// SetPasswordResetRepo attaches the repository used by admin/reset-password
+// to persist reset tokens.
+func (h *Handler) SetPasswordResetRepo(r repository.PasswordResetRequestRepository) {
+	h.resetReqRepo = r
+}
+
+// SetEmailSender attaches the closure used to deliver admin-issued password
+// reset emails. If nil, admin/reset-password falls back to returning a
+// temporary password.
+func (h *Handler) SetEmailSender(s EmailSender) { h.emailSender = s }
+
+// SetServerURL sets the base URL used inside password-reset email bodies.
+func (h *Handler) SetServerURL(u string) { h.serverURL = u }
+
+// SetRelayService wires the relay service used by admin/relays endpoints.
+// nil を渡せば Admin API が DB fallback (create/update/delete のみ) に戻る。
+func (h *Handler) SetRelayService(s RelayService) {
+	h.relayService = s
+}
+
+// SetAbuseForwarder wires a forwarder for admin/forward-abuse-user-report.
+// When nil the handler falls back to just flipping the DB forwarded flag
+// (pre-P4-5 behaviour).
+func (h *Handler) SetAbuseForwarder(f AbuseForwarder) {
+	h.abuseForwarder = f
+}
+
+// SetDeleteAccountEnqueuer wires the enqueuer that schedules cascade
+// deletion of related rows for admin/accounts/delete and admin/delete-account.
+// When nil the handlers still flip the soft-delete flags but no background
+// cleanup runs — useful in tests.
+func (h *Handler) SetDeleteAccountEnqueuer(e DeleteAccountEnqueuer) {
+	h.deleteAccountEnqueuer = e
 }
 
 // EmojiImportEnqueuer is the subset of queue.Enqueuer needed to schedule
@@ -53,6 +171,12 @@ type QueueInspector interface {
 	DeleteTask(qname, taskID string) error
 	DeleteAllPendingTasks(qname string) (int, error)
 	RunTask(qname, taskID string) error
+	// Task listing APIs. page is 1-indexed.
+	ListPendingTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	ListActiveTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	ListScheduledTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	ListRetryTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
+	GetTaskInfo(qname, taskID string) (*QueueTaskSummary, error)
 }
 
 // QueueInfoResult holds basic queue statistics.
@@ -65,6 +189,22 @@ type QueueInfoResult struct {
 	Failed    int
 	Scheduled int
 	Retry     int
+}
+
+// QueueTaskSummary mirrors queue.TaskSummary for handler responses without
+// taking a compile-time dependency on the queue package.
+type QueueTaskSummary struct {
+	ID            string
+	Queue         string
+	Type          string
+	State         string
+	Payload       []byte
+	Retried       int
+	MaxRetry      int
+	LastErr       string
+	LastFailedAt  time.Time
+	NextProcessAt time.Time
+	CompletedAt   time.Time
 }
 
 // SetDriveFileRepo attaches a DriveFileRepository for admin drive operations.
@@ -122,12 +262,12 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 		SetupPassword *string `json:"setupPassword"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	meta, err := h.metaRepo.Fetch()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	user := middleware.GetUser(c)
@@ -136,33 +276,133 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 	if !isInitialSetup {
 		// 初回セットアップ以外はadmin権限必須
 		if user == nil {
-			return c.JSON(http.StatusForbidden, errResp("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 		}
 		if meta.RootUserID == nil || *meta.RootUserID != user.ID {
-			return c.JSON(http.StatusForbidden, errResp("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 		}
 	}
 
 	result, err := h.signupService.Signup(req.Username, req.Password, isInitialSetup)
 	if err != nil {
 		if err == signup.ErrUsernameAlreadyExists {
-			return c.JSON(http.StatusConflict, errResp("USERNAME_ALREADY_EXISTS", "Username already exists.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 		}
 		if err == signup.ErrInvalidUsername {
-			return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 		}
 		if err == signup.ErrUsernameReserved {
-			return c.JSON(http.StatusBadRequest, errResp("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
 		}
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	resp := entity.PackUserDetailed(result.User, nil)
-	out := map[string]any{
-		"id":       resp.ID,
-		"username": resp.Username,
-		"token":    result.Token,
+	u := result.User
+	detailed := entity.PackUserDetailed(u, nil)
+
+	isAdmin := false
+	isMod := false
+	userPolicies := role.DefaultPolicies()
+	if h.roleService != nil {
+		isAdmin = h.roleService.IsAdministrator(u.ID)
+		isMod = h.roleService.IsModerator(u.ID)
+		userPolicies = h.roleService.GetUserPolicies(u.ID)
 	}
+
+	out := map[string]any{
+		// UserLite
+		"id":                u.ID,
+		"name":              detailed.Name,
+		"username":          detailed.Username,
+		"host":              detailed.Host,
+		"avatarUrl":         detailed.AvatarURL,
+		"avatarBlurhash":    detailed.AvatarBlurhash,
+		"avatarDecorations": detailed.AvatarDecorations,
+		"isBot":             detailed.IsBot,
+		"isCat":             detailed.IsCat,
+		"emojis":            detailed.Emojis,
+		"onlineStatus":      detailed.OnlineStatus,
+		"badgeRoles":        detailed.BadgeRoles,
+		// UserDetailed
+		"bannerUrl":      detailed.BannerURL,
+		"bannerBlurhash": detailed.BannerBlurhash,
+		"isLocked":       detailed.IsLocked,
+		"isSilenced":     false,
+		"isSuspended":    detailed.IsSuspended,
+		"description":    detailed.Description,
+		"location":       detailed.Location,
+		"birthday":       detailed.Birthday,
+		"lang":           detailed.Lang,
+		"fields":         detailed.Fields,
+		"verifiedLinks":  detailed.VerifiedLinks,
+		"followersCount": detailed.FollowersCount,
+		"followingCount": detailed.FollowingCount,
+		"notesCount":     detailed.NotesCount,
+		"uri":            detailed.URI,
+		"url":            detailed.URL,
+		"movedTo":        u.MovedToURI,
+		"alsoKnownAs":    u.AlsoKnownAs,
+		"updatedAt":      detailed.UpdatedAt,
+		"lastFetchedAt":  nil,
+		// MeDetailed (新規ユーザーなのでゼロ値が多い)
+		"avatarId":                        u.AvatarID,
+		"bannerId":                        u.BannerID,
+		"followersVisibility":             detailed.FollowersVisibility,
+		"followingVisibility":             detailed.FollowingVisibility,
+		"chatScope":                       u.ChatScope,
+		"canChat":                         true,
+		"followedMessage":                 nil,
+		"memo":                            nil,
+		"moderationNote":                  nil,
+		"hideOnlineStatus":                u.HideOnlineStatus,
+		"isAdmin":                         isAdmin,
+		"isModerator":                     isMod,
+		"isDeleted":                       u.IsDeleted,
+		"isExplorable":                    u.IsExplorable,
+		"hasUnreadNotification":           false,
+		"hasPendingReceivedFollowRequest": false,
+		"hasUnreadAnnouncement":           false,
+		"hasUnreadAntenna":                false,
+		"hasUnreadChannel":                false,
+		"hasUnreadMentions":               false,
+		"hasUnreadSpecifiedNotes":         false,
+		"hasUnreadChatMessages":           false,
+		"unreadNotificationsCount":        0,
+		"unreadAnnouncements":             []any{},
+		"pinnedNoteIds":                   []string{},
+		"pinnedNotes":                     []any{},
+		"pinnedPageId":                    nil,
+		"pinnedPage":                      nil,
+		"policies":                        userPolicies,
+		"roles":                           []any{},
+		"securityKeysList":                []any{},
+		"mutingNotificationTypes":         []any{},
+		"notificationRecieveConfig":       map[string]any{},
+		"emailNotificationTypes":          []string{"follow", "receiveFollowRequest"},
+		"twoFactorEnabled":                false,
+		"usePasswordLessLogin":            false,
+		"securityKeys":                    false,
+		"twoFactorBackupCodesStock":       "none",
+		"autoAcceptFollowed":              true,
+		"noCrawle":                        false,
+		"preventAiLearning":               true,
+		"alwaysMarkNsfw":                  false,
+		"autoSensitive":                   false,
+		"carefulBot":                      false,
+		"injectFeaturedNote":              true,
+		"receiveAnnouncementEmail":        true,
+		"publicReactions":                 true,
+		"loggedInDays":                    0,
+		"achievements":                    []any{},
+		// token (MeDetailed にない追加フィールド)
+		"token": result.Token,
+	}
+
+	// createdAt は ID から復元
+	if t, err := h.idGen.ParseTime(u.ID); err == nil {
+		out["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+	}
+
 	return c.JSON(http.StatusOK, out)
 }
 
@@ -172,12 +412,12 @@ func (h *Handler) ShowUser(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	user, err := h.userRepo.FindByID(req.UserID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 	}
 
 	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
@@ -195,7 +435,7 @@ func (h *Handler) ShowUsers(c echo.Context) error {
 		Offset int    `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	users, err := h.userRepo.ListUsers(model.UserListFilter{
@@ -206,7 +446,7 @@ func (h *Handler) ShowUsers(c echo.Context) error {
 		Offset: req.Offset,
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	result := make([]map[string]any, 0, len(users))
@@ -300,15 +540,15 @@ func (h *Handler) SuspendUser(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true}); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -319,15 +559,15 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": false}); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -336,7 +576,7 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 func (h *Handler) AdminMeta(c echo.Context) error {
 	m, err := h.metaRepo.Fetch()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	resp := map[string]any{
 		// Basic
@@ -460,13 +700,13 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 func (h *Handler) UpdateMeta(c echo.Context) error {
 	var fields map[string]any
 	if err := c.Bind(&fields); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// "i" フィールドを除外 (auth token)
 	delete(fields, "i")
 
 	if err := h.metaRepo.Update(fields); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -486,7 +726,7 @@ func (h *Handler) RolesCreate(c echo.Context) error {
 		DisplayOrder    int    `json:"displayOrder"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	r, err := h.roleService.Create(req.Name, req.Description, role.CreateOptions{
 		IsModerator:     req.IsModerator,
@@ -497,7 +737,7 @@ func (h *Handler) RolesCreate(c echo.Context) error {
 		DisplayOrder:    req.DisplayOrder,
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, r)
 }
@@ -508,11 +748,11 @@ func (h *Handler) RolesShow(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	r, err := h.roleService.Show(req.RoleID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	return c.JSON(http.StatusOK, r)
 }
@@ -521,7 +761,7 @@ func (h *Handler) RolesShow(c echo.Context) error {
 func (h *Handler) RolesList(c echo.Context) error {
 	roles, err := h.roleService.List()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, roles)
 }
@@ -537,10 +777,10 @@ func (h *Handler) RolesUpdate(c echo.Context) error {
 		IsPublic        *bool   `json:"isPublic"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.roleService.Show(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	fields := map[string]any{}
 	if req.Name != nil {
@@ -569,10 +809,10 @@ func (h *Handler) RolesDelete(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if err := h.roleService.Delete(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -585,7 +825,7 @@ func (h *Handler) RolesAssign(c echo.Context) error {
 		ExpiresAt *string `json:"expiresAt"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	var expiresAt *time.Time
 	if req.ExpiresAt != nil {
@@ -595,12 +835,12 @@ func (h *Handler) RolesAssign(c echo.Context) error {
 	}
 	if err := h.roleService.Assign(req.UserID, req.RoleID, expiresAt); err != nil {
 		if err == role.ErrRoleNotFound {
-			return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 		}
 		if err == role.ErrAlreadyAssigned {
-			return c.JSON(http.StatusConflict, errResp("ALREADY_ASSIGNED", "Role already assigned.", "67d8689c-25c6-435f-8eed-6ea68e5e53e9"))
+			return c.JSON(http.StatusConflict, apierr.Error("ALREADY_ASSIGNED", "Role already assigned.", "67d8689c-25c6-435f-8eed-6ea68e5e53e9"))
 		}
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -612,13 +852,13 @@ func (h *Handler) RolesUnassign(c echo.Context) error {
 		RoleID string `json:"roleId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId and roleId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if err := h.roleService.Unassign(req.UserID, req.RoleID); err != nil {
 		if err == role.ErrNotAssigned {
-			return c.JSON(http.StatusNotFound, errResp("NOT_ASSIGNED", "Role not assigned.", "b9060ac7-5c94-4da4-9f55-2047140f5a68"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NOT_ASSIGNED", "Role not assigned.", "b9060ac7-5c94-4da4-9f55-2047140f5a68"))
 		}
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -631,10 +871,10 @@ func (h *Handler) RolesUsers(c echo.Context) error {
 		Offset int    `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.roleService.Show(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	limit := req.Limit
 	if limit <= 0 {
@@ -651,11 +891,11 @@ func (h *Handler) RolesUpdateDefaultPolicies(c echo.Context) error {
 		Policies map[string]any `json:"policies"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// Meta の policies フィールドを更新
 	if err := h.metaRepo.Update(map[string]any{"policies": req.Policies}); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -672,10 +912,10 @@ func (h *Handler) EmojiAdd(c echo.Context) error {
 		URL  string `json:"url"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	e := &model.Emoji{
 		ID:          h.idGen.Generate(time.Now()),
@@ -684,7 +924,7 @@ func (h *Handler) EmojiAdd(c echo.Context) error {
 		PublicURL:   req.URL,
 	}
 	if err := h.emojiRepo.Create(e); err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, e)
 }
@@ -698,10 +938,10 @@ func (h *Handler) EmojiUpdate(c echo.Context) error {
 		Aliases  []string `json:"aliases"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	fields := map[string]any{}
 	if req.Name != nil {
@@ -714,7 +954,7 @@ func (h *Handler) EmojiUpdate(c echo.Context) error {
 		fields["aliases"] = req.Aliases
 	}
 	if err := h.emojiRepo.UpdateFields(req.ID, fields); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -725,13 +965,13 @@ func (h *Handler) EmojiDelete(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	if err := h.emojiRepo.Delete(req.ID); err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -745,14 +985,14 @@ func (h *Handler) EmojiList(c echo.Context) error {
 		Offset   int    `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	emojis, err := h.emojiRepo.ListWithFilter(req.Query, req.Category, true, req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, emojis)
 }
@@ -767,14 +1007,14 @@ func (h *Handler) AbuseReports(c echo.Context) error {
 		Offset   int   `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.abuseRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	reports, err := h.abuseRepo.List(req.Resolved, req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, reports)
 }
@@ -785,10 +1025,10 @@ func (h *Handler) ResolveAbuseReport(c echo.Context) error {
 		ReportID string `json:"reportId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ReportID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "reportId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "reportId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.abuseRepo == nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
 	}
 	resolvedAs := "accept"
 	err := h.abuseRepo.UpdateFields(req.ReportID, map[string]any{
@@ -796,7 +1036,7 @@ func (h *Handler) ResolveAbuseReport(c echo.Context) error {
 		"resolvedAs": resolvedAs,
 	})
 	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_REPORT", "No such report.", "ac2cf84c-3c73-44f0-8e8f-0e76f2cb5eb3"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -808,24 +1048,14 @@ func (h *Handler) ShowModerationLogs(c echo.Context) error {
 		Offset int `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.modLogRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	logs, err := h.modLogRepo.List(req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, logs)
-}
-
-func errResp(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"code":    code,
-			"id":      id,
-		},
-	}
 }

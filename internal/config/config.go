@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strings"
 
@@ -42,6 +43,17 @@ type DBOptions struct {
 	Extra        map[string]string `mapstructure:"extra"`
 }
 
+// DBSlaveOptions represents a single read-replica PostgreSQL connection.
+// Mirrors Misskey's `dbSlaves: [{host, port, db, user, pass}]` YAML entries.
+// SSL/extra options are inherited from the primary DBOptions at DSN build time.
+type DBSlaveOptions struct {
+	Host string `mapstructure:"host"`
+	Port int    `mapstructure:"port"`
+	DB   string `mapstructure:"db"`
+	User string `mapstructure:"user"`
+	Pass string `mapstructure:"pass"`
+}
+
 // MeilisearchOptions represents Meilisearch configuration.
 type MeilisearchOptions struct {
 	Host   string `mapstructure:"host"`
@@ -55,6 +67,27 @@ type MeilisearchOptions struct {
 // FulltextSearchOptions represents fulltext search configuration.
 type FulltextSearchOptions struct {
 	Provider string `mapstructure:"provider"`
+}
+
+// SentryOptions mirrors the subset of `Sentry.NodeOptions` from the upstream
+// Misskey YAML schema that maps cleanly onto Go's sentry-go SDK. Fields not
+// covered (e.g. integration callbacks) are ignored on the Go backend.
+type SentryOptions struct {
+	DSN              string  `mapstructure:"dsn"`
+	Environment      string  `mapstructure:"environment"`
+	Release          string  `mapstructure:"release"`
+	SampleRate       float64 `mapstructure:"sampleRate"`
+	TracesSampleRate float64 `mapstructure:"tracesSampleRate"`
+	Debug            bool    `mapstructure:"debug"`
+	ServerName       string  `mapstructure:"serverName"`
+}
+
+// SentryBackendOptions mirrors `sentryForBackend` from Misskey config YAML.
+// EnableNodeProfiling refers to a Node-only Sentry integration; on the Go
+// backend it is parsed for compatibility but reported as a no-op at boot.
+type SentryBackendOptions struct {
+	EnableNodeProfiling bool          `mapstructure:"enableNodeProfiling"`
+	Options             SentryOptions `mapstructure:"options"`
 }
 
 // LoggingOptions represents logging configuration.
@@ -78,6 +111,7 @@ type Source struct {
 	EnableIPRateLimit      *bool                  `mapstructure:"enableIpRateLimit"`
 	DB                     DBOptions              `mapstructure:"db"`
 	DBReplications         bool                   `mapstructure:"dbReplications"`
+	DBSlaves               []DBSlaveOptions       `mapstructure:"dbSlaves"`
 	Redis                  RedisOptions           `mapstructure:"redis"`
 	RedisForPubsub         *RedisOptions          `mapstructure:"redisForPubsub"`
 	RedisForJobQueue       *RedisOptions          `mapstructure:"redisForJobQueue"`
@@ -115,9 +149,23 @@ type Source struct {
 	DeactivateAntennaThreshold   *int   `mapstructure:"deactivateAntennaThreshold"`
 	PidFile                      string `mapstructure:"pidFile"`
 
+	// TrustProxy is a list of CIDR ranges for trusted reverse proxies.
+	// When set, Echo uses X-Forwarded-For from these ranges to determine
+	// the real client IP. Defaults to private IP ranges (TS-compatible).
+	TrustProxy []string `mapstructure:"trustProxy"`
+
 	// TestMode enables destructive test-only endpoints such as /api/reset-db.
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
 	TestMode bool `mapstructure:"testMode"`
+
+	// SentryForBackend enables Sentry error tracking for the Go server. Nil
+	// disables Sentry entirely (production default).
+	SentryForBackend *SentryBackendOptions `mapstructure:"sentryForBackend"`
+
+	// SentryForFrontend is captured for Misskey YAML compatibility but the Go
+	// backend itself does not consume it; downstream API handlers may forward
+	// it to the frontend bundle. map[string]any keeps the YAML shape as-is.
+	SentryForFrontend map[string]any `mapstructure:"sentryForFrontend"`
 }
 
 // Config represents the resolved application configuration.
@@ -147,6 +195,7 @@ type Config struct {
 
 	DB             DBOptions
 	DBReplications bool
+	DBSlaves       []DBSlaveOptions
 
 	Redis             RedisOptions
 	RedisForPubsub    RedisOptions
@@ -189,9 +238,20 @@ type Config struct {
 	PidFile                      string
 	Logging                      *LoggingOptions
 
+	// TrustProxy is a list of CIDR ranges for trusted reverse proxies.
+	TrustProxy []string
+
 	// TestMode enables destructive test-only endpoints such as /api/reset-db.
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
 	TestMode bool
+
+	// SentryForBackend, when non-nil, enables Sentry error tracking for the
+	// Go server.
+	SentryForBackend *SentryBackendOptions
+
+	// SentryForFrontend is forwarded as-is to clients that need it (parsed
+	// for YAML compatibility; the Go backend itself does not consume it).
+	SentryForFrontend map[string]any
 }
 
 const defaultMaxFileSize int64 = 262144000
@@ -230,13 +290,27 @@ func bindEnvKeys(v *viper.Viper) {
 		"url", "port", "socket",
 		"db.host", "db.port", "db.db", "db.user", "db.pass",
 		"redis.host", "redis.port", "redis.pass", "redis.db", "redis.username",
+		"redis.family", "redis.prefix",
 		"redisForPubsub.host", "redisForPubsub.port", "redisForPubsub.pass",
+		"redisForPubsub.family", "redisForPubsub.prefix", "redisForPubsub.db", "redisForPubsub.username",
 		"redisForJobQueue.host", "redisForJobQueue.port", "redisForJobQueue.pass",
+		"redisForJobQueue.family", "redisForJobQueue.prefix", "redisForJobQueue.db", "redisForJobQueue.username",
 		"redisForTimelines.host", "redisForTimelines.port", "redisForTimelines.pass",
+		"redisForTimelines.family", "redisForTimelines.prefix", "redisForTimelines.db", "redisForTimelines.username",
 		"redisForReactions.host", "redisForReactions.port", "redisForReactions.pass",
+		"redisForReactions.family", "redisForReactions.prefix", "redisForReactions.db", "redisForReactions.username",
 		"id", "maxFileSize",
 		"mediaProxySecret",
 		"testMode",
+		// 運用/セキュリティ系: 既存ymlから環境変数オーバーライドできるようにする
+		"trustProxy",
+		"disableHsts",
+		"enableIpRateLimit",
+		"mediaProxy",
+		"logging.sql.disableQueryTruncation",
+		"logging.sql.enableQueryParamLogging",
+		"sentryForBackend.options.dsn",
+		"sentryForBackend.options.environment",
 	}
 	for _, k := range keys {
 		_ = v.BindEnv(k)
@@ -313,6 +387,7 @@ func resolve(src *Source) (*Config, error) {
 
 		DB:             src.DB,
 		DBReplications: src.DBReplications,
+		DBSlaves:       src.DBSlaves,
 
 		Redis:             redis,
 		RedisForPubsub:    resolveRedisOrDefault(src.RedisForPubsub, redis, host),
@@ -355,7 +430,12 @@ func resolve(src *Source) (*Config, error) {
 		PidFile:                      src.PidFile,
 		Logging:                      src.Logging,
 
+		TrustProxy: resolveTrustProxy(src.TrustProxy),
+
 		TestMode: src.TestMode,
+
+		SentryForBackend:  src.SentryForBackend,
+		SentryForFrontend: src.SentryForFrontend,
 	}
 
 	if cfg.TestMode {
@@ -380,6 +460,40 @@ func resolveRedis(opts RedisOptions, host string) RedisOptions {
 		opts.Prefix = host
 	}
 	return opts
+}
+
+// DefaultTrustProxy is the default set of CIDR ranges for trusted proxies,
+// matching the TypeScript Misskey defaults (private IP ranges).
+var DefaultTrustProxy = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"127.0.0.1/32",
+	"::1/128",
+	"fc00::/7",
+}
+
+// resolveTrustProxy returns the provided list or the default if empty.
+func resolveTrustProxy(provided []string) []string {
+	if len(provided) > 0 {
+		return provided
+	}
+	return DefaultTrustProxy
+}
+
+// ParseTrustProxy converts a list of CIDR strings into parsed *net.IPNet values.
+// Invalid CIDRs are skipped with a warning log.
+func ParseTrustProxy(cidrs []string) []*net.IPNet {
+	var nets []*net.IPNet
+	for _, cidr := range cidrs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			slog.Warn("invalid trustProxy CIDR, skipping", "cidr", cidr, "err", err)
+			continue
+		}
+		nets = append(nets, ipNet)
+	}
+	return nets
 }
 
 // deriveMediaProxySecret returns a secret for HMAC-signed media proxy URLs.
@@ -421,6 +535,33 @@ func (c *Config) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		c.DB.Host, c.DB.Port, c.DB.User, c.DB.Pass, c.DB.DB, sslMode,
+	)
+}
+
+// SlaveDSN returns the PostgreSQL connection string for the idx-th read
+// replica declared in DBSlaves. idx が範囲外の場合は空文字列を返す。
+//
+// SSL/sslmode / Unix socket 判定は primary の DB 設定に合わせる。
+// Misskey 本家では dbSlaves エントリ内で sslmode を個別指定する API は無いため、
+// primary の extra.ssl を継承する (same-network / same-cluster replica を前提)。
+func (c *Config) SlaveDSN(idx int) string {
+	if idx < 0 || idx >= len(c.DBSlaves) {
+		return ""
+	}
+	s := c.DBSlaves[idx]
+	if IsUnixSocketPath(s.Host) {
+		return fmt.Sprintf(
+			"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+			s.Host, s.Port, s.User, s.Pass, s.DB,
+		)
+	}
+	sslMode := "disable"
+	if v, ok := c.DB.Extra["ssl"]; ok && v == "true" {
+		sslMode = "require"
+	}
+	return fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		s.Host, s.Port, s.User, s.Pass, s.DB, sslMode,
 	)
 }
 

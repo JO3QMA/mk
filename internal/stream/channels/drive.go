@@ -19,13 +19,14 @@ func NewDrive(ctx stream.ChannelContext) stream.Channel {
 	return &DriveChannel{ctx: ctx}
 }
 
-func (c *DriveChannel) Init(_ json.RawMessage) {
+func (c *DriveChannel) Init(_ json.RawMessage) error {
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.topic = "drive:" + user.ID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 // OnRedisEvent reads the embedded `type` (e.g. "fileCreated") and forwards
@@ -44,6 +45,12 @@ func (c *DriveChannel) OnRedisEvent(payload []byte) {
 }
 
 func (c *DriveChannel) OnClientMessage(string, json.RawMessage) {}
+
+// ShouldShare implements stream.ShareableChannel.
+func (c *DriveChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *DriveChannel) RequiredPermission() string { return "read:account" }
 
 func (c *DriveChannel) Dispose() {
 	if c.topic != "" {

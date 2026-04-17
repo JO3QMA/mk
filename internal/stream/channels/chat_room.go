@@ -39,26 +39,27 @@ func (f *ChatRoomFactory) New(ctx stream.ChannelContext) stream.Channel {
 
 // Init parses `roomId` from params, verifies the connected user is a member
 // of the room, then subscribes to the shared Redis topic.
-func (c *ChatRoomChannel) Init(params json.RawMessage) {
+func (c *ChatRoomChannel) Init(params json.RawMessage) error {
 	var p struct {
 		RoomID string `json:"roomId"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil || p.RoomID == "" {
-		return
+		return stream.ErrInvalidParams
 	}
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	if c.svc != nil {
 		member, err := c.svc.IsRoomMember(user.ID, p.RoomID)
 		if err != nil || !member {
-			return
+			return stream.ErrInvalidParams
 		}
 	}
 	c.roomID = p.RoomID
 	c.topic = "chatRoomStream:" + p.RoomID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 // OnRedisEvent decodes a {type, body} envelope and forwards the body to the
@@ -100,6 +101,9 @@ func (c *ChatRoomChannel) OnClientMessage(msgType string, body json.RawMessage) 
 		}
 	}
 }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *ChatRoomChannel) RequiredPermission() string { return "read:chat" }
 
 // Dispose unsubscribes from the room topic.
 func (c *ChatRoomChannel) Dispose() {

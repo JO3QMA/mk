@@ -50,16 +50,21 @@ func (b *stubBus) deliver(topic string, payload []byte) {
 type fakeChannel struct {
 	ctx          ChannelContext
 	initParams   json.RawMessage
+	initErr      error
 	disposeCount int
 	redisEvents  [][]byte
 	clientMsgs   []string
 	subscribed   []string
 }
 
-func (f *fakeChannel) Init(params json.RawMessage) {
+func (f *fakeChannel) Init(params json.RawMessage) error {
 	f.initParams = params
+	if f.initErr != nil {
+		return f.initErr
+	}
 	f.subscribed = append(f.subscribed, "topic-a")
 	f.ctx.Subscribe("topic-a")
+	return nil
 }
 func (f *fakeChannel) Dispose() { f.disposeCount++ }
 func (f *fakeChannel) OnRedisEvent(payload []byte) {
@@ -285,10 +290,11 @@ type sendingChannel struct {
 	gotUser any
 }
 
-func (s *sendingChannel) Init(json.RawMessage) {
+func (s *sendingChannel) Init(json.RawMessage) error {
 	s.gotUser = s.ctx.User()
 	_ = s.ctx.Send("note", map[string]any{"text": "hi"})
 	s.got = "ok"
+	return nil
 }
 func (s *sendingChannel) Dispose()                                {}
 func (s *sendingChannel) OnRedisEvent([]byte)                     {}
@@ -368,4 +374,433 @@ func TestChannelContext_SendQueuesEnvelope(t *testing.T) {
 	assert.Equal(t, "alice", user.ID)
 
 	require.Eventually(t, func() bool { return fc.writeCount() >= 1 }, time.Second, 10*time.Millisecond)
+}
+
+// --- pong ack ---
+
+func TestDispatcher_ConnectPongAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test","pong":true}`))
+
+	// `connected` envelope should be queued on the connection
+	require.Eventually(t, func() bool { return fc.writeCount() >= 1 }, time.Second, 10*time.Millisecond)
+	fc.mu.Lock()
+	wrote := append([]byte(nil), fc.writes[0]...)
+	fc.mu.Unlock()
+	var env map[string]any
+	require.NoError(t, json.Unmarshal(wrote, &env))
+	assert.Equal(t, "connected", env["type"])
+	body := env["body"].(map[string]any)
+	assert.Equal(t, "abc", body["id"])
+}
+
+func TestDispatcher_ConnectNoPong_NoAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+	// No `connected` envelope when pong is absent
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 0, fc.writeCount())
+}
+
+// --- ShouldShare ---
+
+type shareableFakeChannel struct {
+	fakeChannel
+}
+
+func (s *shareableFakeChannel) ShouldShare() bool { return true }
+
+func TestDispatcher_ShareableChannel_DuplicateIgnored(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("shared", func(ctx ChannelContext) Channel {
+		return &shareableFakeChannel{fakeChannel: fakeChannel{ctx: ctx}}
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"shared"}`))
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"shared"}`))
+
+	// 1回目の接続でtopic-aがsubscribeされ、2回目はスキップされるので
+	// subscribe回数は1のはず
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	count := 0
+	for _, t := range bus.subscribed {
+		if t == "topic-a" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count)
+}
+
+func TestDispatcher_NonShareableChannel_AllowsMultiple(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"test"}`))
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"test"}`))
+
+	// non-shareable なら2つのエントリが作られる
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 2)
+}
+
+// --- OAuth2 scope check (PermittedChannel) ---
+
+type permittedFakeChannel struct {
+	fakeChannel
+	kind string
+}
+
+func (p *permittedFakeChannel) RequiredPermission() string { return p.kind }
+
+func TestConnection_Permissions_HasPermission(t *testing.T) {
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	conn.SetPermissions([]string{"read:account", "write:notes"})
+
+	assert.Equal(t, []string{"read:account", "write:notes"}, conn.Permissions())
+	assert.True(t, conn.HasPermission("read:account"))
+	assert.False(t, conn.HasPermission("read:drive"))
+	// 空文字列は常に true
+	assert.True(t, conn.HasPermission(""))
+}
+
+func TestConnection_HasPermission_NilMeansUnrestricted(t *testing.T) {
+	// session/cookie 認証では SetPermissions が呼ばれず nil のまま。
+	// この場合はトークンスコープによる制限がないため、全ての kind で true。
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	assert.True(t, conn.HasPermission("read:account"))
+	assert.True(t, conn.HasPermission("write:admin"))
+}
+
+func TestConnection_HasPermission_EmptySliceDenies(t *testing.T) {
+	// 明示的に空スライスをセット → スコープなしトークン → 全 kind で false
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	conn.SetPermissions([]string{})
+	assert.False(t, conn.HasPermission("read:account"))
+	// 空 kind だけは常に true
+	assert.True(t, conn.HasPermission(""))
+}
+
+func TestDispatcher_PermittedChannel_Granted(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("permitted", func(ctx ChannelContext) Channel {
+		return &permittedFakeChannel{fakeChannel: fakeChannel{ctx: ctx}, kind: "read:account"}
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	conn.SetPermissions([]string{"read:account"})
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"permitted"}`))
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 1)
+}
+
+func TestDispatcher_PermittedChannel_Denied(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("permitted", func(ctx ChannelContext) Channel {
+		return &permittedFakeChannel{fakeChannel: fakeChannel{ctx: ctx}, kind: "read:account"}
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	conn.SetPermissions([]string{"write:notes"})
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"permitted"}`))
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 0)
+}
+
+func TestDispatcher_PermittedChannel_SessionAuthAllowed(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("permitted", func(ctx ChannelContext) Channel {
+		return &permittedFakeChannel{fakeChannel: fakeChannel{ctx: ctx}, kind: "read:account"}
+	})
+
+	// permissions を set しない (session/cookie 認証相当) → フルアクセス扱い
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"permitted"}`))
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 1)
+}
+
+func TestDispatcher_PermittedChannel_EmptyPermissionsDenied(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("permitted", func(ctx ChannelContext) Channel {
+		return &permittedFakeChannel{fakeChannel: fakeChannel{ctx: ctx}, kind: "read:account"}
+	})
+
+	// 明示的に空スライスをセット (スコープなしトークン) → 拒否
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	conn.SetPermissions([]string{})
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"permitted"}`))
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 0)
+}
+
+func TestDispatcher_PermittedChannel_EmptyKindAllowed(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("optional", func(ctx ChannelContext) Channel {
+		return &permittedFakeChannel{fakeChannel: fakeChannel{ctx: ctx}, kind: ""}
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"optional"}`))
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 1)
+}
+
+func TestDispatcher_NonPermittedChannel_AlwaysAllowed(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("plain", func(ctx ChannelContext) Channel { return &fakeChannel{ctx: ctx} })
+
+	// PermittedChannel を実装していないチャンネルは permission なくても接続可能
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"plain"}`))
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 1)
+}
+
+func TestDispatcher_ShareablePongAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("shared", func(ctx ChannelContext) Channel {
+		return &shareableFakeChannel{fakeChannel: fakeChannel{ctx: ctx}}
+	})
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	// 1回目: 作成される
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"a","channel":"shared","pong":true}`))
+	// 2回目: 既存共有なのでエントリは作られないが、pongはACKされる
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"b","channel":"shared","pong":true}`))
+
+	require.Eventually(t, func() bool { return fc.writeCount() >= 2 }, time.Second, 10*time.Millisecond)
+}
+
+// --- Init error path ---
+
+func TestDispatcher_InitError_RollsBackChannel(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		return &fakeChannel{ctx: ctx, initErr: ErrInvalidParams}
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+
+	// Init が error を返したら channel は登録されない
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assert.Len(t, d.channels, 0)
+}
+
+func TestDispatcher_InitError_NoPongAck(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		return &fakeChannel{ctx: ctx, initErr: ErrInvalidParams}
+	})
+
+	fc := newFakeConn()
+	conn := NewConnection("c1", &model.User{ID: "alice"}, fc)
+	d := NewDispatcher(conn, registry, bus)
+
+	go conn.Start()
+	defer conn.Close()
+
+	// pong=true でも Init error 時は ack を送らない (TS 互換)
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test","pong":true}`))
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 0, fc.writeCount())
+}
+
+// initSubscribingChannel is a test channel that Subscribe時に失敗する Init を
+// 持つ。Dispatcher が removeChannel で topic refcount を適切に戻すことを
+// 確認するための helper。
+type initSubscribingChannel struct {
+	ctx          ChannelContext
+	disposeCount int
+}
+
+func (c *initSubscribingChannel) Init(json.RawMessage) error {
+	c.ctx.Subscribe("dangling-topic")
+	return ErrInvalidParams
+}
+func (c *initSubscribingChannel) OnRedisEvent([]byte)                     {}
+func (c *initSubscribingChannel) OnClientMessage(string, json.RawMessage) {}
+func (c *initSubscribingChannel) Dispose()                                { c.disposeCount++ }
+
+func TestDispatcher_InitError_CleansUpSubscriptions(t *testing.T) {
+	bus := newStubBus()
+	registry := NewRegistry()
+	var created *initSubscribingChannel
+	registry.Register("test", func(ctx ChannelContext) Channel {
+		created = &initSubscribingChannel{ctx: ctx}
+		return created
+	})
+
+	conn := NewConnection("c1", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, registry, bus)
+
+	d.HandleClientMessage("connect", json.RawMessage(`{"id":"abc","channel":"test"}`))
+
+	// Init 中に Subscribe した topic が Dispatcher の map から除去され、
+	// bus からも Unsubscribe されている必要がある。
+	d.mu.RLock()
+	_, topicRemains := d.topics["dangling-topic"]
+	d.mu.RUnlock()
+	assert.False(t, topicRemains)
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	assert.Contains(t, bus.unsubs, "dangling-topic")
+	// Dispose も呼ばれる
+	assert.Equal(t, 1, created.disposeCount)
+}
+
+// --- readNotification / subNote / unsubNote tests ---
+
+type stubNotifReader struct {
+	called int
+	lastID string
+}
+
+func (s *stubNotifReader) ReadAll(userID string) error {
+	s.called++
+	s.lastID = userID
+	return nil
+}
+
+func TestDispatcher_ReadNotification(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	bus := newStubBus()
+	d := NewDispatcher(conn, nil, bus)
+	nr := &stubNotifReader{}
+	d.SetNotificationReader(nr)
+
+	d.HandleClientMessage("readNotification", nil)
+	assert.Equal(t, 1, nr.called)
+	assert.Equal(t, "alice", nr.lastID)
+}
+
+func TestDispatcher_ReadNotification_NoReader(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, nil, nil)
+	// notifReader未設定でもpanic しない
+	d.HandleClientMessage("readNotification", nil)
+}
+
+func TestDispatcher_SubNote_UnsubNote(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	bus := newStubBus()
+	d := NewDispatcher(conn, nil, bus)
+
+	// subscribe
+	d.HandleClientMessage("s", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	_, subbed := bus.subs["noteStream:n1"]
+	bus.mu.Unlock()
+	assert.True(t, subbed)
+
+	// duplicate subscribe: refcount increments, no duplicate bus.Subscribe
+	d.HandleClientMessage("subNote", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	assert.Equal(t, 1, countOccurrences(bus.subscribed, "noteStream:n1"))
+	bus.mu.Unlock()
+
+	// unsubscribe once: refcount decrements but still > 0
+	d.HandleClientMessage("un", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	_, stillSubbed := bus.subs["noteStream:n1"]
+	bus.mu.Unlock()
+	assert.True(t, stillSubbed)
+
+	// unsubscribe again: refcount reaches 0, bus.Unsubscribe called
+	d.HandleClientMessage("unsubNote", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	_, stillSubbed2 := bus.subs["noteStream:n1"]
+	bus.mu.Unlock()
+	assert.False(t, stillSubbed2)
+}
+
+func TestDispatcher_SubNote_InvalidBody(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, nil, newStubBus())
+	// empty body → no panic
+	d.HandleClientMessage("s", json.RawMessage(`{}`))
+	d.HandleClientMessage("un", json.RawMessage(`{}`))
+}
+
+func countOccurrences(slice []string, target string) int {
+	n := 0
+	for _, s := range slice {
+		if s == target {
+			n++
+		}
+	}
+	return n
 }

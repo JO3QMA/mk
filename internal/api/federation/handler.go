@@ -5,18 +5,45 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 )
+
+// ActorResolver is the narrow subset of core/federation.Resolver that
+// federation/update-remote-user needs. Kept as an interface so unit tests can
+// swap in a fake without pulling in HTTP transports.
+type ActorResolver interface {
+	ForceResolveActor(uri string) (*model.User, error)
+}
 
 // Handler handles federation-related API endpoints.
 type Handler struct {
-	svc *coreinstance.Service
+	svc           *coreinstance.Service
+	followingRepo repository.FollowingRepository
+	userRepo      repository.UserRepository
+	resolver      ActorResolver
 }
 
 // NewHandler creates a new federation Handler.
 func NewHandler(svc *coreinstance.Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetFollowingRepo attaches a FollowingRepository for followers/following lookup.
+func (h *Handler) SetFollowingRepo(r repository.FollowingRepository) {
+	h.followingRepo = r
+}
+
+// SetUserRepo attaches a UserRepository for the users-per-host listing.
+func (h *Handler) SetUserRepo(r repository.UserRepository) {
+	h.userRepo = r
+}
+
+// SetResolver attaches an ActorResolver for update-remote-user.
+func (h *Handler) SetResolver(r ActorResolver) {
+	h.resolver = r
 }
 
 // InstancesRequest is the request body for federation/instances.
@@ -36,7 +63,7 @@ type InstancesRequest struct {
 func (h *Handler) Instances(c echo.Context) error {
 	var req InstancesRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	filter := model.InstanceListFilter{
 		Host:          req.Host,
@@ -51,7 +78,7 @@ func (h *Handler) Instances(c echo.Context) error {
 	}
 	rows, err := h.svc.List(filter)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, inst := range rows {
@@ -69,7 +96,7 @@ type ShowInstanceRequest struct {
 func (h *Handler) ShowInstance(c echo.Context) error {
 	var req ShowInstanceRequest
 	if err := c.Bind(&req); err != nil || req.Host == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	inst, err := h.svc.FindByHost(req.Host)
 	if err != nil {
@@ -112,32 +139,6 @@ func instanceToMap(inst *model.Instance) map[string]any {
 	}
 }
 
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
-}
-
 func notFound(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such instance.",
-			"code":    "NO_SUCH_INSTANCE",
-			"id":      "8be60c3a-6f3a-4d3e-8a13-ba81b9b2c1c8",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_INSTANCE", "No such instance.", "8be60c3a-6f3a-4d3e-8a13-ba81b9b2c1c8"))
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreflash "github.com/shiroha-a/mk/internal/core/flash"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -35,7 +36,7 @@ func (h *Handler) Create(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req CreateRequest
 	if err := c.Bind(&req); err != nil || req.Title == "" || req.Script == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	f, err := h.svc.Create(coreflash.CreateInput{
 		OwnerID:     user.ID,
@@ -46,7 +47,7 @@ func (h *Handler) Create(c echo.Context) error {
 		Visibility:  req.Visibility,
 	})
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, flashToMap(f))
 }
@@ -61,7 +62,7 @@ func (h *Handler) Show(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.FlashID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	requesterID := ""
 	if user != nil {
@@ -89,7 +90,7 @@ func (h *Handler) Update(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req UpdateRequest
 	if err := c.Bind(&req); err != nil || req.FlashID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	f, err := h.svc.Update(user.ID, req.FlashID, coreflash.UpdateInput{
 		Title:       req.Title,
@@ -103,11 +104,11 @@ func (h *Handler) Update(c echo.Context) error {
 		case errors.Is(err, coreflash.ErrFlashNotFound):
 			return notFound(c)
 		case errors.Is(err, coreflash.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		case errors.Is(err, coreflash.ErrFlashTitleRequired):
-			return invalidParam(c)
+			return apierr.JSONInvalidParam(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, flashToMap(f))
 }
@@ -122,16 +123,16 @@ func (h *Handler) Delete(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req DeleteRequest
 	if err := c.Bind(&req); err != nil || req.FlashID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Delete(user.ID, req.FlashID); err != nil {
 		switch {
 		case errors.Is(err, coreflash.ErrFlashNotFound):
 			return notFound(c)
 		case errors.Is(err, coreflash.ErrAccessDenied):
-			return accessDenied(c)
+			return apierr.JSONAccessDenied(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -149,16 +150,16 @@ type SearchRequest struct {
 	Offset int    `json:"offset"`
 }
 
-// My handles POST /api/i/flashs (own list).
+// My handles POST /api/i/flashs and POST /api/flash/my (own list).
 func (h *Handler) My(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginationRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.My(user.ID, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, flashesToList(rows))
 }
@@ -167,11 +168,11 @@ func (h *Handler) My(c echo.Context) error {
 func (h *Handler) Featured(c echo.Context) error {
 	var req PaginationRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.Featured(req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, flashesToList(rows))
 }
@@ -180,11 +181,11 @@ func (h *Handler) Featured(c echo.Context) error {
 func (h *Handler) Search(c echo.Context) error {
 	var req SearchRequest
 	if err := c.Bind(&req); err != nil || req.Query == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.Search(req.Query, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, flashesToList(rows))
 }
@@ -199,7 +200,7 @@ func (h *Handler) Like(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req LikeRequest
 	if err := c.Bind(&req); err != nil || req.FlashID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Like(user.ID, req.FlashID); err != nil {
 		switch {
@@ -208,7 +209,7 @@ func (h *Handler) Like(c echo.Context) error {
 		case errors.Is(err, coreflash.ErrAlreadyLiked):
 			return alreadyLiked(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -218,7 +219,7 @@ func (h *Handler) Unlike(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req LikeRequest
 	if err := c.Bind(&req); err != nil || req.FlashID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Unlike(user.ID, req.FlashID); err != nil {
 		switch {
@@ -227,7 +228,7 @@ func (h *Handler) Unlike(c echo.Context) error {
 		case errors.Is(err, coreflash.ErrNotLiked):
 			return notLiked(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -237,11 +238,11 @@ func (h *Handler) MyLikes(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginationRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	rows, err := h.svc.MyLikes(user.ID, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, flashesToList(rows))
 }
@@ -268,62 +269,14 @@ func flashToMap(f *model.Flash) map[string]any {
 	}
 }
 
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
-}
-
 func notFound(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such flash.",
-			"code":    "NO_SUCH_FLASH",
-			"id":      "f0d34a1a-d29a-401d-90ba-1982122b5630",
-		},
-	})
-}
-
-func accessDenied(c echo.Context) error {
-	return c.JSON(http.StatusForbidden, map[string]any{
-		"error": map[string]any{
-			"message": "Access denied.",
-			"code":    "ACCESS_DENIED",
-			"id":      "1fb7cb09-d46a-4fff-b8df-057708cce513",
-		},
-	})
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FLASH", "No such flash.", "f0d34a1a-d29a-401d-90ba-1982122b5630"))
 }
 
 func alreadyLiked(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "You already liked that flash.",
-			"code":    "ALREADY_LIKED",
-			"id":      "33106d32-22c2-4cdb-9c2e-29ddf92fd14c",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_LIKED", "You already liked that flash.", "33106d32-22c2-4cdb-9c2e-29ddf92fd14c"))
 }
 
 func notLiked(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "You have not liked that flash.",
-			"code":    "NOT_LIKED",
-			"id":      "f5eb37a7-72e4-4c2a-89e1-d56fbafe8b25",
-		},
-	})
+	return c.JSON(http.StatusBadRequest, apierr.Error("NOT_LIKED", "You have not liked that flash.", "f5eb37a7-72e4-4c2a-89e1-d56fbafe8b25"))
 }

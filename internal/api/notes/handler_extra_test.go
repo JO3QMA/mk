@@ -188,6 +188,21 @@ func TestSearchByTag_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestSearchByTag_QueryArray(t *testing.T) {
+	h, noteRepo, _ := newExtraHandler(t)
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1", Tags: []string{"go"}, Visibility: "public", User: &model.User{ID: "u1"}}
+	// query の最初の要素がタグとして使われる
+	rec := postExtra(h.SearchByTag, `{"query":[["go","rust"],["web"]]}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestSearchByTag_QueryArrayEmpty(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	// query が空配列 → tag も空 → 400
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.SearchByTag, `{"query":[]}`, nil).Code)
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.SearchByTag, `{"query":[[]]}`, nil).Code)
+}
+
 type failingSearchByTagRepo struct{ *testutil.MockNoteRepository }
 
 func (f *failingSearchByTagRepo) SearchByTag(_ string, _ int, _, _ string) ([]*model.Note, error) {

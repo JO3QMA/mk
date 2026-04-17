@@ -8,16 +8,17 @@ import (
 
 // Ad represents the `ad` table.
 type Ad struct {
-	ID        string    `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
-	ExpiresAt time.Time `gorm:"column:expiresAt;type:timestamp with time zone;not null" json:"expiresAt"`
-	StartsAt  time.Time `gorm:"column:startsAt;type:timestamp with time zone;not null;default:now()" json:"startsAt"`
-	Place     string    `gorm:"column:place;type:varchar(32);not null" json:"place"`
-	Priority  string    `gorm:"column:priority;type:varchar(32);not null;default:'middle'" json:"priority"`
-	Ratio     int       `gorm:"column:ratio;type:integer;not null;default:1" json:"ratio"`
-	URL       string    `gorm:"column:url;type:varchar(1024);not null" json:"url"`
-	ImageURL  string    `gorm:"column:imageUrl;type:varchar(1024);not null" json:"imageUrl"`
-	Memo      string    `gorm:"column:memo;type:varchar(8192);not null;default:''" json:"memo"`
-	DayOfWeek int       `gorm:"column:dayOfWeek;type:integer;not null;default:0" json:"dayOfWeek"`
+	ID          string    `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	ExpiresAt   time.Time `gorm:"column:expiresAt;type:timestamp with time zone;not null" json:"expiresAt"`
+	StartsAt    time.Time `gorm:"column:startsAt;type:timestamp with time zone;not null;default:now()" json:"startsAt"`
+	Place       string    `gorm:"column:place;type:varchar(32);not null" json:"place"`
+	Priority    string    `gorm:"column:priority;type:varchar(32);not null;default:'middle'" json:"priority"`
+	Ratio       int       `gorm:"column:ratio;type:integer;not null;default:1" json:"ratio"`
+	URL         string    `gorm:"column:url;type:varchar(1024);not null" json:"url"`
+	ImageURL    string    `gorm:"column:imageUrl;type:varchar(1024);not null" json:"imageUrl"`
+	Memo        string    `gorm:"column:memo;type:varchar(8192);not null;default:''" json:"memo"`
+	DayOfWeek   int       `gorm:"column:dayOfWeek;type:integer;not null;default:0" json:"dayOfWeek"`
+	IsSensitive bool      `gorm:"column:isSensitive;default:false" json:"isSensitive"`
 }
 
 func (Ad) TableName() string { return "ad" }

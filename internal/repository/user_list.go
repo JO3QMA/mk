@@ -14,6 +14,11 @@ type UserListRepository interface {
 	AddMember(m *model.UserListMembership) error
 	RemoveMember(listID, userID string) error
 	ListMembers(listID string) ([]*model.UserListMembership, error)
+	UpdateList(id string, fields map[string]any) error
+	UpdateMembership(listID, userID string, withReplies bool) error
+	// ListsContainingMember returns lists owned by ownerID that include
+	// memberUserID as a member. Used by users/lists/get-memberships.
+	ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error)
 }
 
 type userListRepository struct {
@@ -63,4 +68,34 @@ func (r *userListRepository) ListMembers(listID string) ([]*model.UserListMember
 		return nil, err
 	}
 	return members, nil
+}
+
+func (r *userListRepository) UpdateList(id string, fields map[string]any) error {
+	return r.db.Model(&model.UserList{}).Where("id = ?", id).Updates(fields).Error
+}
+
+func (r *userListRepository) UpdateMembership(listID, userID string, withReplies bool) error {
+	result := r.db.Model(&model.UserListMembership{}).
+		Where("\"userListId\" = ? AND \"userId\" = ?", listID, userID).
+		Update("withReplies", withReplies)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *userListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {
+	var lists []*model.UserList
+	err := r.db.
+		Joins(`JOIN "user_list_membership" m ON m."userListId" = "user_list"."id"`).
+		Where(`"user_list"."userId" = ? AND m."userId" = ?`, ownerID, memberUserID).
+		Order(`"user_list"."id" DESC`).
+		Find(&lists).Error
+	if err != nil {
+		return nil, err
+	}
+	return lists, nil
 }

@@ -268,6 +268,22 @@ func TestRenderer_RenderAccept(t *testing.T) {
 	assert.NotNil(t, a.Object)
 }
 
+func TestRenderer_RenderFollowRelay(t *testing.T) {
+	r := newRenderer()
+	f := r.RenderFollowRelay("rel123", "relay-user-id")
+	assert.Equal(t, "Follow", f.Type)
+	assert.Equal(t, "https://example.com/users/relay-user-id", f.Actor)
+	// id は /activities/follow-relay/{relayID} 固定 (processor 側が regex で検出)
+	assert.Equal(t, "https://example.com/activities/follow-relay/rel123", f.ID)
+	// object は AS Public (relay は全 public 投稿を購読するため)
+	assert.Equal(t, Public, f.Object)
+}
+
+func TestURLBuilder_FollowRelayURI(t *testing.T) {
+	b := NewURLBuilder("https://example.com")
+	assert.Equal(t, "https://example.com/activities/follow-relay/abc", b.FollowRelayURI("abc"))
+}
+
 func TestStringValue(t *testing.T) {
 	s := "x"
 	assert.Equal(t, "x", stringValue(&s))
@@ -400,6 +416,42 @@ func TestRenderer_RenderPerson_BannerAndMovedTo(t *testing.T) {
 	assert.Equal(t, movedTo, p.MovedTo)
 	assert.Equal(t, []string{"https://other.example/users/alice", "https://third.example/users/a"}, p.AlsoKnownAs)
 	assert.Equal(t, featured, p.Featured)
+}
+
+func TestRenderer_RenderPerson_MisskeyExtensionFields(t *testing.T) {
+	r := newRenderer()
+	before := 30
+	u := &model.User{
+		ID:                           "u1",
+		Username:                     "alice",
+		RequireSigninToViewContents:  true,
+		MakeNotesFollowersOnlyBefore: &before,
+		MakeNotesHiddenBefore:        nil,
+	}
+	p := r.RenderPerson(u, nil, "PUBKEY")
+	assert.True(t, p.MisskeyRequireSigninToViewContents)
+	require.NotNil(t, p.MisskeyMakeNotesFollowersOnlyBefore)
+	assert.Equal(t, 30, *p.MisskeyMakeNotesFollowersOnlyBefore)
+	assert.Nil(t, p.MisskeyMakeNotesHiddenBefore)
+}
+
+func TestRenderer_RenderPerson_MisskeyExtensionFields_Defaults(t *testing.T) {
+	r := newRenderer()
+	u := &model.User{ID: "u1", Username: "alice"}
+	p := r.RenderPerson(u, nil, "PUBKEY")
+	// デフォルト (false / nil) は omitempty で出力されない
+	assert.False(t, p.MisskeyRequireSigninToViewContents)
+	assert.Nil(t, p.MisskeyMakeNotesFollowersOnlyBefore)
+	assert.Nil(t, p.MisskeyMakeNotesHiddenBefore)
+}
+
+func TestMisskeyContext_ContainsNewFields(t *testing.T) {
+	ctx := MisskeyContext
+	assert.Contains(t, ctx, "_misskey_requireSigninToViewContents")
+	assert.Contains(t, ctx, "_misskey_makeNotesFollowersOnlyBefore")
+	assert.Contains(t, ctx, "_misskey_makeNotesHiddenBefore")
+	assert.Contains(t, ctx, "_misskey_license")
+	assert.Contains(t, ctx, "freeText")
 }
 
 // stubFileResolver returns fixed drive files.
@@ -647,4 +699,118 @@ func TestRenderer_SetResolvers(t *testing.T) {
 	r.SetNoteResolver(nil)
 	r.SetHost("example.com")
 	assert.Equal(t, "example.com", r.host)
+}
+
+func TestRenderer_RenderFlag(t *testing.T) {
+	r := newRenderer()
+	actor := &model.User{ID: "instance"}
+	flag := r.RenderFlag(actor, "https://remote.example/users/alice", "spam comment")
+	assert.Equal(t, "Flag", flag.Type)
+	assert.Equal(t, "https://example.com/users/instance", flag.Actor)
+	assert.Equal(t, "https://remote.example/users/alice", flag.Object)
+	assert.Equal(t, "spam comment", flag.Content)
+	// AddContext 済 (Context が設定される)
+	assert.NotNil(t, flag.Context)
+}
+
+// --- Poll (Question) rendering ---
+
+type stubPollResolver struct {
+	polls map[string]*model.Poll
+}
+
+func (s *stubPollResolver) FindByNoteID(noteID string) (*model.Poll, error) {
+	if p, ok := s.polls[noteID]; ok {
+		return p, nil
+	}
+	return nil, assert.AnError
+}
+
+func TestRenderer_RenderNote_SingleChoicePoll(t *testing.T) {
+	r := newRenderer()
+	past := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	r.SetPollResolver(&stubPollResolver{polls: map[string]*model.Poll{
+		"n1": {
+			NoteID:    "n1",
+			Multiple:  false,
+			Choices:   []string{"A", "B", "C"},
+			Votes:     []int64{10, 5, 3},
+			ExpiresAt: &past,
+		},
+	}})
+	idGen, _ := id.NewGenerator("aidx")
+	note := &model.Note{
+		ID: "n1", UserID: "u1", HasPoll: true,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(note, idGen)
+	assert.Equal(t, "Question", out.Type)
+	require.Len(t, out.OneOf, 3)
+	assert.Empty(t, out.AnyOf)
+	assert.Equal(t, "A", out.OneOf[0].Name)
+	assert.Equal(t, 10, out.OneOf[0].Replies.TotalItems)
+	assert.Equal(t, "B", out.OneOf[1].Name)
+	assert.NotEmpty(t, out.EndTime)
+	assert.NotEmpty(t, out.Closed, "expired poll should have closed")
+}
+
+func TestRenderer_RenderNote_MultipleChoicePoll(t *testing.T) {
+	r := newRenderer()
+	future := time.Now().Add(24 * time.Hour)
+	r.SetPollResolver(&stubPollResolver{polls: map[string]*model.Poll{
+		"n2": {
+			NoteID:    "n2",
+			Multiple:  true,
+			Choices:   []string{"X", "Y"},
+			Votes:     []int64{1, 2},
+			ExpiresAt: &future,
+		},
+	}})
+	idGen, _ := id.NewGenerator("aidx")
+	note := &model.Note{
+		ID: "n2", UserID: "u1", HasPoll: true,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(note, idGen)
+	assert.Equal(t, "Question", out.Type)
+	assert.Empty(t, out.OneOf)
+	require.Len(t, out.AnyOf, 2)
+	assert.Equal(t, "X", out.AnyOf[0].Name)
+	assert.NotEmpty(t, out.EndTime)
+	assert.Empty(t, out.Closed, "active poll should not be closed")
+}
+
+func TestRenderer_RenderNote_PollWithoutExpiry(t *testing.T) {
+	r := newRenderer()
+	r.SetPollResolver(&stubPollResolver{polls: map[string]*model.Poll{
+		"n3": {
+			NoteID:   "n3",
+			Multiple: false,
+			Choices:  []string{"Yes", "No"},
+			Votes:    []int64{0, 0},
+		},
+	}})
+	idGen, _ := id.NewGenerator("aidx")
+	note := &model.Note{
+		ID: "n3", UserID: "u1", HasPoll: true,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(note, idGen)
+	assert.Equal(t, "Question", out.Type)
+	require.Len(t, out.OneOf, 2)
+	assert.Empty(t, out.EndTime)
+	assert.Empty(t, out.Closed)
+}
+
+func TestRenderer_RenderNote_NoPollResolver(t *testing.T) {
+	r := newRenderer()
+	// pollResolver未設定ならHasPoll=trueでもNoteのまま
+	idGen, _ := id.NewGenerator("aidx")
+	note := &model.Note{
+		ID: "n4", UserID: "u1", HasPoll: true,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(note, idGen)
+	assert.Equal(t, "Note", out.Type)
+	assert.Empty(t, out.OneOf)
 }

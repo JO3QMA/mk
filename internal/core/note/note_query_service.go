@@ -7,14 +7,28 @@ import (
 
 // QueryService provides read-only note queries used by notes/* endpoints.
 type QueryService struct {
-	noteRepo      repository.NoteRepository
-	followingRepo repository.FollowingRepository
+	noteRepo       repository.NoteRepository
+	followingRepo  repository.FollowingRepository
+	favoriteRepo   repository.NoteFavoriteRepository
+	threadMuteRepo repository.NoteThreadMutingRepository
 }
 
 // NewQueryService creates a new QueryService.
 // followingRepoはfollowers可視性のチェックに使われる。nilを許容する。
 func NewQueryService(noteRepo repository.NoteRepository, followingRepo repository.FollowingRepository) *QueryService {
 	return &QueryService{noteRepo: noteRepo, followingRepo: followingRepo}
+}
+
+// SetFavoriteRepo enables isFavorited reporting on State(). nil でも State
+// は動くが isFavorited は常に false になる。
+func (s *QueryService) SetFavoriteRepo(r repository.NoteFavoriteRepository) {
+	s.favoriteRepo = r
+}
+
+// SetThreadMutingRepo enables isMutedThread reporting on State(). nil でも
+// State は動くが isMutedThread は常に false になる。
+func (s *QueryService) SetThreadMutingRepo(r repository.NoteThreadMutingRepository) {
+	s.threadMuteRepo = r
 }
 
 // Show returns the requested note if it exists and the viewer can see it.
@@ -108,20 +122,48 @@ func (s *QueryService) Conversation(viewer *model.User, noteID string, limit int
 }
 
 // State returns the note's user-specific state flags.
-// 現状はreaction/clip/notification系のスキーマが未実装のため、すべてfalseを返す。
-// noteの存在および閲覧可能性のみを検証する。
+// 匿名閲覧者 (viewer==nil) はすべて false。
+//
+// upstream Misskey の notes/state は isFavorited / isMutedThread のみを返す
+// (isWatching は廃止) ため、こちらも同じ shape に揃える。
 func (s *QueryService) State(viewer *model.User, noteID string) (*NoteState, error) {
-	if _, err := s.Show(viewer, noteID); err != nil {
+	note, err := s.Show(viewer, noteID)
+	if err != nil {
 		return nil, err
 	}
-	return &NoteState{}, nil
+	state := &NoteState{}
+	if viewer == nil {
+		return state, nil
+	}
+	if s.favoriteRepo != nil {
+		if ok, err := s.favoriteRepo.Exists(viewer.ID, note.ID); err == nil && ok {
+			state.IsFavorited = true
+		}
+	}
+	if s.threadMuteRepo != nil {
+		// 本家 Misskey の threadId は note.threadId (ルート) を指す。reply 系の
+		// ノートは自身の threadId を、ルートは自身の id を threadId として扱う。
+		threadID := note.ID
+		if note.ThreadID != nil && *note.ThreadID != "" {
+			threadID = *note.ThreadID
+		}
+		if ok, err := s.threadMuteRepo.Exists(viewer.ID, threadID); err == nil && ok {
+			state.IsMutedThread = true
+		}
+	}
+	return state, nil
 }
 
 // NoteState represents notes/state response payload.
 type NoteState struct {
 	IsFavorited   bool `json:"isFavorited"`
 	IsMutedThread bool `json:"isMutedThread"`
-	IsWatching    bool `json:"isWatching"`
+}
+
+// FilterVisible drops notes the viewer cannot see. Public API for use by
+// handlers that perform bulk lookups outside of QueryService (e.g. BulkShow).
+func (s *QueryService) FilterVisible(viewer *model.User, rows []*model.Note) []*model.Note {
+	return s.filterVisible(viewer, rows)
 }
 
 // filterVisible drops notes the viewer cannot see.

@@ -15,6 +15,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/chart"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/repository"
+	mksentry "github.com/shiroha-a/mk/internal/sentry"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"gorm.io/gorm"
 )
@@ -28,6 +29,7 @@ type Server struct {
 	auth           *middleware.AuthMiddleware
 	queueClient    *queue.Client
 	queueServer    *queue.Server
+	queueScheduler *queue.Scheduler
 	queueInspector *queue.Inspector
 	chartMgmt      *chart.ManagementService
 }
@@ -38,8 +40,20 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	e.HideBanner = true
 	e.HidePort = true
 
+	// trustProxyからIPExtractorを構成
+	if nets := config.ParseTrustProxy(cfg.TrustProxy); len(nets) > 0 {
+		var opts []echo.TrustOption
+		for _, n := range nets {
+			opts = append(opts, echo.TrustIPRange(n))
+		}
+		e.IPExtractor = echo.ExtractIPFromXFFHeader(opts...)
+	}
+
 	// Global middleware
 	e.Use(echomw.Recover())
+	// Sentry middleware は Recover の直後に置く: panic を hub に送ったあと
+	// Recover に巻き戻し、5xx の最終整形は echo に任せる。
+	e.Use(mksentry.Middleware(cfg))
 	e.Use(echomw.RequestID())
 	e.Use(echomw.LoggerWithConfig(echomw.LoggerConfig{
 		Format: "${time_rfc3339} ${method} ${uri} ${status} ${latency_human}\n",
@@ -67,6 +81,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	}
 	queueClient := queue.NewClient(redisOpt)
 	queueServer := queue.NewServer(redisOpt, queue.ServerConfig{Concurrency: concurrency})
+	queueScheduler := queue.NewScheduler(redisOpt)
 	queueInspector := queue.NewInspector(redisOpt)
 
 	s := &Server{
@@ -77,6 +92,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 		auth:           auth,
 		queueClient:    queueClient,
 		queueServer:    queueServer,
+		queueScheduler: queueScheduler,
 		queueInspector: queueInspector,
 	}
 
@@ -100,6 +116,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Start() error {
 	if err := s.queueServer.Start(); err != nil {
 		return fmt.Errorf("start queue worker: %w", err)
+	}
+	if s.queueScheduler != nil {
+		if err := s.queueScheduler.RegisterChartJobs(); err != nil {
+			slog.Warn("chart scheduler register failed", "err", err)
+		} else if err := s.queueScheduler.Start(); err != nil {
+			slog.Warn("chart scheduler start failed", "err", err)
+		}
 	}
 	if s.chartMgmt != nil {
 		if err := s.chartMgmt.Start(context.Background()); err != nil {
@@ -133,6 +156,9 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.chartMgmt != nil {
 		s.chartMgmt.Stop(ctx)
+	}
+	if s.queueScheduler != nil {
+		s.queueScheduler.Shutdown()
 	}
 	s.queueServer.Shutdown()
 	if err := s.queueClient.Close(); err != nil {

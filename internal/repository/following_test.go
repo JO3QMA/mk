@@ -188,6 +188,36 @@ func TestUserRepository_IncrementFollowingCount(t *testing.T) {
 	assert.Equal(t, 0, found.FollowingCount)
 }
 
+// DeleteAllByUser は target が follower か followee のどちらに入っていても
+// 消え、target と無関係な行には触らないことを確認する。
+func TestFollowingRepository_DeleteAllByUser(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	target := insertTestUser(t, "u_dab_target", "dabtarget")
+	other := insertTestUser(t, "u_dab_other", "dabother")
+	bystander := insertTestUser(t, "u_dab_by", "dabby")
+	defer cleanupUser(t, target.ID)
+	defer cleanupUser(t, other.ID)
+	defer cleanupUser(t, bystander.ID)
+
+	insertFollowing(t, "fl_dab_1", target.ID, other.ID)
+	insertFollowing(t, "fl_dab_2", other.ID, target.ID)
+	insertFollowing(t, "fl_dab_3", other.ID, bystander.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id IN (?, ?, ?)`, "fl_dab_1", "fl_dab_2", "fl_dab_3")
+
+	n, err := repo.DeleteAllByUser(target.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, n)
+
+	// target 絡みの 2 件は消え、無関係は残る
+	_, err = repo.FindByPair(target.ID, other.ID)
+	assert.Error(t, err)
+	_, err = repo.FindByPair(other.ID, target.ID)
+	assert.Error(t, err)
+	found, err := repo.FindByPair(other.ID, bystander.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "fl_dab_3", found.ID)
+}
+
 func TestUserRepository_IncrementFollowersCount(t *testing.T) {
 	repo := NewUserRepository(testDB)
 	user := insertTestUser(t, "u_inc_2", "incuser2")
@@ -200,4 +230,73 @@ func TestUserRepository_IncrementFollowersCount(t *testing.T) {
 	require.NoError(t, repo.IncrementFollowersCount(user.ID, -1))
 	found, _ = repo.FindByID(user.ID)
 	assert.Equal(t, 0, found.FollowersCount)
+}
+
+// insertBirthdayProfile は user_profile 行を birthday 付きで直接 INSERT する。
+// 他のテストで既存プロフィールが作られている場合は UPSERT になる。
+func insertBirthdayProfile(t *testing.T, userID, birthday string) {
+	t.Helper()
+	require.NoError(t, testDB.Exec(
+		`INSERT INTO "user_profile" ("userId", birthday) VALUES (?, ?)
+         ON CONFLICT ("userId") DO UPDATE SET birthday = EXCLUDED.birthday`,
+		userID, birthday).Error)
+}
+
+func TestFollowingRepository_ListFollowingByBirthday(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	me := insertTestUser(t, "u_bd_me", "bdme")
+	defer cleanupUser(t, me.ID)
+	fe1 := insertTestUser(t, "u_bd_fe1", "bdfe1")
+	defer cleanupUser(t, fe1.ID)
+	fe2 := insertTestUser(t, "u_bd_fe2", "bdfe2")
+	defer cleanupUser(t, fe2.ID)
+	fe3 := insertTestUser(t, "u_bd_fe3", "bdfe3")
+	defer cleanupUser(t, fe3.ID)
+
+	insertBirthdayProfile(t, fe1.ID, "1990-05-10")
+	insertBirthdayProfile(t, fe2.ID, "1991-12-30")
+	insertBirthdayProfile(t, fe3.ID, "1992-01-03")
+
+	insertFollowing(t, "fl_bd_1", me.ID, fe1.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_bd_1")
+	insertFollowing(t, "fl_bd_2", me.ID, fe2.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_bd_2")
+	insertFollowing(t, "fl_bd_3", me.ID, fe3.ID)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_bd_3")
+
+	// 単発: 5/10 のみ。
+	rows, err := repo.ListFollowingByBirthday(me.ID, 510, 510, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, fe1.ID, rows[0].FolloweeID)
+
+	// 範囲 (年跨ぎ): 12/25..1/5 → fe2, fe3 (mmdd 昇順なので 103, 1230)。
+	rows2, err := repo.ListFollowingByBirthday(me.ID, 1225, 105, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows2, 2)
+	// mmdd ASC なので fe3 (0103) が先、fe2 (1230) が後。
+	assert.Equal(t, fe3.ID, rows2[0].FolloweeID)
+	assert.Equal(t, fe2.ID, rows2[1].FolloweeID)
+
+	// 範囲 (正常): 1/1..6/30 → fe1 (05-10), fe3 (01-03)。
+	rows3, err := repo.ListFollowingByBirthday(me.ID, 101, 630, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows3, 2)
+}
+
+func TestFollowingRepository_ListFollowingByBirthday_LimitDefaultsAndOffset(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	// limit <= 0 / > 100 のパスを通す。呼び出しが成功すれば良い。
+	_, err := repo.ListFollowingByBirthday("nobody", 1, 1231, 0, 0)
+	require.NoError(t, err)
+	_, err = repo.ListFollowingByBirthday("nobody", 1, 1231, 500, 0)
+	require.NoError(t, err)
+}
+
+func TestFollowingRepository_ListFollowingByBirthday_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewFollowingRepository(testDB.WithContext(ctx))
+	_, err := repo.ListFollowingByBirthday("me", 1, 1231, 10, 0)
+	assert.Error(t, err)
 }

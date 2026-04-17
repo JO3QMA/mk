@@ -90,6 +90,14 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 		q = q.Order("\"usersCount\" ASC")
 	case "-users":
 		q = q.Order("\"usersCount\" DESC")
+	case "+following":
+		q = q.Order("\"followingCount\" ASC")
+	case "-following":
+		q = q.Order("\"followingCount\" DESC")
+	case "+followers":
+		q = q.Order("\"followersCount\" ASC")
+	case "-followers":
+		q = q.Order("\"followersCount\" DESC")
 	case "+firstRetrievedAt":
 		q = q.Order("\"firstRetrievedAt\" ASC")
 	default:

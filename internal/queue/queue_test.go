@@ -310,6 +310,93 @@ func TestInspector_GetQueueInfo_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestInspector_ListPendingTasksAndGetTaskInfo(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{
+		Inbox: "https://remote.example/inbox", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p",
+	}))
+
+	insp := queue.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	pending, err := insp.ListPendingTasks(queue.QueueName, 1, 30)
+	require.NoError(t, err)
+	require.NotEmpty(t, pending, "at least one pending task expected")
+	taskID := pending[0].ID
+	assert.Equal(t, queue.QueueName, pending[0].Queue)
+	assert.NotZero(t, pending[0].Type)
+
+	// GetTaskInfo で同じ ID を引けること
+	info, err := insp.GetTaskInfo(queue.QueueName, taskID)
+	require.NoError(t, err)
+	assert.Equal(t, taskID, info.ID)
+}
+
+func TestInspector_ListActiveScheduledRetry_EmptyByDefault(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	// enqueue 後即 list。active/scheduled/retry は空でも err にならない。
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{
+		Inbox: "https://remote.example/inbox", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p",
+	}))
+
+	insp := queue.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	active, err := insp.ListActiveTasks(queue.QueueName, 1, 30)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(active), 0)
+
+	scheduled, err := insp.ListScheduledTasks(queue.QueueName, 1, 30)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(scheduled), 0)
+
+	retry, err := insp.ListRetryTasks(queue.QueueName, 1, 30)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(retry), 0)
+}
+
+func TestInspector_ListTasks_DefaultsClamped(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	insp := queue.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	// page/pageSize が 0 以下でも default に丸められてエラーにならない。
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{
+		Inbox: "https://remote.example/inbox", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p",
+	}))
+
+	rows, err := insp.ListPendingTasks(queue.QueueName, 0, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, rows)
+
+	rows, err = insp.ListPendingTasks(queue.QueueName, -5, 500)
+	require.NoError(t, err)
+	assert.NotNil(t, rows)
+}
+
+func TestInspector_GetTaskInfo_NotFound(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	insp := queue.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	_, err := insp.GetTaskInfo(queue.QueueName, "nonexistent-id")
+	assert.Error(t, err)
+}
+
 func TestNewWebPushTask_RoundTrip(t *testing.T) {
 	payload := queue.WebPushPayload{
 		UserID: "u1",
@@ -475,6 +562,30 @@ func TestClient_EnqueueReactionFlush(t *testing.T) {
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueReactionFlush())
+}
+
+func TestClient_EnqueueDeleteAccount(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(redisOpt())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueDeleteAccount(queue.DeleteAccountPayload{UserID: "u1"}))
+}
+
+func TestNewDeleteAccountTask_RoundTrip(t *testing.T) {
+	payload := queue.DeleteAccountPayload{UserID: "u-delete"}
+	task := queue.NewDeleteAccountTask(payload)
+	require.Equal(t, queue.TaskTypeDeleteAccount, task.Type())
+	got, err := queue.DecodeDeleteAccountPayload(task.Payload())
+	require.NoError(t, err)
+	require.Equal(t, "u-delete", got.UserID)
+}
+
+func TestDecodeDeleteAccountPayload_MalformedReturnsError(t *testing.T) {
+	_, err := queue.DecodeDeleteAccountPayload([]byte(`not-json`))
+	require.Error(t, err)
 }
 
 // ensure errors package referenced for completeness in CI builds.

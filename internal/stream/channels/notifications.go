@@ -20,13 +20,14 @@ func NewNotifications(ctx stream.ChannelContext) stream.Channel {
 	return &NotificationsChannel{ctx: ctx}
 }
 
-func (c *NotificationsChannel) Init(_ json.RawMessage) {
+func (c *NotificationsChannel) Init(_ json.RawMessage) error {
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.topic = "notifications:" + user.ID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *NotificationsChannel) OnRedisEvent(payload []byte) {
@@ -34,6 +35,12 @@ func (c *NotificationsChannel) OnRedisEvent(payload []byte) {
 }
 
 func (c *NotificationsChannel) OnClientMessage(string, json.RawMessage) {}
+
+// ShouldShare implements stream.ShareableChannel.
+func (c *NotificationsChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *NotificationsChannel) RequiredPermission() string { return "read:account" }
 
 func (c *NotificationsChannel) Dispose() {
 	if c.topic != "" {
@@ -60,15 +67,17 @@ func NewMain(ctx stream.ChannelContext) stream.Channel {
 	return &MainChannel{ctx: ctx}
 }
 
-func (c *MainChannel) Init(_ json.RawMessage) {
+func (c *MainChannel) Init(_ json.RawMessage) error {
+	// TS本家のmain.ts: if (!this.user) return false;
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		return stream.ErrInvalidParams
 	}
 	c.notif = "notifications:" + user.ID
 	c.mainTop = "main:" + user.ID
 	c.ctx.Subscribe(c.notif)
 	c.ctx.Subscribe(c.mainTop)
+	return nil
 }
 
 // OnRedisEvent attempts to read a hint type from the payload (a JSON object
@@ -88,6 +97,12 @@ func (c *MainChannel) OnRedisEvent(payload []byte) {
 }
 
 func (c *MainChannel) OnClientMessage(string, json.RawMessage) {}
+
+// ShouldShare implements stream.ShareableChannel.
+func (c *MainChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *MainChannel) RequiredPermission() string { return "read:account" }
 
 func (c *MainChannel) Dispose() {
 	if c.notif != "" {

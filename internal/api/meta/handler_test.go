@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,6 +265,11 @@ type stubAdRepo struct {
 func (s *stubAdRepo) ListActive(_ time.Time) ([]*model.Ad, error) {
 	return s.ads, s.err
 }
+func (s *stubAdRepo) Create(_ *model.Ad) error                      { return nil }
+func (s *stubAdRepo) FindByID(_ string) (*model.Ad, error)          { return nil, nil }
+func (s *stubAdRepo) List(_, _ int) ([]*model.Ad, error)            { return nil, nil }
+func (s *stubAdRepo) UpdateFields(_ string, _ map[string]any) error { return nil }
+func (s *stubAdRepo) Delete(_ string) error                         { return nil }
 
 // /api/meta returns the active ads list from AdRepository and notesPerOneAd
 // from meta. Frontend reads these and handles injection.
@@ -334,4 +340,29 @@ func TestMeta_AdsRepoErrorFallsBackToEmpty(t *testing.T) {
 	ads, ok := resp["ads"].([]any)
 	require.True(t, ok)
 	assert.Empty(t, ads)
+}
+
+func TestMeta_DetailFalse(t *testing.T) {
+	h, metaRepo := newTestHandler()
+	name := "Instance"
+	metaRepo.Meta = &model.Meta{ID: "x", Name: &name, EnableHcaptcha: true}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", strings.NewReader(`{"detail":false}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	// 基本フィールドが含まれる
+	assert.Equal(t, "Instance", resp["name"])
+	assert.Equal(t, true, resp["enableHcaptcha"])
+	assert.Equal(t, "2026.3.2", resp["version"])
+	// 省かれるフィールド
+	assert.Nil(t, resp["features"])
+	assert.Nil(t, resp["policies"])
+	assert.Nil(t, resp["clientOptions"])
 }

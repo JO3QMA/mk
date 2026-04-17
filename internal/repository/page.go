@@ -13,6 +13,9 @@ type PageRepository interface {
 	UpdateFields(pageID string, fields map[string]any) error
 	Delete(p *model.Page) error
 	ListByUser(userID string, limit, offset int) ([]*model.Page, error)
+	// ListPublicByUser returns only public pages owned by userID, used by
+	// users/pages when viewer is not the owner.
+	ListPublicByUser(userID string, limit, offset int) ([]*model.Page, error)
 	ListFeatured(limit, offset int) ([]*model.Page, error)
 	IncrementCount(pageID, column string, delta int) error
 }
@@ -69,6 +72,24 @@ func (r *pageRepository) ListByUser(userID string, limit, offset int) ([]*model.
 	}
 	var rows []*model.Page
 	if err := r.db.Where("\"userId\" = ?", userID).
+		Order("\"updatedAt\" DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *pageRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Page, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Page
+	if err := r.db.Where("\"userId\" = ? AND visibility = ?", userID, string(model.PageVisibilityPublic)).
 		Order("\"updatedAt\" DESC").
 		Limit(limit).
 		Offset(offset).

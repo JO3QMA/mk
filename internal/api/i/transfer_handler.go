@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/transfer"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -29,13 +30,13 @@ func (h *Handler) exportHandler(exportType string) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		u := middleware.GetUser(c)
 		if h.transferEnqueuer == nil {
-			return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Transfer queue not configured.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Transfer queue not configured.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
 		if err := h.transferEnqueuer.EnqueueExport(queue.ExportPayload{
 			UserID: u.ID,
 			Type:   exportType,
 		}); err != nil {
-			return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Failed to enqueue export.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to enqueue export.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
 		return c.NoContent(http.StatusNoContent)
 	}
@@ -50,17 +51,17 @@ func (h *Handler) importHandler(importType string) echo.HandlerFunc {
 			FileID string `json:"fileId"`
 		}
 		if err := c.Bind(&req); err != nil || req.FileID == "" {
-			return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "fileId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "fileId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 		}
 		if h.transferEnqueuer == nil {
-			return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Transfer queue not configured.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Transfer queue not configured.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
 		if err := h.transferEnqueuer.EnqueueImport(queue.ImportPayload{
 			UserID: u.ID,
 			Type:   importType,
 			FileID: req.FileID,
 		}); err != nil {
-			return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Failed to enqueue import.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to enqueue import.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
 		return c.NoContent(http.StatusNoContent)
 	}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -40,9 +41,10 @@ type Config struct {
 
 // Fetcher fetches and parses URL previews with caching and SSRF protection.
 type Fetcher struct {
-	cfg    Config
-	redis  *redis.Client
-	client *http.Client
+	cfg         Config
+	redis       *redis.Client
+	client      *http.Client
+	proxyClient *http.Client
 }
 
 // SetHTTPClient replaces the HTTP client (for tests that need to bypass
@@ -78,7 +80,15 @@ func NewFetcher(cfg Config, rdb *redis.Client) *Fetcher {
 		}
 	}
 
-	return &Fetcher{cfg: cfg, redis: rdb, client: client}
+	return &Fetcher{
+		cfg:    cfg,
+		redis:  rdb,
+		client: client,
+		// proxyClientはSSRF保護なしの専用クライアント。管理者が設定した
+		// 信頼済みプロキシURLはlocalhostやプライベートネットワーク上に
+		// 配置されることが多いため、プライベートIPブロックを適用しない。
+		proxyClient: &http.Client{Timeout: timeout},
+	}
 }
 
 // Fetch returns the URL preview, using Redis cache when available.
@@ -87,12 +97,12 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 		return nil, ErrDisabled
 	}
 
-	// 外部 summarizer proxy が設定されていればそちらに委譲する。
+	// 外部summarizer proxyが設定されていればそちらに委譲する。
 	if f.cfg.SummaryProxyURL != "" {
 		return f.fetchViaProxy(ctx, rawURL)
 	}
 
-	// Redis キャッシュ確認
+	// Redisキャッシュ確認
 	cacheKey := cachePrefix + hashURL(rawURL)
 	if f.redis != nil {
 		if cached, err := f.redis.Get(ctx, cacheKey).Bytes(); err == nil {
@@ -108,7 +118,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 		return nil, err
 	}
 
-	// Redis キャッシュ保存
+	// Redisキャッシュ保存
 	if f.redis != nil {
 		if data, err := json.Marshal(result); err == nil {
 			f.redis.Set(ctx, cacheKey, data, cacheTTL)
@@ -143,7 +153,7 @@ func (f *Fetcher) fetchAndParse(ctx context.Context, rawURL string) (*Result, er
 		return nil, fmt.Errorf("%w: status %d", ErrFetchFailed, resp.StatusCode)
 	}
 
-	// Content-Length チェック
+	// Content-Lengthチェック
 	if f.cfg.RequireContentLength {
 		cl := resp.Header.Get("Content-Length")
 		if cl == "" {
@@ -156,7 +166,7 @@ func (f *Fetcher) fetchAndParse(ctx context.Context, rawURL string) (*Result, er
 		}
 	}
 
-	// HTML のみ解析する。それ以外は URL だけ返す。
+	// HTMLのみ解析する。それ以外はURLだけ返す。
 	ct := resp.Header.Get("Content-Type")
 	if !strings.Contains(ct, "text/html") && !strings.Contains(ct, "application/xhtml") {
 		return &Result{URL: rawURL, Player: PlayerResult{Allow: []string{}}}, nil
@@ -167,15 +177,16 @@ func (f *Fetcher) fetchAndParse(ctx context.Context, rawURL string) (*Result, er
 }
 
 // fetchViaProxy delegates to an external summarizer service.
-// proxy は管理者が設定した信頼済み URL なので SSRF チェックを適用しない。
+//
+// proxyは管理者が設定した信頼済みURLなのでSSRFチェックを適用しないが、
+// rawURLはクエリパラメータとして安全にエスケープする。
 func (f *Fetcher) fetchViaProxy(ctx context.Context, rawURL string) (*Result, error) {
-	proxyURL := f.cfg.SummaryProxyURL + "?url=" + rawURL
+	proxyURL := f.cfg.SummaryProxyURL + "?url=" + url.QueryEscape(rawURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxyURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFetchFailed, err)
 	}
-	proxyClient := &http.Client{Timeout: f.client.Timeout}
-	resp, err := proxyClient.Do(req)
+	resp, err := f.proxyClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFetchFailed, err)
 	}
@@ -197,7 +208,7 @@ func hashURL(u string) string {
 func isPrivateHost(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
-		// DNS 名は解決してからチェック (Dialer 段階では IP が確定している)
+		// DNS名は解決してからチェック(Dialer段階でIPが確定している)
 		return false
 	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()

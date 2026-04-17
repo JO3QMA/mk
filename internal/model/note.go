@@ -76,3 +76,11 @@ type NoteSearchFilter struct {
 	SinceID   string
 	Limit     int
 }
+
+// ReplyTargetCount is a (userID, count) pair returned by
+// NoteRepository.CountReplyTargets. repository と testutil の両方から参照される
+// ため model パッケージに置く (循環依存の回避)。
+type ReplyTargetCount struct {
+	UserID string `gorm:"column:replyUserId"`
+	Count  int64  `gorm:"column:count"`
+}

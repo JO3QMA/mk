@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -30,7 +31,7 @@ func (h *Handler) Create(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PairRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if _, err := h.svc.Mute(user.ID, req.UserID); err != nil {
 		switch {
@@ -43,7 +44,7 @@ func (h *Handler) Create(c echo.Context) error {
 				},
 			})
 		case errors.Is(err, coremuting.ErrMuteeNotFound):
-			return noSuchUser(c)
+			return apierr.JSONNoSuchUser(c)
 		case errors.Is(err, coremuting.ErrAlreadyMuting):
 			return c.JSON(http.StatusBadRequest, map[string]any{
 				"error": map[string]any{
@@ -53,7 +54,7 @@ func (h *Handler) Create(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -63,7 +64,7 @@ func (h *Handler) Delete(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PairRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if err := h.svc.Unmute(user.ID, req.UserID); err != nil {
 		switch {
@@ -84,7 +85,7 @@ func (h *Handler) Delete(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -100,7 +101,7 @@ func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 30
@@ -110,7 +111,7 @@ func (h *Handler) List(c echo.Context) error {
 	}
 	rows, err := h.svc.List(user.ID, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, m := range rows {
@@ -120,34 +121,4 @@ func (h *Handler) List(c echo.Context) error {
 		})
 	}
 	return c.JSON(http.StatusOK, out)
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
-}
-
-func noSuchUser(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such user.",
-			"code":    "NO_SUCH_USER",
-			"id":      "4362f8dc-731f-4ad8-a694-be5a88922a24",
-		},
-	})
 }

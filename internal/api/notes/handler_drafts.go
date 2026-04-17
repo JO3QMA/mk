@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -45,7 +46,7 @@ func (h *Handler) DraftsCreate(c echo.Context) error {
 		FileIDs    []string `json:"fileIds"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Visibility == "" {
 		req.Visibility = "public"
@@ -59,7 +60,7 @@ func (h *Handler) DraftsCreate(c echo.Context) error {
 		FileIDs:    req.FileIDs,
 	}
 	if err := h.draftRepo.Create(draft); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, packDraft(draft, h.idGen))
 }
@@ -78,11 +79,11 @@ func (h *Handler) DraftsUpdate(c echo.Context) error {
 		FileIDs    []string `json:"fileIds"`
 	}
 	if err := c.Bind(&req); err != nil || req.DraftID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "draftId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "draftId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	draft, err := h.draftRepo.FindByIDAndUser(req.DraftID, user.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_DRAFT", "No such draft.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_DRAFT", "No such draft.", "00000000-0000-0000-0000-000000000000"))
 	}
 	if req.Text != nil {
 		draft.Text = req.Text
@@ -110,7 +111,7 @@ func (h *Handler) DraftsDelete(c echo.Context) error {
 		DraftID string `json:"draftId"`
 	}
 	if err := c.Bind(&req); err != nil || req.DraftID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "draftId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "draftId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	_ = h.draftRepo.Delete(req.DraftID, user.ID)
 	return c.NoContent(http.StatusNoContent)
@@ -132,7 +133,7 @@ func (h *Handler) ThreadMutingCreate(c echo.Context) error {
 		NoteID string `json:"noteId"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -143,7 +144,7 @@ func (h *Handler) ThreadMutingDelete(c echo.Context) error {
 		NoteID string `json:"noteId"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }

@@ -9,10 +9,13 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -42,6 +45,12 @@ type StreamingPublisher interface {
 	PublishRoomMessage(ctx context.Context, roomID, eventType string, body any)
 }
 
+// APDeliverer delivers a pre-rendered activity body to a single remote user's
+// inbox. Implemented by federation.DeliverService.DeliverToUser.
+type APDeliverer interface {
+	DeliverToUser(signerUserID string, recipient *model.User, body []byte) error
+}
+
 // Event types mirrored by the WebSocket channel. 本家と同名。
 const (
 	EventMessage = "message"
@@ -55,6 +64,10 @@ type Service struct {
 	repo      repository.ChatRepository
 	idGen     id.Generator
 	publisher StreamingPublisher
+	userRepo  repository.UserRepository
+	renderer  *activitypub.Renderer
+	urls      *activitypub.URLBuilder
+	deliverer APDeliverer
 }
 
 // NewService constructs a chat Service.
@@ -67,6 +80,15 @@ func NewService(repo repository.ChatRepository, idGen id.Generator) *Service {
 // DB 処理は変わらない)。
 func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 	s.publisher = p
+}
+
+// SetAPDelivery wires the AP federation layer for chat message delivery to
+// remote users. All parameters are required; pass nil to disable federation.
+func (s *Service) SetAPDelivery(userRepo repository.UserRepository, renderer *activitypub.Renderer, urls *activitypub.URLBuilder, deliverer APDeliverer) {
+	s.userRepo = userRepo
+	s.renderer = renderer
+	s.urls = urls
+	s.deliverer = deliverer
 }
 
 // --- Message lifecycle ---
@@ -94,6 +116,80 @@ func (s *Service) CreateMessageToUser(ctx context.Context, fromUserID, toUserID,
 	}
 	if s.publisher != nil {
 		s.publisher.PublishUserMessage(ctx, fromUserID, toUserID, EventMessage, packMessage(msg))
+	}
+	// リモートユーザー宛ならAP配送 (best-effort)
+	s.tryDeliverToRemoteUser(msg, fromUserID, toUserID)
+	return msg, nil
+}
+
+// tryDeliverToRemoteUser attempts AP delivery for a 1-on-1 chat message when
+// the recipient is a remote user. Errors are logged and swallowed (DB commit
+// is already done).
+func (s *Service) tryDeliverToRemoteUser(msg *model.ChatMessage, fromUserID, toUserID string) {
+	if s.deliverer == nil || s.userRepo == nil || s.renderer == nil || s.urls == nil {
+		return
+	}
+	recipient, err := s.userRepo.FindByID(toUserID)
+	if err != nil || recipient.IsLocal() {
+		return
+	}
+	sender, err := s.userRepo.FindByID(fromUserID)
+	if err != nil || !sender.IsLocal() {
+		return
+	}
+	senderURI := s.urls.UserURI(sender.ID)
+	recipientURI := ""
+	if recipient.URI != nil {
+		recipientURI = *recipient.URI
+	}
+	if recipientURI == "" {
+		return
+	}
+	_ = s.repo.UpdateDeliveryStatus(msg.ID, true, false)
+	cm := s.renderer.RenderChatMessage(msg, senderURI, recipientURI)
+	body, err := json.Marshal(cm)
+	if err != nil {
+		_ = s.repo.UpdateDeliveryStatus(msg.ID, false, true)
+		slog.Warn("chat: failed to marshal ChatMessage activity", "msgID", msg.ID, "err", err)
+		return
+	}
+	if err := s.deliverer.DeliverToUser(sender.ID, recipient, body); err != nil {
+		_ = s.repo.UpdateDeliveryStatus(msg.ID, false, true)
+		slog.Warn("chat: failed to deliver ChatMessage to remote user", "msgID", msg.ID, "err", err)
+		return
+	}
+	_ = s.repo.UpdateDeliveryStatus(msg.ID, false, false)
+}
+
+// CreateMessageViaAP persists a chat message received via ActivityPub from a
+// remote user. The uri parameter is the activity's canonical ID. AP retries
+// are common so URI-based dedup is performed (IngestNote と同じパターン).
+func (s *Service) CreateMessageViaAP(ctx context.Context, uri string, fromUser *model.User, toUserID, text string) (*model.ChatMessage, error) {
+	if fromUser == nil || toUserID == "" {
+		return nil, ErrInvalidTarget
+	}
+	// AP retry による重複メッセージ作成を防ぐ
+	if uri != "" {
+		if existing, err := s.repo.FindMessageByURI(uri); err == nil {
+			return existing, nil
+		}
+	}
+	msg := &model.ChatMessage{
+		ID:         s.idGen.Generate(time.Now()),
+		FromUserID: fromUser.ID,
+		ToUserID:   &toUserID,
+	}
+	if text != "" {
+		msg.Text = &text
+	}
+	if uri != "" {
+		msg.URI = &uri
+	}
+	if err := s.repo.CreateMessage(msg); err != nil {
+		return nil, fmt.Errorf("create AP message: %w", err)
+	}
+	if s.publisher != nil {
+		s.publisher.PublishUserMessage(ctx, fromUser.ID, toUserID, EventMessage, packMessage(msg))
 	}
 	return msg, nil
 }

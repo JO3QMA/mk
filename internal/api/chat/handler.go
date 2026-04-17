@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corechat "github.com/shiroha-a/mk/internal/core/chat"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -40,19 +41,13 @@ func (h *Handler) SetService(svc *corechat.Service) {
 func (h *Handler) mapChatErr(c echo.Context, err error) error {
 	switch {
 	case errors.Is(err, corechat.ErrNotFound):
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 	case errors.Is(err, corechat.ErrForbidden):
-		return c.JSON(http.StatusForbidden, apiError("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	case errors.Is(err, corechat.ErrInvalidTarget):
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "toUserId or toRoomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "toUserId or toRoomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
-	return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
-}
-
-func apiError(code, message, errID string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": errID},
-	}
+	return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 }
 
 func packRoom(r *model.ChatRoom) map[string]any {
@@ -93,14 +88,14 @@ func (h *Handler) RoomsCreate(c echo.Context) error {
 		Description string `json:"description"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "name is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	room := &model.ChatRoom{
 		ID: h.idGen.Generate(time.Now()), Name: req.Name,
 		OwnerID: user.ID, Description: req.Description,
 	}
 	if err := h.repo.CreateRoom(room); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, packRoom(room))
 }
@@ -111,11 +106,11 @@ func (h *Handler) RoomsShow(c echo.Context) error {
 		RoomID string `json:"roomId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	return c.JSON(http.StatusOK, packRoom(room))
 }
@@ -129,11 +124,11 @@ func (h *Handler) RoomsUpdate(c echo.Context) error {
 		Description string `json:"description"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil || room.OwnerID != user.ID {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	if req.Name != "" {
 		room.Name = req.Name
@@ -142,7 +137,7 @@ func (h *Handler) RoomsUpdate(c echo.Context) error {
 		room.Description = req.Description
 	}
 	if err := h.repo.UpdateRoom(room); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, packRoom(room))
 }
@@ -154,11 +149,11 @@ func (h *Handler) RoomsDelete(c echo.Context) error {
 		RoomID string `json:"roomId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil || room.OwnerID != user.ID {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	_ = h.repo.DeleteRoom(req.RoomID)
 	return c.NoContent(http.StatusNoContent)
@@ -193,7 +188,7 @@ func (h *Handler) RoomsLeave(c echo.Context) error {
 		RoomID string `json:"roomId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	_ = h.repo.DeleteMembership(user.ID, req.RoomID)
 	return c.NoContent(http.StatusNoContent)
@@ -206,7 +201,7 @@ func (h *Handler) RoomsMute(c echo.Context) error {
 		RoomID string `json:"roomId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	m, err := h.repo.FindMembership(user.ID, req.RoomID)
 	if err != nil {
@@ -224,7 +219,7 @@ func (h *Handler) RoomsUnmute(c echo.Context) error {
 		RoomID string `json:"roomId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	m, err := h.repo.FindMembership(user.ID, req.RoomID)
 	if err != nil {
@@ -243,11 +238,11 @@ func (h *Handler) RoomsTransferOwnership(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId and userId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId and userId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil || room.OwnerID != user.ID {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	room.OwnerID = req.UserID
 	_ = h.repo.UpdateRoom(room)
@@ -267,7 +262,7 @@ func (h *Handler) MessagesCreate(c echo.Context) error {
 		FileID   *string `json:"fileId"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	if h.svc == nil {
 		// 未wire時のフォールバック (テスト互換)
@@ -291,7 +286,7 @@ func (h *Handler) MessagesCreate(c echo.Context) error {
 	case req.ToUserID != nil && *req.ToUserID != "":
 		msg, err = h.svc.CreateMessageToUser(c.Request().Context(), user.ID, *req.ToUserID, text, fileID)
 	default:
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "toUserId or toRoomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "toUserId or toRoomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	if err != nil {
 		return h.mapChatErr(c, err)
@@ -309,7 +304,7 @@ func (h *Handler) messagesCreateLegacy(c echo.Context, user *model.User, text, t
 		Text: text, FileID: fileID,
 	}
 	if err := h.repo.CreateMessage(msg); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, packMessage(msg))
 }
@@ -320,11 +315,11 @@ func (h *Handler) MessagesShow(c echo.Context) error {
 		MessageID string `json:"messageId"`
 	}
 	if err := c.Bind(&req); err != nil || req.MessageID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	msg, err := h.repo.FindMessageByID(req.MessageID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 	}
 	return c.JSON(http.StatusOK, packMessage(msg))
 }
@@ -337,13 +332,13 @@ func (h *Handler) MessagesUpdate(c echo.Context) error {
 		Text      *string `json:"text"`
 	}
 	if err := c.Bind(&req); err != nil || req.MessageID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	if h.svc == nil {
 		// legacy fallback
 		msg, err := h.repo.FindMessageByID(req.MessageID)
 		if err != nil || msg.FromUserID != user.ID {
-			return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 		}
 		if req.Text != nil {
 			msg.Text = req.Text
@@ -368,12 +363,12 @@ func (h *Handler) MessagesDelete(c echo.Context) error {
 		MessageID string `json:"messageId"`
 	}
 	if err := c.Bind(&req); err != nil || req.MessageID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	if h.svc == nil {
 		msg, err := h.repo.FindMessageByID(req.MessageID)
 		if err != nil || msg.FromUserID != user.ID {
-			return c.JSON(http.StatusNotFound, apiError("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 		}
 		_ = h.repo.DeleteMessage(req.MessageID)
 		return c.NoContent(http.StatusNoContent)
@@ -391,7 +386,7 @@ func (h *Handler) MessagesRead(c echo.Context) error {
 		MessageID string `json:"messageId"`
 	}
 	if err := c.Bind(&req); err != nil || req.MessageID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "messageId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	if h.svc != nil {
 		if err := h.svc.MarkReadByMessageID(c.Request().Context(), user.ID, req.MessageID); err != nil {
@@ -412,7 +407,7 @@ func (h *Handler) Messages(c echo.Context) error {
 		Limit  int    `json:"limit"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	var msgs []*model.ChatMessage
 	if req.RoomID != "" {
@@ -435,7 +430,7 @@ func (h *Handler) MessagesSearch(c echo.Context) error {
 		Limit int    `json:"limit"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	msgs, _ := h.repo.SearchMessages(user.ID, req.Query, req.Limit)
 	result := make([]map[string]any, len(msgs))
@@ -445,13 +440,39 @@ func (h *Handler) MessagesSearch(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-// ReactionsCreate handles POST /api/chat/messages/reactions/create.
+// ReactionsCreate handles POST /api/chat/messages/reactions/create and
+// POST /api/chat/messages/react. Reaction format: "userId/emoji".
 func (h *Handler) ReactionsCreate(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		MessageID string `json:"messageId"`
+		Reaction  string `json:"reaction"`
+	}
+	if err := c.Bind(&req); err != nil || req.MessageID == "" || req.Reaction == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	reaction := user.ID + "/" + req.Reaction
+	if err := h.repo.AddReaction(req.MessageID, reaction); err != nil {
+		return apierr.JSONInternalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-// ReactionsDelete handles POST /api/chat/messages/reactions/delete.
+// ReactionsDelete handles POST /api/chat/messages/reactions/delete and
+// POST /api/chat/messages/unreact.
 func (h *Handler) ReactionsDelete(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		MessageID string `json:"messageId"`
+		Reaction  string `json:"reaction"`
+	}
+	if err := c.Bind(&req); err != nil || req.MessageID == "" || req.Reaction == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	reaction := user.ID + "/" + req.Reaction
+	if err := h.repo.RemoveReaction(req.MessageID, reaction); err != nil {
+		return apierr.JSONInternalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -464,13 +485,13 @@ func (h *Handler) InvitationsCreate(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId and userId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId and userId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	inv := &model.ChatRoomInvitation{
 		ID: h.idGen.Generate(time.Now()), UserID: req.UserID, RoomID: req.RoomID,
 	}
 	if err := h.repo.CreateInvitation(inv); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -481,7 +502,7 @@ func (h *Handler) InvitationsDelete(c echo.Context) error {
 		InvitationID string `json:"invitationId"`
 	}
 	if err := c.Bind(&req); err != nil || req.InvitationID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "invitationId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "invitationId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	_ = h.repo.DeleteInvitation(req.InvitationID)
 	return c.NoContent(http.StatusNoContent)
@@ -495,7 +516,7 @@ func (h *Handler) InvitationsAccept(c echo.Context) error {
 		RoomID       string `json:"roomId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	// メンバーシップを作成
 	m := &model.ChatRoomMembership{
@@ -516,7 +537,7 @@ func (h *Handler) InvitationsReject(c echo.Context) error {
 		RoomID string `json:"roomId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	if inv, err := h.repo.FindInvitation(user.ID, req.RoomID); err == nil {
 		_ = h.repo.DeleteInvitation(inv.ID)
@@ -531,22 +552,256 @@ func (h *Handler) MembersBan(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "roomId and userId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roomId and userId are required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 	_ = h.repo.DeleteMembership(req.UserID, req.RoomID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // MembersUpdateMembership handles POST /api/chat/rooms/members/update-membership.
+// ルームオーナーのみが他メンバーの設定を変更できる。
 func (h *Handler) MembersUpdateMembership(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		RoomID  string `json:"roomId"`
+		UserID  string `json:"userId"`
+		IsMuted *bool  `json:"isMuted"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" || req.UserID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	room, err := h.repo.FindRoomByID(req.RoomID)
+	if err != nil || room.OwnerID != user.ID {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "b3926861-29ef-4df6-98b5-a7c640ad2b5a"))
+	}
+	mem, err := h.repo.FindMembership(req.UserID, req.RoomID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MEMBER", "Not a member.", "e3285385-56ee-4909-9ef4-4a0e6e2e614a"))
+	}
+	if req.IsMuted != nil {
+		mem.IsMuted = *req.IsMuted
+	}
+	if err := h.repo.UpdateMembership(mem); err != nil {
+		return apierr.JSONInternalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// --- TS-compatible aliases ---
+
+// MessagesCreateToUser handles POST /api/chat/messages/create-to-user.
+func (h *Handler) MessagesCreateToUser(c echo.Context) error {
+	return h.MessagesCreate(c)
+}
+
+// MessagesCreateToRoom handles POST /api/chat/messages/create-to-room.
+func (h *Handler) MessagesCreateToRoom(c echo.Context) error {
+	return h.MessagesCreate(c)
+}
+
+// UserTimeline handles POST /api/chat/messages/user-timeline.
+func (h *Handler) UserTimeline(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		UserID string `json:"userId"`
+		Limit  int    `json:"limit"`
+	}
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	msgs, err := h.repo.ListMessagesByUser(user.ID, req.UserID, req.Limit)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, packMessage(m))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// RoomTimeline handles POST /api/chat/messages/room-timeline.
+func (h *Handler) RoomTimeline(c echo.Context) error {
+	var req struct {
+		RoomID string `json:"roomId"`
+		Limit  int    `json:"limit"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	msgs, err := h.repo.ListMessagesByRoom(req.RoomID, req.Limit)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, packMessage(m))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// ReadAll handles POST /api/chat/read-all.
+func (h *Handler) ReadAll(c echo.Context) error {
+	user := middleware.GetUser(c)
+	if err := h.repo.MarkAllRead(user.ID); err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// InvitationsIgnore handles POST /api/chat/rooms/invitations/ignore.
+func (h *Handler) InvitationsIgnore(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if inv, err := h.repo.FindInvitation(user.ID, req.RoomID); err == nil {
+		inv.Ignored = true
+		_ = h.repo.UpdateInvitation(inv)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// InvitationsInbox handles POST /api/chat/rooms/invitations/inbox.
+func (h *Handler) InvitationsInbox(c echo.Context) error {
+	user := middleware.GetUser(c)
+	rows, err := h.repo.ListInvitationsByUser(user.ID, false)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, inv := range rows {
+		entry := map[string]any{"id": inv.ID, "roomId": inv.RoomID, "userId": inv.UserID}
+		if inv.Room != nil {
+			entry["room"] = packRoom(inv.Room)
+		}
+		out = append(out, entry)
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// InvitationsOutbox handles POST /api/chat/rooms/invitations/outbox.
+func (h *Handler) InvitationsOutbox(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	// 自分が所有するルームの招待一覧を返す
+	room, err := h.repo.FindRoomByID(req.RoomID)
+	if err != nil || room.OwnerID != user.ID {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "b3926861-29ef-4df6-98b5-a7c640ad2b5a"))
+	}
+	rows, err := h.repo.ListInvitationsByRoom(req.RoomID)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, inv := range rows {
+		entry := map[string]any{"id": inv.ID, "roomId": inv.RoomID, "userId": inv.UserID}
+		if inv.User != nil {
+			entry["user"] = packUser(inv.User)
+		}
+		out = append(out, entry)
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// RoomsJoin handles POST /api/chat/rooms/join.
+func (h *Handler) RoomsJoin(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if _, err := h.repo.FindRoomByID(req.RoomID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "b3926861-29ef-4df6-98b5-a7c640ad2b5a"))
+	}
+	// UNIQUE制約違反を避けるため既存メンバーは冪等に204を返す
+	if _, err := h.repo.FindMembership(user.ID, req.RoomID); err == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	mem := &model.ChatRoomMembership{
+		ID: h.idGen.Generate(time.Now()), UserID: user.ID, RoomID: req.RoomID,
+	}
+	if err := h.repo.CreateMembership(mem); err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// RoomsJoining handles POST /api/chat/rooms/joining (TS-compatible alias for /joined).
+func (h *Handler) RoomsJoining(c echo.Context) error {
+	return h.RoomsJoined(c)
+}
+
+// RoomsMembers handles POST /api/chat/rooms/members.
+func (h *Handler) RoomsMembers(c echo.Context) error {
+	var req struct {
+		RoomID string `json:"roomId"`
+		Limit  int    `json:"limit"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	members, err := h.repo.ListMembersByRoom(req.RoomID)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(members))
+	for _, m := range members {
+		entry := map[string]any{"id": m.ID, "userId": m.UserID, "roomId": m.RoomID, "isMuted": m.IsMuted}
+		if m.User != nil {
+			entry["user"] = packUser(m.User)
+		}
+		out = append(out, entry)
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // --- Other ---
 
 // History handles POST /api/chat/history.
 func (h *Handler) History(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	user := middleware.GetUser(c)
+	var req struct {
+		Limit int `json:"limit"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	msgs, err := h.repo.ListHistory(user.ID, req.Limit)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, packMessage(m))
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // UnreadCount handles POST /api/chat/unread-count.

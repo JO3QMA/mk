@@ -12,7 +12,8 @@ import (
 
 // LocalTimelineChannel forwards local-public/home notes.
 type LocalTimelineChannel struct {
-	ctx stream.ChannelContext
+	ctx    stream.ChannelContext
+	filter noteFilter
 }
 
 // NewLocalTimeline は ChannelFactory の形をした生成関数。Registry に
@@ -22,12 +23,17 @@ func NewLocalTimeline(ctx stream.ChannelContext) stream.Channel {
 }
 
 // Init subscribes to the local-timeline pubsub topic.
-func (c *LocalTimelineChannel) Init(_ json.RawMessage) {
+func (c *LocalTimelineChannel) Init(params json.RawMessage) error {
+	c.filter = parseNoteFilter(params)
 	c.ctx.Subscribe("localTimeline")
+	return nil
 }
 
 // OnRedisEvent forwards a JSON-encoded note payload as a `note` event.
 func (c *LocalTimelineChannel) OnRedisEvent(payload []byte) {
+	if !c.filter.shouldEmit(payload) {
+		return
+	}
 	_ = c.ctx.Send("note", json.RawMessage(payload))
 }
 
@@ -41,7 +47,8 @@ func (c *LocalTimelineChannel) Dispose() {
 
 // GlobalTimelineChannel forwards every public note across the federation.
 type GlobalTimelineChannel struct {
-	ctx stream.ChannelContext
+	ctx    stream.ChannelContext
+	filter noteFilter
 }
 
 // NewGlobalTimeline returns a channel factory for "globalTimeline".
@@ -49,8 +56,15 @@ func NewGlobalTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &GlobalTimelineChannel{ctx: ctx}
 }
 
-func (c *GlobalTimelineChannel) Init(_ json.RawMessage) { c.ctx.Subscribe("globalTimeline") }
+func (c *GlobalTimelineChannel) Init(params json.RawMessage) error {
+	c.filter = parseNoteFilter(params)
+	c.ctx.Subscribe("globalTimeline")
+	return nil
+}
 func (c *GlobalTimelineChannel) OnRedisEvent(payload []byte) {
+	if !c.filter.shouldEmit(payload) {
+		return
+	}
 	_ = c.ctx.Send("note", json.RawMessage(payload))
 }
 func (c *GlobalTimelineChannel) OnClientMessage(string, json.RawMessage) {}
@@ -61,8 +75,9 @@ func (c *GlobalTimelineChannel) Dispose() {
 // HomeTimelineChannel forwards notes addressed to the authenticated user. 認証
 // 済みでない場合は subscribe しない (channel は接続するだけで何も送らない)。
 type HomeTimelineChannel struct {
-	ctx   stream.ChannelContext
-	topic string
+	ctx    stream.ChannelContext
+	topic  string
+	filter noteFilter
 }
 
 // NewHomeTimeline returns a channel factory for "homeTimeline".
@@ -70,20 +85,31 @@ func NewHomeTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &HomeTimelineChannel{ctx: ctx}
 }
 
-func (c *HomeTimelineChannel) Init(_ json.RawMessage) {
+func (c *HomeTimelineChannel) Init(params json.RawMessage) error {
+	c.filter = parseNoteFilter(params)
 	user, ok := c.ctx.User().(*model.User)
 	if !ok || user == nil {
-		return
+		// TS本家はrequireCredential=trueでConnection側で弾くが、
+		// Go側は現状 silent no-op としている。Phase 3ではシグネチャ変更に
+		// とどめ、認証拒否はPermittedChannel等別系で扱う
+		return nil
 	}
 	c.topic = "homeTimeline:" + user.ID
 	c.ctx.Subscribe(c.topic)
+	return nil
 }
 
 func (c *HomeTimelineChannel) OnRedisEvent(payload []byte) {
+	if !c.filter.shouldEmit(payload) {
+		return
+	}
 	_ = c.ctx.Send("note", json.RawMessage(payload))
 }
 
 func (c *HomeTimelineChannel) OnClientMessage(string, json.RawMessage) {}
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *HomeTimelineChannel) RequiredPermission() string { return "read:account" }
 
 func (c *HomeTimelineChannel) Dispose() {
 	if c.topic != "" {
@@ -97,6 +123,7 @@ func (c *HomeTimelineChannel) Dispose() {
 type HybridTimelineChannel struct {
 	ctx       stream.ChannelContext
 	homeTopic string
+	filter    noteFilter
 }
 
 // NewHybridTimeline returns a channel factory for "hybridTimeline".
@@ -104,19 +131,27 @@ func NewHybridTimeline(ctx stream.ChannelContext) stream.Channel {
 	return &HybridTimelineChannel{ctx: ctx}
 }
 
-func (c *HybridTimelineChannel) Init(_ json.RawMessage) {
+func (c *HybridTimelineChannel) Init(params json.RawMessage) error {
+	c.filter = parseNoteFilter(params)
 	c.ctx.Subscribe("localTimeline")
 	if user, ok := c.ctx.User().(*model.User); ok && user != nil {
 		c.homeTopic = "homeTimeline:" + user.ID
 		c.ctx.Subscribe(c.homeTopic)
 	}
+	return nil
 }
 
 func (c *HybridTimelineChannel) OnRedisEvent(payload []byte) {
+	if !c.filter.shouldEmit(payload) {
+		return
+	}
 	_ = c.ctx.Send("note", json.RawMessage(payload))
 }
 
 func (c *HybridTimelineChannel) OnClientMessage(string, json.RawMessage) {}
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *HybridTimelineChannel) RequiredPermission() string { return "read:account" }
 
 func (c *HybridTimelineChannel) Dispose() {
 	c.ctx.Unsubscribe("localTimeline")

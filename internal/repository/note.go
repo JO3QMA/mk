@@ -35,6 +35,15 @@ type NoteRepository interface {
 	// DeleteExpiredRemoteNotes deletes remote notes older than expiryDays
 	// in batches of batchSize. Returns the total count of deleted notes.
 	DeleteExpiredRemoteNotes(expiryDays, batchSize int) (int64, error)
+	// DeleteByUserBatch deletes up to batchSize notes authored by userID in a
+	// single DELETE statement. Returns the count actually removed. Callers
+	// drive the loop themselves so that cancellation checkpoints and sleep
+	// pacing live in the processor (see DeleteAccountProcessor).
+	DeleteByUserBatch(userID string, batchSize int) (int64, error)
+	// CountReplyTargets returns the users that userID most frequently replies
+	// to, ordered by reply count descending. Used by
+	// users/get-frequently-replied-users.
+	CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error)
 }
 
 type noteRepository struct {
@@ -376,6 +385,13 @@ func applyTimelineFilter(q *gorm.DB, f model.TimelineDBFilter) *gorm.DB {
 	if f.IncludeLocalRenotes != nil && !*f.IncludeLocalRenotes {
 		q = q.Where(`NOT ("renoteId" IS NOT NULL AND text IS NULL AND "fileIds" = '{}' AND "renoteUserHost" IS NULL)`)
 	}
+	if len(f.MutedChannelIDs) > 0 {
+		// channel_mutingに登録されたチャンネルのノートはタイムラインから除外する。
+		// GORMは連続.WhereをANDで繋ぐがraw SQL側のORはデフォルトでは
+		// 括弧で囲まれないので、明示的に囲まないとAND側の他フィルタを
+		// バイパスしてしまう (SQL優先順位: AND > OR)。
+		q = q.Where(`("channelId" IS NULL OR "channelId" NOT IN ?)`, f.MutedChannelIDs)
+	}
 	return q
 }
 
@@ -463,4 +479,42 @@ func (r *noteRepository) DeleteExpiredRemoteNotes(expiryDays, batchSize int) (in
 		}
 	}
 	return total, nil
+}
+
+func (r *noteRepository) DeleteByUserBatch(userID string, batchSize int) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	res := r.db.Exec(`
+		DELETE FROM "note" WHERE id IN (
+			SELECT id FROM "note"
+			WHERE "userId" = ?
+			LIMIT ?
+		)`, userID, batchSize)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+func (r *noteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	var rows []model.ReplyTargetCount
+	// replyUserIdがNULLのもの (通常起こり得ないが防御)と自己返信は集計から除外する。
+	err := r.db.Model(&model.Note{}).
+		Select(`"replyUserId", COUNT(*) AS count`).
+		Where(`"userId" = ? AND "replyId" IS NOT NULL AND "replyUserId" IS NOT NULL AND "replyUserId" <> ?`, userID, userID).
+		Group(`"replyUserId"`).
+		Order(`count DESC`).
+		Limit(limit).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }

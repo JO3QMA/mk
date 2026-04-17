@@ -5,15 +5,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/core/captcha"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/datatypes"
 )
 
 // IPLogger records user IPs on successful authentication.
@@ -29,6 +33,8 @@ type Handler struct {
 	captchaSvc      *captcha.Service
 	ipLogger        IPLogger
 	ipLoggingOn     bool
+	signinRepo      repository.SigninRepository
+	idGen           id.Generator
 }
 
 // SetIPLogger attaches an IPLogger and enables IP logging.
@@ -40,6 +46,12 @@ func (h *Handler) SetIPLogger(logger IPLogger, enabled bool) {
 // NewHandler creates a new signin Handler.
 func NewHandler(userRepo repository.UserRepository) *Handler {
 	return &Handler{userRepo: userRepo}
+}
+
+// SetSigninRepo attaches a SigninRepository for recording login history.
+func (h *Handler) SetSigninRepo(repo repository.SigninRepository, idGen id.Generator) {
+	h.signinRepo = repo
+	h.idGen = idGen
 }
 
 // SetCaptcha attaches a CaptchaService. When set, signin-flow verifies
@@ -293,6 +305,12 @@ func (h *Handler) ok(c echo.Context, user *model.User) error {
 	if h.ipLoggingOn && h.ipLogger != nil {
 		go h.ipLogger.Upsert(user.ID, c.RealIP())
 	}
+	// signinレコードを非同期で記録
+	// Echoがリクエストを再利用する前にヘッダーをコピーする
+	if h.signinRepo != nil && h.idGen != nil {
+		hdrs := c.Request().Header.Clone()
+		go h.recordSignin(user.ID, c.RealIP(), hdrs)
+	}
 	token := ""
 	if user.Token != nil {
 		token = *user.Token
@@ -302,6 +320,34 @@ func (h *Handler) ok(c echo.Context, user *model.User) error {
 		"id":       user.ID,
 		"i":        token,
 	})
+}
+
+// sanitizeHeaders removes sensitive headers in-place before persisting.
+// 呼び出し元でClone済みのヘッダーを受け取る前提
+func sanitizeHeaders(h http.Header) {
+	h.Del("Authorization")
+	h.Del("Cookie")
+	h.Del("Set-Cookie")
+}
+
+// recordSignin persists a signin record asynchronously.
+func (h *Handler) recordSignin(userID, ip string, headers http.Header) {
+	sanitizeHeaders(headers)
+	hdrs, err := json.Marshal(headers)
+	if err != nil {
+		hdrs = []byte("{}")
+	}
+	now := time.Now()
+	s := &model.Signin{
+		ID:      h.idGen.Generate(now),
+		UserID:  userID,
+		IP:      ip,
+		Headers: datatypes.JSON(hdrs),
+		Success: true,
+	}
+	if err := h.signinRepo.Create(s); err != nil {
+		slog.Warn("failed to record signin", "userId", userID, "err", err)
+	}
 }
 
 func errBody(id string) map[string]any {

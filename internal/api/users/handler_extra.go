@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -24,7 +25,7 @@ func (h *Handler) Relation(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -48,7 +49,7 @@ func (h *Handler) ReportAbuse(c echo.Context) error {
 		Comment string `json:"comment"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" || req.Comment == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "userId and comment are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId and comment are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.abuseRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -60,7 +61,7 @@ func (h *Handler) ReportAbuse(c echo.Context) error {
 		Comment:      req.Comment,
 	}
 	if err := h.abuseRepo.Create(report); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -73,7 +74,7 @@ func (h *Handler) Reactions(c echo.Context) error {
 		Limit  int    `json:"limit"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// 簡易版: 空配列を返す (リアクション履歴クエリは重いため後続で最適化)
 	return c.JSON(http.StatusOK, []any{})
@@ -86,14 +87,14 @@ func (h *Handler) FeaturedNotes(c echo.Context) error {
 		Limit  int    `json:"limit"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
 	notes, err := h.noteRepo.ListByUserID(req.UserID, "", "", req.Limit)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	result := make([]entity.NoteEntity, 0, len(notes))
 	for _, n := range notes {
@@ -110,14 +111,14 @@ func (h *Handler) SearchByUsernameAndHost(c echo.Context) error {
 		Limit    int     `json:"limit"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "username is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "username is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
 	users, err := h.userService.Search(req.Username, req.Limit, 0)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	result := make([]entity.UserLite, 0, len(users))
 	for _, u := range users {
@@ -135,7 +136,7 @@ func (h *Handler) UpdateMemo(c echo.Context) error {
 		Memo   *string `json:"memo"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	if h.memoRepo == nil {
@@ -152,14 +153,8 @@ func (h *Handler) UpdateMemo(c echo.Context) error {
 			Memo:         *req.Memo,
 		}
 		if err := h.memoRepo.CreateOrUpdate(memo); err != nil {
-			return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
 	}
 	return c.NoContent(http.StatusNoContent)
-}
-
-func apiError(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": id},
-	}
 }

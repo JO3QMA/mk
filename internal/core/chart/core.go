@@ -80,6 +80,12 @@ func New(cfg Config) (*Chart, error) {
 // Name returns the chart's camelCase name.
 func (c *Chart) Name() string { return c.schema.Name }
 
+// IsGrouped reports whether this chart aggregates data into per-group
+// buckets (per-user, per-host etc.). Used by the chart cron processor
+// to skip charts that cannot be ticked without an external enumeration
+// source.
+func (c *Chart) IsGrouped() bool { return c.schema.Grouped }
+
 // Commit queues a diff to be merged into the current bucket on the next
 // Save(). The diff values may be int (any signed int type), int64, or
 // []string for uniqueIncrement columns. Unknown keys are silently

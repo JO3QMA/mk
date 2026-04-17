@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/reaction"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -21,14 +22,14 @@ func (h *Handler) ReactionsCreate(c echo.Context) error {
 
 	var req ReactionCreateRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	_, err := h.reactionService.Create(user, req.NoteID, req.Reaction)
 	if err != nil {
 		switch {
 		case errors.Is(err, reaction.ErrNoteNotFound):
-			return noSuchNote(c)
+			return apierr.JSONNoSuchNote(c)
 		case errors.Is(err, reaction.ErrNoteNotVisible):
 			return c.JSON(http.StatusForbidden, map[string]any{
 				"error": map[string]any{
@@ -62,7 +63,7 @@ func (h *Handler) ReactionsCreate(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -78,13 +79,13 @@ func (h *Handler) ReactionsDelete(c echo.Context) error {
 
 	var req ReactionDeleteRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.reactionService.Delete(user, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, reaction.ErrNoteNotFound):
-			return noSuchNote(c)
+			return apierr.JSONNoSuchNote(c)
 		case errors.Is(err, reaction.ErrReactionNotFound):
 			return c.JSON(http.StatusNotFound, map[string]any{
 				"error": map[string]any{
@@ -94,7 +95,7 @@ func (h *Handler) ReactionsDelete(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -112,7 +113,7 @@ type ReactionsListRequest struct {
 func (h *Handler) Reactions(c echo.Context) error {
 	var req ReactionsListRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -126,9 +127,9 @@ func (h *Handler) Reactions(c echo.Context) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, reaction.ErrNoteNotFound), errors.Is(err, reaction.ErrNoteNotVisible):
-			return noSuchNote(c)
+			return apierr.JSONNoSuchNote(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	out := make([]map[string]any, 0, len(rows))

@@ -1,10 +1,12 @@
 package notes
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/timeline"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -45,6 +47,7 @@ func (h *Handler) Timeline(c echo.Context) error {
 			IncludeRenotedMyNotes: req.IncludeRenotedMyNotes,
 			IncludeLocalRenotes:   req.IncludeLocalRenotes,
 			AllowPartial:          req.AllowPartial,
+			MutedChannelIDs:       h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.HomeTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, true)
@@ -54,10 +57,11 @@ func (h *Handler) Timeline(c echo.Context) error {
 func (h *Handler) LocalTimeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
 		f := timeline.TimelineFilter{
-			WithFiles:    req.WithFiles,
-			WithRenotes:  req.WithRenotes,
-			WithReplies:  req.WithReplies,
-			AllowPartial: req.AllowPartial,
+			WithFiles:       req.WithFiles,
+			WithRenotes:     req.WithRenotes,
+			WithReplies:     req.WithReplies,
+			AllowPartial:    req.AllowPartial,
+			MutedChannelIDs: h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.LocalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, false)
@@ -67,9 +71,10 @@ func (h *Handler) LocalTimeline(c echo.Context) error {
 func (h *Handler) GlobalTimeline(c echo.Context) error {
 	return h.serveTimeline(c, func(viewer *model.User, req TimelineRequest) ([]*model.Note, error) {
 		f := timeline.TimelineFilter{
-			WithFiles:    req.WithFiles,
-			WithRenotes:  req.WithRenotes,
-			AllowPartial: req.AllowPartial,
+			WithFiles:       req.WithFiles,
+			WithRenotes:     req.WithRenotes,
+			AllowPartial:    req.AllowPartial,
+			MutedChannelIDs: h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.GlobalTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, false)
@@ -86,9 +91,33 @@ func (h *Handler) HybridTimeline(c echo.Context) error {
 			IncludeRenotedMyNotes: req.IncludeRenotedMyNotes,
 			IncludeLocalRenotes:   req.IncludeLocalRenotes,
 			AllowPartial:          req.AllowPartial,
+			MutedChannelIDs:       h.loadMutedChannelIDs(viewer),
 		}
 		return h.timelineService.HybridTimeline(c.Request().Context(), viewer, req.UntilID, req.SinceID, req.Limit, f)
 	}, true)
+}
+
+// loadMutedChannelIDs returns the channel IDs that viewer has muted. Returns
+// nil for anonymous viewers or when the repo is not wired. On repository
+// error the mute list is skipped (best-effort) and a warning is logged so
+// operators can see silent filter failures.
+func (h *Handler) loadMutedChannelIDs(viewer *model.User) []string {
+	if viewer == nil || h.channelMutingRepo == nil {
+		return nil
+	}
+	rows, err := h.channelMutingRepo.ListByUser(viewer.ID)
+	if err != nil {
+		slog.Warn("timeline: failed to load muted channels", "userId", viewer.ID, "err", err)
+		return nil
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, m := range rows {
+		ids = append(ids, m.ChannelID)
+	}
+	return ids
 }
 
 // serveTimeline factors out the common parsing and error handling for the four
@@ -100,7 +129,7 @@ func (h *Handler) serveTimeline(
 ) error {
 	var req TimelineRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	req.normalize()
 
@@ -133,7 +162,7 @@ func (h *Handler) serveTimeline(
 	if err != nil {
 		// requireAuthでviewer nilチェックは事前に行っているので、Service層からの
 		// ErrUnauthenticatedはここには到達しない。残りはRedis等の障害のみ。
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }

@@ -87,3 +87,40 @@ func TestSystemWebhookRepository_ListActiveFiltersInactive(t *testing.T) {
 	}
 	assert.False(t, hasInactive, "inactive system webhooks must be filtered out")
 }
+
+func TestSystemWebhookRepository_UpdateAdminFieldsPreservesLatestStatus(t *testing.T) {
+	repo := NewSystemWebhookRepository(testDB)
+
+	sw := &model.SystemWebhook{
+		ID: "sw_adm", Name: "orig", URL: "https://o", Secret: "s",
+		On: pq.StringArray{"userCreated"}, IsActive: true, UpdatedAt: time.Now(),
+	}
+	require.NoError(t, repo.Create(sw))
+	defer testDB.Exec(`DELETE FROM "system_webhook" WHERE id = ?`, sw.ID)
+
+	// 配送 processor が status を書き込んだ後の admin Update で
+	// latestSentAt/latestStatus が保持されることを検証する。
+	sentAt := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, repo.UpdateLatestStatus(sw.ID, sentAt, 202))
+
+	require.NoError(t, repo.UpdateAdminFields(sw.ID, map[string]any{
+		"name":     "renamed",
+		"url":      "https://new",
+		"isActive": false,
+	}))
+
+	got, err := repo.FindByID(sw.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "renamed", got.Name)
+	assert.Equal(t, "https://new", got.URL)
+	assert.False(t, got.IsActive)
+	require.NotNil(t, got.LatestStatus, "LatestStatus must not be cleared by admin update")
+	assert.Equal(t, 202, *got.LatestStatus)
+	require.NotNil(t, got.LatestSentAt, "LatestSentAt must not be cleared by admin update")
+}
+
+func TestSystemWebhookRepository_UpdateAdminFieldsEmptyIsNoop(t *testing.T) {
+	repo := NewSystemWebhookRepository(testDB)
+	// id が存在しなくても empty fields なら error にしない。
+	require.NoError(t, repo.UpdateAdminFields("nonexistent", map[string]any{}))
+}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/core/poll"
 	"github.com/shiroha-a/mk/internal/core/reaction"
@@ -21,24 +22,31 @@ import (
 
 // Handler handles note-related API endpoints.
 type Handler struct {
-	noteRepo         repository.NoteRepository
-	createService    *note.CreateService
-	deleteService    *note.DeleteService
-	queryService     *note.QueryService
-	timelineService  *timeline.Service
-	reactionService  *reaction.Service
-	pollService      *poll.Service
-	searchService    *search.Service
-	idGen            id.Generator
-	favoriteRepo     repository.NoteFavoriteRepository
-	driveFileRepo    repository.DriveFileRepository
-	draftRepo        repository.NoteDraftRepository
-	noteReactionRepo repository.NoteReactionRepository
-	channelRepo      repository.ChannelRepository
+	noteRepo          repository.NoteRepository
+	createService     *note.CreateService
+	deleteService     *note.DeleteService
+	queryService      *note.QueryService
+	timelineService   *timeline.Service
+	reactionService   *reaction.Service
+	pollService       *poll.Service
+	searchService     *search.Service
+	idGen             id.Generator
+	favoriteRepo      repository.NoteFavoriteRepository
+	driveFileRepo     repository.DriveFileRepository
+	draftRepo         repository.NoteDraftRepository
+	noteReactionRepo  repository.NoteReactionRepository
+	channelRepo       repository.ChannelRepository
+	channelMutingRepo repository.ChannelMutingRepository
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
 	translator    *translate.DeepLClient
+}
+
+// SetChannelMutingRepo attaches a ChannelMutingRepository so timeline handlers
+// can exclude notes posted to channels the viewer has muted.
+func (h *Handler) SetChannelMutingRepo(r repository.ChannelMutingRepository) {
+	h.channelMutingRepo = r
 }
 
 // SetTranslator attaches a DeepL translator for /api/notes/translate.
@@ -123,7 +131,7 @@ func (h *Handler) Create(c echo.Context) error {
 
 	var req CreateRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	in := note.CreateInput{
@@ -167,7 +175,7 @@ func (h *Handler) Create(c echo.Context) error {
 				"error": map[string]any{
 					"message": "No such note.",
 					"code":    "NO_SUCH_NOTE",
-					"id":      "eef6c173-3010-4a23-8674-7c4fcaeba719",
+					"id":      "24fcbfc6-2e37-42b6-8388-c29b32725715",
 				},
 			})
 		case errors.Is(err, note.ErrCannotReplyToInvisibleNote), errors.Is(err, note.ErrCannotRenoteInvisibleNote):
@@ -179,7 +187,7 @@ func (h *Handler) Create(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	packed := entity.PackNote(created, h.idGen)
@@ -200,13 +208,13 @@ type ShowRequest struct {
 func (h *Handler) Show(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	viewer := middleware.GetUser(c)
 	n, err := h.lookupVisible(viewer, req.NoteID)
 	if err != nil {
-		return noSuchNote(c)
+		return apierr.JSONNoSuchNote(c)
 	}
 
 	packed := entity.PackNote(n, h.idGen)
@@ -237,7 +245,7 @@ func (h *Handler) Delete(c echo.Context) error {
 
 	var req DeleteRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.deleteService.Delete(user, req.NoteID); err != nil {
@@ -247,7 +255,7 @@ func (h *Handler) Delete(c echo.Context) error {
 				"error": map[string]any{
 					"message": "No such note.",
 					"code":    "NO_SUCH_NOTE",
-					"id":      "490be23f-8c1f-4796-819f-94cb4f9d1630",
+					"id":      "24fcbfc6-2e37-42b6-8388-c29b32725715",
 				},
 			})
 		case errors.Is(err, note.ErrNoteAccessDenied):
@@ -259,7 +267,7 @@ func (h *Handler) Delete(c echo.Context) error {
 				},
 			})
 		default:
-			return internalError(c)
+			return apierr.JSONInternalError(c)
 		}
 	}
 
@@ -307,7 +315,7 @@ func (h *Handler) Children(c echo.Context) error {
 func (h *Handler) serveList(c echo.Context, fn func(*model.User, listRequest) ([]*model.Note, error)) error {
 	var req listRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	req.normalize()
 
@@ -315,9 +323,9 @@ func (h *Handler) serveList(c echo.Context, fn func(*model.User, listRequest) ([
 	notes, err := fn(viewer, req)
 	if err != nil {
 		if errors.Is(err, note.ErrNoteNotFound) {
-			return noSuchNote(c)
+			return apierr.JSONNoSuchNote(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
@@ -343,10 +351,10 @@ type SearchRequest struct {
 func (h *Handler) Search(c echo.Context) error {
 	var req SearchRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if h.searchService == nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -383,9 +391,9 @@ func (h *Handler) Search(c echo.Context) error {
 		// 空クエリは invalidParam として返す。
 		// それ以外のエラー (DB障害など) はinternalErrorで返す。
 		if errors.Is(err, search.ErrEmptyQuery) {
-			return invalidParam(c)
+			return apierr.JSONInvalidParam(c)
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
@@ -394,13 +402,13 @@ func (h *Handler) Search(c echo.Context) error {
 func (h *Handler) State(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	viewer := middleware.GetUser(c)
 	st, err := h.queryService.State(viewer, req.NoteID)
 	if err != nil {
 		// 現状QueryService.StateはErrNoteNotFound以外を返さない
-		return noSuchNote(c)
+		return apierr.JSONNoSuchNote(c)
 	}
 	return c.JSON(http.StatusOK, st)
 }
@@ -415,7 +423,7 @@ type ConversationRequest struct {
 func (h *Handler) Conversation(c echo.Context) error {
 	var req ConversationRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -428,7 +436,33 @@ func (h *Handler) Conversation(c echo.Context) error {
 	notes, err := h.queryService.Conversation(viewer, req.NoteID, req.Limit)
 	if err != nil {
 		// 現状QueryService.ConversationはErrNoteNotFound以外を返さない
-		return noSuchNote(c)
+		return apierr.JSONNoSuchNote(c)
+	}
+	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+}
+
+// BulkShow handles POST /api/notes — bulk note lookup by noteIds.
+// visibility チェックを通して非公開ノートの漏洩を防ぐ。
+func (h *Handler) BulkShow(c echo.Context) error {
+	var req struct {
+		NoteIDs []string `json:"noteIds"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return apierr.JSONInvalidParam(c)
+	}
+	if len(req.NoteIDs) == 0 {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	if len(req.NoteIDs) > 100 {
+		req.NoteIDs = req.NoteIDs[:100]
+	}
+	notes, err := h.noteRepo.FindManyByIDsWithUser(req.NoteIDs)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	viewer := middleware.GetUser(c)
+	if h.queryService != nil {
+		notes = h.queryService.FilterVisible(viewer, notes)
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
@@ -535,34 +569,4 @@ func (h *Handler) resolveViewerFields(notes []entity.NoteEntity, viewer *model.U
 			}
 		}
 	}
-}
-
-func noSuchNote(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such note.",
-			"code":    "NO_SUCH_NOTE",
-			"id":      "24fcbfc6-2e37-42b6-8388-c29b3272571530",
-		},
-	})
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
 }

@@ -99,6 +99,9 @@ func (r *fakeSystemWebhookRepo) ListActive() ([]*model.SystemWebhook, error) {
 	return out, nil
 }
 func (r *fakeSystemWebhookRepo) Update(_ *model.SystemWebhook) error { return nil }
+func (r *fakeSystemWebhookRepo) UpdateAdminFields(_ string, _ map[string]any) error {
+	return nil
+}
 func (r *fakeSystemWebhookRepo) UpdateLatestStatus(_ string, _ time.Time, _ int) error {
 	return nil
 }

@@ -475,3 +475,221 @@ redis:
 	assert.Equal(t, "https://proxy.example.com", cfg.MediaProxy)
 	assert.True(t, cfg.ExternalMediaProxyEnabled)
 }
+
+// --- TrustProxy ---
+
+func TestTrustProxy_Default(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultTrustProxy, cfg.TrustProxy)
+}
+
+func TestTrustProxy_Custom(t *testing.T) {
+	yml := testYAML + `
+trustProxy:
+  - "203.0.113.0/24"
+  - "198.51.100.0/24"
+`
+	path := writeTestConfig(t, yml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"203.0.113.0/24", "198.51.100.0/24"}, cfg.TrustProxy)
+}
+
+func TestResolveTrustProxy_EmptyUsesDefault(t *testing.T) {
+	result := resolveTrustProxy(nil)
+	assert.Equal(t, DefaultTrustProxy, result)
+}
+
+func TestResolveTrustProxy_CustomReturnsProvided(t *testing.T) {
+	custom := []string{"10.0.0.0/8"}
+	result := resolveTrustProxy(custom)
+	assert.Equal(t, custom, result)
+}
+
+func TestParseTrustProxy_ValidCIDRs(t *testing.T) {
+	nets := ParseTrustProxy([]string{"10.0.0.0/8", "192.168.0.0/16"})
+	assert.Len(t, nets, 2)
+}
+
+func TestParseTrustProxy_InvalidCIDR(t *testing.T) {
+	nets := ParseTrustProxy([]string{"10.0.0.0/8", "invalid", "192.168.0.0/16"})
+	assert.Len(t, nets, 2)
+}
+
+func TestParseTrustProxy_Empty(t *testing.T) {
+	nets := ParseTrustProxy(nil)
+	assert.Empty(t, nets)
+}
+
+func TestParseTrustProxy_IPv6(t *testing.T) {
+	nets := ParseTrustProxy([]string{"::1/128", "fc00::/7"})
+	assert.Len(t, nets, 2)
+}
+
+func TestParseTrustProxy_AllInvalid(t *testing.T) {
+	nets := ParseTrustProxy([]string{"not-a-cidr", "also-bad"})
+	assert.Empty(t, nets)
+}
+
+func TestLoad_DBSlaves(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+db:
+  host: primary.example.com
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+dbReplications: true
+dbSlaves:
+  - host: replica1.example.com
+    port: 5432
+    db: misskey
+    user: replica
+    pass: rpass1
+  - host: replica2.example.com
+    port: 5433
+    db: misskey
+    user: replica
+    pass: rpass2
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.DBReplications)
+	require.Len(t, cfg.DBSlaves, 2)
+	assert.Equal(t, "replica1.example.com", cfg.DBSlaves[0].Host)
+	assert.Equal(t, 5432, cfg.DBSlaves[0].Port)
+	assert.Equal(t, "rpass1", cfg.DBSlaves[0].Pass)
+	assert.Equal(t, "replica2.example.com", cfg.DBSlaves[1].Host)
+	assert.Equal(t, 5433, cfg.DBSlaves[1].Port)
+}
+
+func TestLoad_DBSlaves_Empty(t *testing.T) {
+	// dbSlaves 未指定 → 空スライス
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.DBSlaves)
+}
+
+func TestSlaveDSN(t *testing.T) {
+	cfg := &Config{
+		DB: DBOptions{Host: "primary", Port: 5432},
+		DBSlaves: []DBSlaveOptions{
+			{Host: "replica1", Port: 5432, DB: "misskey", User: "replica", Pass: "p1"},
+		},
+	}
+	dsn := cfg.SlaveDSN(0)
+	assert.Contains(t, dsn, "host=replica1")
+	assert.Contains(t, dsn, "port=5432")
+	assert.Contains(t, dsn, "dbname=misskey")
+	assert.Contains(t, dsn, "user=replica")
+	assert.Contains(t, dsn, "password=p1")
+	assert.Contains(t, dsn, "sslmode=disable")
+}
+
+func TestSlaveDSN_OutOfRange(t *testing.T) {
+	cfg := &Config{
+		DBSlaves: []DBSlaveOptions{
+			{Host: "replica1", Port: 5432, DB: "misskey", User: "u", Pass: "p"},
+		},
+	}
+	assert.Empty(t, cfg.SlaveDSN(-1))
+	assert.Empty(t, cfg.SlaveDSN(1))
+	assert.Empty(t, cfg.SlaveDSN(99))
+}
+
+func TestSlaveDSN_InheritsPrimarySSL(t *testing.T) {
+	cfg := &Config{
+		DB: DBOptions{
+			Host:  "primary",
+			Port:  5432,
+			Extra: map[string]string{"ssl": "true"},
+		},
+		DBSlaves: []DBSlaveOptions{
+			{Host: "replica1", Port: 5432, DB: "misskey", User: "u", Pass: "p"},
+		},
+	}
+	dsn := cfg.SlaveDSN(0)
+	assert.Contains(t, dsn, "sslmode=require")
+}
+
+func TestSlaveDSN_UnixSocket(t *testing.T) {
+	// Unix socket replica は SSL 不可
+	cfg := &Config{
+		DB: DBOptions{
+			Host:  "/var/run/postgresql",
+			Extra: map[string]string{"ssl": "true"},
+		},
+		DBSlaves: []DBSlaveOptions{
+			{Host: "/var/run/postgresql/replica", Port: 5433, DB: "misskey", User: "u", Pass: "p"},
+		},
+	}
+	dsn := cfg.SlaveDSN(0)
+	assert.Contains(t, dsn, "host=/var/run/postgresql/replica")
+	assert.Contains(t, dsn, "sslmode=disable")
+	assert.NotContains(t, dsn, "sslmode=require")
+}
+
+func TestLoad_SentryForBackend(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+sentryForBackend:
+  enableNodeProfiling: true
+  options:
+    dsn: 'https://public@o0.ingest.sentry.io/0'
+    environment: production
+    release: '2026.4.0'
+    sampleRate: 0.5
+    tracesSampleRate: 0.1
+    debug: false
+    serverName: 'mk-prod-1'
+sentryForFrontend:
+  vueIntegration:
+    tracingOptions:
+      trackComponents: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.SentryForBackend)
+	assert.True(t, cfg.SentryForBackend.EnableNodeProfiling)
+	assert.Equal(t, "https://public@o0.ingest.sentry.io/0", cfg.SentryForBackend.Options.DSN)
+	assert.Equal(t, "production", cfg.SentryForBackend.Options.Environment)
+	assert.Equal(t, "2026.4.0", cfg.SentryForBackend.Options.Release)
+	assert.InEpsilon(t, 0.5, cfg.SentryForBackend.Options.SampleRate, 1e-9)
+	assert.InEpsilon(t, 0.1, cfg.SentryForBackend.Options.TracesSampleRate, 1e-9)
+	assert.Equal(t, "mk-prod-1", cfg.SentryForBackend.Options.ServerName)
+
+	// SentryForFrontend は素通し格納 (Go バックエンドで参照しない)。
+	// viper は map のキーを小文字化するため正規化済みのキーで照合する。
+	require.NotNil(t, cfg.SentryForFrontend)
+	assert.Contains(t, cfg.SentryForFrontend, "vueintegration")
+}
+
+func TestLoad_SentryDisabledByDefault(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.SentryForBackend)
+	assert.Nil(t, cfg.SentryForFrontend)
+}

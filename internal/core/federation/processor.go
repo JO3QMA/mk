@@ -1,13 +1,17 @@
 package federation
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
+	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
@@ -27,6 +31,14 @@ var (
 	ErrUnsupportedActivity = errors.New("unsupported activity type")
 )
 
+// RelayStatusMarker is the minimal interface needed from core/relay.Service
+// for the inbox processor to toggle relay status on Accept / Reject
+// activities whose id matches `/activities/follow-relay/{id}`.
+type RelayStatusMarker interface {
+	MarkAccepted(ctx context.Context, id string) error
+	MarkRejected(ctx context.Context, id string) error
+}
+
 // Processor dispatches inbound activities to the right handler.
 type Processor struct {
 	resolver         *Resolver
@@ -36,12 +48,31 @@ type Processor struct {
 	userRepo         repository.UserRepository
 	noteRepo         repository.NoteRepository
 
+	// Block/Flag/Move/Add/Remove federation hooks.
+	// SetBlockingService等で注入。nilの場合は対応activityがErrUnsupportedActivityを返す。
+	blockingService *coreblocking.Service
+	abuseReportRepo repository.AbuseReportRepository
+	abuseIDGen      id.Generator
+	pinningRepo     repository.UserNotePiningRepository
+	pinningIDGen    id.Generator
+
 	// Reversi federation hooks (Phase 9.7). All four are set via
 	// SetReversi; if nil, reversi inbox types are treated as unsupported.
 	reversiSvc      *corereversi.Service
 	reversiRepo     repository.ReversiRepository
 	reversiIDGen    id.Generator
 	reversiFedCache *corereversi.FederationIDCache
+
+	// Relay follow-accept / -reject hook. nil 時は relay 特化処理をスキップ。
+	relayMarker RelayStatusMarker
+
+	// Chat federation (CherryPick互換)
+	chatService ChatMessageReceiver
+}
+
+// ChatMessageReceiver handles inbound Misskey:ChatMessage activities.
+type ChatMessageReceiver interface {
+	CreateMessageViaAP(ctx context.Context, uri string, fromUser *model.User, toUserID, text string) (*model.ChatMessage, error)
 }
 
 // NewProcessor constructs a Processor. reactionService / noteDeleteSvc は省略
@@ -124,14 +155,73 @@ func (p *Processor) Process(body []byte) error {
 		return p.handleUpdate(act)
 	case "reject":
 		return p.handleReject(act)
+	case "block":
+		return p.handleBlock(act)
+	case "flag":
+		return p.handleFlag(act)
+	case "move":
+		return p.handleMove(act)
+	case "add":
+		return p.handleAdd(act)
+	case "remove":
+		return p.handleRemove(act)
+	case "emojireaction", "emojireact":
+		return p.handleLike(act)
 	case "invite":
 		return p.handleReversiInvite(act)
 	case "join":
 		return p.handleReversiJoin(act)
 	case "leave":
 		return p.handleReversiLeave(act)
+	case "misskey:chatmessage":
+		return p.handleChatMessage(act)
 	}
 	return ErrUnsupportedActivity
+}
+
+// SetBlockingService wires the blocking service for Block/Undo Block activities.
+func (p *Processor) SetBlockingService(svc *coreblocking.Service) {
+	p.blockingService = svc
+}
+
+// SetAbuseReportRepo wires the abuse report repository for Flag activities.
+func (p *Processor) SetAbuseReportRepo(repo repository.AbuseReportRepository, idGen id.Generator) {
+	p.abuseReportRepo = repo
+	p.abuseIDGen = idGen
+}
+
+// SetPinningRepo wires the note pinning repository for Add/Remove activities.
+func (p *Processor) SetPinningRepo(repo repository.UserNotePiningRepository, idGen id.Generator) {
+	p.pinningRepo = repo
+	p.pinningIDGen = idGen
+}
+
+// SetRelayMarker wires a RelayStatusMarker so inbound Accept / Reject
+// activities whose id matches the follow-relay URI pattern can flip
+// the corresponding relay row to accepted / rejected.
+func (p *Processor) SetRelayMarker(m RelayStatusMarker) {
+	p.relayMarker = m
+}
+
+// SetChatService wires a ChatMessageReceiver for inbound Misskey:ChatMessage
+// activities (CherryPick v12 federation).
+func (p *Processor) SetChatService(svc ChatMessageReceiver) {
+	p.chatService = svc
+}
+
+// followRelayIDPattern extracts the relay id embedded in
+// `.../activities/follow-relay/{id}` URIs. Must stay in lockstep with
+// activitypub.URLBuilder.FollowRelayURI.
+var followRelayIDPattern = regexp.MustCompile(`/activities/follow-relay/([\w-]+)$`)
+
+// matchFollowRelayID returns the relay id if uri is a follow-relay URI,
+// otherwise the empty string.
+func matchFollowRelayID(uri string) string {
+	m := followRelayIDPattern.FindStringSubmatch(uri)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
 }
 
 // SetReversi wires the reversi federation dependencies. When any of the
@@ -186,6 +276,10 @@ func (p *Processor) handleUndo(act genericActivity) error {
 		return p.handleUndoLike(act, inner)
 	case "announce":
 		return p.handleUndoAnnounce(act, inner)
+	case "block":
+		return p.handleUndoBlock(act, inner)
+	case "emojireaction", "emojireact":
+		return p.handleUndoLike(act, inner)
 	}
 	return ErrUnsupportedActivity
 }
@@ -277,13 +371,56 @@ func (p *Processor) handleUndoAnnounce(act genericActivity, inner genericActivit
 	return nil
 }
 
-// handleAccept currently only logs that an Accept was received. リモートからの
-// Acceptは主に follow request の承認なので、Step E 以降で完全実装する。
-func (p *Processor) handleAccept(_ genericActivity) error {
+// handleAccept processes an inbound Accept activity. リモートfolloweeがローカル
+// followerからのフォローリクエストを承認した場合に、フォロー関係を確立する。
+// inner.id が follow-relay パターンにマッチすれば relay の Accept とみなし、
+// RelayStatusMarker.MarkAccepted を呼び出す (upstream ApInboxService 互換)。
+func (p *Processor) handleAccept(act genericActivity) error {
+	var inner genericActivity
+	if err := json.Unmarshal(act.Object, &inner); err != nil {
+		// objectが文字列（Follow IDのURI）の場合もあるが、現状はnilで許容
+		return nil
+	}
+	if !strings.EqualFold(inner.Type, "follow") {
+		return nil
+	}
+	if relayID := matchFollowRelayID(inner.ID); relayID != "" && p.relayMarker != nil {
+		return p.relayMarker.MarkAccepted(context.Background(), relayID)
+	}
+	// actorはリモートfollowee（承認した側）
+	followee, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	// inner.actorはローカルfollower（フォローを申請した側）
+	followerURI, err := readActorString(inner)
+	if err != nil {
+		return nil
+	}
+	// ローカルユーザーはURIカラムがNULLなのでFindByURIでは見つからない。
+	// ローカルURI（/users/{id}）からIDを抽出してFindByIDで検索する。
+	var follower *model.User
+	if localID := p.resolver.ExtractLocalUserID(followerURI); localID != "" {
+		follower, err = p.userRepo.FindByID(localID)
+	} else {
+		follower, err = p.userRepo.FindByURI(followerURI)
+	}
+	if err != nil {
+		return nil
+	}
+	// フォローリクエストを承認してフォロー関係を確立
+	if err := p.followingService.AcceptRequest(followee.ID, follower.ID); err != nil {
+		// フォローリクエストが存在しない場合は無視（既にフォロー済み等）
+		if errors.Is(err, corefollowing.ErrRequestNotFound) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 
-// handleCreate persists an inbound Note carried by a Create activity.
+// handleCreate persists an inbound Note or Question carried by a Create activity.
+// Question (投票) はNote同様にIngestNoteで処理され、Pollレコードが自動作成される。
 func (p *Processor) handleCreate(act genericActivity) error {
 	if _, err := p.resolver.ResolveActor(act.Actor); err != nil {
 		return err
@@ -483,7 +620,8 @@ func peekObjectType(raw json.RawMessage) string {
 //
 // 想定: 自分 (ローカル follower) が remote followee に対して Follow を送ったが
 // 拒否された場合に呼ばれる。inner.Follow.actor がローカル follower、object が
-// remote followee。
+// remote followee。inner.id が follow-relay パターンなら relay 関連として
+// RelayStatusMarker.MarkRejected を呼ぶ。
 func (p *Processor) handleReject(act genericActivity) error {
 	var inner genericActivity
 	if err := json.Unmarshal(act.Object, &inner); err != nil {
@@ -491,6 +629,9 @@ func (p *Processor) handleReject(act genericActivity) error {
 	}
 	if !strings.EqualFold(inner.Type, "follow") {
 		return ErrUnsupportedActivity
+	}
+	if relayID := matchFollowRelayID(inner.ID); relayID != "" && p.relayMarker != nil {
+		return p.relayMarker.MarkRejected(context.Background(), relayID)
 	}
 	followee, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
@@ -513,6 +654,223 @@ func (p *Processor) handleReject(act genericActivity) error {
 		!errors.Is(err, corefollowing.ErrRequestNotFound) {
 		return err
 	}
+	return nil
+}
+
+// handleBlock processes an inbound Block activity. リモートユーザーがローカル
+// ユーザーをブロックした場合にブロック関係を作成する。
+func (p *Processor) handleBlock(act genericActivity) error {
+	if p.blockingService == nil {
+		return ErrUnsupportedActivity
+	}
+	blocker, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	blockeeURI, err := readObjectString(act.Object)
+	if err != nil {
+		return err
+	}
+	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	if err != nil {
+		return errors.New("unknown blockee")
+	}
+	// ローカルユーザーのみ対象
+	if blockee.Host != nil {
+		return nil
+	}
+	if _, err := p.blockingService.Block(blocker.ID, blockee.ID); err != nil {
+		if errors.Is(err, coreblocking.ErrAlreadyBlocking) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// handleUndoBlock removes a blocking relationship created by a previous Block.
+func (p *Processor) handleUndoBlock(act genericActivity, inner genericActivity) error {
+	if p.blockingService == nil {
+		return ErrUnsupportedActivity
+	}
+	blocker, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	blockeeURI, err := readObjectString(inner.Object)
+	if err != nil {
+		return err
+	}
+	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	if err != nil {
+		return errors.New("unknown blockee")
+	}
+	if err := p.blockingService.Unblock(blocker.ID, blockee.ID); err != nil {
+		if errors.Is(err, coreblocking.ErrNotBlocking) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// handleFlag processes an inbound Flag (abuse report) activity. リモートインスタンスからの
+// 通報を保存する。
+func (p *Processor) handleFlag(act genericActivity) error {
+	if p.abuseReportRepo == nil {
+		return ErrUnsupportedActivity
+	}
+	reporter, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	// objectからURI配列を取得（ユーザーやノートのURI）
+	var uris []string
+	if err := json.Unmarshal(act.Object, &uris); err != nil {
+		// 単一URIの場合
+		var single string
+		if err2 := json.Unmarshal(act.Object, &single); err2 != nil {
+			return errors.New("flag: cannot parse object")
+		}
+		uris = []string{single}
+	}
+	if len(uris) == 0 {
+		return errors.New("flag: empty object")
+	}
+	// 最初のURIからターゲットユーザーを特定
+	var targetUserID string
+	for _, uri := range uris {
+		if u, err := p.userRepo.FindByURI(uri); err == nil {
+			targetUserID = u.ID
+			break
+		}
+	}
+	if targetUserID == "" {
+		// ノートURIからユーザーを特定する試み
+		for _, uri := range uris {
+			if n, err := p.noteRepo.FindByURI(uri); err == nil {
+				targetUserID = n.UserID
+				break
+			}
+		}
+	}
+	if targetUserID == "" {
+		return errors.New("flag: cannot resolve target user")
+	}
+	// contentフィールドを取得
+	var content struct {
+		Content string `json:"content"`
+	}
+	_ = json.Unmarshal(act.raw, &content)
+	comment := content.Content
+	if comment == "" {
+		comment = "(flagged via ActivityPub)"
+	}
+	report := &model.AbuseUserReport{
+		ID:             p.abuseIDGen.Generate(nowFn()),
+		TargetUserID:   targetUserID,
+		ReporterID:     reporter.ID,
+		Comment:        comment,
+		TargetUserHost: nil,
+		ReporterHost:   reporter.Host,
+	}
+	// ターゲットユーザーのホスト情報を取得
+	if target, err := p.userRepo.FindByID(targetUserID); err == nil {
+		report.TargetUserHost = target.Host
+	}
+	if err := p.abuseReportRepo.Create(report); err != nil {
+		slog.Warn("failed to create abuse report from flag activity", "err", err)
+		return err
+	}
+	return nil
+}
+
+// handleMove processes an inbound Move activity. アカウント移行通知を受けて
+// リモートactorのプロフィールを強制再取得する。TTLキャッシュをバイパスして
+// movedTo/alsoKnownAsの最新値を反映する。
+func (p *Processor) handleMove(act genericActivity) error {
+	if _, err := p.resolver.ForceResolveActor(act.Actor); err != nil {
+		return err
+	}
+	return nil
+}
+
+// handleAdd processes an inbound Add activity. actorのfeaturedコレクションへの
+// ノートピン留めを処理する。
+func (p *Processor) handleAdd(act genericActivity) error {
+	if p.pinningRepo == nil {
+		return ErrUnsupportedActivity
+	}
+	actor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	// targetがactorのfeaturedコレクションか確認
+	var target struct {
+		Target string `json:"target"`
+	}
+	_ = json.Unmarshal(act.raw, &target)
+	if actor.Featured == nil || target.Target != *actor.Featured {
+		return nil
+	}
+	noteURI, err := readObjectString(act.Object)
+	if err != nil {
+		return err
+	}
+	// ローカルノートならDBから検索、リモートならResolveNoteでフェッチ+取り込み
+	note, err := p.noteRepo.FindByURI(noteURI)
+	if err != nil {
+		note, err = p.resolver.ResolveNote(noteURI)
+		if err != nil {
+			return err
+		}
+	}
+	now := nowFn()
+	pin := &model.UserNotePining{
+		ID:     p.pinningIDGen.Generate(now),
+		UserID: actor.ID,
+		NoteID: note.ID,
+	}
+	if err := p.pinningRepo.Create(pin); err != nil {
+		// 既にピン留め済み（重複キー）の場合のみ無視
+		if existing, _ := p.pinningRepo.FindByPair(actor.ID, note.ID); existing != nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// handleRemove processes an inbound Remove activity. actorのfeaturedコレクションから
+// ノートのピン留めを解除する。
+func (p *Processor) handleRemove(act genericActivity) error {
+	if p.pinningRepo == nil {
+		return ErrUnsupportedActivity
+	}
+	actor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	var target struct {
+		Target string `json:"target"`
+	}
+	_ = json.Unmarshal(act.raw, &target)
+	if actor.Featured == nil || target.Target != *actor.Featured {
+		return nil
+	}
+	noteURI, err := readObjectString(act.Object)
+	if err != nil {
+		return err
+	}
+	note, err := p.noteRepo.FindByURI(noteURI)
+	if err != nil {
+		return nil
+	}
+	pin, err := p.pinningRepo.FindByPair(actor.ID, note.ID)
+	if err != nil {
+		return nil
+	}
+	_ = p.pinningRepo.Delete(pin)
 	return nil
 }
 
@@ -546,4 +904,49 @@ func readActorString(act genericActivity) (string, error) {
 		return act.Actor, nil
 	}
 	return "", errors.New("inner activity missing actor")
+}
+
+// handleChatMessage processes an inbound Misskey:ChatMessage activity
+// (CherryPick v12 federation). The activity itself IS the message object
+// (not wrapped in Create), so act.ID is the message URI.
+func (p *Processor) handleChatMessage(act genericActivity) error {
+	if p.chatService == nil {
+		return ErrUnsupportedActivity
+	}
+	// attributedTo と actor の一致を検証
+	var raw struct {
+		AttributedTo string `json:"attributedTo"`
+		To           string `json:"to"`
+		Content      string `json:"content"`
+	}
+	if err := json.Unmarshal(act.raw, &raw); err != nil {
+		return fmt.Errorf("chat message: unmarshal: %w", err)
+	}
+	if raw.AttributedTo == "" || raw.AttributedTo != act.Actor {
+		return fmt.Errorf("chat message: attributedTo (%s) != actor (%s)", raw.AttributedTo, act.Actor)
+	}
+	if raw.To == "" {
+		return fmt.Errorf("chat message: missing 'to' field")
+	}
+	// actor (送信者) を解決
+	sender, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return fmt.Errorf("chat message: resolve sender: %w", err)
+	}
+	// ローカルユーザーはDB上URI==nilのためFindByURIでは解決できない。
+	// handleAcceptと同じパターンでExtractLocalUserID→FindByIDにフォールバック。
+	recipient, err := p.userRepo.FindByURI(raw.To)
+	if err != nil {
+		if localID := p.resolver.ExtractLocalUserID(raw.To); localID != "" {
+			recipient, err = p.userRepo.FindByID(localID)
+		}
+		if err != nil {
+			return fmt.Errorf("chat message: resolve recipient: %w", err)
+		}
+	}
+	if !recipient.IsLocal() {
+		return fmt.Errorf("chat message: recipient %s is not local", raw.To)
+	}
+	_, err = p.chatService.CreateMessageViaAP(context.Background(), act.ID, sender, recipient.ID, raw.Content)
+	return err
 }

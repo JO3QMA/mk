@@ -5,17 +5,31 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/core/captcha"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 )
+
+type mockIPLogger struct {
+	fn func(userID, ip string) error
+}
+
+func (m *mockIPLogger) Upsert(userID, ip string) error {
+	if m.fn != nil {
+		return m.fn(userID, ip)
+	}
+	return nil
+}
 
 func newTestHandler(t *testing.T) (*signin.Handler, *testutil.MockUserRepository) {
 	t.Helper()
@@ -275,6 +289,79 @@ func TestSigninFlow_CaptchaSkippedFor2FAUsers(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "totp", resp["next"])
+}
+
+func TestSignin_RecordsSigninHistory(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "testuser", "password123")
+
+	signinRepo := testutil.NewMockSigninRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h.SetSigninRepo(signinRepo, idGen)
+
+	rec := doPost(h.Signin, `{"username":"testuser","password":"password123"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// goroutineでsigninレコードが作成されるのを待つ
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 1, signinRepo.Len())
+}
+
+func TestSignin_IPLogging(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "testuser", "password123")
+
+	var logged atomic.Bool
+	h.SetIPLogger(&mockIPLogger{fn: func(userID, ip string) error {
+		logged.Store(true)
+		return nil
+	}}, true)
+
+	rec := doPost(h.Signin, `{"username":"testuser","password":"password123"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	time.Sleep(50 * time.Millisecond)
+	assert.True(t, logged.Load())
+}
+
+func TestSignin_SanitizesHeaders(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "testuser", "password123")
+
+	signinRepo := testutil.NewMockSigninRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h.SetSigninRepo(signinRepo, idGen)
+
+	// Authorization, Cookieヘッダー付きのリクエスト
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/signin", strings.NewReader(`{"username":"testuser","password":"password123"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Cookie", "session=abc123")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	_ = h.Signin(c)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 1, signinRepo.Len())
+	stored := string(signinRepo.Signins[0].Headers)
+	assert.NotContains(t, stored, "secret-token")
+	assert.NotContains(t, stored, "abc123")
+}
+
+func TestSigninFlow_RecordsSigninHistory(t *testing.T) {
+	h, repo := newTestHandler(t)
+	createTestUser(repo, "testuser", "password123")
+
+	signinRepo := testutil.NewMockSigninRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h.SetSigninRepo(signinRepo, idGen)
+
+	rec := doPost(h.SigninFlow, `{"username":"testuser","password":"password123"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 1, signinRepo.Len())
 }
 
 // --- Step 1 captcha branching ---

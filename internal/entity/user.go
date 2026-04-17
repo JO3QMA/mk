@@ -34,6 +34,8 @@ type UserDetailed struct {
 	Location            *string        `json:"location"`
 	Birthday            *string        `json:"birthday"`
 	Lang                *string        `json:"lang"`
+	FollowedMessage     *string        `json:"followedMessage"`
+	PublicReactions     bool           `json:"publicReactions"`
 	Fields              datatypes.JSON `json:"fields"`
 	VerifiedLinks       []string       `json:"verifiedLinks"`
 	FollowersCount      int            `json:"followersCount"`
@@ -119,6 +121,8 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 		PinnedNoteIDs:       []string{},
 		PinnedNotes:         []any{},
 		Roles:               []any{},
+		// DBデフォルト値 (user_profileのpublicReactions DEFAULT true)
+		PublicReactions: true,
 	}
 
 	// IDからcreatedAtを抽出
@@ -133,6 +137,8 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 		d.Location = profile.Location
 		d.Birthday = profile.Birthday
 		d.Lang = profile.Lang
+		d.FollowedMessage = profile.FollowedMessage
+		d.PublicReactions = profile.PublicReactions
 		d.Fields = profile.Fields
 		if len(profile.VerifiedLinks) > 0 {
 			d.VerifiedLinks = []string(profile.VerifiedLinks)

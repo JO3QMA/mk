@@ -16,6 +16,75 @@ func cleanupNote(t *testing.T, id string) {
 	testDB.Exec(`DELETE FROM "note" WHERE id = ?`, id)
 }
 
+// TestNoteRepository_ListHomeTimeline_MutedChannelFilter verifies that
+// model.TimelineDBFilter.MutedChannelIDs is applied at the SQL layer without
+// short-circuiting other AND conditions. The OR clause
+// `channelId IS NULL OR channelId NOT IN (...)` must be wrapped in
+// parentheses; otherwise AND conditions (visibility / following) are bypassed.
+// Regression guard from Devin #191 review.
+func TestNoteRepository_ListHomeTimeline_MutedChannelFilter(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	chRepo := NewChannelRepository(testDB)
+
+	viewer := insertTestUser(t, "u_mute_v", "muteviewer")
+	defer cleanupUser(t, viewer.ID)
+	author := insertTestUser(t, "u_mute_a", "muteauthor")
+	defer cleanupUser(t, author.ID)
+
+	// viewer は author をフォロー (home timeline に含める)
+	require.NoError(t, testDB.Exec(
+		`INSERT INTO "following" (id, "followerId", "followeeId") VALUES (?, ?, ?)`,
+		"flw_mute", viewer.ID, author.ID,
+	).Error)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "flw_mute")
+
+	mutedCh := newTestChannel("ch_mute_m", "muted-ch", nil)
+	require.NoError(t, chRepo.Create(mutedCh))
+	defer cleanupChannel(t, mutedCh.ID)
+	allowedCh := newTestChannel("ch_mute_a", "allowed-ch", nil)
+	require.NoError(t, chRepo.Create(allowedCh))
+	defer cleanupChannel(t, allowedCh.ID)
+
+	mkNote := func(id, chID string) *model.Note {
+		text := "hi"
+		n := &model.Note{
+			ID: id, UserID: author.ID, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+		if chID != "" {
+			n.ChannelID = &chID
+		}
+		return n
+	}
+	plain := mkNote("n_mute_1", "")
+	inMuted := mkNote("n_mute_2", mutedCh.ID)
+	inAllowed := mkNote("n_mute_3", allowedCh.ID)
+	require.NoError(t, repo.Create(plain))
+	require.NoError(t, repo.Create(inMuted))
+	require.NoError(t, repo.Create(inAllowed))
+	defer cleanupNote(t, plain.ID)
+	defer cleanupNote(t, inMuted.ID)
+	defer cleanupNote(t, inAllowed.ID)
+
+	filter := model.TimelineDBFilter{
+		ViewerID:        viewer.ID,
+		MutedChannelIDs: []string{mutedCh.ID},
+	}
+	rows, err := repo.ListHomeTimeline(viewer.ID, 50, "", "", filter)
+	require.NoError(t, err)
+
+	ids := make(map[string]bool, len(rows))
+	for _, n := range rows {
+		ids[n.ID] = true
+	}
+	assert.True(t, ids[plain.ID], "plain note must be included")
+	assert.True(t, ids[inAllowed.ID], "note in allowed channel must be included")
+	assert.False(t, ids[inMuted.ID], "note in muted channel must be excluded")
+	// OR 節のバグがあると、viewer が follow していない他ユーザーの note も
+	// 返ってしまう。ここでは他ユーザーがいないので fan-out テストは省略。
+}
+
 func TestNoteRepository_CreateAndFindByID(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	user := insertTestUser(t, "u_ncf_1", "noteuser1")
@@ -693,5 +762,137 @@ func TestNoteRepository_SearchByTag_Error(t *testing.T) {
 	cancel()
 	repo := NewNoteRepository(testDB.WithContext(ctx))
 	_, err := repo.SearchByTag("x", 10, "", "")
+	assert.Error(t, err)
+}
+
+// TestNoteRepository_DeleteByUserBatch verifies that one call deletes up to
+// batchSize rows and callers are expected to loop.
+func TestNoteRepository_DeleteByUserBatch(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_dbu_v", "dbuviewer")
+	defer cleanupUser(t, user.ID)
+
+	ids := []string{"n_dbu_1", "n_dbu_2", "n_dbu_3"}
+	text := "hi"
+	for _, id := range ids {
+		n := &model.Note{
+			ID: id, UserID: user.ID, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, id)
+	}
+
+	// 1 バッチで 2 件だけ消える。
+	n, err := repo.DeleteByUserBatch(user.ID, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, n)
+
+	// 残りの 1 件は次のバッチで消える。
+	n, err = repo.DeleteByUserBatch(user.ID, 100)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n)
+
+	// 以降はすべて 0 件 (呼び出し側の break 条件)。
+	n, err = repo.DeleteByUserBatch(user.ID, 100)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n)
+
+	// userId 空は no-op
+	n, err = repo.DeleteByUserBatch("", 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n)
+}
+
+// TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence
+// guards against the SQL precedence bug where MutedChannelIDs would short
+// circuit other AND conditions via an unparenthesized OR. Places two notes
+// by the viewer (one in a muted channel) and two notes by an unfollowed
+// user (one in an open channel). The home timeline must return only the
+// viewer's plain note. With missing parentheses the follow filter would be
+// bypassed and the unfollowed user's notes would leak through.
+func TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	viewer := insertTestUser(t, "u_mc_v", "mcviewer")
+	defer cleanupUser(t, viewer.ID)
+	other := insertTestUser(t, "u_mc_o", "mcother")
+	defer cleanupUser(t, other.ID)
+
+	mutedChannel := "ch_mc_muted"
+	openChannel := "ch_mc_open"
+	selfText := "self note"
+	selfInMuted := "self in muted channel"
+	otherText := "other note (not followed)"
+	otherInOpen := "other in open channel (not followed)"
+
+	notes := []*model.Note{
+		{ID: "n_mc_1", UserID: viewer.ID, Text: &selfText, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_2", UserID: viewer.ID, Text: &selfInMuted, Visibility: model.NoteVisibilityPublic, ChannelID: &mutedChannel, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_3", UserID: other.ID, Text: &otherText, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))},
+		{ID: "n_mc_4", UserID: other.ID, Text: &otherInOpen, Visibility: model.NoteVisibilityPublic, ChannelID: &openChannel, Reactions: datatypes.JSON([]byte("{}"))},
+	}
+	for _, n := range notes {
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, n.ID)
+	}
+
+	rows, err := repo.ListHomeTimeline(viewer.ID, 100, "", "", model.TimelineDBFilter{
+		ViewerID:        viewer.ID,
+		MutedChannelIDs: []string{mutedChannel},
+	})
+	require.NoError(t, err)
+
+	ids := idsOf(rows)
+	assert.ElementsMatch(t, []string{"n_mc_1"}, ids,
+		"follow + mute フィルタが OR で短絡されていない (SQL precedence バグのリグレッション)")
+}
+
+func TestNoteRepository_CountReplyTargets(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	author := insertTestUser(t, "u_crt_a", "crtA")
+	defer cleanupUser(t, author.ID)
+	t1 := insertTestUser(t, "u_crt_t1", "crtT1")
+	defer cleanupUser(t, t1.ID)
+	t2 := insertTestUser(t, "u_crt_t2", "crtT2")
+	defer cleanupUser(t, t2.ID)
+
+	// author から t1 に 3 件、t2 に 1 件返信。author 自身への返信は除外される。
+	replyID := "n_crt_src"
+	require.NoError(t, testDB.Create(&model.Note{ID: replyID, UserID: t1.ID, Visibility: model.NoteVisibilityPublic}).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, replyID)
+	mk := func(id, target string) *model.Note {
+		return &model.Note{ID: id, UserID: author.ID, ReplyID: &replyID, ReplyUserID: &target, Visibility: model.NoteVisibilityPublic}
+	}
+	for _, n := range []*model.Note{
+		mk("n_crt_1", t1.ID),
+		mk("n_crt_2", t1.ID),
+		mk("n_crt_3", t1.ID),
+		mk("n_crt_4", t2.ID),
+		mk("n_crt_5", author.ID), // 自己返信は無視
+	} {
+		require.NoError(t, testDB.Create(n).Error)
+		defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
+	}
+
+	rows, err := repo.CountReplyTargets(author.ID, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, t1.ID, rows[0].UserID)
+	assert.EqualValues(t, 3, rows[0].Count)
+	assert.Equal(t, t2.ID, rows[1].UserID)
+	assert.EqualValues(t, 1, rows[1].Count)
+
+	// limit <= 0 は 10 にデフォルト。
+	rows2, err := repo.CountReplyTargets(author.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, rows2, 2)
+}
+
+func TestNoteRepository_CountReplyTargets_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewNoteRepository(testDB.WithContext(ctx))
+	_, err := repo.CountReplyTargets("me", 10)
 	assert.Error(t, err)
 }

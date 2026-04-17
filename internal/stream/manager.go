@@ -12,11 +12,12 @@ import (
 // PubSub bus を握り、各 connection に Dispatcher を割り当てて pubsub →
 // channel のルーティングを行う。
 type Manager struct {
-	mu       sync.RWMutex
-	conns    map[string]*Connection
-	nextID   atomic.Uint64
-	registry *Registry
-	bus      PubSubBus
+	mu          sync.RWMutex
+	conns       map[string]*Connection
+	nextID      atomic.Uint64
+	registry    *Registry
+	bus         PubSubBus
+	notifReader NotificationReader
 }
 
 // NewManager constructs a Manager with no live connections. registry / bus が
@@ -29,12 +30,21 @@ func NewManager(registry *Registry, bus PubSubBus) *Manager {
 	}
 }
 
+// SetNotificationReader wires a NotificationReader so readNotification
+// messages from clients are handled.
+func (m *Manager) SetNotificationReader(nr NotificationReader) {
+	m.notifReader = nr
+}
+
 // Accept implements api/streaming.ConnectionAcceptor. *websocket.Conn から
 // Connection を組み立て、Dispatcher 経由で channel framework に橋渡しする。
 func (m *Manager) Accept(ws *websocket.Conn, user *model.User) {
 	id := m.allocateID()
 	c := NewConnection(id, user, ws)
 	dispatcher := NewDispatcher(c, m.registry, m.bus)
+	if m.notifReader != nil {
+		dispatcher.SetNotificationReader(m.notifReader)
+	}
 	c.SetMessageHandler(dispatcher.HandleClientMessage)
 	c.SetCloseHandler(func() {
 		dispatcher.CloseAll()

@@ -3,17 +3,21 @@ package admin
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/serverstats"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc"
+	"github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm/clause"
 )
 
 // --- accounts ---
@@ -27,19 +31,33 @@ func (h *Handler) AccountsDelete(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
+	h.scheduleAccountCascade(req.UserID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // AccountsFindByEmail handles POST /api/admin/accounts/find-by-email.
+// user_profile.email 列を検索して、紐づく user を返す。本家 Misskey の
+// admin/accounts/find-by-email と同等。
 func (h *Handler) AccountsFindByEmail(c echo.Context) error {
 	var req struct {
 		Email string `json:"email"`
 	}
 	if err := c.Bind(&req); err != nil || req.Email == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	// メール検索は未実装 (user_profileテーブルのemail列検索が必要)
-	return c.JSON(http.StatusNotFound, errResp("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+	profile, err := h.userRepo.FindProfileByEmail(req.Email)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+	}
+	user, err := h.userRepo.FindByID(profile.UserID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+	}
+	// 他の admin エンドポイント (ShowUser 等) と同じ packAdminUser を通して
+	// Misskey 本家互換のレスポンス整形をする。生 model.User を返すと
+	// inbox / sharedInbox / usernameLower 等の内部フィールドが漏れ、
+	// createdAt / roles / policies 等のフロントが期待するフィールドが欠落する。
+	return c.JSON(http.StatusOK, h.packAdminUser(user, profile))
 }
 
 // --- single endpoints ---
@@ -53,7 +71,21 @@ func (h *Handler) DeleteAccount(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
+	h.scheduleAccountCascade(req.UserID)
 	return c.NoContent(http.StatusNoContent)
+}
+
+// scheduleAccountCascade queues the background cascade deletion. Errors
+// from the enqueuer are logged but never surfaced — the admin flag flip
+// is the user-visible source of truth, so a failed enqueue only delays
+// the cleanup until the next manual retry.
+func (h *Handler) scheduleAccountCascade(userID string) {
+	if h.deleteAccountEnqueuer == nil || userID == "" {
+		return
+	}
+	if err := h.deleteAccountEnqueuer.EnqueueDeleteAccount(queue.DeleteAccountPayload{UserID: userID}); err != nil {
+		slog.Warn("admin: enqueue delete-account failed", "userId", userID, "err", err)
+	}
 }
 
 // DeleteAllFilesOfUser handles POST /api/admin/delete-all-files-of-a-user.
@@ -61,33 +93,109 @@ func (h *Handler) DeleteAllFilesOfUser(c echo.Context) error {
 	var req struct {
 		UserID string `json:"userId"`
 	}
-	_ = c.Bind(&req)
-	// ファイル一括削除は将来対応 (バックグラウンドジョブが必要)
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.driveFileRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// 単一の DELETE 文で完結するため同期実行。大量ファイル (数万) の場合も
+	// PostgreSQL で 1 秒未満に収まる想定。将来バッチが必要なら queue へ。
+	if _, err := h.driveFileRepo.DeleteByUser(req.UserID); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // ForwardAbuseUserReport handles POST /api/admin/forward-abuse-user-report.
-// 通報をリモートサーバーにActivityPub Flagアクティビティで転送する。
+//
+// 対象ユーザーがリモートの場合、system actor 署名で origin インスタンス
+// の inbox へ ActivityPub Flag を配送し、DB 側 forwarded=true も立てる。
+// ローカル通報の場合は配送スキップで DB フラグのみ更新する。
 func (h *Handler) ForwardAbuseUserReport(c echo.Context) error {
 	var req struct {
 		ReportID string `json:"reportId"`
 	}
 	_ = c.Bind(&req)
-	if req.ReportID != "" && h.abuseRepo != nil {
+	if req.ReportID == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.abuseForwarder != nil {
+		if err := h.abuseForwarder.ForwardReport(req.ReportID); err != nil {
+			return apierr.JSONInternalError(c)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+	// forwarder 未配線時のフォールバック: DB フラグだけ更新する (テストや
+	// federation stack 未初期化パスで有効)。
+	if h.abuseRepo != nil {
 		_ = h.abuseRepo.UpdateFields(req.ReportID, map[string]any{"forwarded": true})
 	}
-	// 実際のAP Flag送信は将来対応 (DeliverServiceのFlag送信メソッドが必要)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // GetIndexStats handles POST /api/admin/get-index-stats.
+//
+// Returns per-index row counts from pg_stat_user_indexes so the admin UI can
+// spot hot or unused indexes.
 func (h *Handler) GetIndexStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	type row struct {
+		Relname      string `json:"tablename" gorm:"column:relname"`
+		Indexrelname string `json:"indexname" gorm:"column:indexrelname"`
+		IdxScan      int64  `json:"idx_scan" gorm:"column:idx_scan"`
+		IdxTupRead   int64  `json:"idx_tup_read" gorm:"column:idx_tup_read"`
+	}
+	var rows []row
+	if err := h.adminDB.Raw(`
+		SELECT relname, indexrelname, idx_scan, idx_tup_read
+		FROM pg_stat_user_indexes
+		ORDER BY relname, indexrelname
+	`).Scan(&rows).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // GetTableStats handles POST /api/admin/get-table-stats.
+//
+// Returns per-table size and row estimate via pg_stat_user_tables joined with
+// pg_relation_size for quick capacity planning.
 func (h *Handler) GetTableStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{})
+	if h.adminDB == nil {
+		return c.JSON(http.StatusOK, map[string]any{})
+	}
+	type row struct {
+		Relname  string `gorm:"column:relname"`
+		Count    int64  `gorm:"column:row_count"`
+		SizeBase int64  `gorm:"column:size_base"`
+		SizeIdx  int64  `gorm:"column:size_idx"`
+	}
+	var rows []row
+	if err := h.adminDB.Raw(`
+		SELECT c.relname,
+		       COALESCE(s.n_live_tup, 0) AS row_count,
+		       pg_relation_size(c.oid) AS size_base,
+		       COALESCE(pg_indexes_size(c.oid), 0) AS size_idx
+		FROM pg_class c
+		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+		WHERE c.relkind = 'r'
+		  AND c.relnamespace IN (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+		ORDER BY c.relname
+	`).Scan(&rows).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	// Misskey 本家は { tableName: { count, size } } の map 形式で返すのでそれに合わせる。
+	result := make(map[string]any, len(rows))
+	for _, r := range rows {
+		result[r.Relname] = map[string]any{
+			"count": r.Count,
+			"size":  r.SizeBase + r.SizeIdx,
+		}
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 // GetUserIPs handles POST /api/admin/get-user-ips.
@@ -99,7 +207,7 @@ func (h *Handler) GetUserIPs(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	ips, err := h.userIPRepo.ListByUser(req.UserID, 30)
 	if err != nil {
@@ -116,19 +224,67 @@ func (h *Handler) GetUserIPs(c echo.Context) error {
 }
 
 // ResetPassword handles POST /api/admin/reset-password.
+//
+// 優先: 対象ユーザーに verified email があれば reset token を発行してメール
+// リンクを送り、HTTP 200 で {"sent": true} を返す (ユーザーが自分で新パス
+// ワードを設定する本家互換フロー #186)。
+//
+// Fallback: email が verify されていない、repo / sender が未配線、
+// etc. の場合は従来どおりランダムなテンポラリパスワードを生成してその場で
+// 更新し、{"password": "..."} を返す。旧管理 UI との互換を保つ最後の砦。
 func (h *Handler) ResetPassword(c echo.Context) error {
 	var req struct {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	// ランダムパスワード生成
+	if sent := h.sendPasswordResetEmail(req.UserID); sent {
+		return c.JSON(http.StatusOK, map[string]any{"sent": true})
+	}
+	return h.issueTemporaryPassword(c, req.UserID)
+}
+
+// sendPasswordResetEmail attempts the token+email flow. Returns true only
+// when a reset token was persisted and the email handed off to the sender.
+// Any missing dependency / unverified email triggers false for the caller
+// to pick up the legacy path.
+func (h *Handler) sendPasswordResetEmail(userID string) bool {
+	if h.resetReqRepo == nil || h.emailSender == nil || h.userRepo == nil {
+		return false
+	}
+	profile, err := h.userRepo.FindProfileByUserID(userID)
+	if err != nil || profile.Email == nil || *profile.Email == "" || !profile.EmailVerified {
+		return false
+	}
+	token := misc.SecureRandomHex(64)
+	now := time.Now()
+	resetReq := &model.PasswordResetRequest{
+		ID:     h.idGen.Generate(now),
+		Token:  token,
+		UserID: userID,
+	}
+	if err := h.resetReqRepo.Create(resetReq); err != nil {
+		return false
+	}
+	link := h.serverURL + "/reset-password/" + token
+	go h.emailSender(*profile.Email, "Password reset",
+		"An administrator initiated a password reset for your account.\n"+
+			"Use the following link within 30 minutes to set a new password:\n"+link)
+	return true
+}
+
+// issueTemporaryPassword is the legacy path retained for installations where
+// email is not configured or the user has no verified address. Generates a
+// random password, updates the profile, and returns it to the admin.
+func (h *Handler) issueTemporaryPassword(c echo.Context, userID string) error {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	newPass := hex.EncodeToString(b)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
-	_ = h.userRepo.UpdateProfile(req.UserID, map[string]any{"password": string(hash)})
+	if h.userRepo != nil {
+		_ = h.userRepo.UpdateProfile(userID, map[string]any{"password": string(hash)})
+	}
 	return c.JSON(http.StatusOK, map[string]any{"password": newPass})
 }
 
@@ -150,7 +306,7 @@ func (h *Handler) SendEmail(c echo.Context) error {
 			if m.SmtpPort != nil {
 				port = *m.SmtpPort
 			}
-			go sendEmailSMTP(*m.SmtpHost, port, m.SmtpUser, m.SmtpPass, *m.Email, req.To, req.Subject, req.Text)
+			go smtp.Send(*m.SmtpHost, port, m.SmtpUser, m.SmtpPass, *m.Email, req.To, req.Subject, req.Text)
 		}
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -202,11 +358,36 @@ func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
 }
 
 // UpdateProxyAccount handles POST /api/admin/update-proxy-account.
+//
+// username (local) を解決してその user.id を meta.proxyAccountId に保存する。
+// 空 / null を渡した場合は proxyAccountId を NULL に戻して proxy を無効化する。
 func (h *Handler) UpdateProxyAccount(c echo.Context) error {
 	var req struct {
-		Username string `json:"username"`
+		Username *string `json:"username"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.metaRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// 明示的な空文字 / null → 解除
+	if req.Username == nil || *req.Username == "" {
+		if err := h.metaRepo.Update(map[string]any{"proxyAccountId": nil}); err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.userRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	user, err := h.userRepo.FindByUsernameLower(strings.ToLower(*req.Username), nil)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if err := h.metaRepo.Update(map[string]any{"proxyAccountId": user.ID}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -226,25 +407,19 @@ func (h *Handler) UpdateUserNote(c echo.Context) error {
 // --- drive ---
 
 // DriveCleanRemoteFiles handles POST /api/admin/drive/clean-remote-files.
-// リモートキャッシュファイルの削除をキューに投入する。
 func (h *Handler) DriveCleanRemoteFiles(c echo.Context) error {
-	// リモートファイルキャッシュの削除 (バックグラウンドジョブとして実行)
-	// 実際のファイル削除はDriveServiceのバッチ処理で行う
-	if h.adminDB != nil {
-		go func() {
-			h.adminDB.Exec(`DELETE FROM "drive_file" WHERE "isLink" = true AND "userHost" IS NOT NULL`)
-		}()
+	// 単一 DELETE 文なので同期実行で十分。将来バッチ化が必要ならここを
+	// queue ジョブに差し替える。
+	if h.driveFileRepo != nil {
+		_, _ = h.driveFileRepo.DeleteRemoteCache()
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // DriveCleanup handles POST /api/admin/drive/cleanup.
-// ユーザーに紐づかない孤立ファイルを削除する。
 func (h *Handler) DriveCleanup(c echo.Context) error {
-	if h.adminDB != nil {
-		go func() {
-			h.adminDB.Exec(`DELETE FROM "drive_file" WHERE "userId" IS NULL`)
-		}()
+	if h.driveFileRepo != nil {
+		_, _ = h.driveFileRepo.DeleteOrphans()
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -258,15 +433,22 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 		Limit   int    `json:"limit"`
 		SinceID string `json:"sinceId"`
 		UntilID string `json:"untilId"`
+		Origin  string `json:"origin"`
+		Host    string `json:"host"`
+		Type    string `json:"type"`
 	}
 	_ = c.Bind(&req)
-	if req.Limit <= 0 {
-		req.Limit = 10
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
 	}
-	// 全ファイル一覧（管理者用）
-	files, err := h.driveFileRepo.ListByUser("", nil, req.UntilID, req.SinceID, req.Limit)
+	switch req.Origin {
+	case "", "combined", "local", "remote":
+	default:
+		req.Origin = "combined"
+	}
+	files, err := h.driveFileRepo.ListForAdmin(req.Origin, req.Host, req.Type, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
-		return c.JSON(http.StatusOK, []any{})
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	out := make([]entity.DriveFileEntity, 0, len(files))
 	for _, f := range files {
@@ -276,26 +458,48 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 }
 
 // DriveShowFile handles POST /api/admin/drive/show-file.
+// Accepts either a fileId or a url as identifier (Misskey 本家互換)。
 func (h *Handler) DriveShowFile(c echo.Context) error {
 	var req struct {
 		FileID string `json:"fileId"`
+		URL    string `json:"url"`
 	}
-	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "fileId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	if err := c.Bind(&req); err != nil || (req.FileID == "" && req.URL == "") {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "fileId or url is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.driveFileRepo == nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
 	}
-	file, err := h.driveFileRepo.FindByID(req.FileID)
-	if err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+	if req.FileID != "" {
+		file, err := h.driveFileRepo.FindByID(req.FileID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+		}
+		return c.JSON(http.StatusOK, entity.PackDriveFile(file, h.idGen))
 	}
-	return c.JSON(http.StatusOK, entity.PackDriveFile(file, h.idGen))
+	// url 指定時は adminDB を使って url / thumbnailUrl / webpublicUrl いずれか
+	// に一致する 1 件を引く。 driveFileRepo には該当 API が無いため raw query で。
+	if h.adminDB == nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+	}
+	var file model.DriveFile
+	if err := h.adminDB.Where(
+		`"url" = ? OR "thumbnailUrl" = ? OR "webpublicUrl" = ?`,
+		req.URL, req.URL, req.URL,
+	).First(&file).Error; err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+	}
+	return c.JSON(http.StatusOK, entity.PackDriveFile(&file, h.idGen))
 }
 
 // --- emoji bulk ops ---
 
 // EmojiAddAliasesBulk handles POST /api/admin/emoji/add-aliases-bulk.
+//
+// 旧実装は id ごとに FindByID→UpdateFields を直列に呼んでいたが、件数が多いと
+// DB 往復が線形に増える。FindManyByIDs で一括取得 → 個別に alias を merge →
+// UpdateFields で書き戻す (alias はレコード毎に異なるため UpdateFieldsMany
+// では一括化できない)。
 func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
 	var req struct {
 		IDs     []string `json:"ids"`
@@ -304,35 +508,49 @@ func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			if e, err := h.emojiRepo.FindByID(eid); err == nil {
-				merged := append(e.Aliases, req.Aliases...)
-				_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": merged})
-			}
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	rows, err := h.emojiRepo.FindManyByIDs(req.IDs)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	for _, e := range rows {
+		merged := dedupe(append(append([]string{}, e.Aliases...), req.Aliases...))
+		_ = h.emojiRepo.UpdateFields(e.ID, map[string]any{"aliases": merged})
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiCopy handles POST /api/admin/emoji/copy.
+//
+// Misskey 本家は対象 name が既存ならば DUPLICATE_NAME を返す。サフィックス
+// _copy を付けても既存に衝突する可能性があるため、明示チェックを入れる。
 func (h *Handler) EmojiCopy(c echo.Context) error {
 	var req struct {
 		EmojiID string `json:"emojiId"`
 	}
-	_ = c.Bind(&req)
-	if req.EmojiID == "" || h.emojiRepo == nil {
+	if err := c.Bind(&req); err != nil || req.EmojiID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "emojiId is required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.emojiRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	src, err := h.emojiRepo.FindByID(req.EmojiID)
 	if err != nil {
-		return c.NoContent(http.StatusNoContent)
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "e2785b66-dca3-4087-9cac-b93c541cc425"))
 	}
-	// コピーを作成 (同じURLで新しいIDを生成)
+	newName := src.Name + "_copy"
+	if existing, err := h.emojiRepo.FindByNameAndHost(newName, nil); err == nil && existing != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("DUPLICATE_NAME", "Duplicate name.", "5abef7f4-b3d6-4be4-a08f-4c4b7cf4f5b0"))
+	}
 	copied := *src
 	copied.ID = h.idGen.Generate(time.Now())
-	copied.Name = src.Name + "_copy"
-	_ = h.emojiRepo.Create(&copied)
+	copied.Name = newName
+	copied.Host = nil
+	if err := h.emojiRepo.Create(&copied); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, map[string]any{"id": copied.ID})
 }
 
@@ -344,30 +562,46 @@ func (h *Handler) EmojiDeleteBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.Delete(eid)
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.DeleteMany(req.IDs); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
+// dedupe returns the slice with duplicates removed while preserving order.
+func dedupe(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
 // EmojiImportZip handles POST /api/admin/emoji/import-zip.
+//
 // fileId で Drive にアップロード済みの ZIP を指定し、非同期ジョブで展開して
 // ローカルカスタム絵文字として登録する。本家 Misskey 互換
-// (`QueueService.createImportCustomEmojisJob` 相当)。
+// (QueueService.createImportCustomEmojisJob 相当)。
 func (h *Handler) EmojiImportZip(c echo.Context) error {
 	var req struct {
 		FileID string `json:"fileId"`
 	}
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error": map[string]any{
-				"message": "fileId is required.",
-				"code":    "INVALID_PARAM",
-				"id":      "5f4c9d8a-7c39-4bfa-9dcb-09f17e0f7a25",
-			},
-		})
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "fileId is required.", "5f4c9d8a-7c39-4bfa-9dcb-09f17e0f7a25"))
+	}
+	// drive file の存在確認 (ジョブが後で失敗するよりここで早期に弾く)
+	if h.driveFileRepo != nil {
+		if _, err := h.driveFileRepo.FindByID(req.FileID); err != nil {
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
+		}
 	}
 	if h.emojiEnqueuer == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -380,13 +614,7 @@ func (h *Handler) EmojiImportZip(c echo.Context) error {
 		UserID: user.ID,
 		FileID: req.FileID,
 	}); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
-			"error": map[string]any{
-				"message": "Failed to enqueue emoji import.",
-				"code":    "INTERNAL_ERROR",
-				"id":      "89a6d9fd-0fe6-4c3c-9daa-7c6b1f29f1a4",
-			},
-		})
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to enqueue emoji import.", "89a6d9fd-0fe6-4c3c-9daa-7c6b1f29f1a4"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -396,8 +624,21 @@ func (h *Handler) EmojiListRemote(c echo.Context) error {
 	if h.emojiRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	emojis, err := h.emojiRepo.ListWithFilter("", "", false, 20, 0)
+	var req struct {
+		Query  string `json:"query"`
+		Host   string `json:"host"`
+		Limit  int    `json:"limit"`
+		Offset int    `json:"offset"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	emojis, err := h.emojiRepo.ListRemoteWithFilter(req.Query, req.Host, req.Limit, req.Offset)
 	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if emojis == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	return c.JSON(http.StatusOK, emojis)
@@ -412,27 +653,33 @@ func (h *Handler) EmojiRemoveAliasesBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		removeSet := make(map[string]bool, len(req.Aliases))
-		for _, a := range req.Aliases {
-			removeSet[a] = true
-		}
-		for _, eid := range req.IDs {
-			if e, err := h.emojiRepo.FindByID(eid); err == nil {
-				var filtered []string
-				for _, a := range e.Aliases {
-					if !removeSet[a] {
-						filtered = append(filtered, a)
-					}
-				}
-				_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": filtered})
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	rows, err := h.emojiRepo.FindManyByIDs(req.IDs)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	removeSet := make(map[string]bool, len(req.Aliases))
+	for _, a := range req.Aliases {
+		removeSet[a] = true
+	}
+	for _, e := range rows {
+		filtered := make([]string, 0, len(e.Aliases))
+		for _, a := range e.Aliases {
+			if !removeSet[a] {
+				filtered = append(filtered, a)
 			}
 		}
+		_ = h.emojiRepo.UpdateFields(e.ID, map[string]any{"aliases": filtered})
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // EmojiSetAliasesBulk handles POST /api/admin/emoji/set-aliases-bulk.
+//
+// 全 id で同じ aliases 値を設定するため UpdateFieldsMany (WHERE IN UPDATE) で
+// 1 文に集約できる。
 func (h *Handler) EmojiSetAliasesBulk(c echo.Context) error {
 	var req struct {
 		IDs     []string `json:"ids"`
@@ -441,10 +688,11 @@ func (h *Handler) EmojiSetAliasesBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"aliases": req.Aliases})
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"aliases": req.Aliases}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -458,10 +706,11 @@ func (h *Handler) EmojiSetCategoryBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"category": req.Category})
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"category": req.Category}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -475,10 +724,11 @@ func (h *Handler) EmojiSetLicenseBulk(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
 		return c.NoContent(http.StatusNoContent)
 	}
-	if h.emojiRepo != nil {
-		for _, eid := range req.IDs {
-			_ = h.emojiRepo.UpdateFields(eid, map[string]any{"license": req.License})
-		}
+	if h.emojiRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"license": req.License}); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -486,22 +736,84 @@ func (h *Handler) EmojiSetLicenseBulk(c echo.Context) error {
 // --- captcha ---
 
 // CaptchaCurrent handles POST /api/admin/captcha/current.
+//
+// Returns which captcha provider (if any) is currently enabled and its public
+// site key so the admin UI can render the correct configuration form.
 func (h *Handler) CaptchaCurrent(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{"provider": nil})
+	if h.metaRepo == nil {
+		return c.JSON(http.StatusOK, map[string]any{"provider": nil})
+	}
+	meta, err := h.metaRepo.Fetch()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	var provider any
+	var siteKey *string
+	switch {
+	case meta.EnableHcaptcha:
+		provider = "hcaptcha"
+		siteKey = meta.HcaptchaSiteKey
+	case meta.EnableRecaptcha:
+		provider = "recaptcha"
+		siteKey = meta.RecaptchaSiteKey
+	case meta.EnableTurnstile:
+		provider = "turnstile"
+		siteKey = meta.TurnstileSiteKey
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"provider": provider,
+		"siteKey":  siteKey,
+	})
 }
 
 // CaptchaSave handles POST /api/admin/captcha/save.
 func (h *Handler) CaptchaSave(c echo.Context) error {
 	var req struct {
-		Provider string `json:"provider"`
+		Provider    string  `json:"provider"`
+		HcaptchaSK  *string `json:"hcaptchaSiteKey"`
+		HcaptchaSS  *string `json:"hcaptchaSecretKey"`
+		RecaptchaSK *string `json:"recaptchaSiteKey"`
+		RecaptchaSS *string `json:"recaptchaSecretKey"`
+		TurnstileSK *string `json:"turnstileSiteKey"`
+		TurnstileSS *string `json:"turnstileSecretKey"`
 	}
-	_ = c.Bind(&req)
-	if h.metaRepo != nil {
-		_ = h.metaRepo.Update(map[string]any{
-			"enableHcaptcha":  req.Provider == "hcaptcha",
-			"enableRecaptcha": req.Provider == "recaptcha",
-			"enableTurnstile": req.Provider == "turnstile",
-		})
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	// provider が空 or "none" の場合は captcha 無効化として扱う。
+	switch req.Provider {
+	case "", "none", "hcaptcha", "recaptcha", "turnstile":
+	default:
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Unknown captcha provider.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.metaRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	fields := map[string]any{
+		"enableHcaptcha":  req.Provider == "hcaptcha",
+		"enableRecaptcha": req.Provider == "recaptcha",
+		"enableTurnstile": req.Provider == "turnstile",
+	}
+	if req.HcaptchaSK != nil {
+		fields["hcaptchaSiteKey"] = *req.HcaptchaSK
+	}
+	if req.HcaptchaSS != nil {
+		fields["hcaptchaSecretKey"] = *req.HcaptchaSS
+	}
+	if req.RecaptchaSK != nil {
+		fields["recaptchaSiteKey"] = *req.RecaptchaSK
+	}
+	if req.RecaptchaSS != nil {
+		fields["recaptchaSecretKey"] = *req.RecaptchaSS
+	}
+	if req.TurnstileSK != nil {
+		fields["turnstileSiteKey"] = *req.TurnstileSK
+	}
+	if req.TurnstileSS != nil {
+		fields["turnstileSecretKey"] = *req.TurnstileSS
+	}
+	if err := h.metaRepo.Update(fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -510,18 +822,24 @@ func (h *Handler) CaptchaSave(c echo.Context) error {
 
 // AdCreate handles POST /api/admin/ad/create.
 func (h *Handler) AdCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.adRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		URL      string `json:"url"`
-		ImageURL string `json:"imageUrl"`
-		Place    string `json:"place"`
-		Memo     string `json:"memo"`
-		Priority string `json:"priority"`
-		Ratio    int    `json:"ratio"`
+		URL         string `json:"url"`
+		ImageURL    string `json:"imageUrl"`
+		Place       string `json:"place"`
+		Memo        string `json:"memo"`
+		Priority    string `json:"priority"`
+		Ratio       int    `json:"ratio"`
+		DayOfWeek   int    `json:"dayOfWeek"`
+		ExpiresAt   int64  `json:"expiresAt"`
+		StartsAt    int64  `json:"startsAt"`
+		IsSensitive bool   `json:"isSensitive"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil || req.URL == "" || req.ImageURL == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
 	if req.Place == "" {
 		req.Place = "square"
 	}
@@ -532,148 +850,359 @@ func (h *Handler) AdCreate(c echo.Context) error {
 		req.Ratio = 1
 	}
 	ad := &model.Ad{
-		ID: h.idGen.Generate(time.Now()), URL: req.URL, ImageURL: req.ImageURL,
-		Place: req.Place, Memo: req.Memo, Priority: req.Priority, Ratio: req.Ratio,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour), StartsAt: time.Now(),
+		ID:          h.idGen.Generate(time.Now()),
+		URL:         req.URL,
+		ImageURL:    req.ImageURL,
+		Place:       req.Place,
+		Memo:        req.Memo,
+		Priority:    req.Priority,
+		Ratio:       req.Ratio,
+		DayOfWeek:   req.DayOfWeek,
+		IsSensitive: req.IsSensitive,
+		StartsAt:    millisOrNow(req.StartsAt),
+		ExpiresAt:   millisOrDefault(req.ExpiresAt, time.Now().Add(30*24*time.Hour)),
 	}
-	h.adminDB.Create(ad)
+	if err := h.adRepo.Create(ad); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, ad)
 }
 
 // AdDelete handles POST /api/admin/ad/delete.
 func (h *Handler) AdDelete(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.adRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.Ad{})
+	_ = h.adRepo.Delete(req.ID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // AdList handles POST /api/admin/ad/list.
 func (h *Handler) AdList(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.adRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	var ads []*model.Ad
-	h.adminDB.Order(`"id" DESC`).Limit(20).Find(&ads)
-	return c.JSON(http.StatusOK, ads)
+	var req struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	rows, err := h.adRepo.List(req.Limit, req.Offset)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if rows == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // AdUpdate handles POST /api/admin/ad/update.
 func (h *Handler) AdUpdate(c echo.Context) error {
-	if h.adminDB == nil {
+	// 旧実装が `c.Request().Body` を `Updates` に直接渡しており部分更新が機能して
+	// いなかった。partial field map に差し替え、リクエストで明示された項目のみ
+	// 書き換える。
+	if h.adRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		ID string `json:"id"`
+		ID          string  `json:"id"`
+		URL         *string `json:"url"`
+		ImageURL    *string `json:"imageUrl"`
+		Place       *string `json:"place"`
+		Memo        *string `json:"memo"`
+		Priority    *string `json:"priority"`
+		Ratio       *int    `json:"ratio"`
+		DayOfWeek   *int    `json:"dayOfWeek"`
+		ExpiresAt   *int64  `json:"expiresAt"`
+		StartsAt    *int64  `json:"startsAt"`
+		IsSensitive *bool   `json:"isSensitive"`
 	}
-	_ = c.Bind(&req)
-	if req.ID != "" {
-		h.adminDB.Model(&model.Ad{}).Where(`"id" = ?`, req.ID).Updates(c.Request().Body)
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if _, err := h.adRepo.FindByID(req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	fields := map[string]any{}
+	if req.URL != nil {
+		fields["url"] = *req.URL
+	}
+	if req.ImageURL != nil {
+		fields["imageUrl"] = *req.ImageURL
+	}
+	if req.Place != nil {
+		fields["place"] = *req.Place
+	}
+	if req.Memo != nil {
+		fields["memo"] = *req.Memo
+	}
+	if req.Priority != nil {
+		fields["priority"] = *req.Priority
+	}
+	if req.Ratio != nil {
+		fields["ratio"] = *req.Ratio
+	}
+	if req.DayOfWeek != nil {
+		fields["dayOfWeek"] = *req.DayOfWeek
+	}
+	if req.IsSensitive != nil {
+		fields["isSensitive"] = *req.IsSensitive
+	}
+	// pointer 型フィールドは nil (未指定) と 0 (明示的に 0) を区別できるので、
+	// 受け取った値をそのまま UnixMilli に変換する。Create 側と違い 0 を now に
+	// 読み替えない。
+	if req.StartsAt != nil {
+		fields["startsAt"] = time.UnixMilli(*req.StartsAt)
+	}
+	if req.ExpiresAt != nil {
+		fields["expiresAt"] = time.UnixMilli(*req.ExpiresAt)
+	}
+	if err := h.adRepo.UpdateFields(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// millisOrNow converts a UNIX millisecond timestamp to time.Time; 0 falls back
+// to the current wall clock.
+func millisOrNow(ms int64) time.Time {
+	if ms == 0 {
+		return time.Now()
+	}
+	return time.UnixMilli(ms)
+}
+
+// millisOrDefault converts a UNIX millisecond timestamp to time.Time; 0 falls
+// back to the provided default.
+func millisOrDefault(ms int64, def time.Time) time.Time {
+	if ms == 0 {
+		return def
+	}
+	return time.UnixMilli(ms)
 }
 
 // --- avatar-decorations ---
 
 // AvatarDecorationsCreate handles POST /api/admin/avatar-decorations/create.
 func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.avatarDecoRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		URL         string `json:"url"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		URL         string   `json:"url"`
+		RoleIDs     []string `json:"roleIdsThatCanBeUsedThisDecoration"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil || req.Name == "" || req.URL == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
 	d := &model.AvatarDecoration{
-		ID: h.idGen.Generate(time.Now()), Name: req.Name, Description: req.Description, URL: req.URL,
+		ID:          h.idGen.Generate(time.Now()),
+		Name:        req.Name,
+		Description: req.Description,
+		URL:         req.URL,
+		RoleIDs:     req.RoleIDs,
 	}
-	h.adminDB.Create(d)
+	if err := h.avatarDecoRepo.Create(d); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, d)
 }
 
 // AvatarDecorationsDelete handles POST /api/admin/avatar-decorations/delete.
 func (h *Handler) AvatarDecorationsDelete(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.avatarDecoRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.AvatarDecoration{})
+	_ = h.avatarDecoRepo.Delete(req.ID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // AvatarDecorationsList handles POST /api/admin/avatar-decorations/list.
 func (h *Handler) AvatarDecorationsList(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.avatarDecoRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	var decorations []*model.AvatarDecoration
-	h.adminDB.Order(`"id" DESC`).Find(&decorations)
-	return c.JSON(http.StatusOK, decorations)
+	rows, err := h.avatarDecoRepo.List()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if rows == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // AvatarDecorationsUpdate handles POST /api/admin/avatar-decorations/update.
 func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent) // 更新ロジックは将来対応
+	if h.avatarDecoRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID          string    `json:"id"`
+		Name        *string   `json:"name"`
+		Description *string   `json:"description"`
+		URL         *string   `json:"url"`
+		RoleIDs     *[]string `json:"roleIdsThatCanBeUsedThisDecoration"`
+	}
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if _, err := h.avatarDecoRepo.FindByID(req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	fields := map[string]any{"updatedAt": time.Now()}
+	if req.Name != nil {
+		fields["name"] = *req.Name
+	}
+	if req.Description != nil {
+		fields["description"] = *req.Description
+	}
+	if req.URL != nil {
+		fields["url"] = *req.URL
+	}
+	if req.RoleIDs != nil {
+		fields["roleIdsThatCanBeUsedThisDecoration"] = *req.RoleIDs
+	}
+	if err := h.avatarDecoRepo.UpdateFields(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // --- abuse-report/notification-recipient ---
 
 // AbuseReportNotificationRecipientCreate handles POST /api/admin/abuse-report/notification-recipient/create.
 func (h *Handler) AbuseReportNotificationRecipientCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.recipientRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		Name   string `json:"name"`
-		Method string `json:"method"`
+		Name            string  `json:"name"`
+		Method          string  `json:"method"`
+		UserID          *string `json:"userId"`
+		SystemWebhookID *string `json:"systemWebhookId"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
 	if req.Method == "" {
 		req.Method = "email"
 	}
 	r := &model.AbuseReportNotificationRecipient{
-		ID: h.idGen.Generate(time.Now()), Name: req.Name, Method: req.Method, IsActive: true,
+		ID:              h.idGen.Generate(time.Now()),
+		Name:            req.Name,
+		Method:          req.Method,
+		UserID:          req.UserID,
+		SystemWebhookID: req.SystemWebhookID,
+		IsActive:        true,
 	}
-	h.adminDB.Create(r)
+	if err := h.recipientRepo.Create(r); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, r)
 }
 
 // AbuseReportNotificationRecipientDelete handles POST /api/admin/abuse-report/notification-recipient/delete.
 func (h *Handler) AbuseReportNotificationRecipientDelete(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.recipientRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.AbuseReportNotificationRecipient{})
+	_ = h.recipientRepo.Delete(req.ID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // AbuseReportNotificationRecipientList handles POST /api/admin/abuse-report/notification-recipient/list.
 func (h *Handler) AbuseReportNotificationRecipientList(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	if h.recipientRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	rows, err := h.recipientRepo.List()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	// nil を明示的に空配列化 (クライアント互換)
+	if rows == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // AbuseReportNotificationRecipientShow handles POST /api/admin/abuse-report/notification-recipient/show.
 func (h *Handler) AbuseReportNotificationRecipientShow(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	if h.recipientRepo == nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	r, err := h.recipientRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, r)
 }
 
 // AbuseReportNotificationRecipientUpdate handles POST /api/admin/abuse-report/notification-recipient/update.
 func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent) // 更新ロジックは将来対応
+	if h.recipientRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID              string  `json:"id"`
+		Name            *string `json:"name"`
+		Method          *string `json:"method"`
+		IsActive        *bool   `json:"isActive"`
+		UserID          *string `json:"userId"`
+		SystemWebhookID *string `json:"systemWebhookId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	fields := map[string]any{}
+	if req.Name != nil {
+		fields["name"] = *req.Name
+	}
+	if req.Method != nil {
+		fields["method"] = *req.Method
+	}
+	if req.IsActive != nil {
+		fields["isActive"] = *req.IsActive
+	}
+	if req.UserID != nil {
+		fields["userId"] = *req.UserID
+	}
+	if req.SystemWebhookID != nil {
+		fields["systemWebhookId"] = *req.SystemWebhookID
+	}
+	// GORM Updates(map) は対象なしでも nil を返すため、ここでのエラーは DB 障害
+	// 等の真の失敗。NotFound は続く FindByID で検出する。
+	if err := h.recipientRepo.Update(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	r, err := h.recipientRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, r)
 }
 
 // --- federation ---
@@ -746,38 +1275,125 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 
 // InviteCreate handles POST /api/admin/invite/create.
 func (h *Handler) InviteCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	// 本家 TS は count (1-100, default 1) 分のチケットを配列で返す。個々の Create
+	// 失敗時でも既作成分はロールバックしない (本家も Promise.all で非原子的)。
+	if h.inviteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	user := middleware.GetUser(c)
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	code := hex.EncodeToString(b)
-	ticket := &model.RegistrationTicket{
-		ID: h.idGen.Generate(time.Now()), Code: code, CreatedByID: &user.ID,
+	var req struct {
+		Count     int     `json:"count"`
+		ExpiresAt *string `json:"expiresAt"`
 	}
-	h.adminDB.Create(ticket)
-	return c.JSON(http.StatusOK, map[string]any{
-		"id": ticket.ID, "code": ticket.Code, "expiresAt": ticket.ExpiresAt,
-		"createdAt": time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-	})
+	_ = c.Bind(&req)
+	if req.Count <= 0 {
+		req.Count = 1
+	}
+	if req.Count > 100 {
+		req.Count = 100
+	}
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
+		parsed, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_DATE_TIME", "Invalid date-time format", "f1380b15-3760-4c6c-a1db-5c3aaf1cbd49"))
+		}
+		expiresAt = &parsed
+	}
+	user := middleware.GetUser(c)
+	var createdByID *string
+	if user != nil {
+		createdByID = &user.ID
+	}
+	tickets := make([]*model.RegistrationTicket, 0, req.Count)
+	for i := 0; i < req.Count; i++ {
+		b := make([]byte, 16)
+		_, _ = rand.Read(b)
+		t := &model.RegistrationTicket{
+			ID:          h.idGen.Generate(time.Now()),
+			Code:        hex.EncodeToString(b),
+			ExpiresAt:   expiresAt,
+			CreatedByID: createdByID,
+		}
+		if err := h.inviteRepo.Create(t); err != nil {
+			continue
+		}
+		tickets = append(tickets, t)
+	}
+	return c.JSON(http.StatusOK, h.packInviteTickets(tickets))
+}
+
+// packInviteTickets transforms RegistrationTicket rows into the
+// Misskey-compatible InviteCodeEntityService.pack shape.
+func (h *Handler) packInviteTickets(rows []*model.RegistrationTicket) []map[string]any {
+	// Misskey 本家 InviteCodeEntityService.pack と同じ形にする。
+	// createdAt は aidx ID から抽出、used は usedAt の有無で導出する。
+	out := make([]map[string]any, 0, len(rows))
+	for _, t := range rows {
+		var createdAt *string
+		if h.idGen != nil {
+			if ts, err := h.idGen.ParseTime(t.ID); err == nil {
+				s := ts.UTC().Format("2006-01-02T15:04:05.000Z")
+				createdAt = &s
+			}
+		}
+		var expiresAt *string
+		if t.ExpiresAt != nil {
+			s := t.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000Z")
+			expiresAt = &s
+		}
+		var usedAt *string
+		if t.UsedAt != nil {
+			s := t.UsedAt.UTC().Format("2006-01-02T15:04:05.000Z")
+			usedAt = &s
+		}
+		out = append(out, map[string]any{
+			"id":          t.ID,
+			"code":        t.Code,
+			"expiresAt":   expiresAt,
+			"createdAt":   createdAt,
+			"createdBy":   nil,
+			"usedBy":      nil,
+			"usedAt":      usedAt,
+			"used":        t.UsedAt != nil,
+			"createdById": t.CreatedByID,
+			"usedById":    t.UsedByID,
+		})
+	}
+	return out
 }
 
 // InviteList handles POST /api/admin/invite/list.
 func (h *Handler) InviteList(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.inviteRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	var tickets []*model.RegistrationTicket
-	h.adminDB.Order(`"id" DESC`).Limit(20).Find(&tickets)
-	return c.JSON(http.StatusOK, tickets)
+	var req struct {
+		Limit  int    `json:"limit"`
+		Offset int    `json:"offset"`
+		Type   string `json:"type"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	filter := req.Type
+	switch filter {
+	case "unused", "used", "expired", "all":
+	default:
+		filter = "all"
+	}
+	rows, err := h.inviteRepo.List(filter, req.Limit, req.Offset, time.Now())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, h.packInviteTickets(rows))
 }
 
 // --- promo ---
 
 // PromoCreate handles POST /api/admin/promo/create.
 func (h *Handler) PromoCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.promoNoteRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
@@ -785,19 +1401,42 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 		ExpiresAt int64  `json:"expiresAt"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, errResp("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	u := middleware.GetUser(c)
-	userID := ""
-	if u != nil {
-		userID = u.ID
+
+	// 対象 note の存在確認 → 既に promote 済みでないか確認
+	var targetUserID string
+	if h.noteFinder != nil {
+		note, err := h.noteFinder.FindByID(req.NoteID)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_NOTE", "No such note.", "ee449fbe-af2a-453b-9cae-cf2fe7c895fc"))
+		}
+		targetUserID = note.UserID
 	}
+
+	exists, err := h.promoNoteRepo.Exists(req.NoteID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if exists {
+		return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_PROMOTED", "The note has already promoted.", "ae427aa2-7a41-484f-a18c-2c1104051604"))
+	}
+
+	// note 情報が取れなかった場合は呼び出し admin を userId として記録 (最低限の整合)
+	if targetUserID == "" {
+		if u := middleware.GetUser(c); u != nil {
+			targetUserID = u.ID
+		}
+	}
+
 	promo := &model.PromoNote{
 		NoteID:    req.NoteID,
-		ExpiresAt: time.Unix(req.ExpiresAt/1000, 0),
-		UserID:    userID,
+		ExpiresAt: time.UnixMilli(req.ExpiresAt),
+		UserID:    targetUserID,
 	}
-	h.adminDB.Clauses(clause.OnConflict{DoNothing: true}).Create(promo)
+	if err := h.promoNoteRepo.Create(promo); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -805,35 +1444,201 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 
 // QueueClear handles POST /api/admin/queue/clear.
 func (h *Handler) QueueClear(c echo.Context) error {
-	if h.queueInspector != nil {
-		queues, _ := h.queueInspector.Queues()
-		for _, q := range queues {
-			_, _ = h.queueInspector.DeleteAllPendingTasks(q)
-		}
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	queues, err := h.queueInspector.Queues()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	for _, q := range queues {
+		_, _ = h.queueInspector.DeleteAllPendingTasks(q)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // QueueDeliverDelayed handles POST /api/admin/queue/deliver-delayed.
-func (h *Handler) QueueDeliverDelayed(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+// Returns scheduled/retry tasks on the `deliver` queue.
+func (h *Handler) QueueDeliverDelayed(c echo.Context) error {
+	return h.listDelayedTasks(c, "deliver")
+}
 
 // QueueInboxDelayed handles POST /api/admin/queue/inbox-delayed.
-func (h *Handler) QueueInboxDelayed(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+// Returns scheduled/retry tasks on the `inbox` queue.
+func (h *Handler) QueueInboxDelayed(c echo.Context) error {
+	return h.listDelayedTasks(c, "inbox")
+}
+
+// delayedTasksMaxFetch is the upper bound on how many of each of scheduled /
+// retry we pull from asynq to build the virtual delayed list. asynq pages
+// scheduled and retry independently so we cannot naively forward the user's
+// page number to both (retry items before the scheduled boundary would
+// disappear). We instead fetch the first asynq page (up to 100 items) of each,
+// merge scheduled-first, then slice by the user's (page, limit).
+//
+// 想定: admin/queue/*-delayed は通常 "stuck な配送" を目視で確認する用途で、
+// 合計 200 件を超えるケースは運用上ほぼ存在しない。深いページングが必要なら
+// /admin/queue/jobs を state=scheduled / state=retry で使う。
+const delayedTasksMaxFetch = 100
+
+func (h *Handler) listDelayedTasks(c echo.Context, queueName string) error {
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var req struct {
+		Limit int `json:"limit"`
+		Page  int `json:"page"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	if req.Page < 1 {
+		req.Page = 1
+	}
+
+	scheduled, _ := h.queueInspector.ListScheduledTasks(queueName, 1, delayedTasksMaxFetch)
+	retry, _ := h.queueInspector.ListRetryTasks(queueName, 1, delayedTasksMaxFetch)
+	combined := make([]*QueueTaskSummary, 0, len(scheduled)+len(retry))
+	combined = append(combined, scheduled...)
+	combined = append(combined, retry...)
+
+	offset := (req.Page - 1) * req.Limit
+	if offset >= len(combined) {
+		return c.JSON(http.StatusOK, []map[string]any{})
+	}
+	end := offset + req.Limit
+	if end > len(combined) {
+		end = len(combined)
+	}
+	out := make([]map[string]any, 0, end-offset)
+	for _, t := range combined[offset:end] {
+		out = append(out, packTaskSummary(t))
+	}
+	return c.JSON(http.StatusOK, out)
+}
 
 // QueueJobs handles POST /api/admin/queue/jobs.
-func (h *Handler) QueueJobs(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+func (h *Handler) QueueJobs(c echo.Context) error {
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	var req struct {
+		Queue string `json:"queue"`
+		State string `json:"state"`
+		Limit int    `json:"limit"`
+		Page  int    `json:"page"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 30
+	}
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	// Queue 名は Misskey の deliver/inbox 以外にも ap/relay など様々あるため、
+	// 明示指定が無い場合は全キューを走査して pending を返す。
+	queues := []string{req.Queue}
+	if req.Queue == "" {
+		qs, err := h.queueInspector.Queues()
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		}
+		queues = qs
+	}
+	state := req.State
+	if state == "" {
+		state = "pending"
+	}
+	// 複数キューを走査する場合でも合計で req.Limit を超えないように切り詰める
+	// (ページネーション契約の保持)。走査順序は Queues() の返り順に依存するため、
+	// 同じ state で全体ソートされない点は許容する。
+	out := make([]map[string]any, 0, req.Limit)
+outer:
+	for _, q := range queues {
+		var rows []*QueueTaskSummary
+		var err error
+		switch state {
+		case "active":
+			rows, err = h.queueInspector.ListActiveTasks(q, req.Page, req.Limit)
+		case "scheduled":
+			rows, err = h.queueInspector.ListScheduledTasks(q, req.Page, req.Limit)
+		case "retry":
+			rows, err = h.queueInspector.ListRetryTasks(q, req.Page, req.Limit)
+		default:
+			rows, err = h.queueInspector.ListPendingTasks(q, req.Page, req.Limit)
+		}
+		if err != nil {
+			continue
+		}
+		for _, t := range rows {
+			if len(out) >= req.Limit {
+				break outer
+			}
+			out = append(out, packTaskSummary(t))
+		}
+	}
+	return c.JSON(http.StatusOK, out)
+}
 
 // QueuePromoteJobs handles POST /api/admin/queue/promote-jobs.
-// スケジュール済みジョブを即座に実行可能状態にプロモートする。
 func (h *Handler) QueuePromoteJobs(c echo.Context) error {
-	// asynqにはbulk promote APIがないため、NoContentを返す。
-	// 個別のジョブプロモートはqueue/retry-job (RunTask) で代替可能。
-	return c.NoContent(http.StatusNoContent)
+	// asynq に bulk promote API が無いため、全キューの scheduled/retry を 1 ページ
+	// 分ずつ拾って RunTask で逐次 promote する。大量投入時は後続のページを
+	// クライアント側で再呼び出しする運用。
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	queues, err := h.queueInspector.Queues()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	promoted := 0
+	for _, q := range queues {
+		for _, state := range []string{"scheduled", "retry"} {
+			var rows []*QueueTaskSummary
+			if state == "scheduled" {
+				rows, _ = h.queueInspector.ListScheduledTasks(q, 1, 100)
+			} else {
+				rows, _ = h.queueInspector.ListRetryTasks(q, 1, 100)
+			}
+			for _, t := range rows {
+				if err := h.queueInspector.RunTask(q, t.ID); err == nil {
+					promoted++
+				}
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]any{"promoted": promoted})
 }
 
 // QueueQueueStats handles POST /api/admin/queue/queue-stats.
 func (h *Handler) QueueQueueStats(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{})
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusOK, map[string]any{})
+	}
+	queues, err := h.queueInspector.Queues()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	out := map[string]any{}
+	for _, q := range queues {
+		info, err := h.queueInspector.GetQueueInfo(q)
+		if err != nil {
+			continue
+		}
+		out[q] = map[string]any{
+			"queue":     info.Queue,
+			"size":      info.Size,
+			"active":    info.Active,
+			"pending":   info.Pending,
+			"completed": info.Completed,
+			"failed":    info.Failed,
+			"scheduled": info.Scheduled,
+			"retry":     info.Retry,
+		}
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // QueueQueues handles POST /api/admin/queue/queues.
@@ -843,22 +1648,24 @@ func (h *Handler) QueueQueues(c echo.Context) error {
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
-		return c.JSON(http.StatusOK, []any{})
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
-	var result []map[string]any
+	result := make([]map[string]any, 0, len(queues))
 	for _, q := range queues {
 		info, err := h.queueInspector.GetQueueInfo(q)
 		if err != nil {
 			continue
 		}
 		result = append(result, map[string]any{
-			"queue": info.Queue, "size": info.Size,
-			"active": info.Active, "pending": info.Pending,
-			"completed": info.Completed, "failed": info.Failed,
+			"queue":     info.Queue,
+			"size":      info.Size,
+			"active":    info.Active,
+			"pending":   info.Pending,
+			"completed": info.Completed,
+			"failed":    info.Failed,
+			"scheduled": info.Scheduled,
+			"retry":     info.Retry,
 		})
-	}
-	if result == nil {
-		result = []map[string]any{}
 	}
 	return c.JSON(http.StatusOK, result)
 }
@@ -869,9 +1676,14 @@ func (h *Handler) QueueRemoveJob(c echo.Context) error {
 		Queue string `json:"queue"`
 		ID    string `json:"id"`
 	}
-	_ = c.Bind(&req)
-	if h.queueInspector != nil && req.Queue != "" && req.ID != "" {
-		_ = h.queueInspector.DeleteTask(req.Queue, req.ID)
+	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.queueInspector.DeleteTask(req.Queue, req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -882,20 +1694,71 @@ func (h *Handler) QueueRetryJob(c echo.Context) error {
 		Queue string `json:"queue"`
 		ID    string `json:"id"`
 	}
-	_ = c.Bind(&req)
-	if h.queueInspector != nil && req.Queue != "" && req.ID != "" {
-		_ = h.queueInspector.RunTask(req.Queue, req.ID)
+	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.queueInspector == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if err := h.queueInspector.RunTask(req.Queue, req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
 // QueueShowJob handles POST /api/admin/queue/show-job.
 func (h *Handler) QueueShowJob(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	var req struct {
+		Queue string `json:"queue"`
+		ID    string `json:"id"`
+	}
+	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if h.queueInspector == nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	t, err := h.queueInspector.GetTaskInfo(req.Queue, req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, packTaskSummary(t))
 }
 
 // QueueShowJobLogs handles POST /api/admin/queue/show-job-logs.
+// asynq does not persist per-task log output. Returns an empty array to keep
+// the admin UI usable without extra infra.
 func (h *Handler) QueueShowJobLogs(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
+
+// packTaskSummary normalizes a QueueTaskSummary into the Misskey-compatible
+// JSON shape.
+func packTaskSummary(t *QueueTaskSummary) map[string]any {
+	if t == nil {
+		return nil
+	}
+	pack := map[string]any{
+		"id":       t.ID,
+		"queue":    t.Queue,
+		"type":     t.Type,
+		"state":    t.State,
+		"payload":  string(t.Payload),
+		"retried":  t.Retried,
+		"maxRetry": t.MaxRetry,
+	}
+	if t.LastErr != "" {
+		pack["lastErr"] = t.LastErr
+	}
+	if !t.LastFailedAt.IsZero() {
+		pack["lastFailedAt"] = t.LastFailedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !t.NextProcessAt.IsZero() {
+		pack["nextProcessAt"] = t.NextProcessAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !t.CompletedAt.IsZero() {
+		pack["completedAt"] = t.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return pack
+}
 
 // QueueStats handles POST /api/admin/queue/stats.
 func (h *Handler) QueueStats(c echo.Context) error {
@@ -921,16 +1784,26 @@ func (h *Handler) QueueStats(c echo.Context) error {
 
 // --- relays ---
 
-// RelaysAdd handles POST /api/admin/relays/add.
+// RelaysAdd handles POST /api/admin/relays/add. Routes through the
+// relay Service so that a Follow activity is actually dispatched to
+// the relay's inbox (#161). Falls back to raw DB insertion when the
+// service is not wired (tests or early boot).
 func (h *Handler) RelaysAdd(c echo.Context) error {
-	if h.adminDB == nil {
-		return c.NoContent(http.StatusNoContent)
-	}
 	var req struct {
 		Inbox string `json:"inbox"`
 	}
 	_ = c.Bind(&req)
 	if req.Inbox == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if h.relayService != nil {
+		rel, err := h.relayService.Add(c.Request().Context(), req.Inbox)
+		if err != nil {
+			return apierr.JSONInternalError(c)
+		}
+		return c.JSON(http.StatusOK, rel)
+	}
+	if h.adminDB == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	relay := &model.Relay{
@@ -942,6 +1815,16 @@ func (h *Handler) RelaysAdd(c echo.Context) error {
 
 // RelaysList handles POST /api/admin/relays/list.
 func (h *Handler) RelaysList(c echo.Context) error {
+	if h.relayService != nil {
+		list, err := h.relayService.List(c.Request().Context())
+		if err != nil {
+			return apierr.JSONInternalError(c)
+		}
+		if list == nil {
+			list = []*model.Relay{}
+		}
+		return c.JSON(http.StatusOK, list)
+	}
 	if h.adminDB == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
@@ -950,15 +1833,35 @@ func (h *Handler) RelaysList(c echo.Context) error {
 	return c.JSON(http.StatusOK, relays)
 }
 
-// RelaysRemove handles POST /api/admin/relays/remove.
+// RelaysRemove handles POST /api/admin/relays/remove. When the relay
+// service is configured, it sends an Undo(Follow) to the relay inbox
+// before deleting the row.
 func (h *Handler) RelaysRemove(c echo.Context) error {
+	var req struct {
+		ID    string `json:"id"`
+		Inbox string `json:"inbox"`
+	}
+	_ = c.Bind(&req)
+	if h.relayService != nil {
+		id := req.ID
+		if id == "" && req.Inbox != "" && h.adminDB != nil {
+			// 本家互換のため inbox 指定でも remove できるようにする
+			var rel model.Relay
+			if err := h.adminDB.Where(`"inbox" = ?`, req.Inbox).First(&rel).Error; err == nil {
+				id = rel.ID
+			}
+		}
+		if id == "" {
+			return c.NoContent(http.StatusNoContent)
+		}
+		if err := h.relayService.Remove(c.Request().Context(), id); err != nil {
+			return apierr.JSONInternalError(c)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
 	if h.adminDB == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	var req struct {
-		ID string `json:"id"`
-	}
-	_ = c.Bind(&req)
 	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.Relay{})
 	return c.NoContent(http.StatusNoContent)
 }
@@ -967,59 +1870,78 @@ func (h *Handler) RelaysRemove(c echo.Context) error {
 
 // SystemWebhookCreate handles POST /api/admin/system-webhook/create.
 func (h *Handler) SystemWebhookCreate(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.systemWebhookRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
-		Name   string   `json:"name"`
-		URL    string   `json:"url"`
-		Secret string   `json:"secret"`
-		On     []string `json:"on"`
+		Name     string   `json:"name"`
+		URL      string   `json:"url"`
+		Secret   string   `json:"secret"`
+		On       []string `json:"on"`
+		IsActive *bool    `json:"isActive"`
 	}
-	_ = c.Bind(&req)
+	if err := c.Bind(&req); err != nil || req.Name == "" || req.URL == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
 	sw := &model.SystemWebhook{
-		ID: h.idGen.Generate(time.Now()), Name: req.Name, URL: req.URL, Secret: req.Secret,
-		On: req.On, IsActive: true, UpdatedAt: time.Now(),
+		ID:        h.idGen.Generate(time.Now()),
+		Name:      req.Name,
+		URL:       req.URL,
+		Secret:    req.Secret,
+		On:        req.On,
+		IsActive:  isActive,
+		UpdatedAt: time.Now(),
 	}
-	h.adminDB.Create(sw)
+	if err := h.systemWebhookRepo.Create(sw); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
 	return c.JSON(http.StatusOK, sw)
 }
 
 // SystemWebhookDelete handles POST /api/admin/system-webhook/delete.
 func (h *Handler) SystemWebhookDelete(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.systemWebhookRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	h.adminDB.Where(`"id" = ?`, req.ID).Delete(&model.SystemWebhook{})
+	_ = h.systemWebhookRepo.Delete(req.ID)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // SystemWebhookList handles POST /api/admin/system-webhook/list.
 func (h *Handler) SystemWebhookList(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.systemWebhookRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	var webhooks []*model.SystemWebhook
-	h.adminDB.Order(`"id" DESC`).Find(&webhooks)
-	return c.JSON(http.StatusOK, webhooks)
+	rows, err := h.systemWebhookRepo.List()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if rows == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, rows)
 }
 
 // SystemWebhookShow handles POST /api/admin/system-webhook/show.
 func (h *Handler) SystemWebhookShow(c echo.Context) error {
-	if h.adminDB == nil {
-		return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	if h.systemWebhookRepo == nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	var sw model.SystemWebhook
-	if err := h.adminDB.Where(`"id" = ?`, req.ID).First(&sw).Error; err != nil {
-		return c.JSON(http.StatusNotFound, errResp("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	sw, err := h.systemWebhookRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	return c.JSON(http.StatusOK, sw)
 }
@@ -1031,19 +1953,65 @@ func (h *Handler) SystemWebhookTest(c echo.Context) error {
 		Type      string `json:"type"`
 	}
 	_ = c.Bind(&req)
-	if req.WebhookID == "" || h.adminDB == nil {
+	if req.WebhookID == "" || h.systemWebhookRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	var sw model.SystemWebhook
-	if err := h.adminDB.Where(`"id" = ?`, req.WebhookID).First(&sw).Error; err != nil {
+	sw, err := h.systemWebhookRepo.FindByID(req.WebhookID)
+	if err != nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	// テスト送信 (非同期)
+	// テスト送信(非同期)。配送結果は latestStatus 系カラムに反映されないが、
+	// Misskey 本家の /system-webhook/test も fire-and-forget 挙動なので整合。
 	go sendWebhookTest(sw.URL, sw.Secret, req.Type)
 	return c.NoContent(http.StatusNoContent)
 }
 
 // SystemWebhookUpdate handles POST /api/admin/system-webhook/update.
+//
+// 配送 processor が並行して latestSentAt/latestStatus を書き換えるため、
+// FindByID→Save で全列上書きすると配送ステータスを古い値で踏み潰す。partial
+// update (UpdateAdminFields) を使い admin 編集可能列のみ触る。
 func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
-	return c.NoContent(http.StatusNoContent) // 更新ロジックは将来対応
+	if h.systemWebhookRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID       string    `json:"id"`
+		Name     *string   `json:"name"`
+		URL      *string   `json:"url"`
+		Secret   *string   `json:"secret"`
+		On       *[]string `json:"on"`
+		IsActive *bool     `json:"isActive"`
+	}
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	// 存在確認 (GORM Updates(map) は 0 行影響でも nil を返すため)
+	if _, err := h.systemWebhookRepo.FindByID(req.ID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	fields := map[string]any{"updatedAt": time.Now()}
+	if req.Name != nil {
+		fields["name"] = *req.Name
+	}
+	if req.URL != nil {
+		fields["url"] = *req.URL
+	}
+	if req.Secret != nil {
+		fields["secret"] = *req.Secret
+	}
+	if req.On != nil {
+		fields["on"] = *req.On
+	}
+	if req.IsActive != nil {
+		fields["isActive"] = *req.IsActive
+	}
+	if err := h.systemWebhookRepo.UpdateAdminFields(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	sw, err := h.systemWebhookRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, sw)
 }

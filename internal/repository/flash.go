@@ -12,6 +12,9 @@ type FlashRepository interface {
 	UpdateFields(flashID string, fields map[string]any) error
 	Delete(f *model.Flash) error
 	ListByUser(userID string, limit, offset int) ([]*model.Flash, error)
+	// ListPublicByUser returns only public flashes (visibility='public') owned
+	// by userID, used by users/flashs when viewer is not the owner.
+	ListPublicByUser(userID string, limit, offset int) ([]*model.Flash, error)
 	ListFeatured(limit, offset int) ([]*model.Flash, error)
 	Search(query string, limit, offset int) ([]*model.Flash, error)
 	IncrementCount(flashID, column string, delta int) error
@@ -59,6 +62,24 @@ func (r *flashRepository) ListByUser(userID string, limit, offset int) ([]*model
 	}
 	var rows []*model.Flash
 	if err := r.db.Where("\"userId\" = ?", userID).
+		Order("\"updatedAt\" DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *flashRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Flash, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Flash
+	if err := r.db.Where("\"userId\" = ? AND visibility = 'public'", userID).
 		Order("\"updatedAt\" DESC").
 		Limit(limit).
 		Offset(offset).

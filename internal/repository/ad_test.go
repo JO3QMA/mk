@@ -67,3 +67,54 @@ func TestAdRepository_ListActive(t *testing.T) {
 	assert.False(t, ids["ad_expired"], "expired ad should not be returned")
 	assert.False(t, ids["ad_future"], "future ad should not be returned")
 }
+
+func TestAdRepository_CRUD(t *testing.T) {
+	repo := NewAdRepository(testDB)
+	now := time.Now()
+
+	a := &model.Ad{
+		ID:        "ad_crud",
+		URL:       "https://example.com/x",
+		ImageURL:  "https://example.com/x.png",
+		Place:     "square",
+		Priority:  "middle",
+		Ratio:     1,
+		StartsAt:  now,
+		ExpiresAt: now.Add(time.Hour),
+	}
+	require.NoError(t, repo.Create(a))
+	defer cleanupAd(t, a.ID)
+
+	got, err := repo.FindByID(a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "square", got.Place)
+
+	_, err = repo.FindByID("ghost_ad")
+	assert.Error(t, err)
+
+	rows, err := repo.List(10, 0)
+	require.NoError(t, err)
+	assert.NotEmpty(t, rows)
+
+	require.NoError(t, repo.UpdateFields(a.ID, map[string]any{
+		"url":      "https://example.com/renamed",
+		"priority": "high",
+	}))
+	got, err = repo.FindByID(a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/renamed", got.URL)
+	assert.Equal(t, "high", got.Priority)
+
+	require.NoError(t, repo.UpdateFields(a.ID, map[string]any{}))
+
+	require.NoError(t, repo.Delete(a.ID))
+	_, err = repo.FindByID(a.ID)
+	assert.Error(t, err)
+}
+
+func TestAdRepository_ListDefaults(t *testing.T) {
+	repo := NewAdRepository(testDB)
+	// 負数 / 0 は default に丸められて成功するだけを確認する。
+	_, err := repo.List(0, -1)
+	require.NoError(t, err)
+}

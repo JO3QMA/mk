@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/poll"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -20,13 +21,13 @@ func (h *Handler) PollsVote(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PollVoteRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" || req.Choice == nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.pollService.Vote(user, req.NoteID, *req.Choice); err != nil {
 		switch {
 		case errors.Is(err, poll.ErrNoteNotFound), errors.Is(err, poll.ErrNoPoll):
-			return noSuchNote(c)
+			return apierr.JSONNoSuchNote(c)
 		case errors.Is(err, poll.ErrNoteNotVisible):
 			return c.JSON(http.StatusForbidden, map[string]any{
 				"error": map[string]any{
@@ -60,7 +61,7 @@ func (h *Handler) PollsVote(c echo.Context) error {
 				},
 			})
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

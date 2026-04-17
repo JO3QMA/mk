@@ -447,3 +447,24 @@ func TestDefaultPolicies(t *testing.T) {
 	assert.Equal(t, 100, p["driveCapacityMb"])
 	assert.Equal(t, 5, p["pinLimit"])
 }
+
+func TestIsSilenced_DefaultIsFalse(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	// 誰もロールを持っていない → DefaultPolicies は canPublicNote=true
+	assert.False(t, svc.IsSilenced("user1"))
+}
+
+func TestIsSilenced_CanPublicNoteFalseMeansSilenced(t *testing.T) {
+	svc, roleRepo, assignRepo, _ := newTestService(t)
+	// policies JSON で canPublicNote=false を上書きした role を持たせる
+	roleRepo.Roles["r1"] = &model.Role{
+		ID: "r1",
+		Policies: datatypes.JSON([]byte(
+			`{"canPublicNote":{"useDefault":false,"priority":1,"value":false}}`,
+		)),
+	}
+	assignRepo.Assignments["user1:r1"] = &model.RoleAssignment{
+		ID: "a1", UserID: "user1", RoleID: "r1",
+	}
+	assert.True(t, svc.IsSilenced("user1"))
+}

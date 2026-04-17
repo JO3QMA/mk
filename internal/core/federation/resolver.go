@@ -86,6 +86,7 @@ type Resolver struct {
 	instanceTracker InstanceTracker           // optional: ホスト発見を通知
 	chartHook       ChartHook                 // optional: 新規 remote user の集計
 	publickeyRepo   PublickeyStore            // optional: 公開鍵の永続化
+	pollRepo        repository.PollRepository // optional: Question(投票)のPoll作成
 }
 
 // NewResolver constructs a Resolver.
@@ -144,6 +145,11 @@ func (r *Resolver) SetPublickeyRepo(repo PublickeyStore) {
 	r.publickeyRepo = repo
 }
 
+// SetPollRepo attaches a PollRepository for ingesting Question (poll) objects.
+func (r *Resolver) SetPollRepo(repo repository.PollRepository) {
+	r.pollRepo = repo
+}
+
 // PublicKeyForActor returns the cached public key PEM for an actor ID.
 // in-memory → DB → miss の順で探索する。TTL超過は miss として扱い、呼び出し
 // 側が ResolveActor を再実行することで refresh をトリガできる。
@@ -199,6 +205,7 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		Host:          &host,
 		URI:           &actor.ID,
 		Inbox:         &actor.Inbox,
+		IsBot:         activitypub.IsBotActorType(actor.Type),
 		LastFetchedAt: &now,
 	}
 	if name := actor.Name; name != "" {
@@ -206,6 +213,17 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	}
 	if actor.Endpoints.SharedInbox != "" {
 		user.SharedInbox = &actor.Endpoints.SharedInbox
+	}
+	if actor.Featured != "" {
+		user.Featured = &actor.Featured
+	}
+	if actor.MovedTo != "" {
+		user.MovedToURI = &actor.MovedTo
+		user.MovedAt = &now
+	}
+	if len(actor.AlsoKnownAs) > 0 {
+		aka := strings.Join(actor.AlsoKnownAs, ",")
+		user.AlsoKnownAs = &aka
 	}
 	if err := r.userRepo.Create(user); err != nil {
 		return nil, err
@@ -216,6 +234,16 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		r.chartHook.OnRemoteUserCreated(user)
 	}
 	return user, nil
+}
+
+// ForceResolveActor resolves an actor and always re-fetches the profile,
+// bypassing the TTL cache. Move activityなどプロフィール更新が確実に必要な場合に使う。
+func (r *Resolver) ForceResolveActor(uri string) (*model.User, error) {
+	if existing, err := r.userRepo.FindByURI(uri); err == nil {
+		r.refreshActor(existing, uri)
+		return existing, nil
+	}
+	return r.ResolveActor(uri)
 }
 
 // notifyInstance is a best-effort hook into the instance tracker. ベスト
@@ -248,6 +276,11 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 	fields := map[string]any{
 		"lastFetchedAt": &now,
 	}
+	// actor type が変わるケース (Person ↔ Service など) を反映する。常に上書きする
+	// (TS Misskey も同様)。
+	isBot := activitypub.IsBotActorType(actor.Type)
+	fields["isBot"] = isBot
+	existing.IsBot = isBot
 	if actor.Name != "" {
 		name := actor.Name
 		fields["name"] = &name
@@ -263,6 +296,23 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 		fields["sharedInbox"] = &shared
 		existing.SharedInbox = &shared
 	}
+	if actor.Featured != "" {
+		featured := actor.Featured
+		fields["featured"] = &featured
+		existing.Featured = &featured
+	}
+	if actor.MovedTo != "" {
+		movedTo := actor.MovedTo
+		fields["movedToUri"] = &movedTo
+		fields["movedAt"] = &now
+		existing.MovedToURI = &movedTo
+		existing.MovedAt = &now
+	}
+	if len(actor.AlsoKnownAs) > 0 {
+		akaStr := strings.Join(actor.AlsoKnownAs, ",")
+		fields["alsoKnownAs"] = &akaStr
+		existing.AlsoKnownAs = &akaStr
+	}
 	existing.LastFetchedAt = &now
 	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)
 	_ = r.userRepo.UpdateUser(existing.ID, fields)
@@ -272,7 +322,9 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 	}
 }
 
-// fetchActor fetches and decodes a remote actor document.
+// fetchActor fetches and decodes a remote actor document. Reject any
+// document whose `type` is not in activitypub.ValidActorTypes — this guards
+// against a non-Actor object (e.g. a Note) being interpreted as a Person.
 func (r *Resolver) fetchActor(uri string) (*activitypub.Person, error) {
 	body, err := r.fetcher.FetchObject(uri)
 	if err != nil {
@@ -283,6 +335,12 @@ func (r *Resolver) fetchActor(uri string) (*activitypub.Person, error) {
 		return nil, ErrInvalidActor
 	}
 	if actor.ID == "" || actor.PreferredUsername == "" {
+		return nil, ErrInvalidActor
+	}
+	if !activitypub.IsValidActorType(actor.Type) {
+		// Note/Activity 等 Actor でない object が actor として参照された場合の
+		// 防衛策。デバッグのため URI と type を残してから拒否する。
+		slog.Warn("federation: rejecting non-actor type", "uri", uri, "type", actor.Type)
 		return nil, ErrInvalidActor
 	}
 	return &actor, nil
@@ -407,6 +465,10 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	if apNote.Content != "" {
 		note.Mentions = corenote.ExtractMentions(apNote.Content)
 	}
+	// Question（投票）の場合はhasPollフラグをCreate前に設定
+	if len(apNote.OneOf) > 0 || len(apNote.AnyOf) > 0 {
+		note.HasPoll = true
+	}
 	if err := r.noteRepo.Create(note); err != nil {
 		return nil, err
 	}
@@ -416,7 +478,49 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	if note.ReplyID != nil {
 		_ = r.noteRepo.IncrementCount(*note.ReplyID, "repliesCount", 1)
 	}
+	// Question (投票) の処理: oneOf/anyOf から Poll レコードを作成
+	if r.pollRepo != nil && note.HasPoll {
+		r.createPollFromQuestion(note, &apNote)
+	}
 	return note, nil
+}
+
+// createPollFromQuestion creates a Poll record from an AP Question's oneOf/anyOf choices.
+func (r *Resolver) createPollFromQuestion(note *model.Note, apNote *activitypub.Note) {
+	choices := apNote.OneOf
+	multiple := false
+	if len(apNote.AnyOf) > 0 {
+		choices = apNote.AnyOf
+		multiple = true
+	}
+	choiceNames := make([]string, len(choices))
+	votes := make([]int64, len(choices))
+	for i, c := range choices {
+		choiceNames[i] = c.Name
+		if c.Replies != nil {
+			votes[i] = int64(c.Replies.TotalItems)
+		}
+	}
+	poll := &model.Poll{
+		NoteID:         note.ID,
+		Multiple:       multiple,
+		Choices:        choiceNames,
+		Votes:          votes,
+		NoteVisibility: note.Visibility,
+		UserID:         note.UserID,
+		UserHost:       note.UserHost,
+	}
+	// endTime/closedから有効期限を設定
+	if apNote.EndTime != "" {
+		if t, err := time.Parse(time.RFC3339, apNote.EndTime); err == nil {
+			poll.ExpiresAt = &t
+		}
+	} else if apNote.Closed != "" {
+		if t, err := time.Parse(time.RFC3339, apNote.Closed); err == nil {
+			poll.ExpiresAt = &t
+		}
+	}
+	_ = r.pollRepo.Create(poll)
 }
 
 // UpdateRemoteNote applies an inbound Update Note activity body to an existing
@@ -477,6 +581,23 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 		return nil, err
 	}
 	return existing, nil
+}
+
+// ExtractLocalUserID returns the user ID for a URI matching the local
+// /users/{id} pattern, or "" if the URI does not match.
+func (r *Resolver) ExtractLocalUserID(uri string) string {
+	if r.urls == nil {
+		return ""
+	}
+	prefix := r.urls.UserURI("")
+	if !strings.HasPrefix(uri, prefix) {
+		return ""
+	}
+	rest := uri[len(prefix):]
+	if i := strings.Index(rest, "/"); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest
 }
 
 // extractLocalNoteID returns the trailing note ID for a URI rooted at the

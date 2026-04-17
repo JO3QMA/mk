@@ -103,3 +103,51 @@ func TestEmojis_ExcludesRemote(t *testing.T) {
 	arr := body["emojis"].([]any)
 	assert.Empty(t, arr) // リモート絵文字は除外
 }
+
+// --- Emoji (singular) ---
+
+func doPostEmoji(h *emojis.Handler, body string) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/emoji", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	_ = h.Emoji(c)
+	return rec
+}
+
+func TestEmoji_MissingName(t *testing.T) {
+	h, _ := setup()
+	rec := doPostEmoji(h, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestEmoji_NotFound(t *testing.T) {
+	h, _ := setup()
+	rec := doPostEmoji(h, `{"name":"nonexist"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_EMOJI", errObj["code"])
+}
+
+func TestEmoji_Found(t *testing.T) {
+	h, repo := setup()
+	cat := "faces"
+	repo.Emojis["smile@"] = &model.Emoji{
+		ID:        "e1",
+		Name:      "smile",
+		Category:  &cat,
+		PublicURL: "https://example.com/emoji/smile.png",
+		Aliases:   []string{"happy"},
+	}
+	rec := doPostEmoji(h, `{"name":"smile"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "e1", body["id"])
+	assert.Equal(t, "smile", body["name"])
+	assert.Equal(t, "faces", body["category"])
+	assert.Equal(t, "https://example.com/emoji/smile.png", body["url"])
+}

@@ -94,6 +94,12 @@ func (s *Service) GetProfile(userID string) *model.UserProfile {
 	return profile
 }
 
+// ListRecommendations returns locally-active explorable users the viewer does
+// not already follow. Thin wrapper over UserRepository.ListUserRecommendations.
+func (s *Service) ListRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
+	return s.userRepo.ListUserRecommendations(viewerID, activeSince, limit, offset)
+}
+
 // Search returns users whose username matches the prefix query.
 // 空のクエリは空のリストを返す。
 func (s *Service) Search(query string, limit, offset int) ([]*model.User, error) {
@@ -115,6 +121,8 @@ type UpdateInput struct {
 	Location          **string
 	Birthday          **string
 	Lang              **string
+	FollowedMessage   **string
+	PublicReactions   *bool
 	IsLocked          *bool
 	IsBot             *bool
 	IsCat             *bool
@@ -167,6 +175,12 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 	}
 	if in.Lang != nil {
 		profileFields["lang"] = *in.Lang
+	}
+	if in.FollowedMessage != nil {
+		profileFields["followedMessage"] = *in.FollowedMessage
+	}
+	if in.PublicReactions != nil {
+		profileFields["publicReactions"] = *in.PublicReactions
 	}
 	if in.AlwaysMarkNsfw != nil {
 		profileFields["alwaysMarkNsfw"] = *in.AlwaysMarkNsfw

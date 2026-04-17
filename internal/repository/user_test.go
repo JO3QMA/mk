@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
@@ -452,4 +453,90 @@ func TestUserRepository_ListRemoteInboxes(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, seen)
+}
+
+func TestUserRepository_ListUserRecommendations(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	now := time.Now()
+	recent := now.Add(-time.Hour)
+	old := now.Add(-30 * 24 * time.Hour)
+
+	// me (viewer)、候補: r1 (高 followers), r2 (低 followers)
+	// 除外対象: r3 (remote), r4 (locked), r5 (non-explorable), r6 (stale update)
+	// さらに r1 をフォロー済みにすると除外されることを確認する。
+	me := insertTestUser(t, "u_rec_me", "recme")
+	defer cleanupUser(t, me.ID)
+	r1 := &model.User{ID: "u_rec_r1", Username: "recr1", UsernameLower: "recr1",
+		IsExplorable: true, FollowersCount: 100, UpdatedAt: &recent,
+		AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	r2 := &model.User{ID: "u_rec_r2", Username: "recr2", UsernameLower: "recr2",
+		IsExplorable: true, FollowersCount: 5, UpdatedAt: &recent,
+		AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	host := "remote.example"
+	r3 := &model.User{ID: "u_rec_r3", Username: "recr3", UsernameLower: "recr3", Host: &host,
+		IsExplorable: true, FollowersCount: 999, UpdatedAt: &recent,
+		AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	r4 := &model.User{ID: "u_rec_r4", Username: "recr4", UsernameLower: "recr4",
+		IsExplorable: true, IsLocked: true, FollowersCount: 999, UpdatedAt: &recent,
+		AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	r5 := &model.User{ID: "u_rec_r5", Username: "recr5", UsernameLower: "recr5",
+		IsExplorable: true, FollowersCount: 999, UpdatedAt: &recent,
+		AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	r6 := &model.User{ID: "u_rec_r6", Username: "recr6", UsernameLower: "recr6",
+		IsExplorable: true, FollowersCount: 999, UpdatedAt: &old,
+		AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	for _, u := range []*model.User{r1, r2, r3, r4, r5, r6} {
+		require.NoError(t, repo.Create(u))
+		defer cleanupUser(t, u.ID)
+	}
+	// GORMは bool の zero value (false) を default 句で上書きしてしまうため、
+	// r5 の isExplorable = false は Create 後に明示的に UPDATE する。
+	require.NoError(t, testDB.Exec(`UPDATE "user" SET "isExplorable" = FALSE WHERE id = ?`, r5.ID).Error)
+
+	activeSince := now.Add(-7 * 24 * time.Hour)
+	users, err := repo.ListUserRecommendations(me.ID, activeSince, 10, 0)
+	require.NoError(t, err)
+	got := make(map[string]*model.User, len(users))
+	for _, u := range users {
+		got[u.ID] = u
+	}
+	// r1, r2 のみ含まれる。
+	_, hasR1 := got["u_rec_r1"]
+	_, hasR2 := got["u_rec_r2"]
+	assert.True(t, hasR1)
+	assert.True(t, hasR2)
+	assert.NotContains(t, got, "u_rec_r3")
+	assert.NotContains(t, got, "u_rec_r4")
+	assert.NotContains(t, got, "u_rec_r5")
+	assert.NotContains(t, got, "u_rec_r6")
+	// followersCount DESC なので r1 が先に来る。
+	assert.Equal(t, "u_rec_r1", users[0].ID)
+
+	// 既フォローは除外。
+	fRepo := NewFollowingRepository(testDB)
+	require.NoError(t, fRepo.Create(&model.Following{ID: "fl_rec_1", FollowerID: me.ID, FolloweeID: r1.ID}))
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "fl_rec_1")
+	users2, err := repo.ListUserRecommendations(me.ID, activeSince, 10, 0)
+	require.NoError(t, err)
+	for _, u := range users2 {
+		assert.NotEqual(t, r1.ID, u.ID)
+	}
+}
+
+func TestUserRepository_ListUserRecommendations_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	_, err := repo.ListUserRecommendations("me", time.Now(), 10, 0)
+	assert.Error(t, err)
+}
+
+func TestUserRepository_ListUserRecommendations_LimitCap(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	// limit > 100 は 100 にキャップ。limit <= 0 は 10 にデフォルト。
+	// 呼び出しが成功することのみ確認する (カバレッジのため)。
+	_, err := repo.ListUserRecommendations("nobody", time.Now(), 500, 0)
+	require.NoError(t, err)
+	_, err = repo.ListUserRecommendations("nobody", time.Now(), 0, 0)
+	require.NoError(t, err)
 }

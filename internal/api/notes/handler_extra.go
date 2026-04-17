@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -23,17 +24,17 @@ func (h *Handler) FavoritesCreate(c echo.Context) error {
 		NoteID string `json:"noteId"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.noteRepo.FindByID(req.NoteID); err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_NOTE", "No such note.", "a6584e14-6e01-4ad3-b566-851571b1e7c6"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 	}
 	if h.favoriteRepo == nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	exists, _ := h.favoriteRepo.Exists(user.ID, req.NoteID)
 	if exists {
-		return c.JSON(http.StatusConflict, apiError("ALREADY_FAVORITED", "Already favorited.", "a402c12b-34dd-41d2-97d8-4d2c5b7e4645"))
+		return c.JSON(http.StatusConflict, apierr.Error("ALREADY_FAVORITED", "Already favorited.", "a402c12b-34dd-41d2-97d8-4d2c5b7e4645"))
 	}
 	fav := &model.NoteFavorite{
 		ID:     h.idGen.Generate(time.Now()),
@@ -41,7 +42,7 @@ func (h *Handler) FavoritesCreate(c echo.Context) error {
 		NoteID: req.NoteID,
 	}
 	if err := h.favoriteRepo.Create(fav); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -53,13 +54,13 @@ func (h *Handler) FavoritesDelete(c echo.Context) error {
 		NoteID string `json:"noteId"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.favoriteRepo == nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	if err := h.favoriteRepo.Delete(user.ID, req.NoteID); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -72,14 +73,14 @@ func (h *Handler) Featured(c echo.Context) error {
 		Offset int `json:"offset"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
 	notes, err := h.noteRepo.ListFeatured(req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, middleware.GetUser(c)))
 }
@@ -91,15 +92,15 @@ func (h *Handler) Unrenote(c echo.Context) error {
 		NoteID string `json:"noteId"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// renoteId が指定ノートの自分のノートを探して削除
 	renote, err := h.noteRepo.FindRenoteByUser(user.ID, req.NoteID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_NOTE", "No such renote.", "a6584e14-6e01-4ad3-b566-851571b1e7c6"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such renote.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 	}
 	if err := h.deleteService.Delete(user, renote.ID); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -114,14 +115,14 @@ func (h *Handler) Mentions(c echo.Context) error {
 		Visibility string `json:"visibility"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
 	notes, err := h.noteRepo.ListMentions(user.ID, req.Limit, req.SinceID, req.UntilID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	// visibilityフィルタ
 	// "specified" → DMのみ、未指定 → DM以外
@@ -149,7 +150,7 @@ func (h *Handler) UserListTimeline(c echo.Context) error {
 		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ListID == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "listId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "listId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -159,15 +160,30 @@ func (h *Handler) UserListTimeline(c echo.Context) error {
 }
 
 // SearchByTag handles POST /api/notes/search-by-tag.
+// TS互換: tag (string) または query (string[][] — AND/OR組み合わせ) を受け付ける。
+// query の完全なAND/OR交差はサポートせず、最初に見つかったタグで検索する。
 func (h *Handler) SearchByTag(c echo.Context) error {
 	var req struct {
-		Tag     string `json:"tag"`
-		Limit   int    `json:"limit"`
-		SinceID string `json:"sinceId"`
-		UntilID string `json:"untilId"`
+		Tag     string     `json:"tag"`
+		Query   [][]string `json:"query"`
+		Limit   int        `json:"limit"`
+		SinceID string     `json:"sinceId"`
+		UntilID string     `json:"untilId"`
 	}
-	if err := c.Bind(&req); err != nil || req.Tag == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "tag is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "tag is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	// query 配列から tag を抽出 (tag が空の場合のフォールバック)
+	if req.Tag == "" && len(req.Query) > 0 {
+		for _, inner := range req.Query {
+			if len(inner) > 0 && inner[0] != "" {
+				req.Tag = inner[0]
+				break
+			}
+		}
+	}
+	if req.Tag == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "tag is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -192,25 +208,25 @@ func (h *Handler) Translate(c echo.Context) error {
 		TargetLang string `json:"targetLang"`
 	}
 	if err := c.Bind(&req); err != nil || req.NoteID == "" || req.TargetLang == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteId and targetLang are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId and targetLang are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	if h.translator == nil {
-		return c.JSON(http.StatusServiceUnavailable, apiError("UNAVAILABLE", "Translator is not configured.", "bef6e895-c05f-4572-96ab-58f5ae1e2e28"))
+		return c.JSON(http.StatusServiceUnavailable, apierr.Error("UNAVAILABLE", "Translator is not configured.", "bef6e895-c05f-4572-96ab-58f5ae1e2e28"))
 	}
 
 	n, err := h.noteRepo.FindByID(req.NoteID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_NOTE", "No such note.", "bea9b03f-36e0-49c5-a4db-369571c8c0d4"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 	}
 
 	if n.Text == nil || *n.Text == "" {
-		return c.JSON(http.StatusBadRequest, apiError("CANNOT_TRANSLATE", "Nothing to translate.", "bef6e895-c05f-4572-96ab-58f5ae1e2e28"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("CANNOT_TRANSLATE", "Nothing to translate.", "bef6e895-c05f-4572-96ab-58f5ae1e2e28"))
 	}
 
 	result, err := h.translator.Translate(c.Request().Context(), *n.Text, req.TargetLang)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Translation failed.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Translation failed.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -225,7 +241,7 @@ func (h *Handler) ShowPartialBulk(c echo.Context) error {
 		NoteIDs []string `json:"noteIds"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "noteIds is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteIds is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if len(req.NoteIDs) == 0 {
 		return c.JSON(http.StatusOK, []entity.NoteEntity{})
@@ -235,10 +251,4 @@ func (h *Handler) ShowPartialBulk(c echo.Context) error {
 		return c.JSON(http.StatusOK, []entity.NoteEntity{})
 	}
 	return c.JSON(http.StatusOK, h.packMany(notes, middleware.GetUser(c)))
-}
-
-func apiError(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": id},
-	}
 }

@@ -1,13 +1,20 @@
 package admin_test
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var adminUser = &model.User{ID: "admin1"}
@@ -53,6 +60,54 @@ func TestAccountsDelete(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.AccountsDelete, `{}`, adminUser).Code)
 }
+
+type stubDeleteAccountEnqueuer struct {
+	lastUserID string
+	called     int
+	err        error
+}
+
+func (s *stubDeleteAccountEnqueuer) EnqueueDeleteAccount(payload queue.DeleteAccountPayload) error {
+	s.called++
+	s.lastUserID = payload.UserID
+	return s.err
+}
+
+func TestAccountsDelete_EnqueuesCascade(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubDeleteAccountEnqueuer{}
+	h.SetDeleteAccountEnqueuer(stub)
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.AccountsDelete, `{"userId":"u1"}`, adminUser).Code)
+	assert.Equal(t, 1, stub.called)
+	assert.Equal(t, "u1", stub.lastUserID)
+}
+
+func TestAccountsDelete_MissingUserIDSkipsEnqueue(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubDeleteAccountEnqueuer{}
+	h.SetDeleteAccountEnqueuer(stub)
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.AccountsDelete, `{}`, adminUser).Code)
+	assert.Equal(t, 0, stub.called)
+}
+
+func TestAccountsDelete_EnqueueFailureIsLogged(t *testing.T) {
+	// enqueue 失敗はログに残すだけで HTTP 応答は 204 のまま返ることを確認。
+	h, _, _, _ := newTestHandler(t)
+	h.SetDeleteAccountEnqueuer(&stubDeleteAccountEnqueuer{err: assertError{}})
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.AccountsDelete, `{"userId":"u1"}`, adminUser).Code)
+}
+
+func TestDeleteAccount_EnqueuesCascade(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubDeleteAccountEnqueuer{}
+	h.SetDeleteAccountEnqueuer(stub)
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.DeleteAccount, `{"userId":"u9"}`, adminUser).Code)
+	assert.Equal(t, "u9", stub.lastUserID)
+}
 func TestAccountsFindByEmail_Empty(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusBadRequest, doPost(h.AccountsFindByEmail, `{}`, adminUser).Code)
@@ -60,6 +115,70 @@ func TestAccountsFindByEmail_Empty(t *testing.T) {
 func TestAccountsFindByEmail_NotFound(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNotFound, doPost(h.AccountsFindByEmail, `{"email":"ghost@example.com"}`, adminUser).Code)
+}
+
+func TestAccountsFindByEmail_Found(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	email := "alice@example.com"
+	userRepo.Users["alice"] = &model.User{ID: "alice", Username: "alice"}
+	userRepo.Profiles["alice"] = &model.UserProfile{UserID: "alice", Email: &email}
+
+	rec := doPost(h.AccountsFindByEmail, `{"email":"alice@example.com"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"alice"`)
+}
+
+// TestAccountsFindByEmail_ResponseShape verifies that AccountsFindByEmail
+// returns the packAdminUser format: frontend-expected fields (createdAt,
+// roles, policies) must be present, and internal model fields (inbox,
+// sharedInbox, usernameLower) must NOT leak.
+func TestAccountsFindByEmail_ResponseShape(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+
+	// aidxで生成したIDを使い、createdAtがパースされることを保証する
+	idGen, _ := id.NewGenerator("aidx")
+	uid := idGen.Generate(time.Now())
+
+	inbox := "https://remote.example/inbox"
+	sharedInbox := "https://remote.example/sharedInbox"
+	email := "bob@example.com"
+	userRepo.Users[uid] = &model.User{
+		ID:                uid,
+		Username:          "bob",
+		UsernameLower:     "bob",
+		Inbox:             &inbox,
+		SharedInbox:       &sharedInbox,
+		IsExplorable:      true,
+		AvatarDecorations: []byte("[]"),
+	}
+	userRepo.Profiles[uid] = &model.UserProfile{
+		UserID:          uid,
+		Email:           &email,
+		MutedWords:      []byte("[]"),
+		HardMutedWords:  []byte("[]"),
+		MutedInstances:  []byte("[]"),
+		PublicReactions: true,
+	}
+
+	rec := doPost(h.AccountsFindByEmail, `{"email":"bob@example.com"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	// packAdminUserが付与するフロントエンド必須フィールドの存在確認
+	assert.Equal(t, uid, resp["id"])
+	assert.NotNil(t, resp["createdAt"], "createdAt must be present")
+	assert.NotNil(t, resp["roles"], "roles must be present")
+	assert.NotNil(t, resp["policies"], "policies must be present")
+
+	// 内部フィールドがレスポンスに漏れていないことを確認
+	_, hasInbox := resp["inbox"]
+	assert.False(t, hasInbox, "inbox is an internal field and must not be exposed")
+	_, hasSharedInbox := resp["sharedInbox"]
+	assert.False(t, hasSharedInbox, "sharedInbox is an internal field and must not be exposed")
+	_, hasUsernameLower := resp["usernameLower"]
+	assert.False(t, hasUsernameLower, "usernameLower is an internal field and must not be exposed")
 }
 
 // --- ad ---
@@ -137,11 +256,42 @@ func TestDeleteAccountAdmin(t *testing.T) {
 }
 func TestDeleteAllFilesOfUser(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
+	// userId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
+	// repo 未注入は 204
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser).Code)
 }
 func TestForwardAbuseUserReport(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
+	// reportId 欠落は 204 (forwarder 未配線, abuseRepo 未配線 → no-op)
 	assert.Equal(t, http.StatusNoContent, doPost(h.ForwardAbuseUserReport, `{}`, adminUser).Code)
+}
+
+type stubAbuseForwarder struct {
+	calledWith string
+	err        error
+}
+
+func (s *stubAbuseForwarder) ForwardReport(reportID string) error {
+	s.calledWith = reportID
+	return s.err
+}
+
+func TestForwardAbuseUserReport_UsesForwarderWhenWired(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubAbuseForwarder{}
+	h.SetAbuseForwarder(stub)
+	rec := doPost(h.ForwardAbuseUserReport, `{"reportId":"r1"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "r1", stub.calledWith)
+}
+
+func TestForwardAbuseUserReport_ForwarderError(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAbuseForwarder(&stubAbuseForwarder{err: assertError{}})
+	rec := doPost(h.ForwardAbuseUserReport, `{"reportId":"r1"}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 func TestGetIndexStats(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
@@ -179,6 +329,137 @@ func TestResetPasswordAdmin_Success(t *testing.T) {
 	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "password")
+}
+
+type stubPasswordResetRepo struct {
+	created *model.PasswordResetRequest
+	err     error
+}
+
+func (s *stubPasswordResetRepo) Create(req *model.PasswordResetRequest) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.created = req
+	return nil
+}
+func (s *stubPasswordResetRepo) FindByToken(_ string) (*model.PasswordResetRequest, error) {
+	return s.created, nil
+}
+func (s *stubPasswordResetRepo) Delete(_ string) error { return nil }
+
+type capturedEmail struct {
+	mu      sync.Mutex
+	to      string
+	subject string
+	body    string
+	called  int
+}
+
+func (c *capturedEmail) send(to, subject, body string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.called++
+	c.to = to
+	c.subject = subject
+	c.body = body
+}
+
+func (c *capturedEmail) snapshot() capturedEmail {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return capturedEmail{to: c.to, subject: c.subject, body: c.body, called: c.called}
+}
+
+func TestResetPasswordAdmin_VerifiedEmailSendsResetLink(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "testuser"}
+	email := "alice@example.com"
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Email: &email, EmailVerified: true}
+
+	resetRepo := &stubPasswordResetRepo{}
+	captured := &capturedEmail{}
+	h.SetPasswordResetRepo(resetRepo)
+	h.SetEmailSender(captured.send)
+	h.SetServerURL("https://example.com")
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"sent":true`)
+	assert.NotContains(t, rec.Body.String(), "password")
+
+	// Email は goroutine で送られるので少し待つ
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var snap capturedEmail
+	for time.Now().Before(deadline) {
+		snap = captured.snapshot()
+		if snap.called > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.Equal(t, 1, snap.called)
+	assert.Equal(t, email, snap.to)
+	assert.Equal(t, "Password reset", snap.subject)
+	require.NotNil(t, resetRepo.created, "reset token should be persisted")
+	assert.Contains(t, snap.body, resetRepo.created.Token,
+		"body should contain the persisted token in the reset link")
+	assert.Contains(t, snap.body, "https://example.com/reset-password/")
+}
+
+func TestResetPasswordAdmin_UnverifiedEmailFallsBack(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1"}
+	email := "alice@example.com"
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Email: &email, EmailVerified: false}
+
+	h.SetPasswordResetRepo(&stubPasswordResetRepo{})
+	captured := &capturedEmail{}
+	h.SetEmailSender(captured.send)
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "password")
+	assert.Equal(t, 0, captured.called, "unverified email must not trigger sender")
+}
+
+func TestResetPasswordAdmin_MissingEmailFallsBack(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1"}
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"} // email = nil
+	h.SetPasswordResetRepo(&stubPasswordResetRepo{})
+	h.SetEmailSender(func(string, string, string) {})
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "password")
+}
+
+func TestResetPasswordAdmin_NoRepoFallsBack(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1"}
+	email := "a@b.c"
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Email: &email, EmailVerified: true}
+	h.SetEmailSender(func(string, string, string) {})
+	// Repo 未設定 → fallback
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "password")
+}
+
+func TestResetPasswordAdmin_ResetRepoErrorFallsBack(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1"}
+	email := "a@b.c"
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Email: &email, EmailVerified: true}
+	h.SetPasswordResetRepo(&stubPasswordResetRepo{err: assertError{}})
+	h.SetEmailSender(func(string, string, string) {})
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "password",
+		"reset repo failure should fall back to legacy temp-password path")
 }
 func TestSendEmail(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
@@ -241,7 +522,8 @@ func TestEmojiAddAliasesBulk(t *testing.T) {
 }
 func TestEmojiCopy(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiCopy, `{}`, adminUser).Code)
+	// emojiId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.EmojiCopy, `{}`, adminUser).Code)
 }
 func TestEmojiDeleteBulk(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
@@ -372,15 +654,21 @@ func TestQueueQueues(t *testing.T) {
 }
 func TestQueueRemoveJob(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRemoveJob, `{}`, adminUser).Code)
+	// queue/id 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueRemoveJob, `{}`, adminUser).Code)
+	// inspector 未注入は 204
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRemoveJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
 }
 func TestQueueRetryJob(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRetryJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueRetryJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRetryJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
 }
 func TestQueueShowJob(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNotFound, doPost(h.QueueShowJob, `{}`, adminUser).Code)
+	// queue/id 欠落は 400、inspector 未注入 + 正規 bind は 404
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueShowJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusNotFound, doPost(h.QueueShowJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
 }
 func TestQueueShowJobLogs(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
@@ -394,17 +682,99 @@ func TestQueueStatsAdmin(t *testing.T) {
 }
 
 // --- relays ---
+
+// fakeRelaySvc records calls + returns configurable results for the
+// admin/relays handlers.
+type fakeRelaySvc struct {
+	added   []string
+	removed []string
+	listed  int
+	retRel  *model.Relay
+	retList []*model.Relay
+	err     error
+}
+
+func (f *fakeRelaySvc) Add(_ context.Context, inbox string) (*model.Relay, error) {
+	f.added = append(f.added, inbox)
+	return f.retRel, f.err
+}
+func (f *fakeRelaySvc) Remove(_ context.Context, id string) error {
+	f.removed = append(f.removed, id)
+	return f.err
+}
+func (f *fakeRelaySvc) List(_ context.Context) ([]*model.Relay, error) {
+	f.listed++
+	return f.retList, f.err
+}
+
 func TestRelaysAdd(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.RelaysAdd, `{}`, adminUser).Code)
 }
+
+func TestRelaysAdd_WithService(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	svc := &fakeRelaySvc{retRel: &model.Relay{ID: "rel1", Inbox: "https://r.example/inbox", Status: "requesting"}}
+	h.SetRelayService(svc)
+	rec := doPost(h.RelaysAdd, `{"inbox":"https://r.example/inbox"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []string{"https://r.example/inbox"}, svc.added)
+}
+
+func TestRelaysAdd_ServiceError(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	svc := &fakeRelaySvc{err: errors.New("boom")}
+	h.SetRelayService(svc)
+	rec := doPost(h.RelaysAdd, `{"inbox":"https://r.example/inbox"}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
 func TestRelaysList(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusOK, doPost(h.RelaysList, `{}`, adminUser).Code)
 }
+
+func TestRelaysList_WithService(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	svc := &fakeRelaySvc{retList: []*model.Relay{{ID: "a"}, {ID: "b"}}}
+	h.SetRelayService(svc)
+	rec := doPost(h.RelaysList, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 1, svc.listed)
+}
+
+func TestRelaysList_WithService_NilSlice(t *testing.T) {
+	// list が nil を返しても [] を返す (本家互換)
+	h, _, _, _ := newTestHandler(t)
+	svc := &fakeRelaySvc{retList: nil}
+	h.SetRelayService(svc)
+	rec := doPost(h.RelaysList, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "[]")
+}
+
 func TestRelaysRemove(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.RelaysRemove, `{}`, adminUser).Code)
+}
+
+func TestRelaysRemove_WithService(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	svc := &fakeRelaySvc{}
+	h.SetRelayService(svc)
+	rec := doPost(h.RelaysRemove, `{"id":"rel1"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, []string{"rel1"}, svc.removed)
+}
+
+func TestRelaysRemove_WithService_NoID(t *testing.T) {
+	// id も inbox も無い場合はスキップして 204 を返す
+	h, _, _, _ := newTestHandler(t)
+	svc := &fakeRelaySvc{}
+	h.SetRelayService(svc)
+	rec := doPost(h.RelaysRemove, `{}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, svc.removed)
 }
 
 // --- system-webhook ---

@@ -17,6 +17,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mockRoleNotesQuery is a test double for roles.RoleNotesQuery.
+type mockRoleNotesQuery struct {
+	Notes []*model.Note
+	Err   error
+}
+
+func (m *mockRoleNotesQuery) ListByRole(roleID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	result := m.Notes
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
 func newTestHandler(t *testing.T) (*roles.Handler, *testutil.MockRoleRepository) {
 	t.Helper()
 	roleRepo := testutil.NewMockRoleRepository()
@@ -25,7 +42,9 @@ func newTestHandler(t *testing.T) (*roles.Handler, *testutil.MockRoleRepository)
 	metaRepo.Meta = &model.Meta{ID: "x"}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corerole.NewService(roleRepo, assignRepo, metaRepo, idGen)
-	return roles.NewHandler(svc), roleRepo
+	h := roles.NewHandler(svc)
+	h.SetIDGen(idGen)
+	return h, roleRepo
 }
 
 func doPost(h func(echo.Context) error, body string) *httptest.ResponseRecorder {
@@ -119,3 +138,79 @@ type failingListRepo struct {
 }
 
 func (f *failingListRepo) List() ([]*model.Role, error) { return nil, assert.AnError }
+
+// --- Notes ---
+
+func TestNotes_InvalidParam(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Notes, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestNotes_RoleNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := doPost(h.Notes, `{"roleId":"ghost"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestNotes_NotPublic(t *testing.T) {
+	h, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Private", IsPublic: false}
+	rec := doPost(h.Notes, `{"roleId":"r1"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestNotes_NilQuery(t *testing.T) {
+	h, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Public", IsPublic: true}
+	rec := doPost(h.Notes, `{"roleId":"r1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var arr []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &arr))
+	assert.Empty(t, arr)
+}
+
+func TestNotes_Success(t *testing.T) {
+	h, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Public", IsPublic: true}
+	mock := &mockRoleNotesQuery{
+		Notes: []*model.Note{
+			{ID: "n1", UserID: "u1", Text: strPtr("hello"), Visibility: "public"},
+		},
+	}
+	h.SetNotesQuery(mock)
+	rec := doPost(h.Notes, `{"roleId":"r1"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var arr []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &arr))
+	assert.Len(t, arr, 1)
+}
+
+func TestNotes_QueryError(t *testing.T) {
+	h, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Public", IsPublic: true}
+	mock := &mockRoleNotesQuery{Err: assert.AnError}
+	h.SetNotesQuery(mock)
+	rec := doPost(h.Notes, `{"roleId":"r1"}`)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestNotes_DefaultLimit(t *testing.T) {
+	h, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Public", IsPublic: true}
+	mock := &mockRoleNotesQuery{}
+	h.SetNotesQuery(mock)
+	rec := doPost(h.Notes, `{"roleId":"r1","limit":0}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNotes_LimitClamped(t *testing.T) {
+	h, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Public", IsPublic: true}
+	mock := &mockRoleNotesQuery{}
+	h.SetNotesQuery(mock)
+	rec := doPost(h.Notes, `{"roleId":"r1","limit":999}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func strPtr(s string) *string { return &s }

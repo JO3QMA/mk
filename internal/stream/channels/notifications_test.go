@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +28,8 @@ func TestNotifications_AuthenticatedSubscribesPerUser(t *testing.T) {
 func TestNotifications_AnonymousIsNoOp(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewNotifications(ctx)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 	ch.Dispose()
 	assert.Empty(t, ctx.unsubs)
@@ -36,7 +38,8 @@ func TestNotifications_AnonymousIsNoOp(t *testing.T) {
 func TestNotifications_NilUserPointer(t *testing.T) {
 	ctx := newCtx((*model.User)(nil))
 	ch := NewNotifications(ctx)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 }
 
@@ -64,7 +67,8 @@ func TestMain_AuthenticatedSubscribesBoth(t *testing.T) {
 func TestMain_AnonymousIsNoOp(t *testing.T) {
 	ctx := newCtx(nil)
 	ch := NewMain(ctx)
-	ch.Init(nil)
+	err := ch.Init(nil)
+	assert.ErrorIs(t, err, stream.ErrInvalidParams)
 	assert.Empty(t, ctx.subs)
 	ch.Dispose()
 	assert.Empty(t, ctx.unsubs)

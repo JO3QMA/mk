@@ -338,12 +338,14 @@ func TestMe_AvatarAndBannerIDs(t *testing.T) {
 type stubRoleProvider struct {
 	admin     bool
 	moderator bool
+	silenced  bool
 	roles     []*model.Role
 	policies  map[string]any
 }
 
 func (s *stubRoleProvider) IsAdministrator(_ string) bool { return s.admin }
 func (s *stubRoleProvider) IsModerator(_ string) bool     { return s.moderator }
+func (s *stubRoleProvider) IsSilenced(_ string) bool      { return s.silenced }
 func (s *stubRoleProvider) GetUserRoles(_ string) ([]*model.Role, error) {
 	return s.roles, nil
 }
@@ -551,6 +553,25 @@ func TestUpdate_Success(t *testing.T) {
 
 	rec := post(h.Update, `{"name": "New Name", "description": "hi", "location": "Tokyo", "birthday": "1990-01-01", "lang": "ja", "isLocked": true, "isBot": true, "isCat": true, "isExplorable": false, "hideOnlineStatus": true, "alwaysMarkNsfw": true, "autoSensitive": true, "noCrawle": true, "preventAiLearning": true}`, user)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_FollowedMessageAndPublicReactions(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+
+	rec := post(h.Update, `{"followedMessage":"thanks!","publicReactions":false}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	// profile had fields applied
+	p := repo.Profiles["user1"]
+	require.NotNil(t, p.FollowedMessage)
+	assert.Equal(t, "thanks!", *p.FollowedMessage)
+	assert.False(t, p.PublicReactions)
 }
 
 func TestUpdate_InvalidJSON(t *testing.T) {
@@ -943,4 +964,16 @@ func TestRegistryRemove_InvalidParam(t *testing.T) {
 	h, _ := newHandlerWithRegistry(t)
 	rec := post(h.RegistryRemove, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Handler setters ---
+
+func TestSetServerURL(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetServerURL("https://example.com")
+}
+
+func TestSetEmailSender(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmailSender(func(to, subject, body string) {})
 }

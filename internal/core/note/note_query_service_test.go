@@ -195,7 +195,6 @@ func TestQueryService_State_OK(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, st.IsFavorited)
 	assert.False(t, st.IsMutedThread)
-	assert.False(t, st.IsWatching)
 }
 
 func TestQueryService_State_NotFound(t *testing.T) {
@@ -256,5 +255,52 @@ func TestQueryService_ListChildren_RepoError(t *testing.T) {
 	repo := &failingRepoForList{MockNoteRepository: mock, mode: "children"}
 	svc := note.NewQueryService(repo, nil)
 	_, err := svc.ListChildren(nil, "p", "", "", 10)
+	require.Error(t, err)
+}
+
+func TestQueryService_State_AnonymousIsAllFalse(t *testing.T) {
+	mock := testutil.NewMockNoteRepository()
+	mock.Notes["n1"] = &model.Note{ID: "n1", UserID: "a", Visibility: model.NoteVisibilityPublic}
+	svc := note.NewQueryService(mock, nil)
+	svc.SetFavoriteRepo(testutil.NewMockNoteFavoriteRepository())
+	svc.SetThreadMutingRepo(testutil.NewMockNoteThreadMutingRepository())
+
+	state, err := svc.State(nil, "n1")
+	require.NoError(t, err)
+	assert.False(t, state.IsFavorited)
+	assert.False(t, state.IsMutedThread)
+}
+
+func TestQueryService_State_FavoritedTrue(t *testing.T) {
+	mock := testutil.NewMockNoteRepository()
+	mock.Notes["n1"] = &model.Note{ID: "n1", UserID: "a", Visibility: model.NoteVisibilityPublic}
+	svc := note.NewQueryService(mock, nil)
+	favRepo := testutil.NewMockNoteFavoriteRepository()
+	require.NoError(t, favRepo.Create(&model.NoteFavorite{UserID: "viewer", NoteID: "n1"}))
+	svc.SetFavoriteRepo(favRepo)
+
+	state, err := svc.State(&model.User{ID: "viewer"}, "n1")
+	require.NoError(t, err)
+	assert.True(t, state.IsFavorited)
+	assert.False(t, state.IsMutedThread)
+}
+
+func TestQueryService_State_MutedThreadTrue(t *testing.T) {
+	mock := testutil.NewMockNoteRepository()
+	rootID := "thread-root"
+	mock.Notes["child"] = &model.Note{ID: "child", UserID: "a", ThreadID: &rootID, Visibility: model.NoteVisibilityPublic}
+	svc := note.NewQueryService(mock, nil)
+	mutes := testutil.NewMockNoteThreadMutingRepository()
+	require.NoError(t, mutes.Create(&model.NoteThreadMuting{UserID: "viewer", ThreadID: rootID}))
+	svc.SetThreadMutingRepo(mutes)
+
+	state, err := svc.State(&model.User{ID: "viewer"}, "child")
+	require.NoError(t, err)
+	assert.True(t, state.IsMutedThread)
+}
+
+func TestQueryService_State_NoteNotFound(t *testing.T) {
+	svc := note.NewQueryService(testutil.NewMockNoteRepository(), nil)
+	_, err := svc.State(&model.User{ID: "viewer"}, "missing")
 	require.Error(t, err)
 }

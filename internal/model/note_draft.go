@@ -27,6 +27,7 @@ type NoteDraft struct {
 	PollExpiresAt       *time.Time     `gorm:"column:pollExpiresAt;type:timestamp with time zone" json:"pollExpiresAt"`
 	ScheduledAt         *time.Time     `gorm:"column:scheduledAt;type:timestamp with time zone" json:"scheduledAt"`
 	IsActuallyScheduled bool           `gorm:"column:isActuallyScheduled;default:false" json:"isActuallyScheduled"`
+	PollExpiredAfter    *int64         `gorm:"column:pollExpiredAfter;type:bigint" json:"pollExpiredAfter"`
 
 	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }

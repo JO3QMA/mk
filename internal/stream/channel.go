@@ -2,8 +2,16 @@ package stream
 
 import (
 	"encoding/json"
+	"errors"
 	"sync"
 )
+
+// ErrInvalidParams indicates that a Channel.Init call received invalid or
+// missing parameters and cannot proceed. Dispatcher は Init がこのエラー
+// (または任意の non-nil error) を返した場合、channel 登録をロールバックし
+// pong ack も送らない。TS Misskey の init() が false を返したときの挙動に
+// 相当する。
+var ErrInvalidParams = errors.New("stream: invalid channel params")
 
 // Channel is the per-subscription state for one streaming channel attached to
 // a single Connection. Implementations are constructed by a ChannelFactory
@@ -11,8 +19,11 @@ import (
 // connection close.
 type Channel interface {
 	// Init is called once after the channel is registered. params は client が
-	// connect で渡した任意 JSON で、channel 実装ごとに解釈する。
-	Init(params json.RawMessage)
+	// connect で渡した任意 JSON で、channel 実装ごとに解釈する。非 nil の
+	// error を返すと Dispatcher は channel 登録をロールバックし、クライアント
+	// には (TS 互換の silent drop 方針に従い) 何も送らない。必須パラメータ
+	// 欠如などの典型的な拒否には ErrInvalidParams を返す。
+	Init(params json.RawMessage) error
 
 	// OnRedisEvent is called by the Manager when a subscribed Redis pub/sub
 	// channel produces a message. payload は Redis から受信した raw bytes。
@@ -43,6 +54,30 @@ type ChannelContext interface {
 	Subscribe(topic string)
 	// Unsubscribe stops listening on a topic.
 	Unsubscribe(topic string)
+}
+
+// PermittedChannel is an optional interface a Channel can implement to
+// declare the OAuth2 permission scope required for subscription.
+// Dispatcher は connect 時にトークンの permission 配列と照合し、kind が
+// 含まれなければチャンネル作成を拒否する。
+type PermittedChannel interface {
+	Channel
+	// RequiredPermission returns the OAuth2 scope string (e.g. "read:account").
+	// An empty string means no permission is required.
+	RequiredPermission() string
+}
+
+// ShareableChannel is an optional interface a Channel can implement to
+// signal that a single Connection should not hold multiple instances of the
+// same channel name simultaneously. 例: serverStats/queueStats のような
+// broadcast チャンネルは 1 接続につき 1 購読で十分。Dispatcher は connect
+// 時に既存の同名チャンネルを検出し、2 回目の接続を no-op にする。
+type ShareableChannel interface {
+	Channel
+	// ShouldShare reports whether this channel instance should be shared.
+	// true を返すと、同じ Connection 内の同名チャンネルへの追加 connect は
+	// 新しいエントリを作らずに無視される。
+	ShouldShare() bool
 }
 
 // ChannelFactory builds a new Channel for the given context. Channel name は

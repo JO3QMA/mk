@@ -108,3 +108,44 @@ func TestNewMention(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, string(b), `"type":"Mention"`)
 }
+
+func TestIsValidActorType(t *testing.T) {
+	cases := []struct {
+		typ  string
+		want bool
+	}{
+		{"Person", true},
+		{"Service", true},
+		{"Group", true},
+		{"Organization", true},
+		{"Application", true},
+		{"Note", false},
+		{"Tombstone", false},
+		{"", false},
+		{"person", false}, // case sensitive (TS と同じ)
+	}
+	for _, c := range cases {
+		t.Run(c.typ, func(t *testing.T) {
+			assert.Equal(t, c.want, IsValidActorType(c.typ))
+		})
+	}
+}
+
+func TestIsBotActorType(t *testing.T) {
+	cases := []struct {
+		typ  string
+		want bool
+	}{
+		{"Service", true},
+		{"Application", true},
+		{"Person", false},
+		{"Group", false},
+		{"Organization", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		t.Run(c.typ, func(t *testing.T) {
+			assert.Equal(t, c.want, IsBotActorType(c.typ))
+		})
+	}
+}

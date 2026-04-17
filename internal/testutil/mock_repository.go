@@ -1,11 +1,14 @@
 package testutil
 
 import (
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
+	"gorm.io/gorm"
 )
 
 // MockUserRepository is a test double for repository.UserRepository.
@@ -14,13 +17,18 @@ type MockUserRepository struct {
 	Tokens                map[string]*model.User        // keyed by token
 	Profiles              map[string]*model.UserProfile // keyed by userID
 	FindByUsernameLowerFn func(username string, host *string) (*model.User, error)
+	// RecommendationFollowing maps viewerID -> list of followeeIDs to exclude
+	// from ListUserRecommendations. Set by tests to emulate the "already
+	// following" filter.
+	RecommendationFollowing map[string][]string
 }
 
 func NewMockUserRepository() *MockUserRepository {
 	return &MockUserRepository{
-		Users:    make(map[string]*model.User),
-		Tokens:   make(map[string]*model.User),
-		Profiles: make(map[string]*model.UserProfile),
+		Users:                   make(map[string]*model.User),
+		Tokens:                  make(map[string]*model.User),
+		Profiles:                make(map[string]*model.UserProfile),
+		RecommendationFollowing: make(map[string][]string),
 	}
 }
 
@@ -82,6 +90,15 @@ func (m *MockUserRepository) FindProfileByUserID(userID string) (*model.UserProf
 func (m *MockUserRepository) FindProfileByVerifyCode(code string) (*model.UserProfile, error) {
 	for _, p := range m.Profiles {
 		if p.EmailVerifyCode != nil && *p.EmailVerifyCode == code {
+			return p, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockUserRepository) FindProfileByEmail(email string) (*model.UserProfile, error) {
+	for _, p := range m.Profiles {
+		if p.Email != nil && *p.Email == email {
 			return p, nil
 		}
 	}
@@ -194,6 +211,48 @@ func (m *MockUserRepository) ListRemoteInboxes() ([]string, error) {
 	return out, nil
 }
 
+func (m *MockUserRepository) CountOnlineUsers() (int64, error) {
+	return 0, nil
+}
+
+// Followings はテスト側で MockUserRepository.Followings[viewerID] に followeeID
+// のリストを入れておくと、ListUserRecommendations から除外される。
+func (m *MockUserRepository) ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	excluded := make(map[string]struct{})
+	excluded[viewerID] = struct{}{}
+	for _, fid := range m.RecommendationFollowing[viewerID] {
+		excluded[fid] = struct{}{}
+	}
+	var rows []*model.User
+	for _, u := range m.Users {
+		if _, skip := excluded[u.ID]; skip {
+			continue
+		}
+		if u.Host != nil {
+			continue
+		}
+		if u.IsLocked || !u.IsExplorable {
+			continue
+		}
+		if u.UpdatedAt == nil || u.UpdatedAt.Before(activeSince) {
+			continue
+		}
+		rows = append(rows, u)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].FollowersCount > rows[j].FollowersCount })
+	if offset >= len(rows) {
+		return nil, nil
+	}
+	rows = rows[offset:]
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
 func (m *MockUserRepository) UpdateProfile(userID string, fields map[string]any) error {
 	p, ok := m.Profiles[userID]
 	if !ok {
@@ -257,6 +316,19 @@ func applyUserFields(u *model.User, fields map[string]any) {
 			if s, ok := v.(string); ok {
 				u.Token = &s
 			}
+		case "movedToUri":
+			// core/move が string を直接渡す運用。nil は未対応 (現状の要件にない)。
+			if s, ok := v.(string); ok {
+				u.MovedToURI = &s
+			}
+		case "movedAt":
+			if t, ok := v.(time.Time); ok {
+				u.MovedAt = &t
+			}
+		case "alsoKnownAs":
+			if s, ok := v.(string); ok {
+				u.AlsoKnownAs = &s
+			}
 		}
 	}
 }
@@ -279,6 +351,14 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 		case "lang":
 			if s, ok := v.(*string); ok {
 				p.Lang = s
+			}
+		case "followedMessage":
+			if s, ok := v.(*string); ok {
+				p.FollowedMessage = s
+			}
+		case "publicReactions":
+			if b, ok := v.(bool); ok {
+				p.PublicReactions = b
 			}
 		case "alwaysMarkNsfw":
 			if b, ok := v.(bool); ok {
@@ -719,6 +799,48 @@ func (m *MockNoteRepository) DeleteExpiredRemoteNotes(_, _ int) (int64, error) {
 	return 0, nil
 }
 
+func (m *MockNoteRepository) DeleteByUserBatch(userID string, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	n := int64(0)
+	for id, note := range m.Notes {
+		if n >= int64(batchSize) {
+			break
+		}
+		if note.UserID == userID {
+			delete(m.Notes, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	counts := make(map[string]int64)
+	for _, n := range m.Notes {
+		if n.UserID != userID || n.ReplyID == nil || n.ReplyUserID == nil {
+			continue
+		}
+		if *n.ReplyUserID == userID {
+			continue
+		}
+		counts[*n.ReplyUserID]++
+	}
+	rows := make([]model.ReplyTargetCount, 0, len(counts))
+	for uid, c := range counts {
+		rows = append(rows, model.ReplyTargetCount{UserID: uid, Count: c})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Count > rows[j].Count })
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
 func (m *MockNoteRepository) listPublic(limit int) ([]*model.Note, error) {
 	var result []*model.Note
 	for _, n := range m.Notes {
@@ -874,12 +996,33 @@ func (m *MockEmojiRepository) FindByID(id string) (*model.Emoji, error) {
 func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) error {
 	for _, e := range m.Emojis {
 		if e.ID == id {
-			if v, ok := fields["name"]; ok {
-				e.Name = v.(string)
-			}
-			if v, ok := fields["category"]; ok {
-				s := v.(string)
-				e.Category = &s
+			for k, v := range fields {
+				switch k {
+				case "name":
+					if s, ok := v.(string); ok {
+						e.Name = s
+					}
+				case "category":
+					if s, ok := v.(string); ok {
+						e.Category = &s
+					}
+				case "license":
+					if s, ok := v.(string); ok {
+						e.License = &s
+					}
+				case "aliases":
+					if arr, ok := v.([]string); ok {
+						e.Aliases = arr
+					}
+				case "isSensitive":
+					if b, ok := v.(bool); ok {
+						e.IsSensitive = b
+					}
+				case "updatedAt":
+					if ts, ok := v.(time.Time); ok {
+						e.UpdatedAt = &ts
+					}
+				}
 			}
 			return nil
 		}
@@ -937,6 +1080,113 @@ func (m *MockEmojiRepository) FindByNameAndHost(name string, host *string) (*mod
 	return e, nil
 }
 
+func (m *MockEmojiRepository) FindManyByIDs(ids []string) ([]*model.Emoji, error) {
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	out := make([]*model.Emoji, 0)
+	for _, e := range m.Emojis {
+		if _, ok := set[e.ID]; ok {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockEmojiRepository) UpdateFieldsMany(ids []string, fields map[string]any) error {
+	if len(ids) == 0 || len(fields) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	for _, e := range m.Emojis {
+		if _, ok := set[e.ID]; !ok {
+			continue
+		}
+		for k, v := range fields {
+			switch k {
+			case "category":
+				if s, ok := v.(string); ok {
+					e.Category = &s
+				}
+			case "license":
+				if s, ok := v.(string); ok {
+					e.License = &s
+				}
+			case "aliases":
+				if arr, ok := v.([]string); ok {
+					e.Aliases = arr
+				}
+			case "updatedAt":
+				if ts, ok := v.(time.Time); ok {
+					e.UpdatedAt = &ts
+				}
+			case "isSensitive":
+				if b, ok := v.(bool); ok {
+					e.IsSensitive = b
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockEmojiRepository) DeleteMany(ids []string) error {
+	for _, id := range ids {
+		// 各 emoji は name@ と name@host の両方のキーで参照されうる。
+		// Emojis[id] での逆引きは ID が key の場合にしか当たらないため、走査して削除する。
+		for k, e := range m.Emojis {
+			if e.ID == id {
+				delete(m.Emojis, k)
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockEmojiRepository) ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error) {
+	out := make([]*model.Emoji, 0)
+	seen := make(map[string]bool)
+	for _, e := range m.Emojis {
+		if seen[e.ID] {
+			continue
+		}
+		if e.Host == nil {
+			continue
+		}
+		if host != "" && *e.Host != host {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(e.Name), strings.ToLower(query)) {
+			continue
+		}
+		seen[e.ID] = true
+		out = append(out, e)
+	}
+	// id DESC で安定ソート
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[i].ID < out[j].ID {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	if offset >= len(out) {
+		return []*model.Emoji{}, nil
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
+}
+
 // MockMetaRepository is a test double for repository.MetaRepository.
 type MockMetaRepository struct {
 	Meta *model.Meta
@@ -957,9 +1207,55 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 	if m.Meta == nil {
 		m.Meta = &model.Meta{ID: "x"}
 	}
-	if v, ok := fields["rootUserId"]; ok {
-		if s, ok := v.(string); ok {
-			m.Meta.RootUserID = &s
+	for k, v := range fields {
+		switch k {
+		case "rootUserId":
+			if s, ok := v.(string); ok {
+				m.Meta.RootUserID = &s
+			}
+		case "proxyAccountId":
+			switch vv := v.(type) {
+			case string:
+				m.Meta.ProxyAccountID = &vv
+			case nil:
+				m.Meta.ProxyAccountID = nil
+			}
+		case "enableHcaptcha":
+			if b, ok := v.(bool); ok {
+				m.Meta.EnableHcaptcha = b
+			}
+		case "enableRecaptcha":
+			if b, ok := v.(bool); ok {
+				m.Meta.EnableRecaptcha = b
+			}
+		case "enableTurnstile":
+			if b, ok := v.(bool); ok {
+				m.Meta.EnableTurnstile = b
+			}
+		case "hcaptchaSiteKey":
+			if s, ok := v.(string); ok {
+				m.Meta.HcaptchaSiteKey = &s
+			}
+		case "hcaptchaSecretKey":
+			if s, ok := v.(string); ok {
+				m.Meta.HcaptchaSecretKey = &s
+			}
+		case "recaptchaSiteKey":
+			if s, ok := v.(string); ok {
+				m.Meta.RecaptchaSiteKey = &s
+			}
+		case "recaptchaSecretKey":
+			if s, ok := v.(string); ok {
+				m.Meta.RecaptchaSecretKey = &s
+			}
+		case "turnstileSiteKey":
+			if s, ok := v.(string); ok {
+				m.Meta.TurnstileSiteKey = &s
+			}
+		case "turnstileSecretKey":
+			if s, ok := v.(string); ok {
+				m.Meta.TurnstileSecretKey = &s
+			}
 		}
 	}
 	return nil
@@ -987,6 +1283,35 @@ func (m *MockAccessTokenRepository) FindByHash(hash string) (*model.AccessToken,
 		return nil, ErrNotFound
 	}
 	return t, nil
+}
+
+func (m *MockAccessTokenRepository) FindByID(id string) (*model.AccessToken, error) {
+	for _, t := range m.Tokens {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAccessTokenRepository) ListByUserID(userID string) ([]*model.AccessToken, error) {
+	out := make([]*model.AccessToken, 0)
+	for _, t := range m.Tokens {
+		if t.UserID == userID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockAccessTokenRepository) DeleteByID(id string) error {
+	for k, t := range m.Tokens {
+		if t.ID == id {
+			delete(m.Tokens, k)
+			return nil
+		}
+	}
+	return nil
 }
 
 // MockUserNotePiningRepository is a test double for repository.UserNotePiningRepository.
@@ -1363,6 +1688,33 @@ func (m *MockClipRepository) ListByUser(userID string, limit, offset int) ([]*mo
 	return rows[offset:end], nil
 }
 
+func (m *MockClipRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+	var rows []*model.Clip
+	for _, c := range m.Clips {
+		if c.UserID == userID && c.IsPublic {
+			rows = append(rows, c)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset >= len(rows) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
+}
+
 func (m *MockClipRepository) IncrementCount(clipID, column string, delta int) error {
 	c, ok := m.Clips[clipID]
 	if !ok {
@@ -1532,6 +1884,24 @@ func (m *MockPageRepository) ListByUser(userID string, limit, offset int) ([]*mo
 	return paginatePages(rows, limit, offset), nil
 }
 
+func (m *MockPageRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Page, error) {
+	var rows []*model.Page
+	for _, p := range m.Pages {
+		if p.UserID == userID && p.Visibility == model.PageVisibilityPublic {
+			rows = append(rows, p)
+		}
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].UpdatedAt.Before(rows[j].UpdatedAt) ||
+				(rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) && rows[i].ID < rows[j].ID) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return paginatePages(rows, limit, offset), nil
+}
+
 func (m *MockPageRepository) ListFeatured(limit, offset int) ([]*model.Page, error) {
 	var rows []*model.Page
 	for _, p := range m.Pages {
@@ -1679,6 +2049,17 @@ func (m *MockFlashRepository) ListByUser(userID string, limit, offset int) ([]*m
 	var rows []*model.Flash
 	for _, f := range m.Flashes {
 		if f.UserID == userID {
+			rows = append(rows, f)
+		}
+	}
+	sortFlashesByUpdatedDesc(rows)
+	return paginateFlashes(rows, limit, offset), nil
+}
+
+func (m *MockFlashRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Flash, error) {
+	var rows []*model.Flash
+	for _, f := range m.Flashes {
+		if f.UserID == userID && f.Visibility == "public" {
 			rows = append(rows, f)
 		}
 	}
@@ -1869,6 +2250,24 @@ func (m *MockPageLikeRepository) FindByPair(userID, pageID string) (*model.PageL
 func (m *MockPageLikeRepository) Exists(userID, pageID string) (bool, error) {
 	_, err := m.FindByPair(userID, pageID)
 	return err == nil, nil
+}
+
+func (m *MockPageLikeRepository) ListByUser(userID string, limit, offset int) ([]*model.PageLike, error) {
+	out := make([]*model.PageLike, 0)
+	for _, l := range m.Likes {
+		if l.UserID == userID {
+			out = append(out, l)
+		}
+	}
+	// tiny in-memory paging; sort not necessary for unit tests
+	if offset >= len(out) {
+		return nil, nil
+	}
+	end := offset + limit
+	if limit <= 0 || end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
 }
 
 // MockAntennaRepository is a test double for repository.AntennaRepository.
@@ -2228,17 +2627,32 @@ type MockFollowingRepository struct {
 	// RemoteInboxes stores per-followee inbox lists used by
 	// ListRemoteFollowerInboxes. テスト側で明示的に登録する。
 	RemoteInboxes map[string][]string
+	// Birthdays maps followeeID -> "YYYY-MM-DD" string used by
+	// ListFollowingByBirthday. 未登録のユーザーは誕生日なしとして扱う。
+	Birthdays map[string]string
 }
 
 func NewMockFollowingRepository() *MockFollowingRepository {
 	return &MockFollowingRepository{
 		Followings:    make(map[string]*model.Following),
 		RemoteInboxes: make(map[string][]string),
+		Birthdays:     make(map[string]string),
 	}
 }
 
 // ListRemoteFollowerInboxes returns the inbox URLs registered for the given
 // followee. テストでは MockFollowingRepository.RemoteInboxes を直接埋めて使う。
+func (m *MockFollowingRepository) DeleteAllByUser(userID string) (int64, error) {
+	n := int64(0)
+	for k, f := range m.Followings {
+		if f.FollowerID == userID || f.FolloweeID == userID {
+			delete(m.Followings, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MockFollowingRepository) ListRemoteFollowerInboxes(userID string) ([]string, error) {
 	return m.RemoteInboxes[userID], nil
 }
@@ -2288,6 +2702,104 @@ func (m *MockFollowingRepository) ListFollowing(userID string, limit, offset int
 		}
 	}
 	return paginate(rows, limit, offset), nil
+}
+
+func (m *MockFollowingRepository) ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error) {
+	var rows []*model.Following
+	for _, f := range m.Followings {
+		if f.FollowerHost != nil && *f.FollowerHost == host {
+			rows = append(rows, f)
+		}
+	}
+	return paginate(rows, limit, offset), nil
+}
+
+func (m *MockFollowingRepository) ListFollowingByHost(host string, limit, offset int) ([]*model.Following, error) {
+	var rows []*model.Following
+	for _, f := range m.Followings {
+		if f.FolloweeHost != nil && *f.FolloweeHost == host {
+			rows = append(rows, f)
+		}
+	}
+	return paginate(rows, limit, offset), nil
+}
+
+func (m *MockFollowingRepository) UpdateRelation(followerID, followeeID string, fields map[string]any) error {
+	for _, f := range m.Followings {
+		if f.FollowerID == followerID && f.FolloweeID == followeeID {
+			applyFollowingFields(f, fields)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *MockFollowingRepository) UpdateAllByFollower(followerID string, fields map[string]any) error {
+	for _, f := range m.Followings {
+		if f.FollowerID == followerID {
+			applyFollowingFields(f, fields)
+		}
+	}
+	return nil
+}
+
+func (m *MockFollowingRepository) ListFollowingByBirthday(followerID string, beginMMDD, endMMDD, limit, offset int) ([]model.FollowingBirthday, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	wrap := beginMMDD > endMMDD
+	var out []model.FollowingBirthday
+	for _, f := range m.Followings {
+		if f.FollowerID != followerID {
+			continue
+		}
+		bd := m.Birthdays[f.FolloweeID]
+		if len(bd) != 10 {
+			continue
+		}
+		// bd は "YYYY-MM-DD" 形式。mmdd を抽出して範囲判定する。
+		mm := int(bd[5]-'0')*10 + int(bd[6]-'0')
+		dd := int(bd[8]-'0')*10 + int(bd[9]-'0')
+		mmdd := mm*100 + dd
+		in := false
+		if wrap {
+			in = mmdd >= beginMMDD || mmdd <= endMMDD
+		} else {
+			in = mmdd >= beginMMDD && mmdd <= endMMDD
+		}
+		if !in {
+			continue
+		}
+		out = append(out, model.FollowingBirthday{FolloweeID: f.FolloweeID, Birthday: bd})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a := out[i].Birthday[5:7] + out[i].Birthday[8:10]
+		b := out[j].Birthday[5:7] + out[j].Birthday[8:10]
+		return a < b
+	})
+	if offset >= len(out) {
+		return nil, nil
+	}
+	out = out[offset:]
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func applyFollowingFields(f *model.Following, fields map[string]any) {
+	for k, v := range fields {
+		switch k {
+		case "notify":
+			if s, ok := v.(string); ok {
+				f.Notify = &s
+			}
+		case "withReplies":
+			if b, ok := v.(bool); ok {
+				f.WithReplies = b
+			}
+		}
+	}
 }
 
 // MockFollowRequestRepository is a test double for repository.FollowRequestRepository.
@@ -2429,6 +2941,57 @@ func (m *MockUserListRepository) ListMembers(listID string) ([]*model.UserListMe
 	return result, nil
 }
 
+func (m *MockUserListRepository) UpdateList(id string, fields map[string]any) error {
+	list, ok := m.Lists[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if name, ok := fields["name"]; ok {
+		list.Name = name.(string)
+	}
+	if isPublic, ok := fields["isPublic"]; ok {
+		list.IsPublic = isPublic.(bool)
+	}
+	return nil
+}
+
+func (m *MockUserListRepository) UpdateMembership(listID, userID string, withReplies bool) error {
+	for _, mem := range m.Members {
+		if mem.UserListID == listID && mem.UserID == userID {
+			mem.WithReplies = withReplies
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
+}
+
+func (m *MockUserListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {
+	listIDs := make(map[string]struct{})
+	for _, mem := range m.Members {
+		if mem.UserID == memberUserID {
+			listIDs[mem.UserListID] = struct{}{}
+		}
+	}
+	out := make([]*model.UserList, 0)
+	for _, list := range m.Lists {
+		if list.UserID != ownerID {
+			continue
+		}
+		if _, ok := listIDs[list.ID]; ok {
+			out = append(out, list)
+		}
+	}
+	// id DESC
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[i].ID < out[j].ID {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // MockAnnouncementRepository
 // ---------------------------------------------------------------------------
@@ -2568,6 +3131,27 @@ func (m *MockRegistryRepository) KeysWithType(userID string, scope []string, dom
 func (m *MockRegistryRepository) Remove(userID, key string, scope []string, _ *string) error {
 	delete(m.Items, m.rkey(userID, key, scope))
 	return nil
+}
+
+func (m *MockRegistryRepository) ScopesWithDomain(userID string) ([]model.RegistryScopeDomain, error) {
+	seen := map[string]bool{}
+	out := make([]model.RegistryScopeDomain, 0)
+	for _, item := range m.Items {
+		if item.UserID != userID {
+			continue
+		}
+		d := ""
+		if item.Domain != nil {
+			d = *item.Domain
+		}
+		k := strings.Join(item.Scope, ",") + "|" + d
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, model.RegistryScopeDomain{Scope: []string(item.Scope), Domain: item.Domain})
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2824,6 +3408,197 @@ func (m *MockUserMemoRepository) Delete(userID, targetUserID string) error {
 	return nil
 }
 
+// MockPasswordResetRequestRepository is a test double for repository.PasswordResetRequestRepository.
+type MockPasswordResetRequestRepository struct {
+	Requests map[string]*model.PasswordResetRequest // keyed by ID
+}
+
+func NewMockPasswordResetRequestRepository() *MockPasswordResetRequestRepository {
+	return &MockPasswordResetRequestRepository{Requests: make(map[string]*model.PasswordResetRequest)}
+}
+
+func (m *MockPasswordResetRequestRepository) Create(req *model.PasswordResetRequest) error {
+	m.Requests[req.ID] = req
+	return nil
+}
+
+func (m *MockPasswordResetRequestRepository) FindByToken(token string) (*model.PasswordResetRequest, error) {
+	for _, r := range m.Requests {
+		if r.Token == token {
+			return r, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockPasswordResetRequestRepository) Delete(id string) error {
+	delete(m.Requests, id)
+	return nil
+}
+
+// MockSigninRepository is a test double for repository.SigninRepository.
+type MockSigninRepository struct {
+	mu      sync.Mutex
+	Signins []*model.Signin
+}
+
+func NewMockSigninRepository() *MockSigninRepository {
+	return &MockSigninRepository{}
+}
+
+func (m *MockSigninRepository) Create(s *model.Signin) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Signins = append(m.Signins, s)
+	return nil
+}
+
+// Len returns the number of signin records (thread-safe).
+func (m *MockSigninRepository) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Signins)
+}
+
+func (m *MockSigninRepository) ListByUserID(userID string, limit int, untilID, sinceID string) ([]*model.Signin, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var rows []*model.Signin
+	for _, s := range m.Signins {
+		if s.UserID != userID {
+			continue
+		}
+		if untilID != "" && s.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && s.ID <= sinceID {
+			continue
+		}
+		rows = append(rows, s)
+	}
+	// 最新順（IDの降順）にするため逆順にする
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+// MockAuthSessionRepository is a test double for repository.AuthSessionRepository.
+type MockAuthSessionRepository struct {
+	Apps         map[string]*model.App         // keyed by ID
+	Sessions     map[string]*model.AuthSession // keyed by ID
+	AccessTokens map[string]*model.AccessToken // keyed by ID
+}
+
+func NewMockAuthSessionRepository() *MockAuthSessionRepository {
+	return &MockAuthSessionRepository{
+		Apps:         make(map[string]*model.App),
+		Sessions:     make(map[string]*model.AuthSession),
+		AccessTokens: make(map[string]*model.AccessToken),
+	}
+}
+
+func (m *MockAuthSessionRepository) FindAppBySecret(secret string) (*model.App, error) {
+	for _, a := range m.Apps {
+		if a.Secret == secret {
+			return a, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) CreateApp(app *model.App) error {
+	m.Apps[app.ID] = app
+	return nil
+}
+
+func (m *MockAuthSessionRepository) CreateSession(session *model.AuthSession) error {
+	m.Sessions[session.ID] = session
+	return nil
+}
+
+func (m *MockAuthSessionRepository) FindSessionByToken(token string) (*model.AuthSession, error) {
+	for _, s := range m.Sessions {
+		if s.Token == token {
+			if s.App == nil && s.AppID != "" {
+				if a, ok := m.Apps[s.AppID]; ok {
+					s.App = a
+				}
+			}
+			return s, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) FindSessionByTokenAndAppID(token, appID string) (*model.AuthSession, error) {
+	for _, s := range m.Sessions {
+		if s.Token == token && s.AppID == appID {
+			if s.App == nil {
+				if a, ok := m.Apps[s.AppID]; ok {
+					s.App = a
+				}
+			}
+			return s, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) UpdateSessionUserID(sessionID, userID string) error {
+	if s, ok := m.Sessions[sessionID]; ok {
+		s.UserID = &userID
+	}
+	return nil
+}
+
+func (m *MockAuthSessionRepository) DeleteSession(sessionID string) error {
+	delete(m.Sessions, sessionID)
+	return nil
+}
+
+func (m *MockAuthSessionRepository) FindAccessTokenByAppAndUser(appID, userID string) (*model.AccessToken, error) {
+	for _, t := range m.AccessTokens {
+		if t.AppID != nil && *t.AppID == appID && t.UserID == userID {
+			return t, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) CreateAccessToken(token *model.AccessToken) error {
+	m.AccessTokens[token.ID] = token
+	return nil
+}
+
+func (m *MockAuthSessionRepository) FindAppByID(id string) (*model.App, error) {
+	a, ok := m.Apps[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
+func (m *MockAuthSessionRepository) ListAppsByUserID(userID string, limit, offset int) ([]*model.App, error) {
+	var apps []*model.App
+	for _, a := range m.Apps {
+		if a.UserID != nil && *a.UserID == userID {
+			apps = append(apps, a)
+		}
+	}
+	if offset >= len(apps) {
+		return []*model.App{}, nil
+	}
+	apps = apps[offset:]
+	if len(apps) > limit {
+		apps = apps[:limit]
+	}
+	return apps, nil
+}
+
 // MockUserPublickeyRepository is a test double for federation.PublickeyStore.
 type MockUserPublickeyRepository struct {
 	// keyed by userID
@@ -2845,4 +3620,779 @@ func (m *MockUserPublickeyRepository) FindByUserID(userID string) (*model.UserPu
 		return pk, nil
 	}
 	return nil, ErrNotFound
+}
+
+// MockChannelFavoriteRepository is a test double for repository.ChannelFavoriteRepository.
+type MockChannelFavoriteRepository struct {
+	Favorites map[string]*model.ChannelFavorite // keyed by "userId:channelId"
+}
+
+func NewMockChannelFavoriteRepository() *MockChannelFavoriteRepository {
+	return &MockChannelFavoriteRepository{Favorites: make(map[string]*model.ChannelFavorite)}
+}
+
+func (m *MockChannelFavoriteRepository) Create(fav *model.ChannelFavorite) error {
+	m.Favorites[fav.UserID+":"+fav.ChannelID] = fav
+	return nil
+}
+
+func (m *MockChannelFavoriteRepository) Delete(userID, channelID string) error {
+	delete(m.Favorites, userID+":"+channelID)
+	return nil
+}
+
+func (m *MockChannelFavoriteRepository) ListByUser(userID string) ([]*model.ChannelFavorite, error) {
+	var result []*model.ChannelFavorite
+	for _, f := range m.Favorites {
+		if f.UserID == userID {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockChannelFavoriteRepository) Exists(userID, channelID string) (bool, error) {
+	_, ok := m.Favorites[userID+":"+channelID]
+	return ok, nil
+}
+
+// MockChannelMutingRepository is a test double for repository.ChannelMutingRepository.
+type MockChannelMutingRepository struct {
+	Mutings map[string]*model.ChannelMuting // keyed by "userId:channelId"
+}
+
+func NewMockChannelMutingRepository() *MockChannelMutingRepository {
+	return &MockChannelMutingRepository{Mutings: make(map[string]*model.ChannelMuting)}
+}
+
+func (m *MockChannelMutingRepository) Create(mut *model.ChannelMuting) error {
+	m.Mutings[mut.UserID+":"+mut.ChannelID] = mut
+	return nil
+}
+
+func (m *MockChannelMutingRepository) Delete(userID, channelID string) error {
+	delete(m.Mutings, userID+":"+channelID)
+	return nil
+}
+
+func (m *MockChannelMutingRepository) ListByUser(userID string) ([]*model.ChannelMuting, error) {
+	var result []*model.ChannelMuting
+	for _, mut := range m.Mutings {
+		if mut.UserID == userID {
+			result = append(result, mut)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockChannelMutingRepository) Exists(userID, channelID string) (bool, error) {
+	_, ok := m.Mutings[userID+":"+channelID]
+	return ok, nil
+}
+
+// MockClipFavoriteRepository is a test double for repository.ClipFavoriteRepository.
+type MockClipFavoriteRepository struct {
+	Favorites map[string]*model.ClipFavorite // keyed by "userId:clipId"
+}
+
+func NewMockClipFavoriteRepository() *MockClipFavoriteRepository {
+	return &MockClipFavoriteRepository{Favorites: make(map[string]*model.ClipFavorite)}
+}
+
+func (m *MockClipFavoriteRepository) Create(fav *model.ClipFavorite) error {
+	m.Favorites[fav.UserID+":"+fav.ClipID] = fav
+	return nil
+}
+
+func (m *MockClipFavoriteRepository) Delete(userID, clipID string) error {
+	delete(m.Favorites, userID+":"+clipID)
+	return nil
+}
+
+func (m *MockClipFavoriteRepository) ListByUser(userID string) ([]*model.ClipFavorite, error) {
+	var result []*model.ClipFavorite
+	for _, f := range m.Favorites {
+		if f.UserID == userID {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockClipFavoriteRepository) Exists(userID, clipID string) (bool, error) {
+	_, ok := m.Favorites[userID+":"+clipID]
+	return ok, nil
+}
+
+// MockUserListFavoriteRepository is a test double for repository.UserListFavoriteRepository.
+type MockUserListFavoriteRepository struct {
+	Favorites map[string]*model.UserListFavorite // keyed by "userId:userListId"
+}
+
+func NewMockUserListFavoriteRepository() *MockUserListFavoriteRepository {
+	return &MockUserListFavoriteRepository{Favorites: make(map[string]*model.UserListFavorite)}
+}
+
+func (m *MockUserListFavoriteRepository) Create(fav *model.UserListFavorite) error {
+	m.Favorites[fav.UserID+":"+fav.UserListID] = fav
+	return nil
+}
+
+func (m *MockUserListFavoriteRepository) Delete(userID, listID string) error {
+	delete(m.Favorites, userID+":"+listID)
+	return nil
+}
+
+func (m *MockUserListFavoriteRepository) ListByUser(userID string) ([]*model.UserListFavorite, error) {
+	var result []*model.UserListFavorite
+	for _, f := range m.Favorites {
+		if f.UserID == userID {
+			result = append(result, f)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockUserListFavoriteRepository) Exists(userID, listID string) (bool, error) {
+	_, ok := m.Favorites[userID+":"+listID]
+	return ok, nil
+}
+
+// MockRetentionAggregationRepository is a test double for repository.RetentionAggregationRepository.
+type MockRetentionAggregationRepository struct {
+	Records []*model.RetentionAggregation
+}
+
+func NewMockRetentionAggregationRepository() *MockRetentionAggregationRepository {
+	return &MockRetentionAggregationRepository{}
+}
+
+func (m *MockRetentionAggregationRepository) ListRecent(limit int) ([]*model.RetentionAggregation, error) {
+	if limit >= len(m.Records) {
+		return m.Records, nil
+	}
+	return m.Records[:limit], nil
+}
+
+// MockSystemAccountRepository is a test double for repository.SystemAccountRepository.
+type MockSystemAccountRepository struct {
+	Accounts map[string]*model.SystemAccount // keyed by type
+}
+
+func NewMockSystemAccountRepository() *MockSystemAccountRepository {
+	return &MockSystemAccountRepository{Accounts: make(map[string]*model.SystemAccount)}
+}
+
+func (m *MockSystemAccountRepository) FindByType(typ string) (*model.SystemAccount, error) {
+	if sa, ok := m.Accounts[typ]; ok {
+		return sa, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockSystemAccountRepository) Create(sa *model.SystemAccount) error {
+	m.Accounts[sa.Type] = sa
+	return nil
+}
+
+// MockNoteThreadMutingRepository is a test double for repository.NoteThreadMutingRepository.
+type MockNoteThreadMutingRepository struct {
+	Mutings map[string]*model.NoteThreadMuting // keyed by "userId:threadId"
+}
+
+func NewMockNoteThreadMutingRepository() *MockNoteThreadMutingRepository {
+	return &MockNoteThreadMutingRepository{Mutings: make(map[string]*model.NoteThreadMuting)}
+}
+
+func (m *MockNoteThreadMutingRepository) Create(mut *model.NoteThreadMuting) error {
+	m.Mutings[mut.UserID+":"+mut.ThreadID] = mut
+	return nil
+}
+
+func (m *MockNoteThreadMutingRepository) Delete(userID, threadID string) error {
+	delete(m.Mutings, userID+":"+threadID)
+	return nil
+}
+
+func (m *MockNoteThreadMutingRepository) Exists(userID, threadID string) (bool, error) {
+	_, ok := m.Mutings[userID+":"+threadID]
+	return ok, nil
+}
+
+// MockUsedUsernameRepository is a test double for repository.UsedUsernameRepository.
+type MockUsedUsernameRepository struct {
+	Usernames map[string]bool
+}
+
+func NewMockUsedUsernameRepository() *MockUsedUsernameRepository {
+	return &MockUsedUsernameRepository{Usernames: make(map[string]bool)}
+}
+
+func (m *MockUsedUsernameRepository) Create(username string) error {
+	m.Usernames[username] = true
+	return nil
+}
+
+func (m *MockUsedUsernameRepository) Exists(username string) (bool, error) {
+	return m.Usernames[username], nil
+}
+
+// MockRelayRepository is a test double for repository.RelayRepository.
+type MockRelayRepository struct {
+	Relays map[string]*model.Relay
+}
+
+func NewMockRelayRepository() *MockRelayRepository {
+	return &MockRelayRepository{Relays: make(map[string]*model.Relay)}
+}
+
+func (m *MockRelayRepository) Create(r *model.Relay) error {
+	m.Relays[r.ID] = r
+	return nil
+}
+
+func (m *MockRelayRepository) FindByID(id string) (*model.Relay, error) {
+	if r, ok := m.Relays[id]; ok {
+		return r, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockRelayRepository) List() ([]*model.Relay, error) {
+	out := make([]*model.Relay, 0, len(m.Relays))
+	for _, r := range m.Relays {
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (m *MockRelayRepository) ListByStatus(status string) ([]*model.Relay, error) {
+	out := make([]*model.Relay, 0)
+	for _, r := range m.Relays {
+		if r.Status == status {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockRelayRepository) UpdateStatus(id, status string) error {
+	r, ok := m.Relays[id]
+	if !ok {
+		return ErrNotFound
+	}
+	r.Status = status
+	return nil
+}
+
+func (m *MockRelayRepository) Delete(id string) error {
+	delete(m.Relays, id)
+	return nil
+}
+
+// MockSystemWebhookRepository is a test double for
+// repository.SystemWebhookRepository.
+type MockSystemWebhookRepository struct {
+	Webhooks  map[string]*model.SystemWebhook
+	CreateErr error
+	UpdateErr error
+}
+
+// NewMockSystemWebhookRepository creates an empty mock.
+func NewMockSystemWebhookRepository() *MockSystemWebhookRepository {
+	return &MockSystemWebhookRepository{Webhooks: make(map[string]*model.SystemWebhook)}
+}
+
+func (m *MockSystemWebhookRepository) Create(w *model.SystemWebhook) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Webhooks[w.ID] = w
+	return nil
+}
+
+func (m *MockSystemWebhookRepository) FindByID(id string) (*model.SystemWebhook, error) {
+	w, ok := m.Webhooks[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return w, nil
+}
+
+func (m *MockSystemWebhookRepository) List() ([]*model.SystemWebhook, error) {
+	rows := make([]*model.SystemWebhook, 0, len(m.Webhooks))
+	for _, w := range m.Webhooks {
+		rows = append(rows, w)
+	}
+	// id DESC で安定ソート (本実装と整合)
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockSystemWebhookRepository) ListActive() ([]*model.SystemWebhook, error) {
+	rows := make([]*model.SystemWebhook, 0)
+	for _, w := range m.Webhooks {
+		if w.IsActive {
+			rows = append(rows, w)
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockSystemWebhookRepository) Update(w *model.SystemWebhook) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if _, ok := m.Webhooks[w.ID]; !ok {
+		return ErrNotFound
+	}
+	m.Webhooks[w.ID] = w
+	return nil
+}
+
+func (m *MockSystemWebhookRepository) UpdateAdminFields(id string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	w, ok := m.Webhooks[id]
+	if !ok {
+		// GORM Updates(map) はレコード欠損で ErrRecordNotFound を返さず
+		// 0 行影響で nil を返す。本実装と整合させるためここも nil を返す。
+		return nil
+	}
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				w.Name = s
+			}
+		case "url":
+			if s, ok := v.(string); ok {
+				w.URL = s
+			}
+		case "secret":
+			if s, ok := v.(string); ok {
+				w.Secret = s
+			}
+		case "on":
+			if arr, ok := v.([]string); ok {
+				w.On = arr
+			}
+		case "isActive":
+			if b, ok := v.(bool); ok {
+				w.IsActive = b
+			}
+		case "updatedAt":
+			if ts, ok := v.(time.Time); ok {
+				w.UpdatedAt = ts
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockSystemWebhookRepository) UpdateLatestStatus(id string, sentAt time.Time, status int) error {
+	w, ok := m.Webhooks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	w.LatestSentAt = &sentAt
+	w.LatestStatus = &status
+	return nil
+}
+
+func (m *MockSystemWebhookRepository) Delete(id string) error {
+	delete(m.Webhooks, id)
+	return nil
+}
+
+// MockAbuseReportNotificationRecipientRepository is a test double for
+// repository.AbuseReportNotificationRecipientRepository.
+type MockAbuseReportNotificationRecipientRepository struct {
+	Recipients map[string]*model.AbuseReportNotificationRecipient
+	CreateErr  error
+	UpdateErr  error
+}
+
+// NewMockAbuseReportNotificationRecipientRepository creates an empty mock.
+func NewMockAbuseReportNotificationRecipientRepository() *MockAbuseReportNotificationRecipientRepository {
+	return &MockAbuseReportNotificationRecipientRepository{
+		Recipients: make(map[string]*model.AbuseReportNotificationRecipient),
+	}
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) Create(r *model.AbuseReportNotificationRecipient) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Recipients[r.ID] = r
+	return nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) FindByID(id string) (*model.AbuseReportNotificationRecipient, error) {
+	r, ok := m.Recipients[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return r, nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) List() ([]*model.AbuseReportNotificationRecipient, error) {
+	rows := make([]*model.AbuseReportNotificationRecipient, 0, len(m.Recipients))
+	for _, r := range m.Recipients {
+		rows = append(rows, r)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) Update(id string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	r, ok := m.Recipients[id]
+	if !ok {
+		// GORM Updates(map) はレコード欠損で ErrRecordNotFound を返さず
+		// 0 行影響で nil を返す。本実装と整合させるためここも nil を返す。
+		return nil
+	}
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				r.Name = s
+			}
+		case "method":
+			if s, ok := v.(string); ok {
+				r.Method = s
+			}
+		case "isActive":
+			if b, ok := v.(bool); ok {
+				r.IsActive = b
+			}
+		case "userId":
+			if s, ok := v.(string); ok {
+				r.UserID = &s
+			} else if v == nil {
+				r.UserID = nil
+			}
+		case "systemWebhookId":
+			if s, ok := v.(string); ok {
+				r.SystemWebhookID = &s
+			} else if v == nil {
+				r.SystemWebhookID = nil
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockAbuseReportNotificationRecipientRepository) Delete(id string) error {
+	delete(m.Recipients, id)
+	return nil
+}
+
+// MockAdRepository is a test double for repository.AdRepository.
+type MockAdRepository struct {
+	Ads       map[string]*model.Ad
+	CreateErr error
+	ListErr   error
+}
+
+// NewMockAdRepository creates an empty MockAdRepository.
+func NewMockAdRepository() *MockAdRepository {
+	return &MockAdRepository{Ads: make(map[string]*model.Ad)}
+}
+
+func (m *MockAdRepository) ListActive(now time.Time) ([]*model.Ad, error) {
+	if m.ListErr != nil {
+		return nil, m.ListErr
+	}
+	rows := make([]*model.Ad, 0)
+	for _, a := range m.Ads {
+		if !a.StartsAt.After(now) && a.ExpiresAt.After(now) {
+			rows = append(rows, a)
+		}
+	}
+	sortAdsByIDDesc(rows)
+	return rows, nil
+}
+
+func (m *MockAdRepository) Create(a *model.Ad) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Ads[a.ID] = a
+	return nil
+}
+
+func (m *MockAdRepository) FindByID(id string) (*model.Ad, error) {
+	a, ok := m.Ads[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
+func (m *MockAdRepository) List(limit, offset int) ([]*model.Ad, error) {
+	if m.ListErr != nil {
+		return nil, m.ListErr
+	}
+	rows := make([]*model.Ad, 0, len(m.Ads))
+	for _, a := range m.Ads {
+		rows = append(rows, a)
+	}
+	sortAdsByIDDesc(rows)
+	if limit <= 0 {
+		limit = 30
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) {
+		return []*model.Ad{}, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
+}
+
+func (m *MockAdRepository) UpdateFields(id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	a, ok := m.Ads[id]
+	if !ok {
+		return nil // GORM Updates(map) は行欠損でも nil を返す
+	}
+	for k, v := range fields {
+		switch k {
+		case "url":
+			if s, ok := v.(string); ok {
+				a.URL = s
+			}
+		case "imageUrl":
+			if s, ok := v.(string); ok {
+				a.ImageURL = s
+			}
+		case "memo":
+			if s, ok := v.(string); ok {
+				a.Memo = s
+			}
+		case "place":
+			if s, ok := v.(string); ok {
+				a.Place = s
+			}
+		case "priority":
+			if s, ok := v.(string); ok {
+				a.Priority = s
+			}
+		case "ratio":
+			if n, ok := v.(int); ok {
+				a.Ratio = n
+			}
+		case "dayOfWeek":
+			if n, ok := v.(int); ok {
+				a.DayOfWeek = n
+			}
+		case "isSensitive":
+			if b, ok := v.(bool); ok {
+				a.IsSensitive = b
+			}
+		case "startsAt":
+			if ts, ok := v.(time.Time); ok {
+				a.StartsAt = ts
+			}
+		case "expiresAt":
+			if ts, ok := v.(time.Time); ok {
+				a.ExpiresAt = ts
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockAdRepository) Delete(id string) error {
+	delete(m.Ads, id)
+	return nil
+}
+
+func sortAdsByIDDesc(rows []*model.Ad) {
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+}
+
+// MockAvatarDecorationRepository is a test double for
+// repository.AvatarDecorationRepository.
+type MockAvatarDecorationRepository struct {
+	Decorations map[string]*model.AvatarDecoration
+	CreateErr   error
+}
+
+// NewMockAvatarDecorationRepository creates an empty mock.
+func NewMockAvatarDecorationRepository() *MockAvatarDecorationRepository {
+	return &MockAvatarDecorationRepository{Decorations: make(map[string]*model.AvatarDecoration)}
+}
+
+func (m *MockAvatarDecorationRepository) Create(d *model.AvatarDecoration) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Decorations[d.ID] = d
+	return nil
+}
+
+func (m *MockAvatarDecorationRepository) FindByID(id string) (*model.AvatarDecoration, error) {
+	d, ok := m.Decorations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return d, nil
+}
+
+func (m *MockAvatarDecorationRepository) List() ([]*model.AvatarDecoration, error) {
+	rows := make([]*model.AvatarDecoration, 0, len(m.Decorations))
+	for _, d := range m.Decorations {
+		rows = append(rows, d)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (m *MockAvatarDecorationRepository) UpdateFields(id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	d, ok := m.Decorations[id]
+	if !ok {
+		return nil
+	}
+	for k, v := range fields {
+		switch k {
+		case "name":
+			if s, ok := v.(string); ok {
+				d.Name = s
+			}
+		case "description":
+			if s, ok := v.(string); ok {
+				d.Description = s
+			}
+		case "url":
+			if s, ok := v.(string); ok {
+				d.URL = s
+			}
+		case "roleIdsThatCanBeUsedThisDecoration":
+			if arr, ok := v.([]string); ok {
+				d.RoleIDs = arr
+			}
+		case "updatedAt":
+			if ts, ok := v.(time.Time); ok {
+				d.UpdatedAt = &ts
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MockAvatarDecorationRepository) Delete(id string) error {
+	delete(m.Decorations, id)
+	return nil
+}
+
+// MockRegistrationTicketRepository is a test double for
+// repository.RegistrationTicketRepository.
+type MockRegistrationTicketRepository struct {
+	Tickets   map[string]*model.RegistrationTicket
+	CreateErr error
+}
+
+// NewMockRegistrationTicketRepository creates an empty mock.
+func NewMockRegistrationTicketRepository() *MockRegistrationTicketRepository {
+	return &MockRegistrationTicketRepository{Tickets: make(map[string]*model.RegistrationTicket)}
+}
+
+func (m *MockRegistrationTicketRepository) Create(t *model.RegistrationTicket) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.Tickets[t.ID] = t
+	return nil
+}
+
+func (m *MockRegistrationTicketRepository) List(filter string, limit, offset int, now time.Time) ([]*model.RegistrationTicket, error) {
+	rows := make([]*model.RegistrationTicket, 0, len(m.Tickets))
+	for _, t := range m.Tickets {
+		switch filter {
+		case "unused":
+			if t.UsedByID != nil {
+				continue
+			}
+		case "used":
+			if t.UsedByID == nil {
+				continue
+			}
+		case "expired":
+			if t.ExpiresAt == nil || !t.ExpiresAt.Before(now) {
+				continue
+			}
+		}
+		rows = append(rows, t)
+	}
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].ID < rows[j].ID {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) {
+		return []*model.RegistrationTicket{}, nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], nil
+}
+
+func (m *MockRegistrationTicketRepository) Delete(id string) error {
+	delete(m.Tickets, id)
+	return nil
 }

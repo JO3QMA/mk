@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/core/user"
@@ -23,6 +24,7 @@ import (
 type RoleProvider interface {
 	IsAdministrator(userID string) bool
 	IsModerator(userID string) bool
+	IsSilenced(userID string) bool
 	GetUserRoles(userID string) ([]*model.Role, error)
 	GetUserPolicies(userID string) map[string]any
 }
@@ -30,6 +32,13 @@ type RoleProvider interface {
 // EmailSender sends an email (subject + plain text body). SMTP 設定は
 // 実装側が Meta から読み取る。テストではスタブを注入する。
 type EmailSender func(to, subject, body string)
+
+// AccountMover performs the i/move workflow (AP delivery + user row updates).
+// 具体実装は core/move.Service。循環依存を避けるため handler 側には narrow
+// interface として置く。
+type AccountMover interface {
+	Move(src *model.User, dstURI string) error
+}
 
 // Handler handles account-related API endpoints.
 type Handler struct {
@@ -44,6 +53,43 @@ type Handler struct {
 	metaRepo         repository.MetaRepository
 	emailSender      EmailSender
 	serverURL        string
+	signinRepo       repository.SigninRepository
+	accessTokenRepo  repository.AccessTokenRepository
+	galleryRepo      GalleryRepository
+	pageLikeRepo     repository.PageLikeRepository
+	mover            AccountMover
+}
+
+// GalleryRepository is the subset of repository.GalleryRepository used by
+// the i/gallery/* endpoints. Kept as a handler-local alias so we can
+// swap implementations in tests without pulling the full repository.
+type GalleryRepository interface {
+	ListByUser(userID string, limit, offset int) ([]*model.GalleryPost, error)
+	ListLikesByUser(userID string, limit, offset int) ([]*model.GalleryLike, error)
+}
+
+// SetAccessTokenRepo wires the access_token repo for i/authorized-apps and
+// i/revoke-token.
+func (h *Handler) SetAccessTokenRepo(r repository.AccessTokenRepository) {
+	h.accessTokenRepo = r
+}
+
+// SetGalleryRepo wires the gallery repo for i/gallery/*.
+func (h *Handler) SetGalleryRepo(r GalleryRepository) { h.galleryRepo = r }
+
+// SetPageLikeRepo wires the page_like repo for i/page-likes.
+func (h *Handler) SetPageLikeRepo(r repository.PageLikeRepository) {
+	h.pageLikeRepo = r
+}
+
+// isSilenced returns whether the given user has any role whose merged
+// policies deny canPublicNote. Wraps roleProvider so a nil provider
+// (early boot / tests that skip role wiring) yields false.
+func (h *Handler) isSilenced(userID string) bool {
+	if h.roleProvider == nil {
+		return false
+	}
+	return h.roleProvider.IsSilenced(userID)
 }
 
 // SetServerURL sets the base URL used for email verification links.
@@ -72,9 +118,20 @@ func (h *Handler) SetWebAuthn(svc *twofactor.WebAuthnService, repo repository.Us
 	h.securityKeyRepo = repo
 }
 
+// SetSigninRepo attaches a SigninRepository for i/signin-history.
+func (h *Handler) SetSigninRepo(r repository.SigninRepository) {
+	h.signinRepo = r
+}
+
 // SetFavoriteRepo attaches a NoteFavoriteRepository for i/favorites.
 func (h *Handler) SetFavoriteRepo(r repository.NoteFavoriteRepository) {
 	h.favoriteRepo = r
+}
+
+// SetAccountMover attaches an AccountMover used by i/move. If unset, i/move
+// returns 501 so the endpoint fails loudly instead of silently no-oping.
+func (h *Handler) SetAccountMover(m AccountMover) {
+	h.mover = m
 }
 
 // NewHandler creates a new account Handler.
@@ -101,14 +158,14 @@ func (h *Handler) RegistryGet(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil || req.Key == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	item, err := h.registryRepo.Get(u.ID, req.Key, req.Scope, req.Domain)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apiError("NO_SUCH_KEY", "No such key.", "ac3ed68a-62f0-422b-a7bc-d5e09e8f6a6a"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_KEY", "No such key.", "ac3ed68a-62f0-422b-a7bc-d5e09e8f6a6a"))
 	}
 	// value をそのまま返す (JSONBの中身)
 	return c.JSONBlob(http.StatusOK, item.Value)
@@ -124,7 +181,7 @@ func (h *Handler) RegistrySet(c echo.Context) error {
 		Domain *string         `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil || req.Key == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
@@ -139,7 +196,7 @@ func (h *Handler) RegistrySet(c echo.Context) error {
 		Domain:    req.Domain,
 	}
 	if err := h.registryRepo.Set(item); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -152,14 +209,14 @@ func (h *Handler) RegistryGetAll(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	items, err := h.registryRepo.GetAll(u.ID, req.Scope, req.Domain)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	result := make(map[string]json.RawMessage, len(items))
 	for _, item := range items {
@@ -176,14 +233,14 @@ func (h *Handler) RegistryKeysWithType(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	keys, err := h.registryRepo.KeysWithType(u.ID, req.Scope, req.Domain)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.JSON(http.StatusOK, keys)
 }
@@ -197,13 +254,13 @@ func (h *Handler) RegistryRemove(c echo.Context) error {
 		Domain *string  `json:"domain"`
 	}
 	if err := c.Bind(&req); err != nil || req.Key == "" {
-		return c.JSON(http.StatusBadRequest, apiError("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "key is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Scope == nil {
 		req.Scope = []string{}
 	}
 	if err := h.registryRepo.Remove(u.ID, req.Key, req.Scope, req.Domain); err != nil {
-		return c.JSON(http.StatusInternalServerError, apiError("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -235,7 +292,7 @@ func (h *Handler) Me(c echo.Context) error {
 		"bannerUrl":      detailed.BannerURL,
 		"bannerBlurhash": detailed.BannerBlurhash,
 		"isLocked":       detailed.IsLocked,
-		"isSilenced":     u.IsSuspended && false, // ロールベースで判定 (未実装)
+		"isSilenced":     h.isSilenced(u.ID),
 		"isSuspended":    detailed.IsSuspended,
 		"description":    detailed.Description,
 		"location":       detailed.Location,
@@ -382,6 +439,8 @@ type UpdateRequest struct {
 	Location          *string `json:"location"`
 	Birthday          *string `json:"birthday"`
 	Lang              *string `json:"lang"`
+	FollowedMessage   *string `json:"followedMessage"`
+	PublicReactions   *bool   `json:"publicReactions"`
 	IsLocked          *bool   `json:"isLocked"`
 	IsBot             *bool   `json:"isBot"`
 	IsCat             *bool   `json:"isCat"`
@@ -458,7 +517,7 @@ func (h *Handler) Update(c echo.Context) error {
 
 	var req UpdateRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	in := user.UpdateInput{
@@ -478,7 +537,7 @@ func (h *Handler) Update(c echo.Context) error {
 		// クリアリクエストは検査対象外 (ユーザー体験上必要)。
 		if h.metaRepo != nil && *req.Name != "" {
 			if m, err := h.metaRepo.Fetch(); err == nil && containsProhibitedWord(*req.Name, m.ProhibitedWordsForNameOfUser) {
-				return c.JSON(http.StatusBadRequest, errEnvelope("Your new name contains prohibited words.", "NAME_CONTAINS_PROHIBITED_WORDS", "0b3f9f6a-2e7d-4c2c-9d7a-8c6f9b2e1a44"))
+				return c.JSON(http.StatusBadRequest, apierr.Error("NAME_CONTAINS_PROHIBITED_WORDS", "Your new name contains prohibited words.", "0b3f9f6a-2e7d-4c2c-9d7a-8c6f9b2e1a44"))
 			}
 		}
 		in.Name = &req.Name
@@ -495,6 +554,12 @@ func (h *Handler) Update(c echo.Context) error {
 	if req.Lang != nil {
 		in.Lang = &req.Lang
 	}
+	if req.FollowedMessage != nil {
+		in.FollowedMessage = &req.FollowedMessage
+	}
+	if req.PublicReactions != nil {
+		in.PublicReactions = req.PublicReactions
+	}
 	if len(req.Room) > 0 {
 		// json.RawMessage は親の Unmarshal が構文チェック済みの
 		// バイト列を格納する。改変されないよう独自のスライスにコピーする。
@@ -505,9 +570,9 @@ func (h *Handler) Update(c echo.Context) error {
 	bundle, err := h.userService.UpdateProfile(me.ID, in)
 	if err != nil {
 		if errors.Is(err, user.ErrUserNotFound) {
-			return c.JSON(http.StatusNotFound, errEnvelope("No such user.", "NO_SUCH_USER", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
@@ -524,19 +589,19 @@ func (h *Handler) Pin(c echo.Context) error {
 
 	var req PinRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.userService.PinNote(me.ID, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, user.ErrNoteNotFound):
-			return c.JSON(http.StatusNotFound, errEnvelope("No such note.", "NO_SUCH_NOTE", "56734f8b-3928-431e-bf80-6ff87df40cb3"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 		case errors.Is(err, user.ErrAlreadyPinned):
-			return c.JSON(http.StatusBadRequest, errEnvelope("That note has already been pinned.", "ALREADY_PINNED", "8b18c2b7-68fe-4edb-9892-c0cbaeb6c913"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_PINNED", "That note has already been pinned.", "8b18c2b7-68fe-4edb-9892-c0cbaeb6c913"))
 		case errors.Is(err, user.ErrPinLimitExceeded):
-			return c.JSON(http.StatusBadRequest, errEnvelope("You can not pin notes any more.", "PIN_LIMIT_EXCEEDED", "72dab508-c64d-498f-8740-a8eec1ba385a"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("PIN_LIMIT_EXCEEDED", "You can not pin notes any more.", "72dab508-c64d-498f-8740-a8eec1ba385a"))
 		default:
-			return internalError(c)
+			return apierr.JSONInternalError(c)
 		}
 	}
 
@@ -549,43 +614,15 @@ func (h *Handler) Unpin(c echo.Context) error {
 
 	var req PinRequest
 	if err := c.Bind(&req); err != nil || req.NoteID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 
 	if err := h.userService.UnpinNote(me.ID, req.NoteID); err != nil {
 		if errors.Is(err, user.ErrPinNotFound) {
-			return c.JSON(http.StatusNotFound, errEnvelope("No such note.", "NO_SUCH_NOTE", "454170ce-44d9-4d2a-94fc-e6854ec2f7d1"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
 		}
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return h.Me(c)
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, errEnvelope("Invalid param.", "INVALID_PARAM", "3d81ceae-475f-4600-b2a8-2bc116157532"))
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, errEnvelope("Internal error.", "INTERNAL_ERROR", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
-}
-
-func errEnvelope(message, code, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"code":    code,
-			"id":      id,
-		},
-	}
-}
-
-func apiError(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"code":    code,
-			"id":      id,
-		},
-	}
 }

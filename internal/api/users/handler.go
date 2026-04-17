@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -22,20 +23,38 @@ type ChartHook interface {
 
 // Handler handles user-related API endpoints.
 type Handler struct {
-	userService       *user.Service
-	followingService  *corefollowing.Service
-	noteRepo          repository.NoteRepository
-	idGen             id.Generator
-	chartHook         ChartHook
-	abuseRepo         repository.AbuseReportRepository
-	followingRepo     repository.FollowingRepository
-	memoRepo          repository.UserMemoRepository
-	blockingRepo      repository.BlockingRepository
-	mutingRepo        repository.MutingRepository
-	renoteMutingRepo  repository.RenoteMutingRepository
-	followRequestRepo repository.FollowRequestRepository
-	instanceRepo      repository.InstanceRepository
+	userService          *user.Service
+	followingService     *corefollowing.Service
+	noteRepo             repository.NoteRepository
+	idGen                id.Generator
+	chartHook            ChartHook
+	abuseRepo            repository.AbuseReportRepository
+	followingRepo        repository.FollowingRepository
+	memoRepo             repository.UserMemoRepository
+	blockingRepo         repository.BlockingRepository
+	mutingRepo           repository.MutingRepository
+	renoteMutingRepo     repository.RenoteMutingRepository
+	followRequestRepo    repository.FollowRequestRepository
+	instanceRepo         repository.InstanceRepository
+	userListFavoriteRepo UserListFavoriteRepository
+	userListRepo         repository.UserListRepository
+	clipRepo             repository.ClipRepository
+	flashRepo            repository.FlashRepository
+	galleryRepo          repository.GalleryRepository
+	pageRepo             repository.PageRepository
 }
+
+// SetClipRepo attaches a ClipRepository for users/clips.
+func (h *Handler) SetClipRepo(r repository.ClipRepository) { h.clipRepo = r }
+
+// SetFlashRepo attaches a FlashRepository for users/flashs.
+func (h *Handler) SetFlashRepo(r repository.FlashRepository) { h.flashRepo = r }
+
+// SetGalleryRepo attaches a GalleryRepository for users/gallery/posts.
+func (h *Handler) SetGalleryRepo(r repository.GalleryRepository) { h.galleryRepo = r }
+
+// SetPageRepo attaches a PageRepository for users/pages.
+func (h *Handler) SetPageRepo(r repository.PageRepository) { h.pageRepo = r }
 
 // SetMemoRepo attaches a UserMemoRepository for users/update-memo.
 func (h *Handler) SetMemoRepo(r repository.UserMemoRepository) {
@@ -96,16 +115,34 @@ func (h *Handler) SetChartHook(c ChartHook) {
 
 // ShowRequest is the request body for users/show.
 type ShowRequest struct {
-	UserID   *string `json:"userId"`
-	Username *string `json:"username"`
-	Host     *string `json:"host"`
+	UserID   *string  `json:"userId"`
+	UserIDs  []string `json:"userIds"`
+	Username *string  `json:"username"`
+	Host     *string  `json:"host"`
 }
 
 // Show handles POST /api/users/show.
+// TS互換: userIds (配列) が渡された場合は UserLite の配列を返す。
+// userId / username が渡された場合は単体 UserDetailed を返す。
 func (h *Handler) Show(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
+	}
+
+	// userIds が指定されている場合はバルクモード (UsersBulkと同等)。
+	// JSON "userIds":[] は空スライス (len==0) として届く。nil はフィールド未指定。
+	if req.UserIDs != nil {
+		if len(req.UserIDs) > 100 {
+			req.UserIDs = req.UserIDs[:100]
+		}
+		out := make([]entity.UserLite, 0, len(req.UserIDs))
+		for _, uid := range req.UserIDs {
+			if bundle, err := h.userService.ShowByID(uid); err == nil {
+				out = append(out, entity.PackUserLite(bundle.User))
+			}
+		}
+		return c.JSON(http.StatusOK, out)
 	}
 
 	if req.UserID == nil && req.Username == nil {
@@ -129,8 +166,7 @@ func (h *Handler) Show(c echo.Context) error {
 	}
 
 	if err != nil {
-		// Service.ShowByID/ShowByUsernameはErrUserNotFoundのみ返す
-		return noSuchUser(c)
+		return apierr.JSONNoSuchUser(c)
 	}
 
 	// チャート集計はベストエフォート。匿名訪問者は visitor key として
@@ -217,7 +253,7 @@ type SearchRequest struct {
 func (h *Handler) Search(c echo.Context) error {
 	var req SearchRequest
 	if err := c.Bind(&req); err != nil {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -225,7 +261,7 @@ func (h *Handler) Search(c echo.Context) error {
 
 	users, err := h.userService.Search(req.Query, req.Limit, req.Offset)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	out := make([]entity.UserDetailed, 0, len(users))
@@ -248,7 +284,7 @@ type NotesRequest struct {
 func (h *Handler) Notes(c echo.Context) error {
 	var req NotesRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -258,12 +294,12 @@ func (h *Handler) Notes(c echo.Context) error {
 	}
 
 	if _, err := h.userService.ShowByID(req.UserID); err != nil {
-		return noSuchUser(c)
+		return apierr.JSONNoSuchUser(c)
 	}
 
 	notes, err := h.noteRepo.ListByUserID(req.UserID, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	out := make([]entity.NoteEntity, 0, len(notes))
@@ -295,7 +331,7 @@ func (h *Handler) Following(c echo.Context) error {
 func (h *Handler) listRelations(c echo.Context, followers bool) error {
 	var req FollowersRequest
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return invalidParam(c)
+		return apierr.JSONInvalidParam(c)
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -305,7 +341,7 @@ func (h *Handler) listRelations(c echo.Context, followers bool) error {
 	}
 
 	if _, err := h.userService.ShowByID(req.UserID); err != nil {
-		return noSuchUser(c)
+		return apierr.JSONNoSuchUser(c)
 	}
 
 	var (
@@ -318,7 +354,7 @@ func (h *Handler) listRelations(c echo.Context, followers bool) error {
 		rows, err = h.collectFollowing(req)
 	}
 	if err != nil {
-		return internalError(c)
+		return apierr.JSONInternalError(c)
 	}
 
 	return c.JSON(http.StatusOK, rows)
@@ -378,34 +414,4 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		out = append(out, item)
 	}
 	return out, nil
-}
-
-func internalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, map[string]any{
-		"error": map[string]any{
-			"message": "Internal error.",
-			"code":    "INTERNAL_ERROR",
-			"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-		},
-	})
-}
-
-func invalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid param.",
-			"code":    "INVALID_PARAM",
-			"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-		},
-	})
-}
-
-func noSuchUser(c echo.Context) error {
-	return c.JSON(http.StatusNotFound, map[string]any{
-		"error": map[string]any{
-			"message": "No such user.",
-			"code":    "NO_SUCH_USER",
-			"id":      "4362f8dc-731f-4ad8-a694-be5a88922a24",
-		},
-	})
 }
