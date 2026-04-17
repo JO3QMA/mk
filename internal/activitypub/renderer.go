@@ -227,6 +227,9 @@ func (r *Renderer) RenderPerson(u *model.User, profile *model.UserProfile, publi
 	if u.Featured != nil && *u.Featured != "" {
 		p.Featured = *u.Featured
 	}
+	p.MisskeyRequireSigninToViewContents = u.RequireSigninToViewContents
+	p.MisskeyMakeNotesFollowersOnlyBefore = u.MakeNotesFollowersOnlyBefore
+	p.MisskeyMakeNotesHiddenBefore = u.MakeNotesHiddenBefore
 
 	// profile から追加フィールドを埋める
 	if profile != nil {
