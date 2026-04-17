@@ -123,8 +123,9 @@ func (s *QueryService) Conversation(viewer *model.User, noteID string, limit int
 
 // State returns the note's user-specific state flags.
 // 匿名閲覧者 (viewer==nil) はすべて false。
-// isWatching は note 通知購読テーブル (note_watching) を別 issue で扱うため、
-// ここでは常に false を返す。
+//
+// upstream Misskey の notes/state は isFavorited / isMutedThread のみを返す
+// (isWatching は廃止) ため、こちらも同じ shape に揃える。
 func (s *QueryService) State(viewer *model.User, noteID string) (*NoteState, error) {
 	note, err := s.Show(viewer, noteID)
 	if err != nil {
@@ -157,7 +158,6 @@ func (s *QueryService) State(viewer *model.User, noteID string) (*NoteState, err
 type NoteState struct {
 	IsFavorited   bool `json:"isFavorited"`
 	IsMutedThread bool `json:"isMutedThread"`
-	IsWatching    bool `json:"isWatching"`
 }
 
 // filterVisible drops notes the viewer cannot see.
