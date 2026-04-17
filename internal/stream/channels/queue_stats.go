@@ -29,6 +29,9 @@ func (c *QueueStatsChannel) OnRedisEvent(payload []byte) {
 
 func (c *QueueStatsChannel) OnClientMessage(string, json.RawMessage) {}
 
+// ShouldShare implements stream.ShareableChannel.
+func (c *QueueStatsChannel) ShouldShare() bool { return true }
+
 func (c *QueueStatsChannel) Dispose() {
 	if c.connected {
 		c.ctx.Unsubscribe("queueStats")

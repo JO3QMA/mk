@@ -44,6 +44,9 @@ func (c *AntennaChannel) OnRedisEvent(payload []byte) {
 
 func (c *AntennaChannel) OnClientMessage(string, json.RawMessage) {}
 
+// RequiredPermission implements stream.PermittedChannel.
+func (c *AntennaChannel) RequiredPermission() string { return "read:account" }
+
 func (c *AntennaChannel) Dispose() {
 	if c.topic != "" {
 		c.ctx.Unsubscribe(c.topic)

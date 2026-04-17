@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	cryptorand "crypto/rand"
 	"io"
 	"net/http"
@@ -1175,6 +1176,8 @@ func (s *Server) setupRoutes() {
 
 	// 3. Connection manager + 各 publisher の生成
 	streamManager := stream.NewManager(streamRegistry, streamBus)
+	// readNotificationメッセージをnotificationServiceに橋渡しする
+	streamManager.SetNotificationReader(&notifReaderAdapter{svc: notificationService})
 	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)
@@ -1906,4 +1909,14 @@ func (s *gormTicketStore) MarkUsed(ticketID, userID string) error {
 		"usedById": userID,
 		"usedAt":   now,
 	}).Error
+}
+
+// notifReaderAdapter bridges stream.NotificationReader to
+// core/notification.Service.MarkAllAsRead.
+type notifReaderAdapter struct {
+	svc *corenotification.Service
+}
+
+func (a *notifReaderAdapter) ReadAll(userID string) error {
+	return a.svc.MarkAllAsRead(context.Background(), userID)
 }

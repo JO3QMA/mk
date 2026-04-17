@@ -108,6 +108,9 @@ func (c *HomeTimelineChannel) OnRedisEvent(payload []byte) {
 
 func (c *HomeTimelineChannel) OnClientMessage(string, json.RawMessage) {}
 
+// RequiredPermission implements stream.PermittedChannel.
+func (c *HomeTimelineChannel) RequiredPermission() string { return "read:account" }
+
 func (c *HomeTimelineChannel) Dispose() {
 	if c.topic != "" {
 		c.ctx.Unsubscribe(c.topic)
@@ -146,6 +149,9 @@ func (c *HybridTimelineChannel) OnRedisEvent(payload []byte) {
 }
 
 func (c *HybridTimelineChannel) OnClientMessage(string, json.RawMessage) {}
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *HybridTimelineChannel) RequiredPermission() string { return "read:account" }
 
 func (c *HybridTimelineChannel) Dispose() {
 	c.ctx.Unsubscribe("localTimeline")
