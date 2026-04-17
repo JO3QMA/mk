@@ -23,7 +23,7 @@ Docker環境ではコンテナ内の`.config/docker.yml`がデフォルトで読
 | `id` | string | `"aidx"` | IDジェネレータ (`aidx`, `aid`, `meid`, `ulid`, `objectid`) |
 | `setupPassword` | string | - | 初期セットアップ時のパスワード |
 | `disableHsts` | bool | `false` | HSTSヘッダーを無効化 |
-| `enableIpRateLimit` | bool | `false` | IPベースのレート制限を有効化 |
+| `enableIpRateLimit` | bool | `true` | IPベースのレート制限を有効化 |
 | `pidFile` | string | - | PIDファイルパス |
 | `testMode` | bool | `false` | テスト用エンドポイント(/api/reset-db)を有効化。**本番で絶対に使わない** |
 
