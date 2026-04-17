@@ -32,7 +32,15 @@ func (h *Handler) SetAdRepo(r repository.AdRepository) {
 
 // Meta returns server metadata.
 // POST /api/meta
+// Meta handles POST /api/meta.
+// TS互換: detail (boolean, default true)。falseの場合は簡易レスポンスを返す。
 func (h *Handler) Meta(c echo.Context) error {
+	var params struct {
+		Detail *bool `json:"detail"`
+	}
+	_ = c.Bind(&params)
+	detail := params.Detail == nil || *params.Detail
+
 	m, err := h.metaRepo.Fetch()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{
@@ -125,6 +133,29 @@ func (h *Handler) Meta(c echo.Context) error {
 			"serviceWorker":          m.EnableServiceWorker,
 			"miauth":                 true,
 		},
+	}
+
+	// detail=false: TS MetaLite互換。管理者/内部向けフィールド (features, policies,
+	// clientOptions, proxyAccountName, sentryForFrontend, noteSearchableScope,
+	// providesTarball, singleUserMode) を省く。登録/captcha/ads等は含める。
+	if !detail {
+		omit := map[string]struct{}{
+			"features":            {},
+			"policies":            {},
+			"clientOptions":       {},
+			"proxyAccountName":    {},
+			"sentryForFrontend":   {},
+			"noteSearchableScope": {},
+			"providesTarball":     {},
+			"singleUserMode":      {},
+		}
+		lite := make(map[string]any, len(resp))
+		for k, v := range resp {
+			if _, skip := omit[k]; !skip {
+				lite[k] = v
+			}
+		}
+		return c.JSON(http.StatusOK, lite)
 	}
 
 	return c.JSON(http.StatusOK, resp)
