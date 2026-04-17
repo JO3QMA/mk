@@ -441,6 +441,32 @@ func (h *Handler) Conversation(c echo.Context) error {
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
 
+// BulkShow handles POST /api/notes — bulk note lookup by noteIds.
+// visibility チェックを通して非公開ノートの漏洩を防ぐ。
+func (h *Handler) BulkShow(c echo.Context) error {
+	var req struct {
+		NoteIDs []string `json:"noteIds"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return apierr.JSONInvalidParam(c)
+	}
+	if len(req.NoteIDs) == 0 {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	if len(req.NoteIDs) > 100 {
+		req.NoteIDs = req.NoteIDs[:100]
+	}
+	notes, err := h.noteRepo.FindManyByIDsWithUser(req.NoteIDs)
+	if err != nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	viewer := middleware.GetUser(c)
+	if h.queryService != nil {
+		notes = h.queryService.FilterVisible(viewer, notes)
+	}
+	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+}
+
 // packMany serializes a list of notes into NoteEntity objects.
 // driveFileRepoが設定されている場合、ファイル情報を解決してFilesに含める。
 // viewerがnon-nilの場合、myReactionなどのviewer依存フィールドも解決する。

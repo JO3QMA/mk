@@ -651,3 +651,44 @@ func TestExtractMentions(t *testing.T) {
 		})
 	}
 }
+
+func TestBulkShow_Success(t *testing.T) {
+	h, noteRepo := newTestHandler(t)
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1", Visibility: "public", User: &model.User{ID: "u1"}}
+	noteRepo.Notes["n2"] = &model.Note{ID: "n2", UserID: "u1", Visibility: "public", User: &model.User{ID: "u1"}}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes", strings.NewReader(`{"noteIds":["n1","n2","ghost"]}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.BulkShow(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 2)
+}
+
+func TestBulkShow_Empty(t *testing.T) {
+	h, _ := newTestHandler(t)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes", strings.NewReader(`{"noteIds":[]}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.BulkShow(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
+}
+
+func TestBulkShow_NoBody(t *testing.T) {
+	h, _ := newTestHandler(t)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes", strings.NewReader(`{}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.BulkShow(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
+}

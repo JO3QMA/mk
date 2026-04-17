@@ -4391,3 +4391,8 @@ func (m *MockRegistrationTicketRepository) List(filter string, limit, offset int
 	}
 	return rows[offset:end], nil
 }
+
+func (m *MockRegistrationTicketRepository) Delete(id string) error {
+	delete(m.Tickets, id)
+	return nil
+}
