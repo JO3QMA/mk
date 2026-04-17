@@ -270,7 +270,7 @@ func TestRevokeToken_ByTokenHash(t *testing.T) {
 	h, _ := newExtraHandler(t)
 	repo := testutil.NewMockAccessTokenRepository()
 	// SHA-256("mytoken") をハッシュとして登録 (map key = hash)
-	hash := "3b0f1e82c6ef52a2a0f28e0a7b37bd45b76cbb69a8caac4dddbe10bd2e4e16e6"
+	hash := "1a17ea3569204d6c4114794ca73fa257457fc0612928c7bf024801659b77dba8"
 	repo.Tokens[hash] = &model.AccessToken{ID: "at1", Hash: hash, UserID: stubUser.ID}
 	h.SetAccessTokenRepo(repo)
 	// 生tokenで失効できる
