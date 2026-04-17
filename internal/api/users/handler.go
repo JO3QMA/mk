@@ -130,8 +130,9 @@ func (h *Handler) Show(c echo.Context) error {
 		return apierr.JSONInvalidParam(c)
 	}
 
-	// userIds が指定されている場合はバルクモード (UsersBulkと同等)
-	if len(req.UserIDs) > 0 {
+	// userIds が指定されている場合はバルクモード (UsersBulkと同等)。
+	// JSON "userIds":[] は空スライス (len==0) として届く。nil はフィールド未指定。
+	if req.UserIDs != nil {
 		if len(req.UserIDs) > 100 {
 			req.UserIDs = req.UserIDs[:100]
 		}

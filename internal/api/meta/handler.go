@@ -135,8 +135,9 @@ func (h *Handler) Meta(c echo.Context) error {
 		},
 	}
 
-	// detail=false: TS MetaLite互換。features / policies / clientOptions /
-	// proxyAccountName / sentryForFrontend のみ省く。登録/captcha/ads等は含める。
+	// detail=false: TS MetaLite互換。管理者/内部向けフィールド (features, policies,
+	// clientOptions, proxyAccountName, sentryForFrontend, noteSearchableScope,
+	// providesTarball, singleUserMode) を省く。登録/captcha/ads等は含める。
 	if !detail {
 		omit := map[string]struct{}{
 			"features":            {},
