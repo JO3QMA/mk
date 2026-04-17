@@ -66,8 +66,8 @@ type ChatRoomInvitation struct {
 func (ChatRoomInvitation) TableName() string { return "chat_room_invitation" }
 
 // ChatApproval represents the `chat_approval` table.
-// 1対1チャットの個別許可を管理する。User.ChatScope による全体設定を
-// オーバーライドして特定の相手からの DM を許可する。
+// 1対1チャットの個別許可を管理する。User.ChatScopeによる全体設定を
+// オーバーライドして特定の相手からのDMを許可する。
 type ChatApproval struct {
 	ID      string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
 	UserID  string `gorm:"column:userId;type:varchar(32);not null" json:"userId"`

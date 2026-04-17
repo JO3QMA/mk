@@ -249,7 +249,7 @@ func (r *chatRepository) UpdateDeliveryStatus(messageID string, delivering, fail
 }
 
 // ListHistory returns the most recent message per conversation (1-on-1 or
-// room) involving userID. DISTINCT ON で会話ごとの最新 1 件を抽出する。
+// room) involving userID. DISTINCT ONで会話ごとの最新1件を抽出する。
 func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMessage, error) {
 	if limit <= 0 {
 		limit = 10
@@ -257,8 +257,9 @@ func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMes
 	if limit > 100 {
 		limit = 100
 	}
-	// 1対1 (toUserId / fromUserId) とルーム (toRoomId 経由の membership) を UNION
-	// し、会話 key ごとの最新メッセージを取る。
+	// 1対1 (toUserId/fromUserId) とルーム (toRoomId経由のmembership) をUNION
+	// し、会話keyごとの最新メッセージを取る。
+	// GORMの.Limit()は.Raw()の後では無視されるため、SQL内にLIMITを埋め込む。
 	var msgs []*model.ChatMessage
 	err := r.db.Raw(`
 		SELECT DISTINCT ON (conversation_key) *
@@ -273,7 +274,8 @@ func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMes
 			WHERE cm."toRoomId" IS NOT NULL
 		) sub
 		ORDER BY conversation_key, id DESC
-	`, userID, userID, userID).Limit(limit).Find(&msgs).Error
+		LIMIT ?
+	`, userID, userID, userID, limit).Find(&msgs).Error
 	if err != nil {
 		return nil, err
 	}
