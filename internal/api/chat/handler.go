@@ -736,6 +736,10 @@ func (h *Handler) RoomsJoin(c echo.Context) error {
 	if _, err := h.repo.FindRoomByID(req.RoomID); err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "b3926861-29ef-4df6-98b5-a7c640ad2b5a"))
 	}
+	// UNIQUE制約違反を避けるため既存メンバーは冪等に204を返す
+	if _, err := h.repo.FindMembership(user.ID, req.RoomID); err == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
 	mem := &model.ChatRoomMembership{
 		ID: h.idGen.Generate(time.Now()), UserID: user.ID, RoomID: req.RoomID,
 	}
