@@ -95,9 +95,10 @@ func (r *chatFakeRepo) UpdateDeliveryStatus(_ string, _, _ bool) error { return 
 func (r *chatFakeRepo) ListHistory(_ string, _ int) ([]*model.ChatMessage, error) {
 	return nil, nil
 }
-func (r *chatFakeRepo) MarkAllRead(_ string) error       { return nil }
-func (r *chatFakeRepo) AddReaction(_, _ string) error    { return nil }
-func (r *chatFakeRepo) RemoveReaction(_, _ string) error { return nil }
+func (r *chatFakeRepo) MarkAllRead(_ string) error                         { return nil }
+func (r *chatFakeRepo) AddReaction(_, _ string) error                      { return nil }
+func (r *chatFakeRepo) RemoveReaction(_, _ string) error                   { return nil }
+func (r *chatFakeRepo) UpdateInvitation(_ *model.ChatRoomInvitation) error { return nil }
 
 // --- test helpers ---
 

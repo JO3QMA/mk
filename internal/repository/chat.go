@@ -35,6 +35,7 @@ type ChatRepository interface {
 	CreateInvitation(inv *model.ChatRoomInvitation) error
 	DeleteInvitation(id string) error
 	FindInvitation(userID, roomID string) (*model.ChatRoomInvitation, error)
+	UpdateInvitation(inv *model.ChatRoomInvitation) error
 
 	// Unread count
 	CountUnread(userID string) (int64, error)
@@ -201,6 +202,10 @@ func (r *chatRepository) CreateInvitation(inv *model.ChatRoomInvitation) error {
 
 func (r *chatRepository) DeleteInvitation(id string) error {
 	return r.db.Where(`"id" = ?`, id).Delete(&model.ChatRoomInvitation{}).Error
+}
+
+func (r *chatRepository) UpdateInvitation(inv *model.ChatRoomInvitation) error {
+	return r.db.Save(inv).Error
 }
 
 func (r *chatRepository) FindInvitation(userID, roomID string) (*model.ChatRoomInvitation, error) {
