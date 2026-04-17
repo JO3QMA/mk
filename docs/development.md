@@ -77,7 +77,7 @@ make dev
 
 ### テスト関連
 
-| ターゲット | ���容 |
+| ターゲット | 内容 |
 |---|---|
 | `make e2e-frontend-build` | Misskeyフロントエンドビルド (Docker内、3-10分) |
 | `make e2e-run` | Cypress E2Eテスト実行 |
