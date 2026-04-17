@@ -26,6 +26,11 @@ type ChatMessage struct {
 	Reads      pq.StringArray `gorm:"column:reads;type:varchar(32)[];default:'{}'" json:"reads"`
 	FileID     *string        `gorm:"column:fileId;type:varchar(32)" json:"fileId"`
 	Reactions  pq.StringArray `gorm:"column:reactions;type:varchar(1024)[];default:'{}'" json:"reactions"`
+	// CherryPick連合用カラム: リモートインスタンスへのDM配送状態を管理する。
+	// ローカル同士のメッセージでは使用されない (デフォルト値のまま)。
+	Emojis          pq.StringArray `gorm:"column:emojis;type:varchar(128)[];default:'{}'" json:"emojis"`
+	IsDelivering    bool           `gorm:"column:isDelivering;default:false" json:"isDelivering"`
+	IsDeliverFailed bool           `gorm:"column:isDeliverFailed;default:false" json:"isDeliverFailed"`
 
 	FromUser *User     `gorm:"foreignKey:FromUserID" json:"fromUser,omitempty"`
 	ToUser   *User     `gorm:"foreignKey:ToUserID" json:"toUser,omitempty"`
@@ -59,3 +64,29 @@ type ChatRoomInvitation struct {
 }
 
 func (ChatRoomInvitation) TableName() string { return "chat_room_invitation" }
+
+// ChatApproval represents the `chat_approval` table.
+// 1対1チャットの個別許可を管理する。User.ChatScope による全体設定を
+// オーバーライドして特定の相手からの DM を許可する。
+type ChatApproval struct {
+	ID      string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	UserID  string `gorm:"column:userId;type:varchar(32);not null" json:"userId"`
+	OtherID string `gorm:"column:otherId;type:varchar(32);not null" json:"otherId"`
+
+	User  *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Other *User `gorm:"foreignKey:OtherID" json:"other,omitempty"`
+}
+
+func (ChatApproval) TableName() string { return "chat_approval" }
+
+// UserPending represents the `user_pending` table.
+// 招待制登録でメール確認待ちのユーザーを保持する。
+type UserPending struct {
+	ID       string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	Code     string `gorm:"column:code;type:varchar(128);not null;uniqueIndex" json:"code"`
+	Username string `gorm:"column:username;type:varchar(128);not null" json:"username"`
+	Email    string `gorm:"column:email;type:varchar(128);not null" json:"email"`
+	Password string `gorm:"column:password;type:varchar(128);not null" json:"-"`
+}
+
+func (UserPending) TableName() string { return "user_pending" }

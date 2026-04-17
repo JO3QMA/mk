@@ -85,6 +85,19 @@ func (r *chatFakeRepo) FindInvitation(_, _ string) (*model.ChatRoomInvitation, e
 }
 func (r *chatFakeRepo) CountUnread(_ string) (int64, error) { return 0, nil }
 func (r *chatFakeRepo) MarkRead(_, _ string) error          { return nil }
+func (r *chatFakeRepo) ListInvitationsByUser(_ string, _ bool) ([]*model.ChatRoomInvitation, error) {
+	return nil, nil
+}
+func (r *chatFakeRepo) ListInvitationsByRoom(_ string) ([]*model.ChatRoomInvitation, error) {
+	return nil, nil
+}
+func (r *chatFakeRepo) UpdateDeliveryStatus(_ string, _, _ bool) error { return nil }
+func (r *chatFakeRepo) ListHistory(_ string, _ int) ([]*model.ChatMessage, error) {
+	return nil, nil
+}
+func (r *chatFakeRepo) MarkAllRead(_ string) error       { return nil }
+func (r *chatFakeRepo) AddReaction(_, _ string) error    { return nil }
+func (r *chatFakeRepo) RemoveReaction(_, _ string) error { return nil }
 
 // --- test helpers ---
 

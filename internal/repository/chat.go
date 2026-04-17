@@ -41,6 +41,23 @@ type ChatRepository interface {
 
 	// Mark read
 	MarkRead(userID, messageID string) error
+
+	// Invitation listing
+	ListInvitationsByUser(userID string, ignored bool) ([]*model.ChatRoomInvitation, error)
+	ListInvitationsByRoom(roomID string) ([]*model.ChatRoomInvitation, error)
+
+	// Delivery status (CherryPick連合用)
+	UpdateDeliveryStatus(messageID string, delivering, failed bool) error
+
+	// History: 1対1とルームの最新メッセージ混合取得
+	ListHistory(userID string, limit int) ([]*model.ChatMessage, error)
+
+	// Mark all as read
+	MarkAllRead(userID string) error
+
+	// Reactions
+	AddReaction(messageID, reaction string) error
+	RemoveReaction(messageID, reaction string) error
 }
 
 type chatRepository struct {
@@ -206,4 +223,74 @@ func (r *chatRepository) CountUnread(userID string) (int64, error) {
 func (r *chatRepository) MarkRead(userID, messageID string) error {
 	return r.db.Exec(`UPDATE "chat_message" SET "reads" = array_append("reads", ?) WHERE "id" = ? AND NOT ("reads" @> ARRAY[?]::varchar[])`,
 		userID, messageID, userID).Error
+}
+
+func (r *chatRepository) ListInvitationsByUser(userID string, ignored bool) ([]*model.ChatRoomInvitation, error) {
+	var rows []*model.ChatRoomInvitation
+	if err := r.db.Preload("Room").Where(`"userId" = ? AND "ignored" = ?`, userID, ignored).
+		Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *chatRepository) ListInvitationsByRoom(roomID string) ([]*model.ChatRoomInvitation, error) {
+	var rows []*model.ChatRoomInvitation
+	if err := r.db.Preload("User").Where(`"roomId" = ?`, roomID).
+		Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *chatRepository) UpdateDeliveryStatus(messageID string, delivering, failed bool) error {
+	return r.db.Model(&model.ChatMessage{}).Where("id = ?", messageID).
+		Updates(map[string]any{"isDelivering": delivering, "isDeliverFailed": failed}).Error
+}
+
+// ListHistory returns the most recent message per conversation (1-on-1 or
+// room) involving userID. DISTINCT ON で会話ごとの最新 1 件を抽出する。
+func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMessage, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	// 1対1 (toUserId / fromUserId) とルーム (toRoomId 経由の membership) を UNION
+	// し、会話 key ごとの最新メッセージを取る。
+	var msgs []*model.ChatMessage
+	err := r.db.Raw(`
+		SELECT DISTINCT ON (conversation_key) *
+		FROM (
+			SELECT *, LEAST("fromUserId","toUserId") || '-' || GREATEST("fromUserId","toUserId") AS conversation_key
+			FROM "chat_message"
+			WHERE ("fromUserId" = ? OR "toUserId" = ?) AND "toRoomId" IS NULL
+			UNION ALL
+			SELECT cm.*, 'room:' || cm."toRoomId" AS conversation_key
+			FROM "chat_message" cm
+			JOIN "chat_room_membership" m ON m."roomId" = cm."toRoomId" AND m."userId" = ?
+			WHERE cm."toRoomId" IS NOT NULL
+		) sub
+		ORDER BY conversation_key, id DESC
+	`, userID, userID, userID).Limit(limit).Find(&msgs).Error
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
+}
+
+func (r *chatRepository) MarkAllRead(userID string) error {
+	return r.db.Exec(`UPDATE "chat_message" SET "reads" = array_append("reads", ?) WHERE "toUserId" = ? AND NOT ("reads" @> ARRAY[?]::varchar[])`,
+		userID, userID, userID).Error
+}
+
+func (r *chatRepository) AddReaction(messageID, reaction string) error {
+	return r.db.Exec(`UPDATE "chat_message" SET "reactions" = array_append("reactions", ?) WHERE "id" = ?`,
+		reaction, messageID).Error
+}
+
+func (r *chatRepository) RemoveReaction(messageID, reaction string) error {
+	return r.db.Exec(`UPDATE "chat_message" SET "reactions" = array_remove("reactions", ?) WHERE "id" = ?`,
+		reaction, messageID).Error
 }

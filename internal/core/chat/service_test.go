@@ -134,6 +134,19 @@ func (r *fakeChatRepo) MarkRead(userID, messageID string) error {
 	}
 	return nil
 }
+func (r *fakeChatRepo) ListInvitationsByUser(_ string, _ bool) ([]*model.ChatRoomInvitation, error) {
+	return nil, nil
+}
+func (r *fakeChatRepo) ListInvitationsByRoom(_ string) ([]*model.ChatRoomInvitation, error) {
+	return nil, nil
+}
+func (r *fakeChatRepo) UpdateDeliveryStatus(_ string, _, _ bool) error { return nil }
+func (r *fakeChatRepo) ListHistory(_ string, _ int) ([]*model.ChatMessage, error) {
+	return nil, nil
+}
+func (r *fakeChatRepo) MarkAllRead(_ string) error       { return nil }
+func (r *fakeChatRepo) AddReaction(_, _ string) error    { return nil }
+func (r *fakeChatRepo) RemoveReaction(_, _ string) error { return nil }
 
 // --- capture publisher ---
 
