@@ -258,12 +258,11 @@ func TestChatRepository_ListHistory(t *testing.T) {
 	defer cleanupUser(t, other1.ID)
 	defer cleanupUser(t, other2.ID)
 
+	// ownerはmembershipレコードなしでも暗黙メンバーとして扱われることを検証する
+	// (明示的なCreateMembershipを入れない)。
 	room := &model.ChatRoom{ID: "cr_h1", Name: "HistRoom", OwnerID: me.ID}
 	require.NoError(t, repo.CreateRoom(room))
 	defer testDB.Exec(`DELETE FROM "chat_room" WHERE id = ?`, room.ID)
-	mem := &model.ChatRoomMembership{ID: "mem_h1", UserID: me.ID, RoomID: room.ID}
-	require.NoError(t, repo.CreateMembership(mem))
-	defer testDB.Exec(`DELETE FROM "chat_room_membership" WHERE id = ?`, mem.ID)
 
 	text := "msg"
 	// DM: me -> other1 (2件、最新はcm_h2)

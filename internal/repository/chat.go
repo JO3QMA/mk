@@ -267,6 +267,8 @@ func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMes
 	// Raw SQLではPreloadが使えないため、2段階で取得する:
 	// 1) Raw SQLで対象メッセージIDを取得
 	// 2) 通常のGORMクエリでPreload("FromUser")付きで再取得
+	// ルーム所有者はmembershipレコードなしでも暗黙メンバーとして扱う
+	// (IsRoomMemberと同じセマンティクス)。EXISTS句でmembership OR owner を判定。
 	var ids []string
 	err := r.db.Raw(`
 		SELECT id FROM (
@@ -278,14 +280,17 @@ func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMes
 				UNION ALL
 				SELECT cm.*, 'room:' || cm."toRoomId" AS conversation_key
 				FROM "chat_message" cm
-				JOIN "chat_room_membership" m ON m."roomId" = cm."toRoomId" AND m."userId" = ?
 				WHERE cm."toRoomId" IS NOT NULL
+				AND (
+					EXISTS (SELECT 1 FROM "chat_room_membership" m WHERE m."roomId" = cm."toRoomId" AND m."userId" = ?)
+					OR EXISTS (SELECT 1 FROM "chat_room" cr WHERE cr."id" = cm."toRoomId" AND cr."ownerId" = ?)
+				)
 			) sub
 			ORDER BY conversation_key, id DESC
 		) conversations
 		ORDER BY id DESC
 		LIMIT ?
-	`, userID, userID, userID, limit).Pluck("id", &ids).Error
+	`, userID, userID, userID, userID, limit).Pluck("id", &ids).Error
 	if err != nil {
 		return nil, err
 	}

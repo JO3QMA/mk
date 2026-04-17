@@ -17,15 +17,15 @@ func (ChatRoom) TableName() string { return "chat_room" }
 
 // ChatMessage represents the `chat_message` table.
 type ChatMessage struct {
-	ID         string         `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
-	FromUserID string         `gorm:"column:fromUserId;type:varchar(32);not null" json:"fromUserId"`
-	ToUserID   *string        `gorm:"column:toUserId;type:varchar(32)" json:"toUserId"`
-	ToRoomID   *string        `gorm:"column:toRoomId;type:varchar(32)" json:"toRoomId"`
-	Text       *string        `gorm:"column:text;type:varchar(4096)" json:"text"`
-	URI        *string        `gorm:"column:uri;type:varchar(512)" json:"uri"`
-	Reads      pq.StringArray `gorm:"column:reads;type:varchar(32)[];default:'{}'" json:"reads"`
-	FileID     *string        `gorm:"column:fileId;type:varchar(32)" json:"fileId"`
-	Reactions  pq.StringArray `gorm:"column:reactions;type:varchar(1024)[];default:'{}'" json:"reactions"`
+	ID              string         `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	FromUserID      string         `gorm:"column:fromUserId;type:varchar(32);not null" json:"fromUserId"`
+	ToUserID        *string        `gorm:"column:toUserId;type:varchar(32)" json:"toUserId"`
+	ToRoomID        *string        `gorm:"column:toRoomId;type:varchar(32)" json:"toRoomId"`
+	Text            *string        `gorm:"column:text;type:varchar(4096)" json:"text"`
+	URI             *string        `gorm:"column:uri;type:varchar(512)" json:"uri"`
+	Reads           pq.StringArray `gorm:"column:reads;type:varchar(32)[];default:'{}'" json:"reads"`
+	FileID          *string        `gorm:"column:fileId;type:varchar(32)" json:"fileId"`
+	Reactions       pq.StringArray `gorm:"column:reactions;type:varchar(1024)[];default:'{}'" json:"reactions"`
 	Emojis          pq.StringArray `gorm:"column:emojis;type:varchar(128)[];default:'{}'" json:"emojis"`
 	IsDelivering    bool           `gorm:"column:isDelivering;default:false" json:"isDelivering"`
 	IsDeliverFailed bool           `gorm:"column:isDeliverFailed;default:false" json:"isDeliverFailed"`
