@@ -290,13 +290,27 @@ func bindEnvKeys(v *viper.Viper) {
 		"url", "port", "socket",
 		"db.host", "db.port", "db.db", "db.user", "db.pass",
 		"redis.host", "redis.port", "redis.pass", "redis.db", "redis.username",
+		"redis.family", "redis.prefix",
 		"redisForPubsub.host", "redisForPubsub.port", "redisForPubsub.pass",
+		"redisForPubsub.family", "redisForPubsub.prefix", "redisForPubsub.db", "redisForPubsub.username",
 		"redisForJobQueue.host", "redisForJobQueue.port", "redisForJobQueue.pass",
+		"redisForJobQueue.family", "redisForJobQueue.prefix", "redisForJobQueue.db", "redisForJobQueue.username",
 		"redisForTimelines.host", "redisForTimelines.port", "redisForTimelines.pass",
+		"redisForTimelines.family", "redisForTimelines.prefix", "redisForTimelines.db", "redisForTimelines.username",
 		"redisForReactions.host", "redisForReactions.port", "redisForReactions.pass",
+		"redisForReactions.family", "redisForReactions.prefix", "redisForReactions.db", "redisForReactions.username",
 		"id", "maxFileSize",
 		"mediaProxySecret",
 		"testMode",
+		// 運用/セキュリティ系: 既存ymlから環境変数オーバーライドできるようにする
+		"trustProxy",
+		"disableHsts",
+		"enableIpRateLimit",
+		"mediaProxy",
+		"logging.sql.disableQueryTruncation",
+		"logging.sql.enableQueryParamLogging",
+		"sentryForBackend.options.dsn",
+		"sentryForBackend.options.environment",
 	}
 	for _, k := range keys {
 		_ = v.BindEnv(k)
