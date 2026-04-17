@@ -41,9 +41,9 @@ func (h *Handler) SetService(svc *corechat.Service) {
 func (h *Handler) mapChatErr(c echo.Context, err error) error {
 	switch {
 	case errors.Is(err, corechat.ErrNotFound):
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 	case errors.Is(err, corechat.ErrForbidden):
-		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	case errors.Is(err, corechat.ErrInvalidTarget):
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "toUserId or toRoomId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
@@ -110,7 +110,7 @@ func (h *Handler) RoomsShow(c echo.Context) error {
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	return c.JSON(http.StatusOK, packRoom(room))
 }
@@ -128,7 +128,7 @@ func (h *Handler) RoomsUpdate(c echo.Context) error {
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil || room.OwnerID != user.ID {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	if req.Name != "" {
 		room.Name = req.Name
@@ -153,7 +153,7 @@ func (h *Handler) RoomsDelete(c echo.Context) error {
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil || room.OwnerID != user.ID {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	_ = h.repo.DeleteRoom(req.RoomID)
 	return c.NoContent(http.StatusNoContent)
@@ -242,7 +242,7 @@ func (h *Handler) RoomsTransferOwnership(c echo.Context) error {
 	}
 	room, err := h.repo.FindRoomByID(req.RoomID)
 	if err != nil || room.OwnerID != user.ID {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "6ab4d7df-5043-57b9-bd5d-ff9908288473"))
 	}
 	room.OwnerID = req.UserID
 	_ = h.repo.UpdateRoom(room)
@@ -319,7 +319,7 @@ func (h *Handler) MessagesShow(c echo.Context) error {
 	}
 	msg, err := h.repo.FindMessageByID(req.MessageID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 	}
 	return c.JSON(http.StatusOK, packMessage(msg))
 }
@@ -338,7 +338,7 @@ func (h *Handler) MessagesUpdate(c echo.Context) error {
 		// legacy fallback
 		msg, err := h.repo.FindMessageByID(req.MessageID)
 		if err != nil || msg.FromUserID != user.ID {
-			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 		}
 		if req.Text != nil {
 			msg.Text = req.Text
@@ -368,7 +368,7 @@ func (h *Handler) MessagesDelete(c echo.Context) error {
 	if h.svc == nil {
 		msg, err := h.repo.FindMessageByID(req.MessageID)
 		if err != nil || msg.FromUserID != user.ID {
-			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "00000000-0000-0000-0000-000000000000"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MESSAGE", "No such message.", "006d73c9-dada-5b5d-a0f5-00b01f70bc3c"))
 		}
 		_ = h.repo.DeleteMessage(req.MessageID)
 		return c.NoContent(http.StatusNoContent)
