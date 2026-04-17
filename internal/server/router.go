@@ -1765,7 +1765,9 @@ func (s *Server) setupRoutes() {
 		if ticket.CreatedByID == nil || *ticket.CreatedByID != user.ID {
 			return c.JSON(http.StatusForbidden, map[string]any{"error": map[string]any{"message": "Access denied.", "code": "ACCESS_DENIED", "id": "1fb7cb09-d46a-4fff-b8df-057708cce513"}})
 		}
-		s.db.Where("id = ?", req.InviteID).Delete(&model.RegistrationTicket{})
+		if err := s.db.Where("id = ?", req.InviteID).Delete(&model.RegistrationTicket{}).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": "Internal error.", "code": "INTERNAL_ERROR", "id": "5d37dbcb-891e-41ca-a3d6-e690c97775ac"}})
+		}
 		return c.NoContent(http.StatusNoContent)
 	}, middleware.RequireAuth())
 
@@ -1777,29 +1779,7 @@ func (s *Server) setupRoutes() {
 	}, middleware.RequireAuth())
 
 	// notes (plain) — bulk note lookup by noteIds
-	api.POST("/notes", func(c echo.Context) error {
-		var req struct {
-			NoteIDs []string `json:"noteIds"`
-		}
-		if err := c.Bind(&req); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "Invalid param.", "code": "INVALID_PARAM", "id": "3d81ceae-475f-4600-b2a8-2bc116157532"}})
-		}
-		if len(req.NoteIDs) == 0 {
-			return c.JSON(http.StatusOK, []any{})
-		}
-		if len(req.NoteIDs) > 100 {
-			req.NoteIDs = req.NoteIDs[:100]
-		}
-		notes, err := noteRepo.FindManyByIDsWithUser(req.NoteIDs)
-		if err != nil {
-			return c.JSON(http.StatusOK, []any{})
-		}
-		out := make([]entity.NoteEntity, 0, len(notes))
-		for _, n := range notes {
-			out = append(out, entity.PackNote(n, idGen))
-		}
-		return c.JSON(http.StatusOK, out)
-	})
+	api.POST("/notes", notesHandler.BulkShow)
 
 	// export-custom-emojis — zip export (complex, stub)
 	api.POST("/export-custom-emojis", func(c echo.Context) error {
