@@ -114,7 +114,6 @@ func (h *Handler) SetChartHook(c ChartHook) {
 }
 
 // ShowRequest is the request body for users/show.
-// ShowRequest is the request body for users/show.
 type ShowRequest struct {
 	UserID   *string  `json:"userId"`
 	UserIDs  []string `json:"userIds"`

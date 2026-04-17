@@ -135,32 +135,24 @@ func (h *Handler) Meta(c echo.Context) error {
 		},
 	}
 
-	// detail=false の場合は簡易レスポンス (TS互換: features/policies/ads 等を省く)
+	// detail=false: TS MetaLite互換。features / policies / clientOptions /
+	// proxyAccountName / sentryForFrontend のみ省く。登録/captcha/ads等は含める。
 	if !detail {
-		lite := map[string]any{
-			"maintainerName":      resp["maintainerName"],
-			"maintainerEmail":     resp["maintainerEmail"],
-			"version":             resp["version"],
-			"name":                resp["name"],
-			"shortName":           resp["shortName"],
-			"uri":                 resp["uri"],
-			"description":         resp["description"],
-			"langs":               resp["langs"],
-			"themeColor":          resp["themeColor"],
-			"bannerUrl":           resp["bannerUrl"],
-			"iconUrl":             resp["iconUrl"],
-			"backgroundImageUrl":  resp["backgroundImageUrl"],
-			"logoImageUrl":        resp["logoImageUrl"],
-			"maxNoteTextLength":   resp["maxNoteTextLength"],
-			"maxFileSize":         resp["maxFileSize"],
-			"enableEmail":         resp["enableEmail"],
-			"enableServiceWorker": resp["enableServiceWorker"],
-			"swPublickey":         resp["swPublickey"],
-			"tosUrl":              resp["tosUrl"],
-			"serverRules":         resp["serverRules"],
-			"mascotImageUrl":      resp["mascotImageUrl"],
-			"translatorAvailable": resp["translatorAvailable"],
-			"cacheRemoteFiles":    resp["cacheRemoteFiles"],
+		omit := map[string]struct{}{
+			"features":              {},
+			"policies":              {},
+			"clientOptions":         {},
+			"proxyAccountName":      {},
+			"sentryForFrontend":     {},
+			"noteSearchableScope":   {},
+			"providesTarball":       {},
+			"singleUserMode":        {},
+		}
+		lite := make(map[string]any, len(resp))
+		for k, v := range resp {
+			if _, skip := omit[k]; !skip {
+				lite[k] = v
+			}
 		}
 		return c.JSON(http.StatusOK, lite)
 	}
