@@ -1293,6 +1293,7 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetDeleteAccountEnqueuer(s.queueClient)
 	adminHandler.SetPasswordResetRepo(resetReqRepo)
 	adminHandler.SetServerURL(s.config.URL)
+	adminHandler.SetConfigSetupPassword(s.config.SetupPassword)
 	if smtpMetaAdmin, err := metaRepo.Fetch(); err == nil && smtpMetaAdmin.EnableEmail && smtpMetaAdmin.Email != nil && smtpMetaAdmin.SmtpHost != nil {
 		fromAddr := *smtpMetaAdmin.Email
 		host := *smtpMetaAdmin.SmtpHost
