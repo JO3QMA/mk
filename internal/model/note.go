@@ -45,8 +45,6 @@ type Note struct {
 	Tags                     pq.StringArray `gorm:"column:tags;type:varchar(128)[];default:'{}'" json:"tags"`
 	HasPoll                  bool           `gorm:"column:hasPoll;default:false" json:"hasPoll"`
 	ChannelID                *string        `gorm:"column:channelId;type:varchar(32)" json:"channelId"`
-	AppID                    *string        `gorm:"column:appId;type:varchar(32)" json:"appId"`
-	Score                    int            `gorm:"column:score;type:integer;default:0" json:"score"`
 	// Denormalized fields
 	UserHost        *string `gorm:"column:userHost;type:varchar(128)" json:"userHost"`
 	ReplyUserID     *string `gorm:"column:replyUserId;type:varchar(32)" json:"replyUserId"`

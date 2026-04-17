@@ -38,7 +38,6 @@ type NoteEntity struct {
 	Emojis             map[string]string `json:"emojis,omitempty"`
 	ChannelID          *string           `json:"channelId,omitempty"`
 	Channel            *ChannelLite      `json:"channel,omitempty"`
-	AppID              *string           `json:"appId,omitempty"`
 	VisibleUserIDs     []string          `json:"visibleUserIds"`
 	Mentions           []string          `json:"mentions"`
 	HasPoll            bool              `json:"hasPoll"`
@@ -115,7 +114,6 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 		Tags:               n.Tags,
 		Emojis:             make(map[string]string),
 		ChannelID:          n.ChannelID,
-		AppID:              n.AppID,
 		VisibleUserIDs:     visibleUserIDs,
 		Mentions:           mentions,
 		HasPoll:            n.HasPoll,
