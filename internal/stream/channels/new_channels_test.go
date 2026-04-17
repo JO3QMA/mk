@@ -246,6 +246,23 @@ func TestServerStats_Lifecycle(t *testing.T) {
 	assert.Equal(t, []string{"serverStats"}, ctx.unsubs)
 }
 
+func TestServerStats_RequestLog(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewServerStats(ctx)
+	ch.Init(nil)
+	ch.OnClientMessage("requestLog", json.RawMessage(`{"id":"req1","length":50}`))
+	require.Len(t, ctx.sentType, 1)
+	assert.Equal(t, "statsLog", ctx.sentType[0])
+}
+
+func TestServerStats_RequestLog_IgnoresOtherTypes(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewServerStats(ctx)
+	ch.Init(nil)
+	ch.OnClientMessage("other", nil)
+	assert.Empty(t, ctx.sentType)
+}
+
 // --- QueueStats ---
 
 func TestQueueStats_Lifecycle(t *testing.T) {
@@ -260,6 +277,23 @@ func TestQueueStats_Lifecycle(t *testing.T) {
 
 	ch.Dispose()
 	assert.Equal(t, []string{"queueStats"}, ctx.unsubs)
+}
+
+func TestQueueStats_RequestLog(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewQueueStats(ctx)
+	ch.Init(nil)
+	ch.OnClientMessage("requestLog", json.RawMessage(`{"id":"req1","length":50}`))
+	require.Len(t, ctx.sentType, 1)
+	assert.Equal(t, "statsLog", ctx.sentType[0])
+}
+
+func TestQueueStats_RequestLog_IgnoresOtherTypes(t *testing.T) {
+	ctx := newCtx(nil)
+	ch := NewQueueStats(ctx)
+	ch.Init(nil)
+	ch.OnClientMessage("other", nil)
+	assert.Empty(t, ctx.sentType)
 }
 
 // --- Reversi ---
