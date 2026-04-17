@@ -10,12 +10,13 @@ require (
 	github.com/bbrks/go-blurhash v1.2.0
 	github.com/chai2010/webp v1.4.0
 	github.com/disintegration/imaging v1.6.2
+	github.com/getsentry/sentry-go v0.45.1
 	github.com/go-webauthn/webauthn v0.16.4
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hibiken/asynq v0.26.0
-	github.com/jackc/pgx/v5 v5.6.0
+	github.com/jackc/pgx/v5 v5.9.0
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/lib/pq v1.12.3
 	github.com/meilisearch/meilisearch-go v0.36.1
@@ -68,7 +69,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/getsentry/sentry-go v0.45.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
