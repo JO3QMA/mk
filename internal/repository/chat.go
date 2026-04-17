@@ -260,20 +260,26 @@ func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMes
 	// 1対1 (toUserId/fromUserId) とルーム (toRoomId経由のmembership) をUNION
 	// し、会話keyごとの最新メッセージを取る。
 	// GORMの.Limit()は.Raw()の後では無視されるため、SQL内にLIMITを埋め込む。
+	// DISTINCT ONはconversation_keyの昇順を強制するため、そのままLIMITを
+	// 掛けるとアルファベット順で先頭N件が返ってしまう。外側のサブクエリで
+	// id DESCに並べ直してからLIMITすることで最新のN会話を取得する。
 	var msgs []*model.ChatMessage
 	err := r.db.Raw(`
-		SELECT DISTINCT ON (conversation_key) *
-		FROM (
-			SELECT *, LEAST("fromUserId","toUserId") || '-' || GREATEST("fromUserId","toUserId") AS conversation_key
-			FROM "chat_message"
-			WHERE ("fromUserId" = ? OR "toUserId" = ?) AND "toRoomId" IS NULL
-			UNION ALL
-			SELECT cm.*, 'room:' || cm."toRoomId" AS conversation_key
-			FROM "chat_message" cm
-			JOIN "chat_room_membership" m ON m."roomId" = cm."toRoomId" AND m."userId" = ?
-			WHERE cm."toRoomId" IS NOT NULL
-		) sub
-		ORDER BY conversation_key, id DESC
+		SELECT * FROM (
+			SELECT DISTINCT ON (conversation_key) *
+			FROM (
+				SELECT *, LEAST("fromUserId","toUserId") || '-' || GREATEST("fromUserId","toUserId") AS conversation_key
+				FROM "chat_message"
+				WHERE ("fromUserId" = ? OR "toUserId" = ?) AND "toRoomId" IS NULL
+				UNION ALL
+				SELECT cm.*, 'room:' || cm."toRoomId" AS conversation_key
+				FROM "chat_message" cm
+				JOIN "chat_room_membership" m ON m."roomId" = cm."toRoomId" AND m."userId" = ?
+				WHERE cm."toRoomId" IS NOT NULL
+			) sub
+			ORDER BY conversation_key, id DESC
+		) conversations
+		ORDER BY id DESC
 		LIMIT ?
 	`, userID, userID, userID, limit).Find(&msgs).Error
 	if err != nil {
