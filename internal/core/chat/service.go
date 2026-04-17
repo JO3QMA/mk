@@ -126,7 +126,7 @@ func (s *Service) CreateMessageToUser(ctx context.Context, fromUserID, toUserID,
 // the recipient is a remote user. Errors are logged and swallowed (DB commit
 // is already done).
 func (s *Service) tryDeliverToRemoteUser(msg *model.ChatMessage, fromUserID, toUserID string) {
-	if s.deliverer == nil || s.userRepo == nil || s.renderer == nil {
+	if s.deliverer == nil || s.userRepo == nil || s.renderer == nil || s.urls == nil {
 		return
 	}
 	recipient, err := s.userRepo.FindByID(toUserID)
@@ -162,10 +162,17 @@ func (s *Service) tryDeliverToRemoteUser(msg *model.ChatMessage, fromUserID, toU
 }
 
 // CreateMessageViaAP persists a chat message received via ActivityPub from a
-// remote user. The uri parameter is the activity's canonical ID.
+// remote user. The uri parameter is the activity's canonical ID. AP retries
+// are common so URI-based dedup is performed (IngestNote と同じパターン).
 func (s *Service) CreateMessageViaAP(ctx context.Context, uri string, fromUser *model.User, toUserID, text string) (*model.ChatMessage, error) {
 	if fromUser == nil || toUserID == "" {
 		return nil, ErrInvalidTarget
+	}
+	// AP retry による重複メッセージ作成を防ぐ
+	if uri != "" {
+		if existing, err := s.repo.FindMessageByURI(uri); err == nil {
+			return existing, nil
+		}
 	}
 	msg := &model.ChatMessage{
 		ID:         s.idGen.Generate(time.Now()),

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +144,9 @@ func (m *mockChatRepo) MarkAllRead(_ string) error                         { ret
 func (m *mockChatRepo) AddReaction(_, _ string) error                      { return nil }
 func (m *mockChatRepo) RemoveReaction(_, _ string) error                   { return nil }
 func (m *mockChatRepo) UpdateInvitation(_ *model.ChatRoomInvitation) error { return nil }
+func (m *mockChatRepo) FindMessageByURI(_ string) (*model.ChatMessage, error) {
+	return nil, errors.New("not found")
+}
 
 func newTestHandler() (*Handler, *mockChatRepo) {
 	repo := newMock()
