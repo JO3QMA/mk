@@ -274,6 +274,20 @@ type Move struct {
 	Target string `json:"target"`
 }
 
+// ChatMessageActivity represents a CherryPick-compatible `Misskey:ChatMessage`
+// activity used for 1-on-1 DM federation with Misskey v12 and compatible forks.
+// ActivityではなくObjectを埋め込みつつ、Actorを独立フィールドで持つ。
+// To はCherryPick互換のため string (配列ではない)。
+type ChatMessageActivity struct {
+	Object
+	Actor        string `json:"actor"`
+	AttributedTo string `json:"attributedTo"`
+	To           string `json:"to"`
+	Content      string `json:"content,omitempty"`
+	Tag          []any  `json:"tag,omitempty"`
+	Attachment   []any  `json:"attachment,omitempty"`
+}
+
 // MisskeyContext は Misskey/Mastodon/schema.org 拡張語彙を含むコンテキストオブジェクト。
 // TS版 contexts.ts と同等。
 var MisskeyContext = map[string]any{
@@ -341,6 +355,8 @@ func AddContext(o any) {
 	case *Flag:
 		v.Context = ctx
 	case *Move:
+		v.Context = ctx
+	case *ChatMessageActivity:
 		v.Context = ctx
 	}
 }

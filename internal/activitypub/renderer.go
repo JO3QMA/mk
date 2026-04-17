@@ -97,6 +97,11 @@ func (b *URLBuilder) MoveURI(srcID, dstURI string) string {
 	return b.baseURL + "/moves/" + srcID + "/" + hex.EncodeToString(h[:16])
 }
 
+// ChatMessageURI returns the canonical URI for a chat message.
+func (b *URLBuilder) ChatMessageURI(messageID string) string {
+	return b.baseURL + "/chat-messages/" + messageID
+}
+
 // MentionResolver resolves a note.Mentions entry (user ID) into the data
 // required to build an AS Mention tag. 実装は server/router.go 側で
 // UserRepository を wrap する形で提供される。解決に失敗したら ok=false を
@@ -635,6 +640,26 @@ func (r *Renderer) RenderMove(src *model.User, dstURI string) *Move {
 	}
 	AddContext(m)
 	return m
+}
+
+// RenderChatMessage returns a CherryPick-compatible Misskey:ChatMessage
+// activity for 1-on-1 DM federation. Only used when the recipient is a remote
+// user. The activity type is `Misskey:ChatMessage` (not a standard AS type).
+func (r *Renderer) RenderChatMessage(msg *model.ChatMessage, senderURI, recipientURI string) *ChatMessageActivity {
+	cm := &ChatMessageActivity{
+		Object: Object{
+			ID:   r.urls.ChatMessageURI(msg.ID),
+			Type: "Misskey:ChatMessage",
+		},
+		Actor:        senderURI,
+		AttributedTo: senderURI,
+		To:           recipientURI,
+	}
+	if msg.Text != nil {
+		cm.Content = *msg.Text
+	}
+	AddContext(cm)
+	return cm
 }
 
 // addressing computes to/cc lists for a note based on visibility.

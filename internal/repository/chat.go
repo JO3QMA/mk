@@ -18,6 +18,7 @@ type ChatRepository interface {
 	// Message operations
 	CreateMessage(msg *model.ChatMessage) error
 	FindMessageByID(id string) (*model.ChatMessage, error)
+	FindMessageByURI(uri string) (*model.ChatMessage, error)
 	UpdateMessage(msg *model.ChatMessage) error
 	DeleteMessage(id string) error
 	ListMessagesByRoom(roomID string, limit int) ([]*model.ChatMessage, error)
@@ -116,6 +117,14 @@ func (r *chatRepository) CreateMessage(msg *model.ChatMessage) error {
 func (r *chatRepository) FindMessageByID(id string) (*model.ChatMessage, error) {
 	var msg model.ChatMessage
 	if err := r.db.Preload("FromUser").Where(`"id" = ?`, id).First(&msg).Error; err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+func (r *chatRepository) FindMessageByURI(uri string) (*model.ChatMessage, error) {
+	var msg model.ChatMessage
+	if err := r.db.Preload("FromUser").Where(`"uri" = ?`, uri).First(&msg).Error; err != nil {
 		return nil, err
 	}
 	return &msg, nil

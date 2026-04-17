@@ -99,6 +99,9 @@ func (r *chatFakeRepo) MarkAllRead(_ string) error                         { ret
 func (r *chatFakeRepo) AddReaction(_, _ string) error                      { return nil }
 func (r *chatFakeRepo) RemoveReaction(_, _ string) error                   { return nil }
 func (r *chatFakeRepo) UpdateInvitation(_ *model.ChatRoomInvitation) error { return nil }
+func (r *chatFakeRepo) FindMessageByURI(_ string) (*model.ChatMessage, error) {
+	return nil, errors.New("not found")
+}
 
 // --- test helpers ---
 

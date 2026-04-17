@@ -1192,6 +1192,8 @@ func (s *Server) setupRoutes() {
 	chatPublisher := stream.NewChatPublisher(streamPubSub)
 	chatService := corechat.NewService(chatRepo, idGen)
 	chatService.SetStreamingPublisher(chatPublisher)
+	// CherryPick互換AP連合: リモートユーザー宛DMをMisskey:ChatMessageで配送
+	chatService.SetAPDelivery(userRepo, apRenderer, apURLs, deliverService)
 	streamRegistry.Register("chatRoom", channels.NewChatRoomFactory(chatService).New)
 	streamRegistry.Register("chatUser", channels.NewChatUserFactory(chatService).New)
 	// Phase 9.7: federation processor / reversi handler に reversi 依存を注入。
@@ -1204,6 +1206,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db), idGen)
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
 	federationProcessor.SetRelayMarker(relaySvc)
+	federationProcessor.SetChatService(chatService)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
