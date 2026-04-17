@@ -172,6 +172,173 @@ func TestChatRepository_Membership(t *testing.T) {
 	require.NoError(t, repo.DeleteMembership(user.ID, room.ID))
 }
 
+func TestChatRepository_Reactions(t *testing.T) {
+	repo := NewChatRepository(testDB)
+	user1 := insertTestUser(t, "u_chat_rx1", "chatrx1")
+	user2 := insertTestUser(t, "u_chat_rx2", "chatrx2")
+	defer cleanupUser(t, user1.ID)
+	defer cleanupUser(t, user2.ID)
+
+	msg := &model.ChatMessage{
+		ID: "cm_rx", FromUserID: user1.ID, ToUserID: &user2.ID,
+		Reads: pq.StringArray{}, Reactions: pq.StringArray{},
+	}
+	require.NoError(t, repo.CreateMessage(msg))
+	defer testDB.Exec(`DELETE FROM "chat_message" WHERE id = ?`, msg.ID)
+
+	// AddReaction
+	require.NoError(t, repo.AddReaction(msg.ID, user1.ID+"/👍"))
+	require.NoError(t, repo.AddReaction(msg.ID, user2.ID+"/❤️"))
+
+	found, _ := repo.FindMessageByID(msg.ID)
+	assert.Len(t, found.Reactions, 2)
+
+	// RemoveReaction
+	require.NoError(t, repo.RemoveReaction(msg.ID, user1.ID+"/👍"))
+	found, _ = repo.FindMessageByID(msg.ID)
+	assert.Len(t, found.Reactions, 1)
+}
+
+func TestChatRepository_DeliveryStatus(t *testing.T) {
+	repo := NewChatRepository(testDB)
+	user1 := insertTestUser(t, "u_chat_ds1", "chatds1")
+	user2 := insertTestUser(t, "u_chat_ds2", "chatds2")
+	defer cleanupUser(t, user1.ID)
+	defer cleanupUser(t, user2.ID)
+
+	msg := &model.ChatMessage{
+		ID: "cm_ds", FromUserID: user1.ID, ToUserID: &user2.ID,
+		Reads: pq.StringArray{}, Reactions: pq.StringArray{}, Emojis: pq.StringArray{},
+	}
+	require.NoError(t, repo.CreateMessage(msg))
+	defer testDB.Exec(`DELETE FROM "chat_message" WHERE id = ?`, msg.ID)
+
+	require.NoError(t, repo.UpdateDeliveryStatus(msg.ID, true, false))
+	found, _ := repo.FindMessageByID(msg.ID)
+	assert.True(t, found.IsDelivering)
+	assert.False(t, found.IsDeliverFailed)
+
+	require.NoError(t, repo.UpdateDeliveryStatus(msg.ID, false, true))
+	found, _ = repo.FindMessageByID(msg.ID)
+	assert.False(t, found.IsDelivering)
+	assert.True(t, found.IsDeliverFailed)
+}
+
+func TestChatRepository_MarkAllRead(t *testing.T) {
+	repo := NewChatRepository(testDB)
+	user1 := insertTestUser(t, "u_chat_mr1", "chatmr1")
+	user2 := insertTestUser(t, "u_chat_mr2", "chatmr2")
+	defer cleanupUser(t, user1.ID)
+	defer cleanupUser(t, user2.ID)
+
+	text := "hi"
+	for _, id := range []string{"cm_mr1", "cm_mr2"} {
+		m := &model.ChatMessage{
+			ID: id, FromUserID: user1.ID, ToUserID: &user2.ID, Text: &text,
+			Reads: pq.StringArray{}, Reactions: pq.StringArray{}, Emojis: pq.StringArray{},
+		}
+		require.NoError(t, repo.CreateMessage(m))
+		defer testDB.Exec(`DELETE FROM "chat_message" WHERE id = ?`, id)
+	}
+
+	count, _ := repo.CountUnread(user2.ID)
+	assert.EqualValues(t, 2, count)
+
+	require.NoError(t, repo.MarkAllRead(user2.ID))
+	count, _ = repo.CountUnread(user2.ID)
+	assert.EqualValues(t, 0, count)
+}
+
+func TestChatRepository_ListHistory(t *testing.T) {
+	repo := NewChatRepository(testDB)
+	me := insertTestUser(t, "u_chat_h1", "chath1")
+	other1 := insertTestUser(t, "u_chat_h2", "chath2")
+	other2 := insertTestUser(t, "u_chat_h3", "chath3")
+	defer cleanupUser(t, me.ID)
+	defer cleanupUser(t, other1.ID)
+	defer cleanupUser(t, other2.ID)
+
+	room := &model.ChatRoom{ID: "cr_h1", Name: "HistRoom", OwnerID: me.ID}
+	require.NoError(t, repo.CreateRoom(room))
+	defer testDB.Exec(`DELETE FROM "chat_room" WHERE id = ?`, room.ID)
+	mem := &model.ChatRoomMembership{ID: "mem_h1", UserID: me.ID, RoomID: room.ID}
+	require.NoError(t, repo.CreateMembership(mem))
+	defer testDB.Exec(`DELETE FROM "chat_room_membership" WHERE id = ?`, mem.ID)
+
+	text := "msg"
+	// DM: me -> other1 (2件、最新はcm_h2)
+	for _, id := range []string{"cm_h1", "cm_h2"} {
+		m := &model.ChatMessage{
+			ID: id, FromUserID: me.ID, ToUserID: &other1.ID, Text: &text,
+			Reads: pq.StringArray{}, Reactions: pq.StringArray{}, Emojis: pq.StringArray{},
+		}
+		require.NoError(t, repo.CreateMessage(m))
+		defer testDB.Exec(`DELETE FROM "chat_message" WHERE id = ?`, id)
+	}
+	// DM: me -> other2
+	dm3 := &model.ChatMessage{
+		ID: "cm_h3", FromUserID: me.ID, ToUserID: &other2.ID, Text: &text,
+		Reads: pq.StringArray{}, Reactions: pq.StringArray{}, Emojis: pq.StringArray{},
+	}
+	require.NoError(t, repo.CreateMessage(dm3))
+	defer testDB.Exec(`DELETE FROM "chat_message" WHERE id = ?`, dm3.ID)
+	// ルームメッセージ
+	rm := &model.ChatMessage{
+		ID: "cm_h4", FromUserID: me.ID, ToRoomID: &room.ID, Text: &text,
+		Reads: pq.StringArray{}, Reactions: pq.StringArray{}, Emojis: pq.StringArray{},
+	}
+	require.NoError(t, repo.CreateMessage(rm))
+	defer testDB.Exec(`DELETE FROM "chat_message" WHERE id = ?`, rm.ID)
+
+	// 3会話あるはず: me-other1, me-other2, room:cr_h1
+	hist, err := repo.ListHistory(me.ID, 10)
+	require.NoError(t, err)
+	assert.Len(t, hist, 3)
+	// 最新順: cm_h4 > cm_h3 > cm_h2 (cm_h1はme-other1会話の古い方で除外)
+	assert.Equal(t, "cm_h4", hist[0].ID)
+
+	// limit=1で最新1会話のみ
+	hist1, err := repo.ListHistory(me.ID, 1)
+	require.NoError(t, err)
+	assert.Len(t, hist1, 1)
+
+	// limit=0はデフォルト10
+	histDef, err := repo.ListHistory(me.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, histDef, 3)
+}
+
+func TestChatRepository_ListInvitationsByUserAndRoom(t *testing.T) {
+	repo := NewChatRepository(testDB)
+	user1 := insertTestUser(t, "u_chat_li1", "chatli1")
+	user2 := insertTestUser(t, "u_chat_li2", "chatli2")
+	defer cleanupUser(t, user1.ID)
+	defer cleanupUser(t, user2.ID)
+
+	room := &model.ChatRoom{ID: "cr_li", Name: "Room", OwnerID: user1.ID}
+	require.NoError(t, repo.CreateRoom(room))
+	defer testDB.Exec(`DELETE FROM "chat_room" WHERE id = ?`, room.ID)
+
+	inv := &model.ChatRoomInvitation{ID: "inv_li1", UserID: user2.ID, RoomID: room.ID}
+	require.NoError(t, repo.CreateInvitation(inv))
+	defer testDB.Exec(`DELETE FROM "chat_room_invitation" WHERE id = ?`, inv.ID)
+
+	// ListInvitationsByUser: ignored=false
+	rows, err := repo.ListInvitationsByUser(user2.ID, false)
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+
+	// ignored=trueは0件
+	rows2, err := repo.ListInvitationsByUser(user2.ID, true)
+	require.NoError(t, err)
+	assert.Empty(t, rows2)
+
+	// ListInvitationsByRoom
+	roomInvs, err := repo.ListInvitationsByRoom(room.ID)
+	require.NoError(t, err)
+	assert.Len(t, roomInvs, 1)
+}
+
 func TestChatRepository_Invitation(t *testing.T) {
 	repo := NewChatRepository(testDB)
 	user := insertTestUser(t, "u_chat_5", "chatuser5")
