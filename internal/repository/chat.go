@@ -263,9 +263,12 @@ func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMes
 	// DISTINCT ONはconversation_keyの昇順を強制するため、そのままLIMITを
 	// 掛けるとアルファベット順で先頭N件が返ってしまう。外側のサブクエリで
 	// id DESCに並べ直してからLIMITすることで最新のN会話を取得する。
-	var msgs []*model.ChatMessage
+	// Raw SQLではPreloadが使えないため、2段階で取得する:
+	// 1) Raw SQLで対象メッセージIDを取得
+	// 2) 通常のGORMクエリでPreload("FromUser")付きで再取得
+	var ids []string
 	err := r.db.Raw(`
-		SELECT * FROM (
+		SELECT id FROM (
 			SELECT DISTINCT ON (conversation_key) *
 			FROM (
 				SELECT *, LEAST("fromUserId","toUserId") || '-' || GREATEST("fromUserId","toUserId") AS conversation_key
@@ -281,8 +284,15 @@ func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMes
 		) conversations
 		ORDER BY id DESC
 		LIMIT ?
-	`, userID, userID, userID, limit).Find(&msgs).Error
+	`, userID, userID, userID, limit).Pluck("id", &ids).Error
 	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var msgs []*model.ChatMessage
+	if err := r.db.Preload("FromUser").Where("id IN ?", ids).Order("id DESC").Find(&msgs).Error; err != nil {
 		return nil, err
 	}
 	return msgs, nil
@@ -294,8 +304,9 @@ func (r *chatRepository) MarkAllRead(userID string) error {
 }
 
 func (r *chatRepository) AddReaction(messageID, reaction string) error {
-	return r.db.Exec(`UPDATE "chat_message" SET "reactions" = array_append("reactions", ?) WHERE "id" = ?`,
-		reaction, messageID).Error
+	// MarkReadと同じく重複ガード付き。同一reactionの二重追加を防ぐ。
+	return r.db.Exec(`UPDATE "chat_message" SET "reactions" = array_append("reactions", ?) WHERE "id" = ? AND NOT ("reactions" @> ARRAY[?]::varchar[])`,
+		reaction, messageID, reaction).Error
 }
 
 func (r *chatRepository) RemoveReaction(messageID, reaction string) error {
