@@ -27,7 +27,14 @@ func (c *ServerStatsChannel) OnRedisEvent(payload []byte) {
 	_ = c.ctx.Send("stats", json.RawMessage(payload))
 }
 
-func (c *ServerStatsChannel) OnClientMessage(string, json.RawMessage) {}
+// OnClientMessage handles requestLog from the client. 現状stats collectorが
+// 未実装のため空配列を返す (queue_stats.go と同じ)。
+func (c *ServerStatsChannel) OnClientMessage(msgType string, body json.RawMessage) {
+	if msgType != "requestLog" {
+		return
+	}
+	_ = c.ctx.Send("statsLog", []any{})
+}
 
 // ShouldShare implements stream.ShareableChannel.
 func (c *ServerStatsChannel) ShouldShare() bool { return true }

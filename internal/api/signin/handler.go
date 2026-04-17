@@ -78,29 +78,17 @@ func (h *Handler) Signin(c echo.Context) error {
 		Password *string `json:"password"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error": map[string]any{
-				"id": "6cc579cc-885d-43d8-95c2-b8c7fc963280",
-			},
-		})
+		return c.JSON(http.StatusBadRequest, errBody("6cc579cc-885d-43d8-95c2-b8c7fc963280"))
 	}
 
 	// ユーザー検索
 	user, err := h.userRepo.FindByUsernameLower(req.Username, nil)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{
-				"id": "6cc579cc-885d-43d8-95c2-b8c7fc963280",
-			},
-		})
+		return c.JSON(http.StatusNotFound, errBody("6cc579cc-885d-43d8-95c2-b8c7fc963280"))
 	}
 
 	if user.IsSuspended {
-		return c.JSON(http.StatusForbidden, map[string]any{
-			"error": map[string]any{
-				"id": "e03a5f46-d309-4865-9b69-56282d94e1eb",
-			},
-		})
+		return c.JSON(http.StatusForbidden, errBody("e03a5f46-d309-4865-9b69-56282d94e1eb"))
 	}
 
 	// Step 1: パスワードなしの場合、次のステップを返す
@@ -114,19 +102,11 @@ func (h *Handler) Signin(c echo.Context) error {
 	// Step 2: パスワード検証
 	profile, err := h.userRepo.FindProfileByUserID(user.ID)
 	if err != nil || profile.Password == nil {
-		return c.JSON(http.StatusForbidden, map[string]any{
-			"error": map[string]any{
-				"id": "932c904e-9460-45b7-9ce6-7ed33be7eb2c",
-			},
-		})
+		return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(*req.Password)); err != nil {
-		return c.JSON(http.StatusForbidden, map[string]any{
-			"error": map[string]any{
-				"id": "932c904e-9460-45b7-9ce6-7ed33be7eb2c",
-			},
-		})
+		return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 	}
 
 	// 認証成功
@@ -158,29 +138,17 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 		TestcaptchaResponse string `json:"testcaptcha-response"`
 	}
 	if err := c.Bind(&req); err != nil || req.Username == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error": map[string]any{
-				"id": "6cc579cc-885d-43d8-95c2-b8c7fc963280",
-			},
-		})
+		return c.JSON(http.StatusBadRequest, errBody("6cc579cc-885d-43d8-95c2-b8c7fc963280"))
 	}
 
 	// ユーザー検索 (小文字で検索)
 	user, err := h.userRepo.FindByUsernameLower(req.Username, nil)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{
-				"id": "6cc579cc-885d-43d8-95c2-b8c7fc963280",
-			},
-		})
+		return c.JSON(http.StatusNotFound, errBody("6cc579cc-885d-43d8-95c2-b8c7fc963280"))
 	}
 
 	if user.IsSuspended {
-		return c.JSON(http.StatusForbidden, map[string]any{
-			"error": map[string]any{
-				"id": "e03a5f46-d309-4865-9b69-56282d94e1eb",
-			},
-		})
+		return c.JSON(http.StatusForbidden, errBody("e03a5f46-d309-4865-9b69-56282d94e1eb"))
 	}
 
 	// Step 1: パスワード未提供 → 次のステップを指示
@@ -201,19 +169,11 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 	// Step 2: パスワード検証
 	profile, err := h.userRepo.FindProfileByUserID(user.ID)
 	if err != nil || profile.Password == nil {
-		return c.JSON(http.StatusForbidden, map[string]any{
-			"error": map[string]any{
-				"id": "932c904e-9460-45b7-9ce6-7ed33be7eb2c",
-			},
-		})
+		return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(*req.Password)); err != nil {
-		return c.JSON(http.StatusForbidden, map[string]any{
-			"error": map[string]any{
-				"id": "932c904e-9460-45b7-9ce6-7ed33be7eb2c",
-			},
-		})
+		return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 	}
 
 	// CAPTCHA 検証 (password step 完了後、2FA 無しの場合のみ)。
