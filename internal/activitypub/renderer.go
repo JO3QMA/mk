@@ -651,6 +651,7 @@ func (r *Renderer) RenderChatMessage(msg *model.ChatMessage, senderURI, recipien
 			ID:   r.urls.ChatMessageURI(msg.ID),
 			Type: "Misskey:ChatMessage",
 		},
+		Actor:        senderURI,
 		AttributedTo: senderURI,
 		To:           recipientURI,
 	}

@@ -276,8 +276,11 @@ type Move struct {
 
 // ChatMessageActivity represents a CherryPick-compatible `Misskey:ChatMessage`
 // activity used for 1-on-1 DM federation with Misskey v12 and compatible forks.
+// ActivityではなくObjectを埋め込みつつ、Actorを独立フィールドで持つ。
+// To はCherryPick互換のため string (配列ではない)。
 type ChatMessageActivity struct {
 	Object
+	Actor        string `json:"actor"`
 	AttributedTo string `json:"attributedTo"`
 	To           string `json:"to"`
 	Content      string `json:"content,omitempty"`
