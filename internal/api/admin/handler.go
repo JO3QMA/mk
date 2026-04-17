@@ -2,7 +2,9 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -71,6 +73,7 @@ type Handler struct {
 	emailSender           EmailSender
 	serverURL             string
 	idGen                 id.Generator
+	configSetupPassword   string
 }
 
 // EmailSender sends a plain-text email (to, subject, body). Same signature
@@ -83,6 +86,12 @@ type EmailSender func(to, subject, body string)
 // fake without implementing the full NoteRepository surface.
 type NoteFinder interface {
 	FindByID(id string) (*model.Note, error)
+}
+
+// SetConfigSetupPassword sets the initial setup password from config. TS互換:
+// 初回セットアップ時にクライアントが送るsetupPasswordとconfig値を照合する。
+func (h *Handler) SetConfigSetupPassword(pw string) {
+	h.configSetupPassword = pw
 }
 
 // SetSystemWebhookRepo attaches a SystemWebhookRepository for admin/system-webhook/*.
@@ -273,7 +282,21 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 	user := middleware.GetUser(c)
 	isInitialSetup := meta.RootUserID == nil && user == nil
 
-	if !isInitialSetup {
+	if isInitialSetup {
+		// TS互換: setupPassword検証。configにsetupPasswordが設定されている場合は
+		// クライアントの値と一致させる。未設定なのにクライアントが非空値を送った場合も拒否。
+		clientPW := ""
+		if req.SetupPassword != nil {
+			clientPW = strings.TrimSpace(*req.SetupPassword)
+		}
+		if h.configSetupPassword != "" {
+			if clientPW != h.configSetupPassword {
+				return c.JSON(http.StatusBadRequest, apierr.Error("INCORRECT_INITIAL_PASSWORD", "Initial password is incorrect.", "97147c55-1ae1-4f6f-91d6-e1c3e0e76d62"))
+			}
+		} else if clientPW != "" {
+			return c.JSON(http.StatusBadRequest, apierr.Error("INCORRECT_INITIAL_PASSWORD", "Initial password is incorrect.", "97147c55-1ae1-4f6f-91d6-e1c3e0e76d62"))
+		}
+	} else {
 		// 初回セットアップ以外はadmin権限必須
 		if user == nil {
 			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
@@ -294,6 +317,7 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 		if err == signup.ErrUsernameReserved {
 			return c.JSON(http.StatusBadRequest, apierr.Error("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
 		}
+		slog.Error("admin/accounts/create: signup failed", "username", req.Username, "err", err)
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 

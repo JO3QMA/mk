@@ -280,6 +280,36 @@ func TestAccountsCreate_PreservedUsername(t *testing.T) {
 	assert.Equal(t, "USED_USERNAME", errObj["code"])
 }
 
+func TestAccountsCreate_SetupPassword_ConfigSet_Matches(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetConfigSetupPassword("mysecret")
+	rec := doPost(h.AccountsCreate, `{"username":"admin","password":"pass","setupPassword":"mysecret"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAccountsCreate_SetupPassword_ConfigSet_Mismatch(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetConfigSetupPassword("mysecret")
+	rec := doPost(h.AccountsCreate, `{"username":"admin","password":"pass","setupPassword":"wrong"}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INCORRECT_INITIAL_PASSWORD")
+}
+
+func TestAccountsCreate_SetupPassword_ConfigNotSet_ClientSendsNonEmpty(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// configにsetupPasswordなし、クライアントが非空値を送信 → 拒否
+	rec := doPost(h.AccountsCreate, `{"username":"admin","password":"pass","setupPassword":"unexpected"}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INCORRECT_INITIAL_PASSWORD")
+}
+
+func TestAccountsCreate_SetupPassword_ConfigNotSet_ClientSendsEmpty(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// configにsetupPasswordなし、クライアントもnull → OK
+	rec := doPost(h.AccountsCreate, `{"username":"admin","password":"pass"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestShowUsers_InvalidJSON(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	rec := doPost(h.ShowUsers, `invalid`, nil)
