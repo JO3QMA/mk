@@ -440,13 +440,39 @@ func (h *Handler) MessagesSearch(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-// ReactionsCreate handles POST /api/chat/messages/reactions/create.
+// ReactionsCreate handles POST /api/chat/messages/reactions/create and
+// POST /api/chat/messages/react. Reaction format: "userId/emoji".
 func (h *Handler) ReactionsCreate(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		MessageID string `json:"messageId"`
+		Reaction  string `json:"reaction"`
+	}
+	if err := c.Bind(&req); err != nil || req.MessageID == "" || req.Reaction == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	reaction := user.ID + "/" + req.Reaction
+	if err := h.repo.AddReaction(req.MessageID, reaction); err != nil {
+		return apierr.JSONInternalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-// ReactionsDelete handles POST /api/chat/messages/reactions/delete.
+// ReactionsDelete handles POST /api/chat/messages/reactions/delete and
+// POST /api/chat/messages/unreact.
 func (h *Handler) ReactionsDelete(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		MessageID string `json:"messageId"`
+		Reaction  string `json:"reaction"`
+	}
+	if err := c.Bind(&req); err != nil || req.MessageID == "" || req.Reaction == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	reaction := user.ID + "/" + req.Reaction
+	if err := h.repo.RemoveReaction(req.MessageID, reaction); err != nil {
+		return apierr.JSONInternalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -534,14 +560,238 @@ func (h *Handler) MembersBan(c echo.Context) error {
 
 // MembersUpdateMembership handles POST /api/chat/rooms/members/update-membership.
 func (h *Handler) MembersUpdateMembership(c echo.Context) error {
+	var req struct {
+		RoomID  string `json:"roomId"`
+		UserID  string `json:"userId"`
+		IsMuted *bool  `json:"isMuted"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" || req.UserID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	mem, err := h.repo.FindMembership(req.UserID, req.RoomID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_MEMBER", "Not a member.", "e3285385-56ee-4909-9ef4-4a0e6e2e614a"))
+	}
+	if req.IsMuted != nil {
+		mem.IsMuted = *req.IsMuted
+	}
+	if err := h.repo.UpdateMembership(mem); err != nil {
+		return apierr.JSONInternalError(c)
+	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// --- TS-compatible aliases ---
+
+// MessagesCreateToUser handles POST /api/chat/messages/create-to-user.
+func (h *Handler) MessagesCreateToUser(c echo.Context) error {
+	return h.MessagesCreate(c)
+}
+
+// MessagesCreateToRoom handles POST /api/chat/messages/create-to-room.
+func (h *Handler) MessagesCreateToRoom(c echo.Context) error {
+	return h.MessagesCreate(c)
+}
+
+// UserTimeline handles POST /api/chat/messages/user-timeline.
+func (h *Handler) UserTimeline(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		UserID string `json:"userId"`
+		Limit  int    `json:"limit"`
+	}
+	if err := c.Bind(&req); err != nil || req.UserID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	msgs, err := h.repo.ListMessagesByUser(user.ID, req.UserID, req.Limit)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, packMessage(m))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// RoomTimeline handles POST /api/chat/messages/room-timeline.
+func (h *Handler) RoomTimeline(c echo.Context) error {
+	var req struct {
+		RoomID string `json:"roomId"`
+		Limit  int    `json:"limit"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	msgs, err := h.repo.ListMessagesByRoom(req.RoomID, req.Limit)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, packMessage(m))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// ReadAll handles POST /api/chat/read-all.
+func (h *Handler) ReadAll(c echo.Context) error {
+	user := middleware.GetUser(c)
+	if err := h.repo.MarkAllRead(user.ID); err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// InvitationsIgnore handles POST /api/chat/rooms/invitations/ignore.
+func (h *Handler) InvitationsIgnore(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if inv, err := h.repo.FindInvitation(user.ID, req.RoomID); err == nil {
+		inv.Ignored = true
+		_ = h.repo.UpdateInvitation(inv)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// InvitationsInbox handles POST /api/chat/rooms/invitations/inbox.
+func (h *Handler) InvitationsInbox(c echo.Context) error {
+	user := middleware.GetUser(c)
+	rows, err := h.repo.ListInvitationsByUser(user.ID, false)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, inv := range rows {
+		entry := map[string]any{"id": inv.ID, "roomId": inv.RoomID, "userId": inv.UserID}
+		if inv.Room != nil {
+			entry["room"] = packRoom(inv.Room)
+		}
+		out = append(out, entry)
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// InvitationsOutbox handles POST /api/chat/rooms/invitations/outbox.
+func (h *Handler) InvitationsOutbox(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	// 自分が所有するルームの招待一覧を返す
+	room, err := h.repo.FindRoomByID(req.RoomID)
+	if err != nil || room.OwnerID != user.ID {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "b3926861-29ef-4df6-98b5-a7c640ad2b5a"))
+	}
+	rows, err := h.repo.ListInvitationsByRoom(req.RoomID)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, inv := range rows {
+		entry := map[string]any{"id": inv.ID, "roomId": inv.RoomID, "userId": inv.UserID}
+		if inv.User != nil {
+			entry["user"] = packUser(inv.User)
+		}
+		out = append(out, entry)
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// RoomsJoin handles POST /api/chat/rooms/join.
+func (h *Handler) RoomsJoin(c echo.Context) error {
+	user := middleware.GetUser(c)
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	if _, err := h.repo.FindRoomByID(req.RoomID); err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "b3926861-29ef-4df6-98b5-a7c640ad2b5a"))
+	}
+	mem := &model.ChatRoomMembership{
+		ID: h.idGen.Generate(time.Now()), UserID: user.ID, RoomID: req.RoomID,
+	}
+	if err := h.repo.CreateMembership(mem); err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// RoomsJoining handles POST /api/chat/rooms/joining (TS-compatible alias for /joined).
+func (h *Handler) RoomsJoining(c echo.Context) error {
+	return h.RoomsJoined(c)
+}
+
+// RoomsMembers handles POST /api/chat/rooms/members.
+func (h *Handler) RoomsMembers(c echo.Context) error {
+	var req struct {
+		RoomID string `json:"roomId"`
+		Limit  int    `json:"limit"`
+	}
+	if err := c.Bind(&req); err != nil || req.RoomID == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	members, err := h.repo.ListMembersByRoom(req.RoomID)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(members))
+	for _, m := range members {
+		entry := map[string]any{"id": m.ID, "userId": m.UserID, "roomId": m.RoomID, "isMuted": m.IsMuted}
+		if m.User != nil {
+			entry["user"] = packUser(m.User)
+		}
+		out = append(out, entry)
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // --- Other ---
 
 // History handles POST /api/chat/history.
 func (h *Handler) History(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	user := middleware.GetUser(c)
+	var req struct {
+		Limit int `json:"limit"`
+	}
+	_ = c.Bind(&req)
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	msgs, err := h.repo.ListHistory(user.ID, req.Limit)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, packMessage(m))
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // UnreadCount handles POST /api/chat/unread-count.

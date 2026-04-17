@@ -139,9 +139,10 @@ func (m *mockChatRepo) UpdateDeliveryStatus(_ string, _, _ bool) error { return 
 func (m *mockChatRepo) ListHistory(_ string, _ int) ([]*model.ChatMessage, error) {
 	return nil, nil
 }
-func (m *mockChatRepo) MarkAllRead(_ string) error       { return nil }
-func (m *mockChatRepo) AddReaction(_, _ string) error    { return nil }
-func (m *mockChatRepo) RemoveReaction(_, _ string) error { return nil }
+func (m *mockChatRepo) MarkAllRead(_ string) error                         { return nil }
+func (m *mockChatRepo) AddReaction(_, _ string) error                      { return nil }
+func (m *mockChatRepo) RemoveReaction(_, _ string) error                   { return nil }
+func (m *mockChatRepo) UpdateInvitation(_ *model.ChatRoomInvitation) error { return nil }
 
 func newTestHandler() (*Handler, *mockChatRepo) {
 	repo := newMock()
@@ -662,13 +663,19 @@ func TestMessagesSearch(t *testing.T) {
 
 func TestReactionsCreate(t *testing.T) {
 	h, _ := newTestHandler()
-	rec := post(h.ReactionsCreate, `{}`, u1)
+	// missing params → 400
+	assert.Equal(t, http.StatusBadRequest, post(h.ReactionsCreate, `{}`, u1).Code)
+	// valid
+	rec := post(h.ReactionsCreate, `{"messageId":"m1","reaction":"👍"}`, u1)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
 func TestReactionsDelete(t *testing.T) {
 	h, _ := newTestHandler()
-	rec := post(h.ReactionsDelete, `{}`, u1)
+	// missing params → 400
+	assert.Equal(t, http.StatusBadRequest, post(h.ReactionsDelete, `{}`, u1).Code)
+	// valid
+	rec := post(h.ReactionsDelete, `{"messageId":"m1","reaction":"👍"}`, u1)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
@@ -747,8 +754,8 @@ func TestMembersBan_InvalidParam(t *testing.T) {
 
 func TestMembersUpdateMembership(t *testing.T) {
 	h, _ := newTestHandler()
-	rec := post(h.MembersUpdateMembership, `{}`, u1)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+	// missing params → 400
+	assert.Equal(t, http.StatusBadRequest, post(h.MembersUpdateMembership, `{}`, u1).Code)
 }
 
 func TestHistory(t *testing.T) {
