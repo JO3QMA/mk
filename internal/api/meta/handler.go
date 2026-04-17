@@ -32,7 +32,15 @@ func (h *Handler) SetAdRepo(r repository.AdRepository) {
 
 // Meta returns server metadata.
 // POST /api/meta
+// Meta handles POST /api/meta.
+// TS互換: detail (boolean, default true)。falseの場合は簡易レスポンスを返す。
 func (h *Handler) Meta(c echo.Context) error {
+	var params struct {
+		Detail *bool `json:"detail"`
+	}
+	_ = c.Bind(&params)
+	detail := params.Detail == nil || *params.Detail
+
 	m, err := h.metaRepo.Fetch()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{
@@ -125,6 +133,36 @@ func (h *Handler) Meta(c echo.Context) error {
 			"serviceWorker":          m.EnableServiceWorker,
 			"miauth":                 true,
 		},
+	}
+
+	// detail=false の場合は簡易レスポンス (TS互換: features/policies/ads 等を省く)
+	if !detail {
+		lite := map[string]any{
+			"maintainerName":      resp["maintainerName"],
+			"maintainerEmail":     resp["maintainerEmail"],
+			"version":             resp["version"],
+			"name":                resp["name"],
+			"shortName":           resp["shortName"],
+			"uri":                 resp["uri"],
+			"description":         resp["description"],
+			"langs":               resp["langs"],
+			"themeColor":          resp["themeColor"],
+			"bannerUrl":           resp["bannerUrl"],
+			"iconUrl":             resp["iconUrl"],
+			"backgroundImageUrl":  resp["backgroundImageUrl"],
+			"logoImageUrl":        resp["logoImageUrl"],
+			"maxNoteTextLength":   resp["maxNoteTextLength"],
+			"maxFileSize":         resp["maxFileSize"],
+			"enableEmail":         resp["enableEmail"],
+			"enableServiceWorker": resp["enableServiceWorker"],
+			"swPublickey":         resp["swPublickey"],
+			"tosUrl":              resp["tosUrl"],
+			"serverRules":         resp["serverRules"],
+			"mascotImageUrl":      resp["mascotImageUrl"],
+			"translatorAvailable": resp["translatorAvailable"],
+			"cacheRemoteFiles":    resp["cacheRemoteFiles"],
+		}
+		return c.JSON(http.StatusOK, lite)
 	}
 
 	return c.JSON(http.StatusOK, resp)

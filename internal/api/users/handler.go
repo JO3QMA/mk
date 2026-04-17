@@ -114,17 +114,35 @@ func (h *Handler) SetChartHook(c ChartHook) {
 }
 
 // ShowRequest is the request body for users/show.
+// ShowRequest is the request body for users/show.
 type ShowRequest struct {
-	UserID   *string `json:"userId"`
-	Username *string `json:"username"`
-	Host     *string `json:"host"`
+	UserID   *string  `json:"userId"`
+	UserIDs  []string `json:"userIds"`
+	Username *string  `json:"username"`
+	Host     *string  `json:"host"`
 }
 
 // Show handles POST /api/users/show.
+// TS互換: userIds (配列) が渡された場合は UserLite の配列を返す。
+// userId / username が渡された場合は単体 UserDetailed を返す。
 func (h *Handler) Show(c echo.Context) error {
 	var req ShowRequest
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
+	}
+
+	// userIds が指定されている場合はバルクモード (UsersBulkと同等)
+	if len(req.UserIDs) > 0 {
+		if len(req.UserIDs) > 100 {
+			req.UserIDs = req.UserIDs[:100]
+		}
+		out := make([]entity.UserLite, 0, len(req.UserIDs))
+		for _, uid := range req.UserIDs {
+			if bundle, err := h.userService.ShowByID(uid); err == nil {
+				out = append(out, entity.PackUserLite(bundle.User))
+			}
+		}
+		return c.JSON(http.StatusOK, out)
 	}
 
 	if req.UserID == nil && req.Username == nil {
@@ -148,7 +166,6 @@ func (h *Handler) Show(c echo.Context) error {
 	}
 
 	if err != nil {
-		// Service.ShowByID/ShowByUsernameはErrUserNotFoundのみ返す
 		return apierr.JSONNoSuchUser(c)
 	}
 
