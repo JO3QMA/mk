@@ -45,6 +45,12 @@ func (c *ReversiChannel) OnRedisEvent(payload []byte) {
 
 func (c *ReversiChannel) OnClientMessage(string, json.RawMessage) {}
 
+// ShouldShare implements stream.ShareableChannel.
+func (c *ReversiChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *ReversiChannel) RequiredPermission() string { return "read:account" }
+
 func (c *ReversiChannel) Dispose() {
 	if c.connected {
 		user, ok := c.ctx.User().(*model.User)

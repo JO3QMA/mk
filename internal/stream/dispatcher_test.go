@@ -721,3 +721,86 @@ func TestDispatcher_InitError_CleansUpSubscriptions(t *testing.T) {
 	// Dispose も呼ばれる
 	assert.Equal(t, 1, created.disposeCount)
 }
+
+// --- readNotification / subNote / unsubNote tests ---
+
+type stubNotifReader struct {
+	called int
+	lastID string
+}
+
+func (s *stubNotifReader) ReadAll(userID string) error {
+	s.called++
+	s.lastID = userID
+	return nil
+}
+
+func TestDispatcher_ReadNotification(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	bus := newStubBus()
+	d := NewDispatcher(conn, nil, bus)
+	nr := &stubNotifReader{}
+	d.SetNotificationReader(nr)
+
+	d.HandleClientMessage("readNotification", nil)
+	assert.Equal(t, 1, nr.called)
+	assert.Equal(t, "alice", nr.lastID)
+}
+
+func TestDispatcher_ReadNotification_NoReader(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, nil, nil)
+	// notifReader未設定でもpanic しない
+	d.HandleClientMessage("readNotification", nil)
+}
+
+func TestDispatcher_SubNote_UnsubNote(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	bus := newStubBus()
+	d := NewDispatcher(conn, nil, bus)
+
+	// subscribe
+	d.HandleClientMessage("s", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	_, subbed := bus.subs["noteStream:n1"]
+	bus.mu.Unlock()
+	assert.True(t, subbed)
+
+	// duplicate subscribe: refcount increments, no duplicate bus.Subscribe
+	d.HandleClientMessage("subNote", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	assert.Equal(t, 1, countOccurrences(bus.subscribed, "noteStream:n1"))
+	bus.mu.Unlock()
+
+	// unsubscribe once: refcount decrements but still > 0
+	d.HandleClientMessage("un", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	_, stillSubbed := bus.subs["noteStream:n1"]
+	bus.mu.Unlock()
+	assert.True(t, stillSubbed)
+
+	// unsubscribe again: refcount reaches 0, bus.Unsubscribe called
+	d.HandleClientMessage("unsubNote", json.RawMessage(`{"id":"n1"}`))
+	bus.mu.Lock()
+	_, stillSubbed2 := bus.subs["noteStream:n1"]
+	bus.mu.Unlock()
+	assert.False(t, stillSubbed2)
+}
+
+func TestDispatcher_SubNote_InvalidBody(t *testing.T) {
+	conn := NewConnection("test", &model.User{ID: "alice"}, newFakeConn())
+	d := NewDispatcher(conn, nil, newStubBus())
+	// empty body → no panic
+	d.HandleClientMessage("s", json.RawMessage(`{}`))
+	d.HandleClientMessage("un", json.RawMessage(`{}`))
+}
+
+func countOccurrences(slice []string, target string) int {
+	n := 0
+	for _, s := range slice {
+		if s == target {
+			n++
+		}
+	}
+	return n
+}

@@ -46,6 +46,12 @@ func (c *DriveChannel) OnRedisEvent(payload []byte) {
 
 func (c *DriveChannel) OnClientMessage(string, json.RawMessage) {}
 
+// ShouldShare implements stream.ShareableChannel.
+func (c *DriveChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *DriveChannel) RequiredPermission() string { return "read:account" }
+
 func (c *DriveChannel) Dispose() {
 	if c.topic != "" {
 		c.ctx.Unsubscribe(c.topic)

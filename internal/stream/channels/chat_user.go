@@ -94,6 +94,9 @@ func (c *ChatUserChannel) OnClientMessage(msgType string, body json.RawMessage) 
 	}
 }
 
+// RequiredPermission implements stream.PermittedChannel.
+func (c *ChatUserChannel) RequiredPermission() string { return "read:chat" }
+
 // Dispose unsubscribes from the user's conversation topic.
 func (c *ChatUserChannel) Dispose() {
 	if c.topic != "" {
