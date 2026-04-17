@@ -65,6 +65,14 @@ type Processor struct {
 
 	// Relay follow-accept / -reject hook. nil 時は relay 特化処理をスキップ。
 	relayMarker RelayStatusMarker
+
+	// Chat federation (CherryPick互換)
+	chatService ChatMessageReceiver
+}
+
+// ChatMessageReceiver handles inbound Misskey:ChatMessage activities.
+type ChatMessageReceiver interface {
+	CreateMessageViaAP(ctx context.Context, uri string, fromUser *model.User, toUserID, text string) (*model.ChatMessage, error)
 }
 
 // NewProcessor constructs a Processor. reactionService / noteDeleteSvc は省略
@@ -165,6 +173,8 @@ func (p *Processor) Process(body []byte) error {
 		return p.handleReversiJoin(act)
 	case "leave":
 		return p.handleReversiLeave(act)
+	case "misskey:chatmessage":
+		return p.handleChatMessage(act)
 	}
 	return ErrUnsupportedActivity
 }
@@ -191,6 +201,12 @@ func (p *Processor) SetPinningRepo(repo repository.UserNotePiningRepository, idG
 // the corresponding relay row to accepted / rejected.
 func (p *Processor) SetRelayMarker(m RelayStatusMarker) {
 	p.relayMarker = m
+}
+
+// SetChatService wires a ChatMessageReceiver for inbound Misskey:ChatMessage
+// activities (CherryPick v12 federation).
+func (p *Processor) SetChatService(svc ChatMessageReceiver) {
+	p.chatService = svc
 }
 
 // followRelayIDPattern extracts the relay id embedded in
@@ -888,4 +904,45 @@ func readActorString(act genericActivity) (string, error) {
 		return act.Actor, nil
 	}
 	return "", errors.New("inner activity missing actor")
+}
+
+// handleChatMessage processes an inbound Misskey:ChatMessage activity
+// (CherryPick v12 federation). The activity itself IS the message object
+// (not wrapped in Create), so act.ID is the message URI.
+func (p *Processor) handleChatMessage(act genericActivity) error {
+	if p.chatService == nil {
+		return ErrUnsupportedActivity
+	}
+	// attributedTo と actor の一致を検証
+	var raw struct {
+		AttributedTo string `json:"attributedTo"`
+		To           string `json:"to"`
+		Content      string `json:"content"`
+	}
+	if err := json.Unmarshal(act.raw, &raw); err != nil {
+		return fmt.Errorf("chat message: unmarshal: %w", err)
+	}
+	if raw.AttributedTo == "" || raw.AttributedTo != act.Actor {
+		return fmt.Errorf("chat message: attributedTo (%s) != actor (%s)", raw.AttributedTo, act.Actor)
+	}
+	if raw.To == "" {
+		return fmt.Errorf("chat message: missing 'to' field")
+	}
+	// actor (送信者) を解決
+	sender, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return fmt.Errorf("chat message: resolve sender: %w", err)
+	}
+	// to (受信者) をローカルユーザーとして検索
+	recipient, err := p.userRepo.FindByURI(raw.To)
+	if err != nil {
+		// URI で見つからない場合 ID で試す (ローカルユーザーの URI は
+		// /users/{id} 形式のため直接 FindByID でも解決できる)
+		return fmt.Errorf("chat message: resolve recipient: %w", err)
+	}
+	if !recipient.IsLocal() {
+		return fmt.Errorf("chat message: recipient %s is not local", raw.To)
+	}
+	_, err = p.chatService.CreateMessageViaAP(context.Background(), act.ID, sender, recipient.ID, raw.Content)
+	return err
 }
