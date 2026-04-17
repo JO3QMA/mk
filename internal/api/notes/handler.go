@@ -163,29 +163,11 @@ func (h *Handler) Create(c echo.Context) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, note.ErrNoteContentRequired):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "Text, fileIds, or renoteId is required.",
-					"code":    "INVALID_PARAM",
-					"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 		case errors.Is(err, note.ErrReplyTargetNotFound), errors.Is(err, note.ErrRenoteTargetNotFound):
-			return c.JSON(http.StatusNotFound, map[string]any{
-				"error": map[string]any{
-					"message": "No such note.",
-					"code":    "NO_SUCH_NOTE",
-					"id":      "24fcbfc6-2e37-42b6-8388-c29b32725715",
-				},
-			})
+			return c.JSON(http.StatusNotFound, apierr.NoSuchNote())
 		case errors.Is(err, note.ErrCannotReplyToInvisibleNote), errors.Is(err, note.ErrCannotRenoteInvisibleNote):
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"error": map[string]any{
-					"message": "You can not see this note.",
-					"code":    "CANNOT_REPLY_TO_INVISIBLE_NOTE",
-					"id":      "44b07c37-2deb-4b34-9ec9-b1deeed42f0d",
-				},
-			})
+			return c.JSON(http.StatusForbidden, apierr.Error("CANNOT_REPLY_TO_INVISIBLE_NOTE", "You can not see this note.", "44b07c37-2deb-4b34-9ec9-b1deeed42f0d"))
 		}
 		return apierr.JSONInternalError(c)
 	}
@@ -251,21 +233,9 @@ func (h *Handler) Delete(c echo.Context) error {
 	if err := h.deleteService.Delete(user, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, note.ErrNoteNotFound):
-			return c.JSON(http.StatusNotFound, map[string]any{
-				"error": map[string]any{
-					"message": "No such note.",
-					"code":    "NO_SUCH_NOTE",
-					"id":      "24fcbfc6-2e37-42b6-8388-c29b32725715",
-				},
-			})
+			return c.JSON(http.StatusNotFound, apierr.NoSuchNote())
 		case errors.Is(err, note.ErrNoteAccessDenied):
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"error": map[string]any{
-					"message": "You are not the author of this note.",
-					"code":    "ACCESS_DENIED",
-					"id":      "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9",
-				},
-			})
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "You are not the author of this note.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 		default:
 			return apierr.JSONInternalError(c)
 		}

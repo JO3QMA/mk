@@ -29,37 +29,13 @@ func (h *Handler) PollsVote(c echo.Context) error {
 		case errors.Is(err, poll.ErrNoteNotFound), errors.Is(err, poll.ErrNoPoll):
 			return apierr.JSONNoSuchNote(c)
 		case errors.Is(err, poll.ErrNoteNotVisible):
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"error": map[string]any{
-					"message": "You can not see this note.",
-					"code":    "ACCESS_DENIED",
-					"id":      "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9",
-				},
-			})
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "You can not see this note.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 		case errors.Is(err, poll.ErrInvalidChoice):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "Invalid choice.",
-					"code":    "INVALID_CHOICE",
-					"id":      "e0cc9a04-f2e8-41e4-a5f1-4127293260cc",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_CHOICE", "Invalid choice.", "e0cc9a04-f2e8-41e4-a5f1-4127293260cc"))
 		case errors.Is(err, poll.ErrPollExpired):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "The poll is already expired.",
-					"code":    "ALREADY_EXPIRED",
-					"id":      "1022a357-b085-4054-9083-8f8de358337e",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_EXPIRED", "The poll is already expired.", "1022a357-b085-4054-9083-8f8de358337e"))
 		case errors.Is(err, poll.ErrAlreadyVoted):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You have already voted.",
-					"code":    "ALREADY_VOTED",
-					"id":      "0963fc77-efac-419b-9424-b391608dc6d8",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_VOTED", "You have already voted.", "0963fc77-efac-419b-9424-b391608dc6d8"))
 		}
 		return apierr.JSONInternalError(c)
 	}

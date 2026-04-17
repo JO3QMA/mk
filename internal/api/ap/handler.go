@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/activitypub"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -136,7 +137,7 @@ func (h *Handler) APIGet(c echo.Context) error {
 		URI string `json:"uri"`
 	}
 	if err := c.Bind(&req); err != nil || req.URI == "" {
-		return c.JSON(http.StatusBadRequest, apAPIError("INVALID_PARAM", "uri is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "uri is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	// ローカルURIからオブジェクトを解決
@@ -156,7 +157,7 @@ func (h *Handler) APIGet(c echo.Context) error {
 		}
 	}
 
-	return c.JSON(http.StatusNotFound, apAPIError("NO_SUCH_OBJECT", "No such object.", "dc94d745-1262-4e63-a17d-fecaa57efc82"))
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_OBJECT", "No such object.", "dc94d745-1262-4e63-a17d-fecaa57efc82"))
 }
 
 // APIShow handles POST /api/ap/show — URIからUser/Noteを解決して返す。
@@ -165,7 +166,7 @@ func (h *Handler) APIShow(c echo.Context) error {
 		URI string `json:"uri"`
 	}
 	if err := c.Bind(&req); err != nil || req.URI == "" {
-		return c.JSON(http.StatusBadRequest, apAPIError("INVALID_PARAM", "uri is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "uri is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
 	// ローカルのノートURIかチェック (/notes/ を含む)
@@ -238,7 +239,7 @@ func (h *Handler) APIShow(c echo.Context) error {
 		}
 	}
 
-	return c.JSON(http.StatusNotFound, apAPIError("NO_SUCH_OBJECT", "No such object.", "dc94d745-1262-4e63-a17d-fecaa57efc82"))
+	return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_OBJECT", "No such object.", "dc94d745-1262-4e63-a17d-fecaa57efc82"))
 }
 
 // resolveLocal attempts to resolve a local URI to an AP object.
@@ -262,12 +263,6 @@ func (h *Handler) resolveLocal(uri string) (any, error) {
 		return h.renderer.RenderPerson(bundle.User, bundle.Profile, keypair.PublicKey), nil
 	}
 	return nil, http.ErrNotSupported
-}
-
-func apAPIError(code, message, id string) map[string]any {
-	return map[string]any{
-		"error": map[string]any{"message": message, "code": code, "id": id},
-	}
 }
 
 func extractLocalID(uri, pathPrefix string) string {

@@ -143,13 +143,7 @@ func (h *Handler) serveTimeline(
 
 	viewer := middleware.GetUser(c)
 	if requireAuth && viewer == nil {
-		return c.JSON(http.StatusUnauthorized, map[string]any{
-			"error": map[string]any{
-				"message": "Credential required.",
-				"code":    "CREDENTIAL_REQUIRED",
-				"id":      "1384574d-a912-4b81-8601-c7b1c4085df1",
-			},
-		})
+		return c.JSON(http.StatusUnauthorized, apierr.Error("CREDENTIAL_REQUIRED", "Credential required.", "1384574d-a912-4b81-8601-c7b1c4085df1"))
 	}
 
 	// UGC visibility: 未ログインユーザーの閲覧を制限する (meta.ugcVisibilityForVisitor)。

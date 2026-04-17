@@ -31,37 +31,13 @@ func (h *Handler) ReactionsCreate(c echo.Context) error {
 		case errors.Is(err, reaction.ErrNoteNotFound):
 			return apierr.JSONNoSuchNote(c)
 		case errors.Is(err, reaction.ErrNoteNotVisible):
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"error": map[string]any{
-					"message": "You can not see this note.",
-					"code":    "ACCESS_DENIED",
-					"id":      "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9",
-				},
-			})
+			return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "You can not see this note.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 		case errors.Is(err, reaction.ErrAlreadyReacted):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You are already reacting to that note.",
-					"code":    "ALREADY_REACTED",
-					"id":      "71efcf98-86d6-4e2b-b2ad-9d032369366b",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_REACTED", "You are already reacting to that note.", "71efcf98-86d6-4e2b-b2ad-9d032369366b"))
 		case errors.Is(err, reaction.ErrCannotReactToPureRenote):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You can not react to a pure Renote.",
-					"code":    "CANNOT_REACT_TO_RENOTE",
-					"id":      "eaccdc08-ddef-43fe-908f-d108faad57f5",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("CANNOT_REACT_TO_RENOTE", "You can not react to a pure Renote.", "eaccdc08-ddef-43fe-908f-d108faad57f5"))
 		case errors.Is(err, reaction.ErrBlocked):
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"error": map[string]any{
-					"message": "You are blocked by that user.",
-					"code":    "BLOCKED",
-					"id":      "e70412a4-7197-4726-8e74-f3e0deb92aa7",
-				},
-			})
+			return c.JSON(http.StatusForbidden, apierr.Error("BLOCKED", "You are blocked by that user.", "e70412a4-7197-4726-8e74-f3e0deb92aa7"))
 		}
 		return apierr.JSONInternalError(c)
 	}
@@ -87,13 +63,7 @@ func (h *Handler) ReactionsDelete(c echo.Context) error {
 		case errors.Is(err, reaction.ErrNoteNotFound):
 			return apierr.JSONNoSuchNote(c)
 		case errors.Is(err, reaction.ErrReactionNotFound):
-			return c.JSON(http.StatusNotFound, map[string]any{
-				"error": map[string]any{
-					"message": "You are not reacting to that note.",
-					"code":    "NOT_REACTED",
-					"id":      "92f4426d-4196-4125-aa5b-02943e2ec8fc",
-				},
-			})
+			return c.JSON(http.StatusNotFound, apierr.Error("NOT_REACTED", "You are not reacting to that note.", "92f4426d-4196-4125-aa5b-02943e2ec8fc"))
 		}
 		return apierr.JSONInternalError(c)
 	}

@@ -36,23 +36,11 @@ func (h *Handler) Create(c echo.Context) error {
 	if _, err := h.svc.Mute(user.ID, req.UserID); err != nil {
 		switch {
 		case errors.Is(err, coremuting.ErrSelfMute):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You cannot mute yourself.",
-					"code":    "MUTEE_IS_YOURSELF",
-					"id":      "37285718-52f7-4aef-b7de-c38b8e8a8420",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("MUTEE_IS_YOURSELF", "You cannot mute yourself.", "37285718-52f7-4aef-b7de-c38b8e8a8420"))
 		case errors.Is(err, coremuting.ErrMuteeNotFound):
 			return apierr.JSONNoSuchUser(c)
 		case errors.Is(err, coremuting.ErrAlreadyMuting):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You are already muting that user.",
-					"code":    "ALREADY_MUTING",
-					"id":      "ccfecbe4-1f1c-4fc2-8bdb-9f3672ab7191",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_MUTING", "You are already muting that user.", "ccfecbe4-1f1c-4fc2-8bdb-9f3672ab7191"))
 		}
 		return apierr.JSONInternalError(c)
 	}
@@ -69,21 +57,9 @@ func (h *Handler) Delete(c echo.Context) error {
 	if err := h.svc.Unmute(user.ID, req.UserID); err != nil {
 		switch {
 		case errors.Is(err, coremuting.ErrSelfMute):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You cannot unmute yourself.",
-					"code":    "MUTEE_IS_YOURSELF",
-					"id":      "afa929cc-95f0-4e30-92c1-b4b5e5e0f38e",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("MUTEE_IS_YOURSELF", "You cannot unmute yourself.", "afa929cc-95f0-4e30-92c1-b4b5e5e0f38e"))
 		case errors.Is(err, coremuting.ErrNotMuting):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You are not muting that user.",
-					"code":    "NOT_MUTING",
-					"id":      "5467d020-daa9-4553-81e1-135c0c35a96d",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("NOT_MUTING", "You are not muting that user.", "5467d020-daa9-4553-81e1-135c0c35a96d"))
 		}
 		return apierr.JSONInternalError(c)
 	}

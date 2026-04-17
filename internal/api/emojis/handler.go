@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
@@ -49,23 +50,11 @@ func (h *Handler) Emoji(c echo.Context) error {
 		Name string `json:"name"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error": map[string]any{
-				"message": "Invalid param.",
-				"code":    "INVALID_PARAM",
-				"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-			},
-		})
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
 	}
 	e, err := h.emojiRepo.FindByNameAndHost(req.Name, nil)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]any{
-			"error": map[string]any{
-				"message": "No such emoji.",
-				"code":    "NO_SUCH_EMOJI",
-				"id":      "14141e4b-dea8-41f0-9ba1-1721a6b5b92c",
-			},
-		})
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "14141e4b-dea8-41f0-9ba1-1721a6b5b92c"))
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"id":          e.ID,
