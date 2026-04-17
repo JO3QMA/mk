@@ -163,7 +163,7 @@ func (h *Handler) Create(c echo.Context) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, note.ErrNoteContentRequired):
-			return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Text, fileIds, or renoteId is required.", apierr.UUIDInvalidParam))
 		case errors.Is(err, note.ErrReplyTargetNotFound), errors.Is(err, note.ErrRenoteTargetNotFound):
 			return c.JSON(http.StatusNotFound, apierr.NoSuchNote())
 		case errors.Is(err, note.ErrCannotReplyToInvisibleNote), errors.Is(err, note.ErrCannotRenoteInvisibleNote):

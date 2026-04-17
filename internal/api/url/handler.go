@@ -24,7 +24,7 @@ func NewHandler(fetcher *urlpreview.Fetcher) *Handler {
 func (h *Handler) Preview(c echo.Context) error {
 	rawURL := c.QueryParam("url")
 	if rawURL == "" {
-		return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "url is required.", apierr.UUIDInvalidParam))
 	}
 
 	result, err := h.fetcher.Fetch(c.Request().Context(), rawURL)

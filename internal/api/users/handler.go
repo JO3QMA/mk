@@ -146,7 +146,7 @@ func (h *Handler) Show(c echo.Context) error {
 	}
 
 	if req.UserID == nil && req.Username == nil {
-		return c.JSON(http.StatusBadRequest, apierr.InvalidParam())
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId or username is required.", apierr.UUIDInvalidParam))
 	}
 
 	var (
