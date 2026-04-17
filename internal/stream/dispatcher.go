@@ -255,8 +255,8 @@ func (d *Dispatcher) removeChannel(id string) {
 	}
 }
 
-// CloseAll tears down every registered channel. Manager が connection close
-// 時に呼ぶ。
+// CloseAll tears down every registered channel and noteStream subscription.
+// Manager が connection close 時に呼ぶ。
 func (d *Dispatcher) CloseAll() {
 	d.mu.Lock()
 	ids := make([]string, 0, len(d.channels))
@@ -266,6 +266,19 @@ func (d *Dispatcher) CloseAll() {
 	d.mu.Unlock()
 	for _, id := range ids {
 		d.removeChannel(id)
+	}
+	// noteStream の Redis subscription もクリーンアップ
+	d.noteSubMu.Lock()
+	noteIDs := make([]string, 0, len(d.noteSubs))
+	for noteID := range d.noteSubs {
+		noteIDs = append(noteIDs, noteID)
+	}
+	d.noteSubs = make(map[string]int)
+	d.noteSubMu.Unlock()
+	if d.bus != nil {
+		for _, noteID := range noteIDs {
+			d.bus.Unsubscribe("noteStream:" + noteID)
+		}
 	}
 }
 
@@ -443,20 +456,24 @@ func (d *Dispatcher) handleUnsubNote(body json.RawMessage) {
 
 // forwardNoteEvent sends a noteStream event directly to the connection
 // (not wrapped in a channel envelope). TS互換のトップレベル noteUpdated 形式。
+// Redis payload は {type, body} envelope で届く (reacted, deleted, pollVoted 等)。
 func (d *Dispatcher) forwardNoteEvent(noteID string, payload []byte) {
 	if d.conn == nil {
 		return
 	}
-	var event json.RawMessage
-	if err := json.Unmarshal(payload, &event); err != nil {
+	var env struct {
+		Type string          `json:"type"`
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil || env.Type == "" {
 		return
 	}
 	_ = d.conn.Send(map[string]any{
 		"type": "noteUpdated",
 		"body": map[string]any{
 			"id":   noteID,
-			"type": "updated",
-			"body": event,
+			"type": env.Type,
+			"body": env.Body,
 		},
 	})
 }
