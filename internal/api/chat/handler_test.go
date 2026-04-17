@@ -164,6 +164,7 @@ func post(handler func(echo.Context) error, body string, user *model.User) *http
 }
 
 var u1 = &model.User{ID: "u1", Username: "alice"}
+var u2 = &model.User{ID: "u2", Username: "bob"}
 
 // --- Rooms ---
 
@@ -762,6 +763,8 @@ func TestHistory(t *testing.T) {
 	h, _ := newTestHandler()
 	rec := post(h.History, `{}`, u1)
 	assert.Equal(t, http.StatusOK, rec.Code)
+	rec2 := post(h.History, `{"limit":5}`, u1)
+	assert.Equal(t, http.StatusOK, rec2.Code)
 }
 
 func TestUnreadCount(t *testing.T) {
@@ -771,4 +774,108 @@ func TestUnreadCount(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, float64(0), resp["count"])
+}
+
+// --- TS-compatible aliases + new handlers ---
+
+func TestMessagesCreateToUser(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.rooms["r1"] = &model.ChatRoom{ID: "r1", OwnerID: u1.ID}
+	rec := post(h.MessagesCreateToUser, `{"text":"hi","toUserId":"u2"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestMessagesCreateToRoom(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.rooms["r1"] = &model.ChatRoom{ID: "r1", OwnerID: u1.ID}
+	rec := post(h.MessagesCreateToRoom, `{"text":"hi","toRoomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUserTimeline(t *testing.T) {
+	h, _ := newTestHandler()
+	assert.Equal(t, http.StatusBadRequest, post(h.UserTimeline, `{}`, u1).Code)
+	rec := post(h.UserTimeline, `{"userId":"u2"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec2 := post(h.UserTimeline, `{"userId":"u2","limit":5}`, u1)
+	assert.Equal(t, http.StatusOK, rec2.Code)
+}
+
+func TestRoomTimeline(t *testing.T) {
+	h, _ := newTestHandler()
+	assert.Equal(t, http.StatusBadRequest, post(h.RoomTimeline, `{}`, u1).Code)
+	rec := post(h.RoomTimeline, `{"roomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec2 := post(h.RoomTimeline, `{"roomId":"r1","limit":5}`, u1)
+	assert.Equal(t, http.StatusOK, rec2.Code)
+}
+
+func TestReadAll(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.ReadAll, `{}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestInvitationsIgnore(t *testing.T) {
+	h, repo := newTestHandler()
+	assert.Equal(t, http.StatusBadRequest, post(h.InvitationsIgnore, `{}`, u1).Code)
+	repo.invitations["inv1"] = &model.ChatRoomInvitation{ID: "inv1", UserID: u1.ID, RoomID: "r1"}
+	rec := post(h.InvitationsIgnore, `{"roomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestInvitationsInbox(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.InvitationsInbox, `{}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestInvitationsOutbox(t *testing.T) {
+	h, repo := newTestHandler()
+	assert.Equal(t, http.StatusBadRequest, post(h.InvitationsOutbox, `{}`, u1).Code)
+	// no room → 404
+	assert.Equal(t, http.StatusNotFound, post(h.InvitationsOutbox, `{"roomId":"r1"}`, u1).Code)
+	// owner can see outbox
+	repo.rooms["r1"] = &model.ChatRoom{ID: "r1", OwnerID: u1.ID}
+	rec := post(h.InvitationsOutbox, `{"roomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	// non-owner → 404
+	assert.Equal(t, http.StatusNotFound, post(h.InvitationsOutbox, `{"roomId":"r1"}`, u2).Code)
+}
+
+func TestRoomsJoin(t *testing.T) {
+	h, repo := newTestHandler()
+	assert.Equal(t, http.StatusBadRequest, post(h.RoomsJoin, `{}`, u1).Code)
+	assert.Equal(t, http.StatusNotFound, post(h.RoomsJoin, `{"roomId":"ghost"}`, u1).Code)
+	repo.rooms["r1"] = &model.ChatRoom{ID: "r1", OwnerID: u2.ID}
+	rec := post(h.RoomsJoin, `{"roomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestRoomsJoining(t *testing.T) {
+	h, _ := newTestHandler()
+	rec := post(h.RoomsJoining, `{}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRoomsMembers(t *testing.T) {
+	h, _ := newTestHandler()
+	assert.Equal(t, http.StatusBadRequest, post(h.RoomsMembers, `{}`, u1).Code)
+	rec := post(h.RoomsMembers, `{"roomId":"r1"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestMembersUpdateMembership_Auth(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.rooms["r1"] = &model.ChatRoom{ID: "r1", OwnerID: u1.ID}
+	repo.memberships["u2:r1"] = &model.ChatRoomMembership{ID: "m1", UserID: u2.ID, RoomID: "r1"}
+	// owner can update
+	tr := true
+	_ = tr
+	rec := post(h.MembersUpdateMembership, `{"roomId":"r1","userId":"u2","isMuted":true}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	// non-owner → 404
+	assert.Equal(t, http.StatusNotFound, post(h.MembersUpdateMembership, `{"roomId":"r1","userId":"u2"}`, u2).Code)
+	// not a member → 404
+	assert.Equal(t, http.StatusNotFound, post(h.MembersUpdateMembership, `{"roomId":"r1","userId":"ghost"}`, u1).Code)
 }

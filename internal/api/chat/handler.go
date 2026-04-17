@@ -559,7 +559,9 @@ func (h *Handler) MembersBan(c echo.Context) error {
 }
 
 // MembersUpdateMembership handles POST /api/chat/rooms/members/update-membership.
+// ルームオーナーのみが他メンバーの設定を変更できる。
 func (h *Handler) MembersUpdateMembership(c echo.Context) error {
+	user := middleware.GetUser(c)
 	var req struct {
 		RoomID  string `json:"roomId"`
 		UserID  string `json:"userId"`
@@ -567,6 +569,10 @@ func (h *Handler) MembersUpdateMembership(c echo.Context) error {
 	}
 	if err := c.Bind(&req); err != nil || req.RoomID == "" || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
+	}
+	room, err := h.repo.FindRoomByID(req.RoomID)
+	if err != nil || room.OwnerID != user.ID {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROOM", "No such room.", "b3926861-29ef-4df6-98b5-a7c640ad2b5a"))
 	}
 	mem, err := h.repo.FindMembership(req.UserID, req.RoomID)
 	if err != nil {
