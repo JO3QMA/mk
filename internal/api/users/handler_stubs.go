@@ -441,11 +441,7 @@ func (h *Handler) ListsCreateFromPublic(c echo.Context) error {
 	}
 	src, err := h.userListRepo.FindByID(req.ListID)
 	if err != nil || !src.IsPublic {
-		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{
-			"message": "No such list.",
-			"code":    "NO_SUCH_LIST",
-			"id":      "9292f798-6175-4f7d-93f4-b6742279667d",
-		}})
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "9292f798-6175-4f7d-93f4-b6742279667d"))
 	}
 	now := time.Now()
 	newList := &model.UserList{
@@ -534,11 +530,11 @@ func (h *Handler) ListsUpdate(c echo.Context) error {
 	}
 	list, err := h.userListRepo.FindByID(req.ListID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "796666fe-3dff-4d39-becb-8a5932c1d5b7"}})
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "796666fe-3dff-4d39-becb-8a5932c1d5b7"))
 	}
 	// 所有権チェック
 	if list.UserID != user.ID {
-		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "796666fe-3dff-4d39-becb-8a5932c1d5b7"}})
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "796666fe-3dff-4d39-becb-8a5932c1d5b7"))
 	}
 	fields := map[string]any{}
 	if req.Name != "" {
@@ -573,15 +569,15 @@ func (h *Handler) ListsUpdateMembership(c echo.Context) error {
 	}
 	list, err := h.userListRepo.FindByID(req.ListID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"}})
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"))
 	}
 	// 所有権チェック
 	if list.UserID != user.ID {
-		return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such list.", "code": "NO_SUCH_LIST", "id": "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"}})
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"))
 	}
 	if err := h.userListRepo.UpdateMembership(req.ListID, req.UserID, req.WithReplies); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.JSON(http.StatusNotFound, map[string]any{"error": map[string]any{"message": "No such user.", "code": "NO_SUCH_USER", "id": "588e7f72-c744-4a61-b180-d354e912bda2"}})
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "588e7f72-c744-4a61-b180-d354e912bda2"))
 		}
 		return apierr.JSONInternalError(c)
 	}

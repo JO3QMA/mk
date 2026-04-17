@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -43,13 +44,7 @@ func (h *Handler) Meta(c echo.Context) error {
 
 	m, err := h.metaRepo.Fetch()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
-			"error": map[string]any{
-				"message": "Internal error.",
-				"code":    "INTERNAL_ERROR",
-				"id":      "5d37dbcb-891e-41ca-a3d6-e690c97775ac",
-			},
-		})
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 
 	resp := map[string]any{

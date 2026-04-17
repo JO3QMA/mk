@@ -37,23 +37,11 @@ func (h *Handler) Create(c echo.Context) error {
 	if _, err := h.svc.Block(user.ID, req.UserID); err != nil {
 		switch {
 		case errors.Is(err, coreblocking.ErrSelfBlock):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You cannot block yourself.",
-					"code":    "BLOCKEE_IS_YOURSELF",
-					"id":      "88b19138-f28d-42c0-8499-6a31bbd0fdc6",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("BLOCKEE_IS_YOURSELF", "You cannot block yourself.", "88b19138-f28d-42c0-8499-6a31bbd0fdc6"))
 		case errors.Is(err, coreblocking.ErrBlockeeNotFound):
 			return apierr.JSONNoSuchUser(c)
 		case errors.Is(err, coreblocking.ErrAlreadyBlocking):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You are already blocking that user.",
-					"code":    "ALREADY_BLOCKING",
-					"id":      "787fed64-acb9-464a-82eb-afbd745b9614",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_BLOCKING", "You are already blocking that user.", "787fed64-acb9-464a-82eb-afbd745b9614"))
 		}
 		return apierr.JSONInternalError(c)
 	}
@@ -70,21 +58,9 @@ func (h *Handler) Delete(c echo.Context) error {
 	if err := h.svc.Unblock(user.ID, req.UserID); err != nil {
 		switch {
 		case errors.Is(err, coreblocking.ErrSelfBlock):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You cannot unblock yourself.",
-					"code":    "BLOCKEE_IS_YOURSELF",
-					"id":      "06f6fac6-524b-473c-a354-e97a40ae6eac",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("BLOCKEE_IS_YOURSELF", "You cannot unblock yourself.", "06f6fac6-524b-473c-a354-e97a40ae6eac"))
 		case errors.Is(err, coreblocking.ErrNotBlocking):
-			return c.JSON(http.StatusBadRequest, map[string]any{
-				"error": map[string]any{
-					"message": "You are not blocking that user.",
-					"code":    "NOT_BLOCKING",
-					"id":      "291b2efa-60c6-45c0-9f6a-045c8f9b02cd",
-				},
-			})
+			return c.JSON(http.StatusBadRequest, apierr.Error("NOT_BLOCKING", "You are not blocking that user.", "291b2efa-60c6-45c0-9f6a-045c8f9b02cd"))
 		}
 		return apierr.JSONInternalError(c)
 	}

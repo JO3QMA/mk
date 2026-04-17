@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/urlpreview"
 )
 
@@ -23,13 +24,7 @@ func NewHandler(fetcher *urlpreview.Fetcher) *Handler {
 func (h *Handler) Preview(c echo.Context) error {
 	rawURL := c.QueryParam("url")
 	if rawURL == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error": map[string]any{
-				"message": "url is required.",
-				"code":    "INVALID_PARAM",
-				"id":      "3d81ceae-475f-4600-b2a8-2bc116157532",
-			},
-		})
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "url is required.", apierr.UUIDInvalidParam))
 	}
 
 	result, err := h.fetcher.Fetch(c.Request().Context(), rawURL)
