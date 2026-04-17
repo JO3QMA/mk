@@ -196,7 +196,7 @@ Misskeyは用途別に複数のRedis接続を持つ。設定で同一ホスト�
 
 ## マイグレーション
 
-`migration/`ディレクトリにgolang-migrate用のSQLファイルを配置 (000001〜000032)。
+`migration/`ディレクトリにgolang-migrate用のSQLファイルを配置 (000001〜000036)。
 
 TS版Misskeyの既存テーブルには追加のみで破壊的変更を行わない。Go固有のテーブル追加とカラム追加はすべてIF NOT EXISTS付き。
 
