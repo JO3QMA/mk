@@ -28,7 +28,7 @@ func (c *ServerStatsChannel) OnRedisEvent(payload []byte) {
 }
 
 // OnClientMessage handles requestLog from the client. 現状stats collectorが
-// 未実装のため空配列を返す (queue_stats.go と同じ)。
+// 未実装のため空配列を返す (queue_stats.goと同じ)。
 func (c *ServerStatsChannel) OnClientMessage(msgType string, body json.RawMessage) {
 	if msgType != "requestLog" {
 		return

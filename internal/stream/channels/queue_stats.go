@@ -28,7 +28,7 @@ func (c *QueueStatsChannel) OnRedisEvent(payload []byte) {
 }
 
 // OnClientMessage handles requestLog from the client. TS本家ではstats
-// collectorがqueueStatsLog:{id}トピックに応答する request-response パターンを
+// collectorがqueueStatsLog:{id}トピックに応答するrequest-responseパターンを
 // 使うが、現状collectorは未実装のため空配列を返す。
 func (c *QueueStatsChannel) OnClientMessage(msgType string, body json.RawMessage) {
 	if msgType != "requestLog" {
