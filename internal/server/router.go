@@ -348,6 +348,7 @@ func (s *Server) setupRoutes() {
 	apRenderer.SetFileResolver(driveFileRepo)
 	apRenderer.SetEmojiResolver(emojiRepo)
 	apRenderer.SetNoteResolver(noteRepo)
+	apRenderer.SetPollResolver(pollRepo)
 	// config.URL は "https://example.com" 形式。ホスト部分だけ抽出する。
 	if u, err := urlpkg.Parse(s.config.URL); err == nil {
 		apRenderer.SetHost(u.Host)
