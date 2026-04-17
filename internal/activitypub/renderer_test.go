@@ -418,6 +418,42 @@ func TestRenderer_RenderPerson_BannerAndMovedTo(t *testing.T) {
 	assert.Equal(t, featured, p.Featured)
 }
 
+func TestRenderer_RenderPerson_MisskeyExtensionFields(t *testing.T) {
+	r := newRenderer()
+	before := 30
+	u := &model.User{
+		ID:                           "u1",
+		Username:                     "alice",
+		RequireSigninToViewContents:  true,
+		MakeNotesFollowersOnlyBefore: &before,
+		MakeNotesHiddenBefore:        nil,
+	}
+	p := r.RenderPerson(u, nil, "PUBKEY")
+	assert.True(t, p.MisskeyRequireSigninToViewContents)
+	require.NotNil(t, p.MisskeyMakeNotesFollowersOnlyBefore)
+	assert.Equal(t, 30, *p.MisskeyMakeNotesFollowersOnlyBefore)
+	assert.Nil(t, p.MisskeyMakeNotesHiddenBefore)
+}
+
+func TestRenderer_RenderPerson_MisskeyExtensionFields_Defaults(t *testing.T) {
+	r := newRenderer()
+	u := &model.User{ID: "u1", Username: "alice"}
+	p := r.RenderPerson(u, nil, "PUBKEY")
+	// デフォルト (false / nil) は omitempty で出力されない
+	assert.False(t, p.MisskeyRequireSigninToViewContents)
+	assert.Nil(t, p.MisskeyMakeNotesFollowersOnlyBefore)
+	assert.Nil(t, p.MisskeyMakeNotesHiddenBefore)
+}
+
+func TestMisskeyContext_ContainsNewFields(t *testing.T) {
+	ctx := MisskeyContext
+	assert.Contains(t, ctx, "_misskey_requireSigninToViewContents")
+	assert.Contains(t, ctx, "_misskey_makeNotesFollowersOnlyBefore")
+	assert.Contains(t, ctx, "_misskey_makeNotesHiddenBefore")
+	assert.Contains(t, ctx, "_misskey_license")
+	assert.Contains(t, ctx, "freeText")
+}
+
 // stubFileResolver returns fixed drive files.
 type stubFileResolver struct {
 	files []*model.DriveFile
