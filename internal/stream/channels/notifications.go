@@ -36,6 +36,12 @@ func (c *NotificationsChannel) OnRedisEvent(payload []byte) {
 
 func (c *NotificationsChannel) OnClientMessage(string, json.RawMessage) {}
 
+// ShouldShare implements stream.ShareableChannel.
+func (c *NotificationsChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *NotificationsChannel) RequiredPermission() string { return "read:account" }
+
 func (c *NotificationsChannel) Dispose() {
 	if c.topic != "" {
 		c.ctx.Unsubscribe(c.topic)
@@ -91,6 +97,12 @@ func (c *MainChannel) OnRedisEvent(payload []byte) {
 }
 
 func (c *MainChannel) OnClientMessage(string, json.RawMessage) {}
+
+// ShouldShare implements stream.ShareableChannel.
+func (c *MainChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *MainChannel) RequiredPermission() string { return "read:account" }
 
 func (c *MainChannel) Dispose() {
 	if c.notif != "" {

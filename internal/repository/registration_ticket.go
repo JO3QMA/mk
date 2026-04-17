@@ -32,6 +32,7 @@ type RegistrationTicketRepository interface {
 	// `now` is passed by callers so tests can supply a deterministic clock
 	// when evaluating the `expired` filter.
 	List(filter string, limit, offset int, now time.Time) ([]*model.RegistrationTicket, error)
+	Delete(id string) error
 }
 
 type registrationTicketRepository struct {
@@ -68,4 +69,8 @@ func (r *registrationTicketRepository) List(filter string, limit, offset int, no
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (r *registrationTicketRepository) Delete(id string) error {
+	return r.db.Where("id = ?", id).Delete(&model.RegistrationTicket{}).Error
 }

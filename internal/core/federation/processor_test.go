@@ -986,3 +986,94 @@ func TestProcess_AcceptNonRelay_IgnoresMarker(t *testing.T) {
 	// relay marker は呼ばれない
 	assert.Empty(t, marker.accepted)
 }
+
+// --- Chat federation (Misskey:ChatMessage) ---
+
+type stubChatReceiver struct {
+	called    int
+	lastURI   string
+	lastFrom  *model.User
+	lastTo    string
+	lastText  string
+	returnErr error
+}
+
+func (s *stubChatReceiver) CreateMessageViaAP(_ context.Context, uri string, fromUser *model.User, toUserID, text string) (*model.ChatMessage, error) {
+	s.called++
+	s.lastURI = uri
+	s.lastFrom = fromUser
+	s.lastTo = toUserID
+	s.lastText = text
+	if s.returnErr != nil {
+		return nil, s.returnErr
+	}
+	return &model.ChatMessage{ID: "cm_ap_1"}, nil
+}
+
+func TestProcess_ChatMessage_HappyPath(t *testing.T) {
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	// ローカルユーザーはURI==nil (本番と同じ)。ExtractLocalUserID→FindByIDで解決。
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+	chatSvc := &stubChatReceiver{}
+	p.SetChatService(chatSvc)
+
+	body := []byte(`{
+		"id": "https://remote.example/chat-messages/1",
+		"type": "Misskey:ChatMessage",
+		"actor": "https://remote.example/users/alice",
+		"attributedTo": "https://remote.example/users/alice",
+		"to": "https://example.com/users/bob",
+		"content": "hello via AP"
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.Equal(t, 1, chatSvc.called)
+	assert.Equal(t, "https://remote.example/chat-messages/1", chatSvc.lastURI)
+	assert.Equal(t, "bob", chatSvc.lastTo)
+	assert.Equal(t, "hello via AP", chatSvc.lastText)
+}
+
+func TestProcess_ChatMessage_NoChatService(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	body := []byte(`{
+		"id": "https://remote.example/chat-messages/2",
+		"type": "Misskey:ChatMessage",
+		"actor": "https://remote.example/users/alice",
+		"attributedTo": "https://remote.example/users/alice",
+		"to": "https://example.com/users/bob",
+		"content": "hi"
+	}`)
+	err := p.Process(body)
+	assert.ErrorIs(t, err, federation.ErrUnsupportedActivity)
+}
+
+func TestProcess_ChatMessage_ActorMismatch(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	chatSvc := &stubChatReceiver{}
+	p.SetChatService(chatSvc)
+	body := []byte(`{
+		"id": "https://remote.example/chat-messages/3",
+		"type": "Misskey:ChatMessage",
+		"actor": "https://remote.example/users/alice",
+		"attributedTo": "https://remote.example/users/mallory",
+		"to": "https://example.com/users/bob",
+		"content": "spoof"
+	}`)
+	err := p.Process(body)
+	assert.Error(t, err)
+	assert.Equal(t, 0, chatSvc.called)
+}
+
+func TestProcess_ChatMessage_MissingTo(t *testing.T) {
+	p, _, _, _ := newProcessor(t, aliceActor)
+	chatSvc := &stubChatReceiver{}
+	p.SetChatService(chatSvc)
+	body := []byte(`{
+		"id": "https://remote.example/chat-messages/4",
+		"type": "Misskey:ChatMessage",
+		"actor": "https://remote.example/users/alice",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "no to"
+	}`)
+	err := p.Process(body)
+	assert.Error(t, err)
+}

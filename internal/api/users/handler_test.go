@@ -558,6 +558,24 @@ func TestFollowing_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestShow_BulkUserIDs(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["u2"] = &model.User{ID: "u2", Username: "bob", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	rec := post(h.Show, `{"userIds":["u1","u2","ghost"]}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 2)
+}
+
+func TestShow_BulkUserIDs_Empty(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := post(h.Show, `{"userIds":[]}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
+}
+
 // --- Internal error paths via failing repos ---
 
 type failingNoteRepo struct {

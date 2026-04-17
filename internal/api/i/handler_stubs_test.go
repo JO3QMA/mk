@@ -266,6 +266,25 @@ func TestRevokeToken_UnknownTokenIsIdempotent(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+func TestRevokeToken_ByTokenHash(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	repo := testutil.NewMockAccessTokenRepository()
+	// SHA-256("mytoken") をハッシュとして登録 (map key = hash)
+	hash := "1a17ea3569204d6c4114794ca73fa257457fc0612928c7bf024801659b77dba8"
+	repo.Tokens[hash] = &model.AccessToken{ID: "at1", Hash: hash, UserID: stubUser.ID}
+	h.SetAccessTokenRepo(repo)
+	// 生tokenで失効できる
+	rec := postExtra(h.RevokeToken, `{"token":"mytoken"}`, stubUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestRevokeToken_NoParams(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	h.SetAccessTokenRepo(testutil.NewMockAccessTokenRepository())
+	// tokenId も token も空 → 400
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.RevokeToken, `{}`, stubUser).Code)
+}
+
 // stubGalleryRepo implements i.GalleryRepository.
 type stubGalleryRepo struct {
 	posts []*model.GalleryPost

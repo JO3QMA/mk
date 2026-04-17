@@ -150,7 +150,7 @@ type SearchRequest struct {
 	Offset int    `json:"offset"`
 }
 
-// My handles POST /api/i/flashs (own list).
+// My handles POST /api/i/flashs and POST /api/flash/my (own list).
 func (h *Handler) My(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginationRequest

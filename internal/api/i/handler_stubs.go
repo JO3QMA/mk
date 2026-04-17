@@ -2,8 +2,10 @@ package i
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -124,8 +126,8 @@ func (h *Handler) SigninHistory(c echo.Context) error {
 }
 
 // RevokeToken handles POST /api/i/revoke-token.
-// 指定 access_token が自分の所有であれば削除する。他ユーザーの token を
-// 渡された場合は access-denied を返し、無言削除にならないようにする。
+// TS互換: tokenId (ID) または token (ハッシュ文字列) のどちらかで指定可。
+// 指定 access_token が自分の所有であれば削除する。
 func (h *Handler) RevokeToken(c echo.Context) error {
 	if h.accessTokenRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -133,19 +135,37 @@ func (h *Handler) RevokeToken(c echo.Context) error {
 	u := middleware.GetUser(c)
 	var req struct {
 		TokenID string `json:"tokenId"`
+		Token   string `json:"token"`
 	}
-	if err := c.Bind(&req); err != nil || req.TokenID == "" {
+	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	tok, err := h.accessTokenRepo.FindByID(req.TokenID)
-	if err != nil {
-		// 既に消えている可能性 → idempotent に 204
-		return c.NoContent(http.StatusNoContent)
+	if req.TokenID == "" && req.Token == "" {
+		return apierr.JSONInvalidParam(c)
 	}
-	if tok.UserID != u.ID {
-		return apierr.JSONAccessDenied(c)
+	var tokenID string
+	if req.TokenID != "" {
+		tok, err := h.accessTokenRepo.FindByID(req.TokenID)
+		if err != nil {
+			return c.NoContent(http.StatusNoContent)
+		}
+		if tok.UserID != u.ID {
+			return apierr.JSONAccessDenied(c)
+		}
+		tokenID = tok.ID
+	} else {
+		// DBはSHA-256ハッシュを格納しているため、生tokenをハッシュ化して検索
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.Token)))
+		tok, err := h.accessTokenRepo.FindByHash(hash)
+		if err != nil {
+			return c.NoContent(http.StatusNoContent)
+		}
+		if tok.UserID != u.ID {
+			return apierr.JSONAccessDenied(c)
+		}
+		tokenID = tok.ID
 	}
-	if err := h.accessTokenRepo.DeleteByID(req.TokenID); err != nil {
+	if err := h.accessTokenRepo.DeleteByID(tokenID); err != nil {
 		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)

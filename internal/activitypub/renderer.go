@@ -97,6 +97,11 @@ func (b *URLBuilder) MoveURI(srcID, dstURI string) string {
 	return b.baseURL + "/moves/" + srcID + "/" + hex.EncodeToString(h[:16])
 }
 
+// ChatMessageURI returns the canonical URI for a chat message.
+func (b *URLBuilder) ChatMessageURI(messageID string) string {
+	return b.baseURL + "/chat-messages/" + messageID
+}
+
 // MentionResolver resolves a note.Mentions entry (user ID) into the data
 // required to build an AS Mention tag. 実装は server/router.go 側で
 // UserRepository を wrap する形で提供される。解決に失敗したら ok=false を
@@ -126,6 +131,12 @@ type NoteResolver interface {
 	FindByID(id string) (*model.Note, error)
 }
 
+// PollResolver loads a poll by its parent note ID. Used by RenderNote to
+// populate Question fields (oneOf/anyOf/endTime/closed).
+type PollResolver interface {
+	FindByNoteID(noteID string) (*model.Poll, error)
+}
+
 // actorTypeForUser returns the AP actor `type` to emit for a local user.
 // 現状: IsBot=true なら Service、それ以外は Person。Application (system actor)
 // 出力は将来のシステムアカウント機能で別経路を追加する想定。
@@ -143,6 +154,7 @@ type Renderer struct {
 	fileResolver    FileResolver
 	emojiResolver   EmojiResolver
 	noteResolver    NoteResolver
+	pollResolver    PollResolver
 	host            string // ローカルホスト名 (MFM変換用)
 }
 
@@ -160,6 +172,11 @@ func (r *Renderer) SetMentionResolver(mr MentionResolver) {
 // SetFileResolver attaches a FileResolver for Note attachment rendering.
 func (r *Renderer) SetFileResolver(fr FileResolver) {
 	r.fileResolver = fr
+}
+
+// SetPollResolver attaches a PollResolver for Question (poll) rendering.
+func (r *Renderer) SetPollResolver(pr PollResolver) {
+	r.pollResolver = pr
 }
 
 // SetEmojiResolver attaches an EmojiResolver for custom emoji tags.
@@ -222,6 +239,9 @@ func (r *Renderer) RenderPerson(u *model.User, profile *model.UserProfile, publi
 	if u.Featured != nil && *u.Featured != "" {
 		p.Featured = *u.Featured
 	}
+	p.MisskeyRequireSigninToViewContents = u.RequireSigninToViewContents
+	p.MisskeyMakeNotesFollowersOnlyBefore = u.MakeNotesFollowersOnlyBefore
+	p.MisskeyMakeNotesHiddenBefore = u.MakeNotesHiddenBefore
 
 	// profile から追加フィールドを埋める
 	if profile != nil {
@@ -361,8 +381,51 @@ func (r *Renderer) RenderNote(n *model.Note, idGen id.Generator) *Note {
 	out.To = to
 	out.CC = cc
 
+	// Poll (Question) の asPoll レンダリング。HasPoll が true かつ pollResolver
+	// が設定されている場合、Note type を "Question" に変更し、選択肢を oneOf/anyOf
+	// として出力する。upstream renderNote の asPoll 部分と同等。
+	if n.HasPoll && r.pollResolver != nil {
+		if poll, err := r.pollResolver.FindByNoteID(n.ID); err == nil {
+			r.applyPoll(out, poll)
+		}
+	}
+
 	AddContext(out)
 	return out
+}
+
+// applyPoll converts a Note into a Question by changing the type and populating
+// oneOf (single choice) or anyOf (multiple choice) + endTime/closed fields.
+func (r *Renderer) applyPoll(out *Note, poll *model.Poll) {
+	out.Type = "Question"
+	choices := make([]QuestionChoice, len(poll.Choices))
+	for i, c := range poll.Choices {
+		var count int
+		if i < len(poll.Votes) {
+			count = int(poll.Votes[i])
+		}
+		choices[i] = QuestionChoice{
+			Type: "Note",
+			Name: c,
+			Replies: &QuestionChoiceReplies{
+				Type:       "Collection",
+				TotalItems: count,
+			},
+		}
+	}
+	if poll.Multiple {
+		out.AnyOf = choices
+	} else {
+		out.OneOf = choices
+	}
+	if poll.ExpiresAt != nil {
+		ts := poll.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000Z")
+		out.EndTime = ts
+		// 期限切れの場合は closed もセット
+		if poll.ExpiresAt.Before(time.Now()) {
+			out.Closed = ts
+		}
+	}
 }
 
 // addAttachments loads drive files and adds Document entries to the note.
@@ -635,6 +698,26 @@ func (r *Renderer) RenderMove(src *model.User, dstURI string) *Move {
 	}
 	AddContext(m)
 	return m
+}
+
+// RenderChatMessage returns a CherryPick-compatible Misskey:ChatMessage
+// activity for 1-on-1 DM federation. Only used when the recipient is a remote
+// user. The activity type is `Misskey:ChatMessage` (not a standard AS type).
+func (r *Renderer) RenderChatMessage(msg *model.ChatMessage, senderURI, recipientURI string) *ChatMessageActivity {
+	cm := &ChatMessageActivity{
+		Object: Object{
+			ID:   r.urls.ChatMessageURI(msg.ID),
+			Type: "Misskey:ChatMessage",
+		},
+		Actor:        senderURI,
+		AttributedTo: senderURI,
+		To:           recipientURI,
+	}
+	if msg.Text != nil {
+		cm.Content = *msg.Text
+	}
+	AddContext(cm)
+	return cm
 }
 
 // addressing computes to/cc lists for a note based on visibility.

@@ -2,6 +2,7 @@ package stream
 
 import (
 	"encoding/json"
+	"log/slog"
 	"sync"
 )
 
@@ -21,6 +22,12 @@ type channelEntry struct {
 	topics  map[string]struct{}
 }
 
+// NotificationReader marks all notifications as read for a user. Implemented
+// by core/notification or similar service; nil disables readNotification.
+type NotificationReader interface {
+	ReadAll(userID string) error
+}
+
 // Dispatcher is the per-Connection state holding registered channels and the
 // reverse map "topic → channel id" used to route inbound pubsub events.
 //
@@ -36,6 +43,11 @@ type Dispatcher struct {
 	mu       sync.RWMutex
 	channels map[string]*channelEntry   // channel id → entry
 	topics   map[string]map[string]bool // topic → set of channel ids
+
+	// subNote の refcount 管理 (noteID → count)
+	noteSubMu   sync.Mutex
+	noteSubs    map[string]int
+	notifReader NotificationReader
 }
 
 // NewDispatcher constructs a Dispatcher for the given connection. registry /
@@ -47,7 +59,13 @@ func NewDispatcher(conn *Connection, registry *Registry, bus PubSubBus) *Dispatc
 		bus:      bus,
 		channels: make(map[string]*channelEntry),
 		topics:   make(map[string]map[string]bool),
+		noteSubs: make(map[string]int),
 	}
+}
+
+// SetNotificationReader wires a NotificationReader for readNotification.
+func (d *Dispatcher) SetNotificationReader(nr NotificationReader) {
+	d.notifReader = nr
 }
 
 // HandleClientMessage parses a Misskey-style envelope and forwards it to the
@@ -60,6 +78,15 @@ func (d *Dispatcher) HandleClientMessage(msgType string, body json.RawMessage) {
 		d.handleDisconnect(body)
 	case "ch":
 		d.handleChannelMessage(body)
+	case "readNotification":
+		d.handleReadNotification()
+	case "subNote", "s":
+		d.handleSubNote(body)
+	case "sr":
+		d.handleSubNote(body)
+		d.handleReadNotification()
+	case "unsubNote", "un":
+		d.handleUnsubNote(body)
 	}
 }
 
@@ -231,8 +258,8 @@ func (d *Dispatcher) removeChannel(id string) {
 	}
 }
 
-// CloseAll tears down every registered channel. Manager が connection close
-// 時に呼ぶ。
+// CloseAll tears down every registered channel and noteStream subscription.
+// Manager が connection close 時に呼ぶ。
 func (d *Dispatcher) CloseAll() {
 	d.mu.Lock()
 	ids := make([]string, 0, len(d.channels))
@@ -242,6 +269,19 @@ func (d *Dispatcher) CloseAll() {
 	d.mu.Unlock()
 	for _, id := range ids {
 		d.removeChannel(id)
+	}
+	// noteStream の Redis subscription もクリーンアップ
+	d.noteSubMu.Lock()
+	noteIDs := make([]string, 0, len(d.noteSubs))
+	for noteID := range d.noteSubs {
+		noteIDs = append(noteIDs, noteID)
+	}
+	d.noteSubs = make(map[string]int)
+	d.noteSubMu.Unlock()
+	if d.bus != nil {
+		for _, noteID := range noteIDs {
+			d.bus.Unsubscribe("noteStream:" + noteID)
+		}
 	}
 }
 
@@ -353,3 +393,90 @@ func (c *channelContext) Send(msgType string, body any) error {
 
 func (c *channelContext) Subscribe(topic string)   { c.dispatcher.subscribe(c.id, topic) }
 func (c *channelContext) Unsubscribe(topic string) { c.dispatcher.unsubscribe(c.id, topic) }
+
+// --- readNotification / subNote / unsubNote ---
+
+// handleReadNotification marks all notifications as read for the connected user.
+func (d *Dispatcher) handleReadNotification() {
+	if d.notifReader == nil || d.conn == nil || d.conn.User() == nil {
+		return
+	}
+	if err := d.notifReader.ReadAll(d.conn.User().ID); err != nil {
+		slog.Warn("stream: readNotification failed", "err", err)
+	}
+}
+
+// handleSubNote subscribes to note-level events (reactions, deletions, etc.)
+// for a specific note. TS互換: refcount で同一noteIDの重複subscribeを管理。
+func (d *Dispatcher) handleSubNote(body json.RawMessage) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.ID == "" {
+		return
+	}
+	topic := "noteStream:" + req.ID
+	d.noteSubMu.Lock()
+	d.noteSubs[req.ID]++
+	first := d.noteSubs[req.ID] == 1
+	d.noteSubMu.Unlock()
+
+	if first && d.bus != nil {
+		d.bus.Subscribe(topic, func(payload []byte) {
+			d.forwardNoteEvent(req.ID, payload)
+		})
+	}
+}
+
+// handleUnsubNote decrements the refcount for a note subscription and
+// unsubscribes when it reaches zero.
+func (d *Dispatcher) handleUnsubNote(body json.RawMessage) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.ID == "" {
+		return
+	}
+	topic := "noteStream:" + req.ID
+	d.noteSubMu.Lock()
+	count, ok := d.noteSubs[req.ID]
+	if !ok {
+		d.noteSubMu.Unlock()
+		return
+	}
+	count--
+	if count <= 0 {
+		delete(d.noteSubs, req.ID)
+		d.noteSubMu.Unlock()
+		if d.bus != nil {
+			d.bus.Unsubscribe(topic)
+		}
+		return
+	}
+	d.noteSubs[req.ID] = count
+	d.noteSubMu.Unlock()
+}
+
+// forwardNoteEvent sends a noteStream event directly to the connection
+// (not wrapped in a channel envelope). TS互換のトップレベル noteUpdated 形式。
+// Redis payload は {type, body} envelope で届く (reacted, deleted, pollVoted 等)。
+func (d *Dispatcher) forwardNoteEvent(noteID string, payload []byte) {
+	if d.conn == nil {
+		return
+	}
+	var env struct {
+		Type string          `json:"type"`
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil || env.Type == "" {
+		return
+	}
+	_ = d.conn.Send(map[string]any{
+		"type": "noteUpdated",
+		"body": map[string]any{
+			"id":   noteID,
+			"type": env.Type,
+			"body": env.Body,
+		},
+	})
+}

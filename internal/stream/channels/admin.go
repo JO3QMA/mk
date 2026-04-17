@@ -63,6 +63,12 @@ func (c *AdminChannel) OnRedisEvent(payload []byte) {
 
 func (c *AdminChannel) OnClientMessage(string, json.RawMessage) {}
 
+// ShouldShare implements stream.ShareableChannel.
+func (c *AdminChannel) ShouldShare() bool { return true }
+
+// RequiredPermission implements stream.PermittedChannel.
+func (c *AdminChannel) RequiredPermission() string { return "read:admin:stream" }
+
 func (c *AdminChannel) Dispose() {
 	if c.connected {
 		c.ctx.Unsubscribe("adminStream")

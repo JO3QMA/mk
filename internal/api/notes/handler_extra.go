@@ -160,14 +160,29 @@ func (h *Handler) UserListTimeline(c echo.Context) error {
 }
 
 // SearchByTag handles POST /api/notes/search-by-tag.
+// TS互換: tag (string) または query (string[][] — AND/OR組み合わせ) を受け付ける。
+// query の完全なAND/OR交差はサポートせず、最初に見つかったタグで検索する。
 func (h *Handler) SearchByTag(c echo.Context) error {
 	var req struct {
-		Tag     string `json:"tag"`
-		Limit   int    `json:"limit"`
-		SinceID string `json:"sinceId"`
-		UntilID string `json:"untilId"`
+		Tag     string     `json:"tag"`
+		Query   [][]string `json:"query"`
+		Limit   int        `json:"limit"`
+		SinceID string     `json:"sinceId"`
+		UntilID string     `json:"untilId"`
 	}
-	if err := c.Bind(&req); err != nil || req.Tag == "" {
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "tag is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	// query 配列から tag を抽出 (tag が空の場合のフォールバック)
+	if req.Tag == "" && len(req.Query) > 0 {
+		for _, inner := range req.Query {
+			if len(inner) > 0 && inner[0] != "" {
+				req.Tag = inner[0]
+				break
+			}
+		}
+	}
+	if req.Tag == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "tag is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {

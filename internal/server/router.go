@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	cryptorand "crypto/rand"
 	"io"
 	"net/http"
@@ -348,6 +349,7 @@ func (s *Server) setupRoutes() {
 	apRenderer.SetFileResolver(driveFileRepo)
 	apRenderer.SetEmojiResolver(emojiRepo)
 	apRenderer.SetNoteResolver(noteRepo)
+	apRenderer.SetPollResolver(pollRepo)
 	// config.URL は "https://example.com" 形式。ホスト部分だけ抽出する。
 	if u, err := urlpkg.Parse(s.config.URL); err == nil {
 		apRenderer.SetHost(u.Host)
@@ -1144,6 +1146,8 @@ func (s *Server) setupRoutes() {
 	api.POST("/flash/search", flashHandler.Search)
 	api.POST("/flash/like", flashHandler.Like, middleware.RequireAuth())
 	api.POST("/flash/unlike", flashHandler.Unlike, middleware.RequireAuth())
+	api.POST("/flash/my", flashHandler.My, middleware.RequireAuth())
+	api.POST("/flash/my-likes", flashHandler.MyLikes, middleware.RequireAuth())
 	api.POST("/i/flashs", flashHandler.My, middleware.RequireAuth())
 	api.POST("/i/flashs/likes", flashHandler.MyLikes, middleware.RequireAuth())
 
@@ -1172,6 +1176,8 @@ func (s *Server) setupRoutes() {
 
 	// 3. Connection manager + 各 publisher の生成
 	streamManager := stream.NewManager(streamRegistry, streamBus)
+	// readNotificationメッセージをnotificationServiceに橋渡しする
+	streamManager.SetNotificationReader(&notifReaderAdapter{svc: notificationService})
 	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)
@@ -1192,6 +1198,8 @@ func (s *Server) setupRoutes() {
 	chatPublisher := stream.NewChatPublisher(streamPubSub)
 	chatService := corechat.NewService(chatRepo, idGen)
 	chatService.SetStreamingPublisher(chatPublisher)
+	// CherryPick互換AP連合: リモートユーザー宛DMをMisskey:ChatMessageで配送
+	chatService.SetAPDelivery(userRepo, apRenderer, apURLs, deliverService)
 	streamRegistry.Register("chatRoom", channels.NewChatRoomFactory(chatService).New)
 	streamRegistry.Register("chatUser", channels.NewChatUserFactory(chatService).New)
 	// Phase 9.7: federation processor / reversi handler に reversi 依存を注入。
@@ -1204,6 +1212,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db), idGen)
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
 	federationProcessor.SetRelayMarker(relaySvc)
+	federationProcessor.SetChatService(chatService)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
@@ -1480,22 +1489,35 @@ func (s *Server) setupRoutes() {
 	api.POST("/chat/rooms/mute", chatHandler.RoomsMute, middleware.RequireAuth())
 	api.POST("/chat/rooms/unmute", chatHandler.RoomsUnmute, middleware.RequireAuth())
 	api.POST("/chat/rooms/transfer-ownership", chatHandler.RoomsTransferOwnership, middleware.RequireAuth())
+	api.POST("/chat/rooms/join", chatHandler.RoomsJoin, middleware.RequireAuth())
+	api.POST("/chat/rooms/joining", chatHandler.RoomsJoining, middleware.RequireAuth())
+	api.POST("/chat/rooms/members", chatHandler.RoomsMembers, middleware.RequireAuth())
 	api.POST("/chat/rooms/invitations/create", chatHandler.InvitationsCreate, middleware.RequireAuth())
 	api.POST("/chat/rooms/invitations/delete", chatHandler.InvitationsDelete, middleware.RequireAuth())
 	api.POST("/chat/rooms/invitations/accept", chatHandler.InvitationsAccept, middleware.RequireAuth())
 	api.POST("/chat/rooms/invitations/reject", chatHandler.InvitationsReject, middleware.RequireAuth())
+	api.POST("/chat/rooms/invitations/ignore", chatHandler.InvitationsIgnore, middleware.RequireAuth())
+	api.POST("/chat/rooms/invitations/inbox", chatHandler.InvitationsInbox, middleware.RequireAuth())
+	api.POST("/chat/rooms/invitations/outbox", chatHandler.InvitationsOutbox, middleware.RequireAuth())
 	api.POST("/chat/rooms/members/ban", chatHandler.MembersBan, middleware.RequireAuth())
 	api.POST("/chat/rooms/members/update-membership", chatHandler.MembersUpdateMembership, middleware.RequireAuth())
 	api.POST("/chat/messages", chatHandler.Messages, middleware.RequireAuth())
 	api.POST("/chat/messages/create", chatHandler.MessagesCreate, middleware.RequireAuth())
+	api.POST("/chat/messages/create-to-user", chatHandler.MessagesCreateToUser, middleware.RequireAuth())
+	api.POST("/chat/messages/create-to-room", chatHandler.MessagesCreateToRoom, middleware.RequireAuth())
 	api.POST("/chat/messages/show", chatHandler.MessagesShow, middleware.RequireAuth())
 	api.POST("/chat/messages/update", chatHandler.MessagesUpdate, middleware.RequireAuth())
 	api.POST("/chat/messages/delete", chatHandler.MessagesDelete, middleware.RequireAuth())
 	api.POST("/chat/messages/read", chatHandler.MessagesRead, middleware.RequireAuth())
 	api.POST("/chat/messages/search", chatHandler.MessagesSearch, middleware.RequireAuth())
+	api.POST("/chat/messages/user-timeline", chatHandler.UserTimeline, middleware.RequireAuth())
+	api.POST("/chat/messages/room-timeline", chatHandler.RoomTimeline, middleware.RequireAuth())
+	api.POST("/chat/messages/react", chatHandler.ReactionsCreate, middleware.RequireAuth())
+	api.POST("/chat/messages/unreact", chatHandler.ReactionsDelete, middleware.RequireAuth())
 	api.POST("/chat/messages/reactions/create", chatHandler.ReactionsCreate, middleware.RequireAuth())
 	api.POST("/chat/messages/reactions/delete", chatHandler.ReactionsDelete, middleware.RequireAuth())
 	api.POST("/chat/history", chatHandler.History, middleware.RequireAuth())
+	api.POST("/chat/read-all", chatHandler.ReadAll, middleware.RequireAuth())
 	api.POST("/chat/unread-count", chatHandler.UnreadCount, middleware.RequireAuth())
 
 	// --- Phase P3: 補助公開エンドポイント ---
@@ -1730,6 +1752,61 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, out)
 	}, middleware.RequireAuth())
 
+	// invite/delete — 自分が作成した招待コード削除
+	api.POST("/invite/delete", func(c echo.Context) error {
+		user := middleware.GetUser(c)
+		var req struct {
+			InviteID string `json:"inviteId"`
+		}
+		if err := c.Bind(&req); err != nil || req.InviteID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "inviteId is required.", "code": "INVALID_PARAM", "id": "3d81ceae-475f-4600-b2a8-2bc116157532"}})
+		}
+		var ticket model.RegistrationTicket
+		if err := s.db.Where("id = ?", req.InviteID).First(&ticket).Error; err != nil {
+			return c.NoContent(http.StatusNoContent)
+		}
+		if ticket.CreatedByID == nil || *ticket.CreatedByID != user.ID {
+			return c.JSON(http.StatusForbidden, map[string]any{"error": map[string]any{"message": "Access denied.", "code": "ACCESS_DENIED", "id": "1fb7cb09-d46a-4fff-b8df-057708cce513"}})
+		}
+		if err := s.db.Where("id = ?", req.InviteID).Delete(&model.RegistrationTicket{}).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": "Internal error.", "code": "INTERNAL_ERROR", "id": "5d37dbcb-891e-41ca-a3d6-e690c97775ac"}})
+		}
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// invite/limit — 残り招待枠を返す (policies から取得、簡易実装)
+	api.POST("/invite/limit", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"remaining": 0,
+		})
+	}, middleware.RequireAuth())
+
+	// notes (plain) — bulk note lookup by noteIds
+	api.POST("/notes", notesHandler.BulkShow)
+
+	// export-custom-emojis — zip export (complex, stub)
+	api.POST("/export-custom-emojis", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// fetch-external-resources — URL proxy (stub)
+	api.POST("/fetch-external-resources", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"type": "unknown", "data": map[string]any{}})
+	})
+
+	// fetch-rss — RSS parser (stub)
+	api.POST("/fetch-rss", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"items": []any{}})
+	})
+
+	// page-push — push event to page subscribers (stub)
+	api.POST("/page-push", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// v2/admin/emoji/list — v2 paginated emoji list (delegates to existing admin handler)
+	api.POST("/v2/admin/emoji/list", adminHandler.EmojiList, middleware.RequireAdmin(roleService))
+
 	// --- その他の残りエンドポイント ---
 	// test — フロントエンドのテスト用
 	api.POST("/test", func(c echo.Context) error {
@@ -1832,4 +1909,14 @@ func (s *gormTicketStore) MarkUsed(ticketID, userID string) error {
 		"usedById": userID,
 		"usedAt":   now,
 	}).Error
+}
+
+// notifReaderAdapter bridges stream.NotificationReader to
+// core/notification.Service.MarkAllAsRead.
+type notifReaderAdapter struct {
+	svc *corenotification.Service
+}
+
+func (a *notifReaderAdapter) ReadAll(userID string) error {
+	return a.svc.MarkAllAsRead(context.Background(), userID)
 }
