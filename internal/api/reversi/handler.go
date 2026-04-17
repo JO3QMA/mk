@@ -276,7 +276,7 @@ func (h *Handler) Surrender(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	}
 	if game.User1ID != user.ID && game.User2ID != user.ID {
-		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	}
 	var winnerID string
 	if game.User1ID == user.ID {
@@ -324,7 +324,7 @@ func surrenderErrorResponse(c echo.Context, err error) error {
 	case errors.Is(err, corereversi.ErrGameNotFound):
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	case errors.Is(err, corereversi.ErrNotPlayer):
-		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	case errors.Is(err, corereversi.ErrAlreadyEnded):
 		return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_ENDED", "Game has already ended.", "2a3a7f72-bc06-4f4e-9f7c-b7f8d4f6a09e"))
 	case errors.Is(err, corereversi.ErrNotStarted):
