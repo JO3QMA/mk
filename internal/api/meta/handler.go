@@ -139,14 +139,14 @@ func (h *Handler) Meta(c echo.Context) error {
 	// proxyAccountName / sentryForFrontend のみ省く。登録/captcha/ads等は含める。
 	if !detail {
 		omit := map[string]struct{}{
-			"features":              {},
-			"policies":              {},
-			"clientOptions":         {},
-			"proxyAccountName":      {},
-			"sentryForFrontend":     {},
-			"noteSearchableScope":   {},
-			"providesTarball":       {},
-			"singleUserMode":        {},
+			"features":            {},
+			"policies":            {},
+			"clientOptions":       {},
+			"proxyAccountName":    {},
+			"sentryForFrontend":   {},
+			"noteSearchableScope": {},
+			"providesTarball":     {},
+			"singleUserMode":      {},
 		}
 		lite := make(map[string]any, len(resp))
 		for k, v := range resp {

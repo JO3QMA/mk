@@ -2,8 +2,10 @@ package i
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -152,7 +154,9 @@ func (h *Handler) RevokeToken(c echo.Context) error {
 		}
 		tokenID = tok.ID
 	} else {
-		tok, err := h.accessTokenRepo.FindByHash(req.Token)
+		// DBはSHA-256ハッシュを格納しているため、生tokenをハッシュ化して検索
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.Token)))
+		tok, err := h.accessTokenRepo.FindByHash(hash)
 		if err != nil {
 			return c.NoContent(http.StatusNoContent)
 		}
