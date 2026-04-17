@@ -1145,6 +1145,8 @@ func (s *Server) setupRoutes() {
 	api.POST("/flash/search", flashHandler.Search)
 	api.POST("/flash/like", flashHandler.Like, middleware.RequireAuth())
 	api.POST("/flash/unlike", flashHandler.Unlike, middleware.RequireAuth())
+	api.POST("/flash/my", flashHandler.My, middleware.RequireAuth())
+	api.POST("/flash/my-likes", flashHandler.MyLikes, middleware.RequireAuth())
 	api.POST("/i/flashs", flashHandler.My, middleware.RequireAuth())
 	api.POST("/i/flashs/likes", flashHandler.MyLikes, middleware.RequireAuth())
 
@@ -1746,6 +1748,81 @@ func (s *Server) setupRoutes() {
 		}
 		return c.JSON(http.StatusOK, out)
 	}, middleware.RequireAuth())
+
+	// invite/delete — 自分が作成した招待コード削除
+	api.POST("/invite/delete", func(c echo.Context) error {
+		user := middleware.GetUser(c)
+		var req struct {
+			InviteID string `json:"inviteId"`
+		}
+		if err := c.Bind(&req); err != nil || req.InviteID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "inviteId is required.", "code": "INVALID_PARAM", "id": "3d81ceae-475f-4600-b2a8-2bc116157532"}})
+		}
+		var ticket model.RegistrationTicket
+		if err := s.db.Where("id = ?", req.InviteID).First(&ticket).Error; err != nil {
+			return c.NoContent(http.StatusNoContent)
+		}
+		if ticket.CreatedByID == nil || *ticket.CreatedByID != user.ID {
+			return c.JSON(http.StatusForbidden, map[string]any{"error": map[string]any{"message": "Access denied.", "code": "ACCESS_DENIED", "id": "1fb7cb09-d46a-4fff-b8df-057708cce513"}})
+		}
+		s.db.Where("id = ?", req.InviteID).Delete(&model.RegistrationTicket{})
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// invite/limit — 残り招待枠を返す (policies から取得、簡易実装)
+	api.POST("/invite/limit", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"remaining": 0,
+		})
+	}, middleware.RequireAuth())
+
+	// notes (plain) — bulk note lookup by noteIds
+	api.POST("/notes", func(c echo.Context) error {
+		var req struct {
+			NoteIDs []string `json:"noteIds"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "Invalid param.", "code": "INVALID_PARAM", "id": "3d81ceae-475f-4600-b2a8-2bc116157532"}})
+		}
+		if len(req.NoteIDs) == 0 {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		if len(req.NoteIDs) > 100 {
+			req.NoteIDs = req.NoteIDs[:100]
+		}
+		notes, err := noteRepo.FindManyByIDsWithUser(req.NoteIDs)
+		if err != nil {
+			return c.JSON(http.StatusOK, []any{})
+		}
+		out := make([]entity.NoteEntity, 0, len(notes))
+		for _, n := range notes {
+			out = append(out, entity.PackNote(n, idGen))
+		}
+		return c.JSON(http.StatusOK, out)
+	})
+
+	// export-custom-emojis — zip export (complex, stub)
+	api.POST("/export-custom-emojis", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// fetch-external-resources — URL proxy (stub)
+	api.POST("/fetch-external-resources", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"type": "unknown", "data": map[string]any{}})
+	})
+
+	// fetch-rss — RSS parser (stub)
+	api.POST("/fetch-rss", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"items": []any{}})
+	})
+
+	// page-push — push event to page subscribers (stub)
+	api.POST("/page-push", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, middleware.RequireAuth())
+
+	// v2/admin/emoji/list — v2 paginated emoji list (delegates to existing admin handler)
+	api.POST("/v2/admin/emoji/list", adminHandler.EmojiList, middleware.RequireAdmin(roleService))
 
 	// --- その他の残りエンドポイント ---
 	// test — フロントエンドのテスト用
