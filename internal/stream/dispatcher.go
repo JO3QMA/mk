@@ -80,8 +80,11 @@ func (d *Dispatcher) HandleClientMessage(msgType string, body json.RawMessage) {
 		d.handleChannelMessage(body)
 	case "readNotification":
 		d.handleReadNotification()
-	case "subNote", "s", "sr":
+	case "subNote", "s":
 		d.handleSubNote(body)
+	case "sr":
+		d.handleSubNote(body)
+		d.handleReadNotification()
 	case "unsubNote", "un":
 		d.handleUnsubNote(body)
 	}
