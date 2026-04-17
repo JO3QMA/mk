@@ -442,6 +442,7 @@ func (h *Handler) Conversation(c echo.Context) error {
 }
 
 // BulkShow handles POST /api/notes — bulk note lookup by noteIds.
+// visibility チェックを通して非公開ノートの漏洩を防ぐ。
 func (h *Handler) BulkShow(c echo.Context) error {
 	var req struct {
 		NoteIDs []string `json:"noteIds"`
@@ -460,6 +461,9 @@ func (h *Handler) BulkShow(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	viewer := middleware.GetUser(c)
+	if h.queryService != nil {
+		notes = h.queryService.FilterVisible(viewer, notes)
+	}
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
 

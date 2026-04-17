@@ -160,6 +160,12 @@ type NoteState struct {
 	IsMutedThread bool `json:"isMutedThread"`
 }
 
+// FilterVisible drops notes the viewer cannot see. Public API for use by
+// handlers that perform bulk lookups outside of QueryService (e.g. BulkShow).
+func (s *QueryService) FilterVisible(viewer *model.User, rows []*model.Note) []*model.Note {
+	return s.filterVisible(viewer, rows)
+}
+
 // filterVisible drops notes the viewer cannot see.
 func (s *QueryService) filterVisible(viewer *model.User, rows []*model.Note) []*model.Note {
 	out := make([]*model.Note, 0, len(rows))
