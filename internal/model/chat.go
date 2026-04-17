@@ -26,8 +26,6 @@ type ChatMessage struct {
 	Reads      pq.StringArray `gorm:"column:reads;type:varchar(32)[];default:'{}'" json:"reads"`
 	FileID     *string        `gorm:"column:fileId;type:varchar(32)" json:"fileId"`
 	Reactions  pq.StringArray `gorm:"column:reactions;type:varchar(1024)[];default:'{}'" json:"reactions"`
-	// CherryPick連合用カラム: リモートインスタンスへのDM配送状態を管理する。
-	// ローカル同士のメッセージでは使用されない (デフォルト値のまま)。
 	Emojis          pq.StringArray `gorm:"column:emojis;type:varchar(128)[];default:'{}'" json:"emojis"`
 	IsDelivering    bool           `gorm:"column:isDelivering;default:false" json:"isDelivering"`
 	IsDeliverFailed bool           `gorm:"column:isDeliverFailed;default:false" json:"isDeliverFailed"`
@@ -65,9 +63,8 @@ type ChatRoomInvitation struct {
 
 func (ChatRoomInvitation) TableName() string { return "chat_room_invitation" }
 
-// ChatApproval represents the `chat_approval` table.
-// 1対1チャットの個別許可を管理する。User.ChatScopeによる全体設定を
-// オーバーライドして特定の相手からのDMを許可する。
+// ChatApproval represents the `chat_approval` table. It manages per-user
+// overrides for 1-on-1 chat permissions (works with User.ChatScope).
 type ChatApproval struct {
 	ID      string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
 	UserID  string `gorm:"column:userId;type:varchar(32);not null" json:"userId"`
@@ -79,8 +76,8 @@ type ChatApproval struct {
 
 func (ChatApproval) TableName() string { return "chat_approval" }
 
-// UserPending represents the `user_pending` table.
-// 招待制登録でメール確認待ちのユーザーを保持する。
+// UserPending represents the `user_pending` table. It holds users awaiting
+// email confirmation during invite-based registration.
 type UserPending struct {
 	ID       string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
 	Code     string `gorm:"column:code;type:varchar(128);not null;uniqueIndex" json:"code"`

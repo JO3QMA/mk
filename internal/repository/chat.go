@@ -46,10 +46,11 @@ type ChatRepository interface {
 	ListInvitationsByUser(userID string, ignored bool) ([]*model.ChatRoomInvitation, error)
 	ListInvitationsByRoom(roomID string) ([]*model.ChatRoomInvitation, error)
 
-	// Delivery status (CherryPick連合用)
+	// UpdateDeliveryStatus sets the AP delivery flags on a chat message.
 	UpdateDeliveryStatus(messageID string, delivering, failed bool) error
 
-	// History: 1対1とルームの最新メッセージ混合取得
+	// ListHistory returns the most recent message per conversation (DM + room)
+	// involving userID, ordered by recency.
 	ListHistory(userID string, limit int) ([]*model.ChatMessage, error)
 
 	// Mark all as read
@@ -249,7 +250,7 @@ func (r *chatRepository) UpdateDeliveryStatus(messageID string, delivering, fail
 }
 
 // ListHistory returns the most recent message per conversation (1-on-1 or
-// room) involving userID. DISTINCT ONで会話ごとの最新1件を抽出する。
+// room) involving userID, using DISTINCT ON to pick one row per conversation.
 func (r *chatRepository) ListHistory(userID string, limit int) ([]*model.ChatMessage, error) {
 	if limit <= 0 {
 		limit = 10
