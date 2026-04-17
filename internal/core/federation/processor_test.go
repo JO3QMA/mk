@@ -1012,8 +1012,8 @@ func (s *stubChatReceiver) CreateMessageViaAP(_ context.Context, uri string, fro
 
 func TestProcess_ChatMessage_HappyPath(t *testing.T) {
 	p, repo, _, _ := newProcessor(t, aliceActor)
-	bobURI := "https://example.com/users/bob"
-	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+	// ローカルユーザーはURI==nil (本番と同じ)。ExtractLocalUserID→FindByIDで解決。
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
 	chatSvc := &stubChatReceiver{}
 	p.SetChatService(chatSvc)
 

@@ -933,12 +933,16 @@ func (p *Processor) handleChatMessage(act genericActivity) error {
 	if err != nil {
 		return fmt.Errorf("chat message: resolve sender: %w", err)
 	}
-	// to (受信者) をローカルユーザーとして検索
+	// ローカルユーザーはDB上URI==nilのためFindByURIでは解決できない。
+	// handleAcceptと同じパターンでExtractLocalUserID→FindByIDにフォールバック。
 	recipient, err := p.userRepo.FindByURI(raw.To)
 	if err != nil {
-		// URI で見つからない場合 ID で試す (ローカルユーザーの URI は
-		// /users/{id} 形式のため直接 FindByID でも解決できる)
-		return fmt.Errorf("chat message: resolve recipient: %w", err)
+		if localID := p.resolver.ExtractLocalUserID(raw.To); localID != "" {
+			recipient, err = p.userRepo.FindByID(localID)
+		}
+		if err != nil {
+			return fmt.Errorf("chat message: resolve recipient: %w", err)
+		}
 	}
 	if !recipient.IsLocal() {
 		return fmt.Errorf("chat message: recipient %s is not local", raw.To)
