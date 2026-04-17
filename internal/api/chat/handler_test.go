@@ -129,6 +129,19 @@ func (m *mockChatRepo) FindInvitation(userID, roomID string) (*model.ChatRoomInv
 }
 func (m *mockChatRepo) CountUnread(_ string) (int64, error) { return 0, nil }
 func (m *mockChatRepo) MarkRead(_, _ string) error          { return nil }
+func (m *mockChatRepo) ListInvitationsByUser(_ string, _ bool) ([]*model.ChatRoomInvitation, error) {
+	return nil, nil
+}
+func (m *mockChatRepo) ListInvitationsByRoom(_ string) ([]*model.ChatRoomInvitation, error) {
+	return nil, nil
+}
+func (m *mockChatRepo) UpdateDeliveryStatus(_ string, _, _ bool) error { return nil }
+func (m *mockChatRepo) ListHistory(_ string, _ int) ([]*model.ChatMessage, error) {
+	return nil, nil
+}
+func (m *mockChatRepo) MarkAllRead(_ string) error       { return nil }
+func (m *mockChatRepo) AddReaction(_, _ string) error    { return nil }
+func (m *mockChatRepo) RemoveReaction(_, _ string) error { return nil }
 
 func newTestHandler() (*Handler, *mockChatRepo) {
 	repo := newMock()
