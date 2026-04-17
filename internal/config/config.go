@@ -308,8 +308,8 @@ func bindEnvKeys(v *viper.Viper) {
 		"enableIpRateLimit",
 		"mediaProxy",
 		"logging.sql",
-		"sentryForBackend.dsn",
-		"sentryForBackend.environment",
+		"sentryForBackend.options.dsn",
+		"sentryForBackend.options.environment",
 	}
 	for _, k := range keys {
 		_ = v.BindEnv(k)
