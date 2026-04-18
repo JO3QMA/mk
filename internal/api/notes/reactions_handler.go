@@ -73,11 +73,11 @@ func (h *Handler) ReactionsDelete(c echo.Context) error {
 
 // ReactionsListRequest is the request body for notes/reactions.
 type ReactionsListRequest struct {
-	NoteID  string `json:"noteId"`
-	Type    string `json:"type"`
-	Limit   int    `json:"limit"`
-	SinceID string `json:"sinceId"`
-	UntilID string `json:"untilId"`
+	NoteID  string `json:"noteId" query:"noteId"`
+	Type    string `json:"type" query:"type"`
+	Limit   int    `json:"limit" query:"limit"`
+	SinceID string `json:"sinceId" query:"sinceId"`
+	UntilID string `json:"untilId" query:"untilId"`
 }
 
 // Reactions handles POST /api/notes/reactions.
