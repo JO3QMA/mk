@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/reaction"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
@@ -72,11 +73,11 @@ func (h *Handler) ReactionsDelete(c echo.Context) error {
 
 // ReactionsListRequest is the request body for notes/reactions.
 type ReactionsListRequest struct {
-	NoteID  string `json:"noteId"`
-	Type    string `json:"type"`
-	Limit   int    `json:"limit"`
-	SinceID string `json:"sinceId"`
-	UntilID string `json:"untilId"`
+	NoteID  string `json:"noteId" query:"noteId"`
+	Type    string `json:"type" query:"type"`
+	Limit   int    `json:"limit" query:"limit"`
+	SinceID string `json:"sinceId" query:"sinceId"`
+	UntilID string `json:"untilId" query:"untilId"`
 }
 
 // Reactions handles POST /api/notes/reactions.
@@ -108,10 +109,14 @@ func (h *Handler) Reactions(c echo.Context) error {
 		if t, err := h.idGen.ParseTime(r.ID); err == nil {
 			createdAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
 		}
+		var userField any = map[string]any{"id": r.UserID}
+		if r.User != nil {
+			userField = entity.PackUserLite(r.User)
+		}
 		out = append(out, map[string]any{
 			"id":        r.ID,
 			"createdAt": createdAt,
-			"user":      map[string]any{"id": r.UserID},
+			"user":      userField,
 			"type":      r.Reaction,
 		})
 	}

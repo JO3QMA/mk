@@ -39,7 +39,7 @@ func NewEmojiRepository(db *gorm.DB) EmojiRepository {
 
 func (r *emojiRepository) ListLocal() ([]*model.Emoji, error) {
 	var emojis []*model.Emoji
-	if err := r.db.Where("host IS NULL").Find(&emojis).Error; err != nil {
+	if err := r.db.Where("host IS NULL").Order("category ASC, name ASC").Find(&emojis).Error; err != nil {
 		return nil, err
 	}
 	return emojis, nil
