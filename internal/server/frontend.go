@@ -18,11 +18,12 @@ import (
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
-// frontendHTML generates the HTML shell for the Misskey frontend.
-// ビルド済みアセットがある場合は CLIENT_ENTRY を設定して production モードで配信。
-// なければ Vite dev server 経由の development モードで配信。
-// proxyAccountResolverは/api/metaのproxyAccountNameフィールド解決用で、
-// nilを渡すとその値はnullになる (pre-setup等)。
+// frontendHTML generates the HTML shell for the Misskey frontend. When a
+// built asset bundle is present the HTML wires CLIENT_ENTRY for production
+// mode; otherwise it falls back to the Vite dev-server path.
+// proxyAccountResolver is used to populate the embedded meta JSON's
+// proxyAccountName field; passing nil leaves the value as null (appropriate
+// for pre-setup instances).
 func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository, proxyAccountResolver meta.ProxyAccountResolver) echo.HandlerFunc {
 	// ビルド済みアセットからCLIENT_ENTRYを取得
 	clientEntry := frontendutil.DetectClientEntry()
@@ -205,10 +206,12 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta, proxyAccountResolver meta.
 	return string(data)
 }
 
-// newProxyAccountResolverはtype='proxy'のsystem_accountから対応する
-// user.usernameを解決するmeta.ProxyAccountResolverを返す。読み取り専用で、
-// 未作成なら(_, false)を返す (TS版のfetchは未存在時に作成するが、
-// /api/metaの副作用として自動作成するのは避け、明示セットアップ経由に寄せる)。
+// newProxyAccountResolver returns a ProxyAccountResolver that looks up the
+// system_account with type='proxy' and resolves the corresponding username.
+// Read-only: if the row does not exist yet (_, false) is returned.
+// 本家TSのsystemAccountService.fetchは未存在時に自動作成するが、/api/metaの
+// 副作用としてシステムアカウントが勝手に生成されるのを避けるため、Go側は
+// 明示セットアップ経路 (admin系エンドポイント) に生成を寄せている。
 func newProxyAccountResolver(saRepo repository.SystemAccountRepository, userRepo repository.UserRepository) meta.ProxyAccountResolver {
 	return func() (string, bool) {
 		sa, err := saRepo.FindByType("proxy")
@@ -223,10 +226,10 @@ func newProxyAccountResolver(saRepo repository.SystemAccountRepository, userRepo
 	}
 }
 
-// resolveProxyAccountNameForSSRはSSR埋め込みJSON向けのproxy account名解決。
-// /api/meta の resolveProxyAccountName と同じ挙動 (meta.ProxyAccountResolver は
-// meta パッケージ定義なのでロジックは共有されるが、SSR 側は独自の nil-safe
-// ラッパーで呼ぶ)。
+// resolveProxyAccountNameForSSR resolves the proxy account name for the
+// SSR-embedded meta JSON. Mirrors the behavior of resolveProxyAccountName
+// in the meta package; returns nil when the resolver is absent or lookup
+// fails so the JSON field serializes as null.
 func resolveProxyAccountNameForSSR(r meta.ProxyAccountResolver) any {
 	if r == nil {
 		return nil
