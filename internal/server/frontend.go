@@ -18,10 +18,13 @@ import (
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
-// frontendHTML generates the HTML shell for the Misskey frontend.
-// ビルド済みアセットがある場合は CLIENT_ENTRY を設定して production モードで配信。
-// なければ Vite dev server 経由の development モードで配信。
-func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.HandlerFunc {
+// frontendHTML generates the HTML shell for the Misskey frontend. When a
+// built asset bundle is present the HTML wires CLIENT_ENTRY for production
+// mode; otherwise it falls back to the Vite dev-server path.
+// proxyAccountResolver is used to populate the embedded meta JSON's
+// proxyAccountName field; passing nil leaves the value as null (appropriate
+// for pre-setup instances).
+func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository, proxyAccountResolver meta.ProxyAccountResolver) echo.HandlerFunc {
 	// ビルド済みアセットからCLIENT_ENTRYを取得
 	clientEntry := frontendutil.DetectClientEntry()
 
@@ -50,7 +53,7 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 			if m.MascotImageURL != nil && *m.MascotImageURL != "" {
 				mascotURL = *m.MascotImageURL
 			}
-			metaJSON = buildMetaJSON(cfg, m)
+			metaJSON = buildMetaJSON(cfg, m, proxyAccountResolver)
 		}
 
 		// CLIENT_ENTRYの設定
@@ -111,7 +114,7 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 // buildMetaJSON constructs the /api/meta equivalent JSON for inline embedding.
 // /api/meta ハンドラ (meta/handler.go) と完全に同じフィールドを返す。
 // フロントエンドはこのJSONを先に読んで /api/meta の呼び出しを省略する。
-func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
+func buildMetaJSON(cfg *config.Config, m *model.Meta, proxyAccountResolver meta.ProxyAccountResolver) string {
 	// mascotImageUrl フォールバック
 	mascot := "/assets/ai.png"
 	if m.MascotImageURL != nil && *m.MascotImageURL != "" {
@@ -171,15 +174,15 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
 		"requireSetup":                 m.RootUserID == nil,
 		"singleUserMode":               m.SingleUserMode,
-		"providesTarball":              false,
+		"providesTarball":              cfg.PublishTarballInsteadOfProvideRepositoryUrl,
 		"maxFileSize":                  cfg.MaxFileSize,
-		"proxyAccountName":             nil,
+		"proxyAccountName":             resolveProxyAccountNameForSSR(proxyAccountResolver),
 		"noteSearchableScope":          meta.NoteSearchableScope(cfg.Meilisearch),
 		"enableMcaptcha":               m.EnableMcaptcha,
 		"mcaptchaSiteKey":              m.McaptchaSiteKey,
 		"mcaptchaInstanceUrl":          m.McaptchaInstanceURL,
 		"enableTestcaptcha":            m.EnableTestcaptcha,
-		"sentryForFrontend":            nil,
+		"sentryForFrontend":            sentryForFrontendForSSR(cfg.SentryForFrontend),
 		"googleAnalyticsMeasurementId": m.GoogleAnalyticsMeasurementID,
 		"clientOptions":                clientOptionsJSON(m.ClientOptions),
 		"policies":                     role.DefaultPolicies(),
@@ -201,6 +204,50 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+// newProxyAccountResolver returns a ProxyAccountResolver that looks up the
+// system_account with type='proxy' and resolves the corresponding username.
+// Read-only: if the row does not exist yet (_, false) is returned.
+// 本家TSのsystemAccountService.fetchは未存在時に自動作成するが、/api/metaの
+// 副作用としてシステムアカウントが勝手に生成されるのを避けるため、Go側は
+// 明示セットアップ経路 (admin系エンドポイント) に生成を寄せている。
+func newProxyAccountResolver(saRepo repository.SystemAccountRepository, userRepo repository.UserRepository) meta.ProxyAccountResolver {
+	return func() (string, bool) {
+		sa, err := saRepo.FindByType("proxy")
+		if err != nil || sa == nil {
+			return "", false
+		}
+		user, err := userRepo.FindByID(sa.UserID)
+		if err != nil || user == nil {
+			return "", false
+		}
+		return user.Username, true
+	}
+}
+
+// resolveProxyAccountNameForSSR resolves the proxy account name for the
+// SSR-embedded meta JSON. Mirrors the behavior of resolveProxyAccountName
+// in the meta package; returns nil when the resolver is absent or lookup
+// fails so the JSON field serializes as null.
+func resolveProxyAccountNameForSSR(r meta.ProxyAccountResolver) any {
+	if r == nil {
+		return nil
+	}
+	name, ok := r()
+	if !ok {
+		return nil
+	}
+	return name
+}
+
+// sentryForFrontendForSSR normalizes config.SentryForFrontend for SSR embed.
+// Empty map == null (TS: `?? null`).
+func sentryForFrontendForSSR(m map[string]any) any {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // clientOptionsJSON normalizes a jsonb byte slice into map[string]any.

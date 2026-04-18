@@ -166,6 +166,12 @@ type Source struct {
 	// backend itself does not consume it; downstream API handlers may forward
 	// it to the frontend bundle. map[string]any keeps the YAML shape as-is.
 	SentryForFrontend map[string]any `mapstructure:"sentryForFrontend"`
+
+	// PublishTarballInsteadOfProvideRepositoryUrl mirrors the upstream Misskey
+	// YAML flag. When true, the frontend treats the release as a tarball
+	// distribution rather than pointing at the source repository URL. Exposed
+	// via /api/meta.providesTarball.
+	PublishTarballInsteadOfProvideRepositoryUrl bool `mapstructure:"publishTarballInsteadOfProvideRepositoryUrl"`
 }
 
 // Config represents the resolved application configuration.
@@ -252,6 +258,10 @@ type Config struct {
 	// SentryForFrontend is forwarded as-is to clients that need it (parsed
 	// for YAML compatibility; the Go backend itself does not consume it).
 	SentryForFrontend map[string]any
+
+	// PublishTarballInsteadOfProvideRepositoryUrl is exposed to clients via
+	// /api/meta.providesTarball. See the Source struct for details.
+	PublishTarballInsteadOfProvideRepositoryUrl bool
 }
 
 const defaultMaxFileSize int64 = 262144000
@@ -436,6 +446,8 @@ func resolve(src *Source) (*Config, error) {
 
 		SentryForBackend:  src.SentryForBackend,
 		SentryForFrontend: src.SentryForFrontend,
+
+		PublishTarballInsteadOfProvideRepositoryUrl: src.PublishTarballInsteadOfProvideRepositoryUrl,
 	}
 
 	if cfg.TestMode {

@@ -524,6 +524,8 @@ func (s *Server) setupRoutes() {
 	// Meta endpoint (public)
 	metaHandler := meta.NewHandler(s.config, metaRepo)
 	metaHandler.SetAdRepo(repository.NewAdRepository(s.db))
+	proxyAccountResolver := newProxyAccountResolver(repository.NewSystemAccountRepository(s.db), userRepo)
+	metaHandler.SetProxyAccountResolver(proxyAccountResolver)
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
 
@@ -1875,7 +1877,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
-	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
+	s.echo.GET("/*", frontendHTML(s.config, metaRepo, proxyAccountResolver))
 }
 
 // generateInviteCode creates a random invite code string.

@@ -473,3 +473,136 @@ func TestPolicyBool(t *testing.T) {
 		})
 	}
 }
+
+// --- Phase 7-5c follow-up (#256): providesTarball / sentryForFrontend /
+//     proxyAccountName のフィールド追加 ---
+
+// providesTarballはconfig.PublishTarballInsteadOfProvideRepositoryUrlをそのまま返す。
+func TestMeta_ProvidesTarball(t *testing.T) {
+	cfg := &config.Config{
+		Version: "2026.3.2",
+		URL:     "https://misskey.example.com",
+		PublishTarballInsteadOfProvideRepositoryUrl: true,
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	h := NewHandler(cfg, metaRepo)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["providesTarball"])
+}
+
+func TestMeta_ProvidesTarball_DefaultFalse(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["providesTarball"])
+}
+
+// sentryForFrontendはconfig.SentryForFrontend mapをそのまま返し、空なら null。
+func TestMeta_SentryForFrontend_Populated(t *testing.T) {
+	cfg := &config.Config{
+		Version: "2026.3.2",
+		URL:     "https://misskey.example.com",
+		SentryForFrontend: map[string]any{
+			"options": map[string]any{"dsn": "https://sentry.example/1"},
+		},
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	h := NewHandler(cfg, metaRepo)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	sentry, ok := resp["sentryForFrontend"].(map[string]any)
+	require.True(t, ok)
+	opts, _ := sentry["options"].(map[string]any)
+	assert.Equal(t, "https://sentry.example/1", opts["dsn"])
+}
+
+func TestMeta_SentryForFrontend_EmptyReturnsNil(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Nil(t, resp["sentryForFrontend"])
+}
+
+// proxyAccountNameはresolverが値を返せばそれをexpose、解決不能ならnull。
+func TestMeta_ProxyAccountName_Resolved(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"}
+	h.SetProxyAccountResolver(func() (string, bool) {
+		return "instance.proxy", true
+	})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "instance.proxy", resp["proxyAccountName"])
+}
+
+func TestMeta_ProxyAccountName_ResolverReturnsFalse(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"}
+	h.SetProxyAccountResolver(func() (string, bool) { return "", false })
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Nil(t, resp["proxyAccountName"])
+}
+
+func TestMeta_ProxyAccountName_NoResolver(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.Meta = &model.Meta{ID: "x"}
+	// resolver未設定時はnil返却 (tests / pre-setup でのデフォルト動作)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Nil(t, resp["proxyAccountName"])
+}
