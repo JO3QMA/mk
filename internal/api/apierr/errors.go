@@ -101,3 +101,58 @@ func CannotRenoteDueToVisibility() map[string]any {
 func NoSuchChannel() map[string]any {
 	return Error("NO_SUCH_CHANNEL", "No such channel.", UUIDNoSuchChannel)
 }
+
+// CannotRenoteToAPureRenote returns a 403 CANNOT_RENOTE_TO_A_PURE_RENOTE response.
+func CannotRenoteToAPureRenote() map[string]any {
+	return Error("CANNOT_RENOTE_TO_A_PURE_RENOTE", "You can not Renote a pure Renote.", UUIDCannotRenoteToAPureRenote)
+}
+
+// CannotReplyToAPureRenote returns a 403 CANNOT_REPLY_TO_A_PURE_RENOTE response.
+func CannotReplyToAPureRenote() map[string]any {
+	return Error("CANNOT_REPLY_TO_A_PURE_RENOTE", "You can not reply to a pure Renote.", UUIDCannotReplyToAPureRenote)
+}
+
+// CannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility returns the
+// matching 403 response for reply visibility-conflict.
+func CannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility() map[string]any {
+	return Error(
+		"CANNOT_REPLY_TO_SPECIFIED_VISIBILITY_NOTE_WITH_EXTENDED_VISIBILITY",
+		"You cannot reply to a specified visibility note with extended visibility.",
+		UUIDCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility,
+	)
+}
+
+// CannotCreateAlreadyExpiredPoll returns a 400 CANNOT_CREATE_ALREADY_EXPIRED_POLL response.
+func CannotCreateAlreadyExpiredPoll() map[string]any {
+	return Error("CANNOT_CREATE_ALREADY_EXPIRED_POLL", "Poll is already expired.", UUIDCannotCreateAlreadyExpiredPoll)
+}
+
+// YouHaveBeenBlocked returns a 403 YOU_HAVE_BEEN_BLOCKED response.
+func YouHaveBeenBlocked() map[string]any {
+	return Error("YOU_HAVE_BEEN_BLOCKED", "You have been blocked by this user.", UUIDYouHaveBeenBlocked)
+}
+
+// NoSuchFile returns a 400 NO_SUCH_FILE response.
+func NoSuchFile() map[string]any {
+	return Error("NO_SUCH_FILE", "Some files are not found.", UUIDNoSuchFile)
+}
+
+// CannotRenoteOutsideOfChannel returns a 403 CANNOT_RENOTE_OUTSIDE_OF_CHANNEL response.
+func CannotRenoteOutsideOfChannel() map[string]any {
+	return Error("CANNOT_RENOTE_OUTSIDE_OF_CHANNEL", "Cannot renote outside of channel.", UUIDCannotRenoteOutsideOfChannel)
+}
+
+// ContainsProhibitedWords returns a 400 CONTAINS_PROHIBITED_WORDS response.
+func ContainsProhibitedWords() map[string]any {
+	return Error("CONTAINS_PROHIBITED_WORDS", "Cannot post because it contains prohibited words.", UUIDContainsProhibitedWords)
+}
+
+// ContainsTooManyMentions returns a 400 CONTAINS_TOO_MANY_MENTIONS response.
+func ContainsTooManyMentions() map[string]any {
+	return Error("CONTAINS_TOO_MANY_MENTIONS", "Cannot post because it exceeds the allowed number of mentions.", UUIDContainsTooManyMentions)
+}
+
+// FailedToResolveRemoteUser returns a 404 FAILED_TO_RESOLVE_REMOTE_USER response.
+func FailedToResolveRemoteUser() map[string]any {
+	return Error("FAILED_TO_RESOLVE_REMOTE_USER", "Failed to resolve remote user.", UUIDFailedToResolveRemoteUser)
+}

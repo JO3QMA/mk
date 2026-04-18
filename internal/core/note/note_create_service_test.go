@@ -650,3 +650,235 @@ func TestIsPureRenote_ModelNote(t *testing.T) {
 		})
 	}
 }
+
+// --- Phase 7-1 follow-up (#254): 追加 sentinel error 検出テスト ---
+
+func strPtr254(s string) *string { return &s }
+
+func TestCreateService_ExpiredPoll(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	past := time.Now().Add(-1 * time.Hour)
+	text := "vote!"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"},
+		Text: &text,
+		Poll: &note.PollInput{Choices: []string{"a", "b"}, ExpiresAt: &past},
+	})
+	assert.ErrorIs(t, err, note.ErrCannotCreateAlreadyExpiredPoll)
+}
+
+func TestCreateService_CannotRenoteToAPureRenote(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteID := "pure_renote_target"
+	renoteTargetInner := "other_note"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "other", Visibility: model.NoteVisibilityPublic,
+		RenoteID: &renoteTargetInner, // pure renote: text/cw/files/poll なし
+	}
+	_, err := svc.Create(note.CreateInput{
+		User:     &model.User{ID: "u1"},
+		RenoteID: strPtr254(noteID),
+	})
+	assert.ErrorIs(t, err, note.ErrCannotRenoteToAPureRenote)
+}
+
+func TestCreateService_CannotReplyToAPureRenote(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteID := "pure_renote_target_2"
+	inner := "other_note"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "other", Visibility: model.NoteVisibilityPublic,
+		RenoteID: &inner,
+	}
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: "u1"},
+		Text:    &text,
+		ReplyID: strPtr254(noteID),
+	})
+	assert.ErrorIs(t, err, note.ErrCannotReplyToAPureRenote)
+}
+
+func TestCreateService_CannotReplyToSpecifiedVisibility(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteID := "specified_target"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "u1", Visibility: model.NoteVisibilitySpecified,
+		VisibleUserIDs: []string{"u1"},
+	}
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User:       &model.User{ID: "u1"},
+		Text:       &text,
+		ReplyID:    strPtr254(noteID),
+		Visibility: model.NoteVisibilityPublic, // widerで不許可
+	})
+	assert.ErrorIs(t, err, note.ErrCannotReplyToSpecifiedVisibility)
+}
+
+func TestCreateService_YouHaveBeenBlocked_Renote(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	blockRepo := testutil.NewMockBlockingRepository()
+	svc.SetBlockingRepo(blockRepo)
+
+	// block: target user が actor を block している
+	require.NoError(t, blockRepo.Create(&model.Blocking{ID: "b1", BlockerID: "target_user", BlockeeID: "u1"}))
+
+	noteID := "renote_target_blocked"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "target_user", Visibility: model.NoteVisibilityPublic,
+	}
+	_, err := svc.Create(note.CreateInput{
+		User:     &model.User{ID: "u1"},
+		RenoteID: strPtr254(noteID),
+	})
+	assert.ErrorIs(t, err, note.ErrYouHaveBeenBlocked)
+}
+
+func TestCreateService_YouHaveBeenBlocked_Reply(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	blockRepo := testutil.NewMockBlockingRepository()
+	svc.SetBlockingRepo(blockRepo)
+
+	require.NoError(t, blockRepo.Create(&model.Blocking{ID: "b1", BlockerID: "target_user", BlockeeID: "u1"}))
+
+	noteID := "reply_target_blocked"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "target_user", Visibility: model.NoteVisibilityPublic,
+	}
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: "u1"},
+		Text:    &text,
+		ReplyID: strPtr254(noteID),
+	})
+	assert.ErrorIs(t, err, note.ErrYouHaveBeenBlocked)
+}
+
+func TestCreateService_NoSuchFile(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	svc.SetDriveFileRepo(fileRepo)
+
+	text := "hello"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: "u1"},
+		Text:    &text,
+		FileIDs: []string{"nonexistent_file"},
+	})
+	assert.ErrorIs(t, err, note.ErrNoSuchFile)
+}
+
+func TestCreateService_ContainsProhibitedWords(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", ProhibitedWords: []string{"badword"}}
+	svc.SetMetaRepo(metaRepo)
+
+	text := "contains badword here"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"},
+		Text: &text,
+	})
+	assert.ErrorIs(t, err, note.ErrContainsProhibitedWords)
+}
+
+func TestCreateService_ContainsTooManyMentions(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	// 21 メンションで default limit (20) 超過
+	mentions := ""
+	for i := 0; i < 21; i++ {
+		mentions += "@user" + strPtr254Str(i) + " "
+	}
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"},
+		Text: &mentions,
+	})
+	assert.ErrorIs(t, err, note.ErrContainsTooManyMentions)
+}
+
+func strPtr254Str(i int) string {
+	// base36: 0-9,a-z
+	const chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+	if i < 36 {
+		return string(chars[i])
+	}
+	return string(chars[i/36]) + string(chars[i%36])
+}
+
+// Devin review #270: IsPureRenote check must not leak note structure to
+// unauthorized viewers. invisible な pure renote への reply/renote では
+// 「見えない」エラーを返し、pure renote であることが推測できないようにする。
+func TestCreateService_InvisiblePureRenote_NoLeak_Reply(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteID := "invisible_pure_renote"
+	inner := "original_note"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "other_user",
+		Visibility: model.NoteVisibilityFollowers, // viewerはfollowしていない
+		RenoteID:   &inner,                        // pure renote
+	}
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: "u1"},
+		Text:    &text,
+		ReplyID: strPtr254(noteID),
+	})
+	// pure renote error ではなく invisible error が返るべき
+	assert.ErrorIs(t, err, note.ErrCannotReplyToInvisibleNote)
+	assert.NotErrorIs(t, err, note.ErrCannotReplyToAPureRenote)
+}
+
+func TestCreateService_InvisiblePureRenote_NoLeak_Renote(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteID := "invisible_pure_renote_2"
+	inner := "original_note"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "other_user",
+		Visibility: model.NoteVisibilityFollowers,
+		RenoteID:   &inner,
+	}
+	_, err := svc.Create(note.CreateInput{
+		User:     &model.User{ID: "u1"},
+		RenoteID: strPtr254(noteID),
+	})
+	// pure renote error ではなく invisible error
+	assert.ErrorIs(t, err, note.ErrCannotRenoteInvisibleNote)
+	assert.NotErrorIs(t, err, note.ErrCannotRenoteToAPureRenote)
+}
+
+// Devin review #270: 重複 fileId で false positive にならないこと。
+func TestCreateService_DuplicateFileIDs_Accepted(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	svc.SetDriveFileRepo(fileRepo)
+
+	uid := "u1"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid}
+
+	text := "hello"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: uid},
+		Text:    &text,
+		FileIDs: []string{"f1", "f1"}, // 重複
+	})
+	assert.NoError(t, err)
+}
+
+// 所有者違いの file は拒否される (regression)。
+func TestCreateService_NoSuchFile_WrongOwner(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	svc.SetDriveFileRepo(fileRepo)
+
+	otherUID := "other_user"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &otherUID}
+
+	text := "hello"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: "u1"},
+		Text:    &text,
+		FileIDs: []string{"f1"},
+	})
+	assert.ErrorIs(t, err, note.ErrNoSuchFile)
+}

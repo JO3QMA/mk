@@ -4,6 +4,7 @@ package note
 import (
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -25,6 +26,32 @@ var (
 	ErrCannotRenoteInvisibleNote = errors.New("cannot renote this note")
 	// ErrChannelNotFound is returned when the channelId references a missing channel.
 	ErrChannelNotFound = errors.New("channel not found")
+	// ErrCannotRenoteToAPureRenote is returned when the renote target is a pure
+	// renote (renote of another note with no original content). Misskey disallows
+	// renoting a pure renote to avoid redundant propagation chains.
+	ErrCannotRenoteToAPureRenote = errors.New("cannot renote a pure renote")
+	// ErrCannotReplyToAPureRenote is returned when the reply target is a pure renote.
+	ErrCannotReplyToAPureRenote = errors.New("cannot reply to a pure renote")
+	// ErrCannotReplyToSpecifiedVisibility is returned when replying to a
+	// "specified" visibility note with a wider visibility (non-specified).
+	ErrCannotReplyToSpecifiedVisibility = errors.New("cannot reply to specified visibility note with extended visibility")
+	// ErrYouHaveBeenBlocked is returned when the target user (reply/renote target)
+	// has blocked the actor.
+	ErrYouHaveBeenBlocked = errors.New("you have been blocked by the target user")
+	// ErrCannotCreateAlreadyExpiredPoll is returned when poll.ExpiresAt is in
+	// the past at creation time.
+	ErrCannotCreateAlreadyExpiredPoll = errors.New("poll is already expired")
+	// ErrNoSuchFile is returned when one or more fileIds reference missing files.
+	ErrNoSuchFile = errors.New("some files are not found")
+	// ErrCannotRenoteOutsideOfChannel is returned when the renote target belongs
+	// to a channel that disallows renoting outside of its context.
+	ErrCannotRenoteOutsideOfChannel = errors.New("cannot renote outside of channel")
+	// ErrContainsProhibitedWords is returned when the note text contains a word
+	// in meta.prohibitedWords.
+	ErrContainsProhibitedWords = errors.New("note contains prohibited words")
+	// ErrContainsTooManyMentions is returned when the note exceeds the role
+	// policy's mentionLimit.
+	ErrContainsTooManyMentions = errors.New("note contains too many mentions")
 )
 
 // CreateInput is the input parameter for CreateService.Create.
@@ -130,11 +157,39 @@ type CreateService struct {
 	chartHook        ChartHook
 	webhookHook      WebhookHook
 	userRepo         repository.UserRepository
+	blockingRepo     repository.BlockingRepository
+	driveFileRepo    repository.DriveFileRepository
+	metaRepo         repository.MetaRepository
+	channelRepo      repository.ChannelRepository
 }
 
 // SetUserRepo attaches a UserRepository for resolving mention usernames to IDs.
 func (s *CreateService) SetUserRepo(r repository.UserRepository) {
 	s.userRepo = r
+}
+
+// SetBlockingRepo attaches a BlockingRepository for detecting reply/renote
+// block violations. When unset the block check is skipped (backward compat).
+func (s *CreateService) SetBlockingRepo(r repository.BlockingRepository) {
+	s.blockingRepo = r
+}
+
+// SetDriveFileRepo attaches a DriveFileRepository for validating fileIds.
+// When unset fileId validation is skipped (backward compat).
+func (s *CreateService) SetDriveFileRepo(r repository.DriveFileRepository) {
+	s.driveFileRepo = r
+}
+
+// SetMetaRepo attaches a MetaRepository for prohibited-word detection.
+// When unset the check is skipped.
+func (s *CreateService) SetMetaRepo(r repository.MetaRepository) {
+	s.metaRepo = r
+}
+
+// SetChannelRepo attaches a ChannelRepository for the "renote outside of
+// channel" rule evaluation. Required alongside ChannelHook for strict checks.
+func (s *CreateService) SetChannelRepo(r repository.ChannelRepository) {
+	s.channelRepo = r
 }
 
 // NewCreateService creates a new CreateService.
@@ -219,6 +274,26 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		visibility = model.NoteVisibilityPublic
 	}
 
+	// プロhibited wordsチェック (meta.prohibitedWordsマッチ)
+	if err := s.checkProhibitedWords(in.Text, in.CW); err != nil {
+		return nil, err
+	}
+
+	// mentionLimitチェック (role policiesの制限)
+	if err := s.checkMentionLimit(in.Text); err != nil {
+		return nil, err
+	}
+
+	// pollのexpiresAtが既に過去なら弾く
+	if in.Poll != nil && in.Poll.ExpiresAt != nil && in.Poll.ExpiresAt.Before(time.Now()) {
+		return nil, ErrCannotCreateAlreadyExpiredPoll
+	}
+
+	// fileIdsのうち存在しないIDがあれば弾く
+	if err := s.checkFileIDs(in.User.ID, in.FileIDs); err != nil {
+		return nil, err
+	}
+
 	// channelId が指定されていれば存在チェック。channelHook 未設定なら
 	// channel 機能が無効なものとして扱い、エラーは返さない。
 	if in.ChannelID != nil && *in.ChannelID != "" && s.channelHook != nil {
@@ -235,8 +310,25 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		if err != nil {
 			return nil, ErrReplyTargetNotFound
 		}
+		// 可視性チェックを先に行う。FindByIDWithUserは無条件に行を返すため、
+		// 不可視noteに対して別error (pure renote 等) を返すと「対象noteが
+		// 何であるか」を攻撃者が推測できる情報漏洩になる。Devin review #270。
 		if !CanSeeNote(in.User, t, s.followingRepo) {
 			return nil, ErrCannotReplyToInvisibleNote
+		}
+		// pure renote (renoteIdあり、text/files/poll/cwなし) への返信は許可しない
+		if IsPureRenote(t) {
+			return nil, ErrCannotReplyToAPureRenote
+		}
+		// specified可視性noteへの返信時は visibility も specified でなければ拒否
+		if t.Visibility == model.NoteVisibilitySpecified && visibility != model.NoteVisibilitySpecified {
+			return nil, ErrCannotReplyToSpecifiedVisibility
+		}
+		// reply対象のユーザーに block されていたら拒否
+		if t.UserID != in.User.ID {
+			if err := s.checkBlocked(t.UserID, in.User.ID); err != nil {
+				return nil, err
+			}
 		}
 		replyTarget = t
 	}
@@ -245,8 +337,27 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		if err != nil {
 			return nil, ErrRenoteTargetNotFound
 		}
+		// 可視性チェックを先に行う (Devin review #270 — 情報漏洩防止)。
 		if !CanSeeNote(in.User, t, s.followingRepo) {
 			return nil, ErrCannotRenoteInvisibleNote
+		}
+		// pure renoteを更にrenoteするのは禁止 (TS: isRenote && !isQuote)
+		if IsPureRenote(t) {
+			return nil, ErrCannotRenoteToAPureRenote
+		}
+		// renote対象のユーザーに block されていたら拒否
+		if t.UserID != in.User.ID {
+			if err := s.checkBlocked(t.UserID, in.User.ID); err != nil {
+				return nil, err
+			}
+		}
+		// チャンネル外への renote 可否: 対象がチャンネル note で、本 note の
+		// ChannelID が対象と異なる (= チャンネル外への転送) 場合は channel の
+		// allowRenoteToExternal を確認する。
+		if t.ChannelID != nil && !sameChannel(t.ChannelID, in.ChannelID) {
+			if err := s.checkRenoteOutsideOfChannel(*t.ChannelID); err != nil {
+				return nil, err
+			}
 		}
 		renoteTarget = t
 	}
@@ -503,4 +614,137 @@ func IsPureRenote(n *model.Note) bool {
 		return false
 	}
 	return true
+}
+
+// sameChannel reports whether two optional channel IDs refer to the same channel.
+// Both nil or same pointer or same string → true; differing strings → false.
+func sameChannel(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+// checkProhibitedWords scans text + cw for any word listed in
+// meta.prohibitedWords. Returns ErrContainsProhibitedWords on match.
+// MetaRepo未設定、または prohibitedWords が空ならskipする。
+func (s *CreateService) checkProhibitedWords(text, cw *string) error {
+	if s.metaRepo == nil {
+		return nil
+	}
+	meta, err := s.metaRepo.Fetch()
+	if err != nil || meta == nil || len(meta.ProhibitedWords) == 0 {
+		return nil
+	}
+	haystacks := make([]string, 0, 2)
+	if text != nil && *text != "" {
+		haystacks = append(haystacks, strings.ToLower(*text))
+	}
+	if cw != nil && *cw != "" {
+		haystacks = append(haystacks, strings.ToLower(*cw))
+	}
+	for _, word := range meta.ProhibitedWords {
+		word = strings.TrimSpace(strings.ToLower(word))
+		if word == "" {
+			continue
+		}
+		for _, h := range haystacks {
+			if strings.Contains(h, word) {
+				return ErrContainsProhibitedWords
+			}
+		}
+	}
+	return nil
+}
+
+// checkMentionLimit counts mentions in text and compares against the default
+// role policy's mentionLimit. Per-user role override is not yet supported
+// (TS side merges per-user policies; follow-up issue should wire that).
+func (s *CreateService) checkMentionLimit(text *string) error {
+	if text == nil || *text == "" {
+		return nil
+	}
+	mentions := ExtractMentionStructs(*text)
+	limit := defaultMentionLimit()
+	if limit > 0 && len(mentions) > limit {
+		return ErrContainsTooManyMentions
+	}
+	return nil
+}
+
+// defaultMentionLimit returns the baseline mentionLimit from role.DefaultPolicies.
+// 本家TSではrole per-userのmerge値を使うが、Go側は現状default値でチェック。
+func defaultMentionLimit() int {
+	// role.DefaultPolicies() を直接 import すると循環依存になるため、
+	// 同期を保つ意図で本家TSの現行既定値 (20) をここに直書きする。
+	return 20
+}
+
+// checkFileIDs verifies all provided fileIds exist and belong to the user.
+// DriveFileRepo未設定ならskipする。
+// TS本家は user.id 所有の files のみ拾うが、Go の DriveFileRepo は ID ベース
+// の bulk 取得しか持たないため、取得後に userId 一致をチェックする。
+// 本家TSは Promise.all で個別解決するため fileIds に重複があっても通る。
+// Go 側も `WHERE id IN ?` の SQL 重複排除による false positive を避けるため、
+// 返却 file を「所有者一致の ID 集合」に畳んだ上で、入力 ID が全て集合に
+// 含まれることを確認する (Devin review #270)。
+func (s *CreateService) checkFileIDs(userID string, fileIDs []string) error {
+	if len(fileIDs) == 0 || s.driveFileRepo == nil {
+		return nil
+	}
+	files, err := s.driveFileRepo.ListByFileIDs(fileIDs)
+	if err != nil {
+		return err
+	}
+	owned := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		if f.UserID != nil && *f.UserID == userID {
+			owned[f.ID] = struct{}{}
+		}
+	}
+	for _, id := range fileIDs {
+		if _, ok := owned[id]; !ok {
+			return ErrNoSuchFile
+		}
+	}
+	return nil
+}
+
+// checkBlocked returns ErrYouHaveBeenBlocked when blockerID has blocked
+// blockeeID. BlockingRepo未設定ならskip。
+func (s *CreateService) checkBlocked(blockerID, blockeeID string) error {
+	if s.blockingRepo == nil {
+		return nil
+	}
+	blocked, err := s.blockingRepo.Exists(blockerID, blockeeID)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return ErrYouHaveBeenBlocked
+	}
+	return nil
+}
+
+// checkRenoteOutsideOfChannel resolves the channel referenced by channelID
+// and rejects renoting outside of it when the channel forbids it.
+// ChannelRepo未設定ならskip (strictチェック不能として許可側に倒す)。
+func (s *CreateService) checkRenoteOutsideOfChannel(channelID string) error {
+	if s.channelRepo == nil {
+		return nil
+	}
+	ch, err := s.channelRepo.FindByID(channelID)
+	if err != nil {
+		// チャンネル不明時は TS 側は NO_SUCH_CHANNEL を投げるが、本経路は
+		// 既に renote ターゲットが作られている (= channel は存在した時点が
+		// ある) 前提なので、取得失敗は allow 側に倒す。
+		return nil
+	}
+	if !ch.AllowRenoteToExternal {
+		return ErrCannotRenoteOutsideOfChannel
+	}
+	return nil
 }

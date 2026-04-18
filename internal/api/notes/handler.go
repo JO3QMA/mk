@@ -174,6 +174,24 @@ func (h *Handler) Create(c echo.Context) error {
 			return apierr.JSONCannotRenoteDueToVisibility(c)
 		case errors.Is(err, note.ErrChannelNotFound):
 			return apierr.JSONNoSuchChannel(c)
+		case errors.Is(err, note.ErrCannotRenoteToAPureRenote):
+			return apierr.JSONCannotRenoteToAPureRenote(c)
+		case errors.Is(err, note.ErrCannotReplyToAPureRenote):
+			return apierr.JSONCannotReplyToAPureRenote(c)
+		case errors.Is(err, note.ErrCannotReplyToSpecifiedVisibility):
+			return apierr.JSONCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility(c)
+		case errors.Is(err, note.ErrYouHaveBeenBlocked):
+			return apierr.JSONYouHaveBeenBlocked(c)
+		case errors.Is(err, note.ErrCannotCreateAlreadyExpiredPoll):
+			return apierr.JSONCannotCreateAlreadyExpiredPoll(c)
+		case errors.Is(err, note.ErrNoSuchFile):
+			return apierr.JSONNoSuchFile(c)
+		case errors.Is(err, note.ErrCannotRenoteOutsideOfChannel):
+			return apierr.JSONCannotRenoteOutsideOfChannel(c)
+		case errors.Is(err, note.ErrContainsProhibitedWords):
+			return apierr.JSONContainsProhibitedWords(c)
+		case errors.Is(err, note.ErrContainsTooManyMentions):
+			return apierr.JSONContainsTooManyMentions(c)
 		}
 		return apierr.JSONInternalError(c)
 	}

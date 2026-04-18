@@ -3,10 +3,12 @@ package notes
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
@@ -439,7 +441,9 @@ func TestCreate_WithPollExpiresAt(t *testing.T) {
 		AvatarDecorations: datatypes.JSON([]byte("[]")),
 	}
 
-	body := `{"text": "Vote!", "poll": {"choices": ["A", "B"], "multiple": true, "expiresAt": 1700000000000}}`
+	// 未来日時を動的に算出 (hardcoded 値だと時間経過でテストが expired 判定で落ちる)
+	futureMs := time.Now().Add(24 * time.Hour).UnixMilli()
+	body := fmt.Sprintf(`{"text": "Vote!", "poll": {"choices": ["A", "B"], "multiple": true, "expiresAt": %d}}`, futureMs)
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
