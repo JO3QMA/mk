@@ -274,6 +274,30 @@ func TestService_List_Filtered(t *testing.T) {
 	assert.Equal(t, "👍", out[0].Reaction)
 }
 
+func TestService_List_LegacyReactionMatched(t *testing.T) {
+	svc, noteRepo, reactRepo, emojiRepo, _ := newService(t)
+	seedNote(noteRepo, "n1", "author", model.NoteVisibilityPublic)
+	// TS時代の `:smile:` 形式でDBに保存されたリアクションを直接挿入
+	emojiRepo.Emojis["smile@"] = &model.Emoji{Name: "smile"}
+	reactRepo.Reactions["rx_legacy"] = &model.NoteReaction{
+		ID: "rx_legacy", UserID: "u1", NoteID: "n1", Reaction: ":smile:",
+	}
+	// mk時代の `:smile@.:` 形式でもリアクションを追加
+	reactRepo.Reactions["rx_canonical"] = &model.NoteReaction{
+		ID: "rx_canonical", UserID: "u2", NoteID: "n1", Reaction: ":smile@.:",
+	}
+
+	// `:smile@.:` でフィルタすると両方ヒットする
+	out, err := svc.List(nil, "n1", "", "", 10, ":smile@.:")
+	require.NoError(t, err)
+	assert.Len(t, out, 2)
+
+	// `:smile:` でフィルタしても正規化されて両方ヒットする
+	out, err = svc.List(nil, "n1", "", "", 10, ":smile:")
+	require.NoError(t, err)
+	assert.Len(t, out, 2)
+}
+
 func TestIsPureRenote_Variants(t *testing.T) {
 	target := "x"
 	cases := []struct {

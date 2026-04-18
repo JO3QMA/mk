@@ -20,7 +20,7 @@ type NoteReactionRepository interface {
 	// FindByUserAndNoteIDs returns reactions for a user across multiple notes.
 	// noteIDをキーとしたmapを返す。
 	FindByUserAndNoteIDs(userID string, noteIDs []string) (map[string]*model.NoteReaction, error)
-	ListByNoteID(noteID string, untilID, sinceID string, limit int, reaction string) ([]*model.NoteReaction, error)
+	ListByNoteID(noteID string, untilID, sinceID string, limit int, reactions []string) ([]*model.NoteReaction, error)
 }
 
 type noteReactionRepository struct {
@@ -73,11 +73,13 @@ func (r *noteReactionRepository) FindByUserAndNoteIDs(userID string, noteIDs []s
 
 // ListByNoteID returns reactions for the given noteID, optionally filtered by
 // reaction string. Ordered by id DESC for keyset pagination.
-func (r *noteReactionRepository) ListByNoteID(noteID string, untilID, sinceID string, limit int, reaction string) ([]*model.NoteReaction, error) {
+func (r *noteReactionRepository) ListByNoteID(noteID string, untilID, sinceID string, limit int, reactions []string) ([]*model.NoteReaction, error) {
 	var rows []*model.NoteReaction
 	q := r.db.Preload("User").Where("\"noteId\" = ?", noteID)
-	if reaction != "" {
-		q = q.Where("reaction = ?", reaction)
+	if len(reactions) == 1 {
+		q = q.Where("reaction = ?", reactions[0])
+	} else if len(reactions) > 1 {
+		q = q.Where("reaction IN ?", reactions)
 	}
 	if untilID != "" {
 		q = q.Where("id < ?", untilID)

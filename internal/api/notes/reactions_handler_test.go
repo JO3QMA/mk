@@ -348,7 +348,7 @@ type listFailingReactionRepo struct {
 	*testutil.MockNoteReactionRepository
 }
 
-func (f *listFailingReactionRepo) ListByNoteID(_, _, _ string, _ int, _ string) ([]*model.NoteReaction, error) {
+func (f *listFailingReactionRepo) ListByNoteID(_, _, _ string, _ int, _ []string) ([]*model.NoteReaction, error) {
 	return nil, errors.New("list boom")
 }
 

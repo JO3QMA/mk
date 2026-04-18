@@ -934,14 +934,23 @@ func (m *MockNoteReactionRepository) FindByUserAndNoteIDs(userID string, noteIDs
 	return result, nil
 }
 
-func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID string, limit int, reaction string) ([]*model.NoteReaction, error) {
+func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID string, limit int, reactions []string) ([]*model.NoteReaction, error) {
 	var rows []*model.NoteReaction
 	for _, r := range m.Reactions {
 		if r.NoteID != noteID {
 			continue
 		}
-		if reaction != "" && r.Reaction != reaction {
-			continue
+		if len(reactions) > 0 {
+			matched := false
+			for _, rx := range reactions {
+				if r.Reaction == rx {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		if untilID != "" && r.ID >= untilID {
 			continue
