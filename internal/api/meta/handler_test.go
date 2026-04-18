@@ -365,4 +365,111 @@ func TestMeta_DetailFalse(t *testing.T) {
 	assert.Nil(t, resp["features"])
 	assert.Nil(t, resp["policies"])
 	assert.Nil(t, resp["clientOptions"])
+	assert.Nil(t, resp["noteSearchableScope"])
+}
+
+// TestMeta_FeaturesTimelineFlags verifies that features.localTimeline and
+// features.globalTimeline are exposed from the default role policies, so the
+// frontend can decide whether to render LTL/GTL tabs.
+func TestMeta_FeaturesTimelineFlags(t *testing.T) {
+	h, metaRepo := newTestHandler()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	features, ok := resp["features"].(map[string]any)
+	require.True(t, ok, "features should be present when detail=true")
+	assert.Equal(t, true, features["localTimeline"], "ltlAvailable default is true")
+	assert.Equal(t, true, features["globalTimeline"], "gtlAvailable default is true")
+}
+
+// TestMeta_NoteSearchableScope_DefaultLocal covers the fallback path where
+// Meilisearch is not configured: scope must default to "local".
+func TestMeta_NoteSearchableScope_DefaultLocal(t *testing.T) {
+	h, metaRepo := newTestHandler()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	// config.Meilisearch is nil in newTestHandler().
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "local", resp["noteSearchableScope"])
+}
+
+// TestMeta_NoteSearchableScope_Global covers the Meilisearch-wired path where
+// scope is anything other than "local" (e.g. "global") — the response must
+// switch to "global".
+func TestMeta_NoteSearchableScope_Global(t *testing.T) {
+	cfg := &config.Config{
+		Version:     "2026.3.2",
+		URL:         "https://misskey.example.com",
+		Meilisearch: &config.MeilisearchOptions{Host: "ms", Port: "7700", Scope: "global"},
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	h := NewHandler(cfg, metaRepo)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "global", resp["noteSearchableScope"])
+}
+
+// TestMeta_NoteSearchableScope_MeilisearchLocal ensures that an explicit
+// Meilisearch scope of "local" still produces "local" (config-present path).
+func TestMeta_NoteSearchableScope_MeilisearchLocal(t *testing.T) {
+	cfg := &config.Config{
+		Version:     "2026.3.2",
+		URL:         "https://misskey.example.com",
+		Meilisearch: &config.MeilisearchOptions{Host: "ms", Port: "7700", Scope: "local"},
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	h := NewHandler(cfg, metaRepo)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "local", resp["noteSearchableScope"])
+}
+
+func TestPolicyBool(t *testing.T) {
+	cases := []struct {
+		name     string
+		policies map[string]any
+		key      string
+		want     bool
+	}{
+		{"present true", map[string]any{"k": true}, "k", true},
+		{"present false", map[string]any{"k": false}, "k", false},
+		{"missing", map[string]any{}, "k", false},
+		{"non-bool type", map[string]any{"k": "yes"}, "k", false},
+		{"nil value", map[string]any{"k": nil}, "k", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, policyBool(tc.policies, tc.key))
+		})
+	}
 }

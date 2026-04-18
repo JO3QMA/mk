@@ -105,7 +105,6 @@ func (h *Handler) Meta(c echo.Context) error {
 		"providesTarball":              false,
 		"maxFileSize":                  h.config.MaxFileSize,
 		"proxyAccountName":             nil,
-		"noteSearchableScope":          "local",
 		"enableMcaptcha":               m.EnableMcaptcha,
 		"mcaptchaSiteKey":              m.McaptchaSiteKey,
 		"mcaptchaInstanceUrl":          m.McaptchaInstanceURL,
@@ -121,6 +120,8 @@ func (h *Handler) Meta(c echo.Context) error {
 		"features": map[string]any{
 			"registration":           !m.DisableRegistration,
 			"emailRequiredForSignup": m.EmailRequiredForSignup,
+			"localTimeline":          policyBool(role.DefaultPolicies(), "ltlAvailable"),
+			"globalTimeline":         policyBool(role.DefaultPolicies(), "gtlAvailable"),
 			"hcaptcha":               m.EnableHcaptcha,
 			"recaptcha":              m.EnableRecaptcha,
 			"turnstile":              m.EnableTurnstile,
@@ -129,6 +130,10 @@ func (h *Handler) Meta(c echo.Context) error {
 			"miauth":                 true,
 		},
 	}
+
+	// noteSearchableScope: Meilisearch 設定に準拠。本家 (MetaEntityService.ts:135)
+	// では `meilisearch.scope !== 'local'` の場合のみ "global" を返す。
+	resp["noteSearchableScope"] = noteSearchableScope(h.config.Meilisearch)
 
 	// detail=false: TS MetaLite互換。管理者/内部向けフィールド (features, policies,
 	// clientOptions, proxyAccountName, sentryForFrontend, noteSearchableScope,
@@ -186,6 +191,35 @@ func clientOptionsJSON(raw []byte) any {
 		return map[string]any{}
 	}
 	return out
+}
+
+// policyBool reads a boolean policy value from role.DefaultPolicies() output
+// with a conservative default. Unknown or non-bool values fall back to false
+// so the client never sees an undefined flag in the features block.
+func policyBool(policies map[string]any, key string) bool {
+	v, ok := policies[key]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false
+	}
+	return b
+}
+
+// noteSearchableScope derives the "local"/"global" search scope flag from
+// the Meilisearch configuration. Behavior mirrors upstream
+// MetaEntityService.ts:135 — only return "global" when Meilisearch is wired
+// and its scope override is anything other than "local".
+func noteSearchableScope(m *config.MeilisearchOptions) string {
+	if m == nil {
+		return "local"
+	}
+	if m.Scope == "" || m.Scope == "local" {
+		return "local"
+	}
+	return "global"
 }
 
 // serializeActiveAds fetches currently-active ads via adRepo and projects
