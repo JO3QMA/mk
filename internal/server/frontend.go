@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/meta"
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/frontendutil"
@@ -173,7 +174,7 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		"providesTarball":              false,
 		"maxFileSize":                  cfg.MaxFileSize,
 		"proxyAccountName":             nil,
-		"noteSearchableScope":          "local",
+		"noteSearchableScope":          meta.NoteSearchableScope(cfg.Meilisearch),
 		"enableMcaptcha":               m.EnableMcaptcha,
 		"mcaptchaSiteKey":              m.McaptchaSiteKey,
 		"mcaptchaInstanceUrl":          m.McaptchaInstanceURL,
@@ -185,6 +186,8 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		"features": map[string]any{
 			"registration":           !m.DisableRegistration,
 			"emailRequiredForSignup": m.EmailRequiredForSignup,
+			"localTimeline":          meta.PolicyBool(role.DefaultPolicies(), "ltlAvailable"),
+			"globalTimeline":         meta.PolicyBool(role.DefaultPolicies(), "gtlAvailable"),
 			"hcaptcha":               m.EnableHcaptcha,
 			"recaptcha":              m.EnableRecaptcha,
 			"turnstile":              m.EnableTurnstile,

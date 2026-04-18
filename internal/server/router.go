@@ -18,6 +18,7 @@ import (
 	apiannouncements "github.com/shiroha-a/mk/internal/api/announcements"
 	"github.com/shiroha-a/mk/internal/api/antennas"
 	"github.com/shiroha-a/mk/internal/api/ap"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	apiapp "github.com/shiroha-a/mk/internal/api/app"
 	apiauth "github.com/shiroha-a/mk/internal/api/auth"
 	"github.com/shiroha-a/mk/internal/api/blocking"
@@ -1660,13 +1661,7 @@ func (s *Server) setupRoutes() {
 			})
 		}
 		if _, err := noteRepo.FindByID(req.NoteID); err != nil {
-			return c.JSON(http.StatusNotFound, map[string]any{
-				"error": map[string]any{
-					"message": "No such note.",
-					"code":    "NO_SUCH_NOTE",
-					"id":      "24fcbfc6-2e37-42b6-8388-c29b32725715",
-				},
-			})
+			return apierr.JSONNoSuchNote(c)
 		}
 		_ = promoReadRepo.MarkRead(&model.PromoRead{
 			ID:     idGen.Generate(time.Now()),
