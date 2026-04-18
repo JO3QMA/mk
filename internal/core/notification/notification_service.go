@@ -250,8 +250,9 @@ func (s *Service) HasUnreadOfTypes(ctx context.Context, userID string, types []T
 	return false, nil
 }
 
-// exclusive は XRevRange 用の「この ID より後 (newer)」を表す境界文字列を返す。
-// 空文字の場合は "-" で stream 先頭を表す。非空なら "(<id>" で exclusive 指定。
+// exclusive returns the exclusive lower-bound string for XRevRange, i.e. the
+// boundary that means "strictly newer than this id". Empty readID becomes "-"
+// (stream head); non-empty uses the "(<id>" exclusive marker.
 func exclusive(readID string) string {
 	if readID == "" {
 		return "-"
