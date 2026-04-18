@@ -722,7 +722,9 @@ func (s *Server) setupRoutes() {
 	// Emojis endpoints (public)
 	emojisHandler := apiemojis.NewHandler(emojiRepo)
 	api.POST("/emojis", emojisHandler.Emojis)
+	api.GET("/emojis", emojisHandler.Emojis)
 	api.POST("/emoji", emojisHandler.Emoji)
+	api.GET("/emoji", emojisHandler.Emoji)
 
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
