@@ -141,8 +141,8 @@ func NormalizeReactionKey(key string) string {
 }
 
 // normalizeReactionKeys rewrites reaction JSONB keys so that legacy
-// `:name:` entries are merged into `:name@.:`. TS時代のレコードと
-// mk時代のレコードが同一キーに集約される。
+// `:name:` entries are merged into `:name@.:`.
+// TS時代のレコードとmk時代のレコードが同一キーに集約される。
 func normalizeReactionKeys(raw datatypes.JSON) datatypes.JSON {
 	if len(raw) == 0 {
 		return raw
