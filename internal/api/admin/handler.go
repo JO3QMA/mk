@@ -1018,7 +1018,7 @@ func (h *Handler) EmojiList(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	return c.JSON(http.StatusOK, emojis)
+	return c.JSON(http.StatusOK, entity.PackEmojiDetailedList(emojis))
 }
 
 // EmojiListV2 handles POST /api/v2/admin/emoji/list.

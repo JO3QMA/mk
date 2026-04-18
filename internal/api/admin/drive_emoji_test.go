@@ -297,8 +297,8 @@ func TestEmojiImportZip_UnknownFileReturns400(t *testing.T) {
 func TestEmojiListV2_Basic(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	repo := testutil.NewMockEmojiRepository()
-	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "smile"}))
-	require.NoError(t, repo.Create(&model.Emoji{ID: "e2", Name: "wave"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "smile", PublicURL: "https://example.com/smile.png"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e2", Name: "wave", OriginalURL: "https://example.com/wave-orig.png"}))
 	h.SetEmojiRepo(repo)
 
 	rec := doPost(h.EmojiListV2, `{}`, adminUser)
@@ -310,6 +310,12 @@ func TestEmojiListV2_Basic(t *testing.T) {
 	assert.EqualValues(t, 2, resp["count"])
 	assert.EqualValues(t, 2, resp["allCount"])
 	assert.EqualValues(t, 1, resp["allPages"])
+	// v2はpackDetailedAdmin相当: publicUrl/originalUrlを直接返す（computed urlは含まない）
+	for _, raw := range emojis {
+		em := raw.(map[string]any)
+		_, hasPublicURL := em["publicUrl"]
+		assert.True(t, hasPublicURL, "v2 emoji should have publicUrl field")
+	}
 }
 
 func TestEmojiListV2_NilRepo(t *testing.T) {
