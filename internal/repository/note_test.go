@@ -1004,8 +1004,3 @@ func TestNoteRepository_ListGlobalTimeline(t *testing.T) {
 	_, err = repo.ListGlobalTimeline(50, "", "nonexistent", filter)
 	require.NoError(t, err)
 }
-
-// DeleteExpiredRemoteNotesはnote."createdAt"列を参照するが、misskey-goの
-// noteテーブルはcreatedAt列を持たない (IDから導出する設計)。このため
-// 関数自体がSQL実行時に必ずエラーになる。本関数はバグで別issueで扱うため、
-// ここでは呼ばない。

@@ -62,8 +62,11 @@ type NoteRepository interface {
 	ListHomeTimeline(userID string, limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
 	ListLocalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
 	ListGlobalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
-	// DeleteExpiredRemoteNotes deletes remote notes older than expiryDays
-	// in batches of batchSize. Returns the total count of deleted notes.
+	// DeleteExpiredRemoteNotes deletes up to batchSize remote notes older
+	// than expiryDays in a single DELETE statement. Returns the count
+	// actually removed in this batch. Callers drive the loop themselves so
+	// cancellation checkpoints and sleep pacing live in the processor
+	// (see CleanRemoteNotesProcessor).
 	DeleteExpiredRemoteNotes(expiryDays, batchSize int) (int64, error)
 	// DeleteByUserBatch deletes up to batchSize notes authored by userID in a
 	// single DELETE statement. Returns the count actually removed. Callers
@@ -485,7 +488,9 @@ func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, 
 }
 
 // DeleteExpiredRemoteNotes はリモートノート (userHost IS NOT NULL) のうち
-// expiryDays より前に作成されたものを batchSize 件ずつ削除する。
+// expiryDays より前に作成されたものを最大 batchSize 件削除し、実際に消えた
+// 行数を返す。ループは呼び出し側 (CleanRemoteNotesProcessor) が sleep / ctx
+// cancellation 付きで回す。
 // ON DELETE CASCADE が reactions / replies 等に効く前提。
 // misskey-go の note テーブルには createdAt カラムが無い (aidx ID から時刻を
 // 導出する設計) ため、ID 文字列の lexicographic 比較で時刻切り捨てを行う。
@@ -494,24 +499,17 @@ func (r *noteRepository) DeleteExpiredRemoteNotes(expiryDays, batchSize int) (in
 		batchSize = 100
 	}
 	cutoffID := aidxCutoffID(time.Now().Add(-time.Duration(expiryDays) * 24 * time.Hour))
-	var total int64
-	for {
-		res := r.db.Exec(`
-			DELETE FROM "note" WHERE id IN (
-				SELECT id FROM "note"
-				WHERE "userHost" IS NOT NULL
-				  AND id < ?
-				LIMIT ?
-			)`, cutoffID, batchSize)
-		if res.Error != nil {
-			return total, res.Error
-		}
-		total += res.RowsAffected
-		if res.RowsAffected < int64(batchSize) {
-			break
-		}
+	res := r.db.Exec(`
+		DELETE FROM "note" WHERE id IN (
+			SELECT id FROM "note"
+			WHERE "userHost" IS NOT NULL
+			  AND id < ?
+			LIMIT ?
+		)`, cutoffID, batchSize)
+	if res.Error != nil {
+		return 0, res.Error
 	}
-	return total, nil
+	return res.RowsAffected, nil
 }
 
 func (r *noteRepository) DeleteByUserBatch(userID string, batchSize int) (int64, error) {
