@@ -2,12 +2,14 @@ package notes
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -505,6 +507,114 @@ func TestCreate_FindByIDWithUserFails(t *testing.T) {
 	err := h.Create(c)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// decodeError extracts the error.id field from a JSON error response.
+func decodeError(t *testing.T, body []byte) (code, id string) {
+	t.Helper()
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(body, &resp))
+	errObj := resp["error"].(map[string]any)
+	return errObj["code"].(string), errObj["id"].(string)
+}
+
+func TestCreate_RenoteTargetNotFound(t *testing.T) {
+	noteRepo := &failingNoteRepo{}
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, nil, nil, idGen)
+
+	user := &model.User{ID: "user1", Username: "testuser"}
+
+	body := `{"renoteId": "nonexistent"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	code, uuidStr := decodeError(t, rec.Body.Bytes())
+	assert.Equal(t, "NO_SUCH_RENOTE_TARGET", code)
+	assert.Equal(t, apierr.UUIDNoSuchRenoteTarget, uuidStr)
+}
+
+// fixedNoteRepo returns a preset note for FindByIDWithUser so visibility-check
+// paths can be exercised without touching a real database.
+type fixedNoteRepo struct {
+	*testutil.MockNoteRepository
+	note *model.Note
+}
+
+func (r *fixedNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
+	return r.note, nil
+}
+
+func TestCreate_CannotReplyToInvisibleNote(t *testing.T) {
+	hiddenNote := &model.Note{ID: "n1", UserID: "other", Visibility: model.NoteVisibilityFollowers}
+	noteRepo := &fixedNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository(), note: hiddenNote}
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, nil, nil, idGen)
+
+	user := &model.User{ID: "user1", Username: "testuser"}
+
+	body := `{"text": "reply", "replyId": "n1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	code, uuidStr := decodeError(t, rec.Body.Bytes())
+	assert.Equal(t, "CANNOT_REPLY_TO_AN_INVISIBLE_NOTE", code)
+	assert.Equal(t, apierr.UUIDCannotReplyToAnInvisibleNote, uuidStr)
+}
+
+// channelNotFoundHook は EnsureChannelExists が常にエラーを返すテストスタブ。
+type channelNotFoundHook struct{}
+
+func (channelNotFoundHook) EnsureChannelExists(_ string) error { return errNotFoundSentinel }
+func (channelNotFoundHook) OnNotePosted(_ string)              {}
+
+var errNotFoundSentinel = errors.New("channel not found")
+
+func TestCreate_ChannelNotFound(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	createSvc.SetChannelHook(channelNotFoundHook{})
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, nil, nil, idGen)
+
+	user := &model.User{ID: "user1", Username: "testuser"}
+
+	body := `{"text": "to channel", "channelId": "nonexistent"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	setAuthUser(c, user)
+
+	require.NoError(t, h.Create(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	code, uuidStr := decodeError(t, rec.Body.Bytes())
+	assert.Equal(t, "NO_SUCH_CHANNEL", code)
+	assert.Equal(t, apierr.UUIDNoSuchChannel, uuidStr)
 }
 
 func TestDelete_InvalidJSON(t *testing.T) {

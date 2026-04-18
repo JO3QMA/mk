@@ -27,7 +27,7 @@ func (h *Handler) FavoritesCreate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "noteId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if _, err := h.noteRepo.FindByID(req.NoteID); err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
+		return apierr.JSONNoSuchNote(c)
 	}
 	if h.favoriteRepo == nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
@@ -97,7 +97,7 @@ func (h *Handler) Unrenote(c echo.Context) error {
 	// renoteId が指定ノートの自分のノートを探して削除
 	renote, err := h.noteRepo.FindRenoteByUser(user.ID, req.NoteID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such renote.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
+		return apierr.JSONNoSuchNote(c)
 	}
 	if err := h.deleteService.Delete(user, renote.ID); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
@@ -217,7 +217,7 @@ func (h *Handler) Translate(c echo.Context) error {
 
 	n, err := h.noteRepo.FindByID(req.NoteID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
+		return apierr.JSONNoSuchNote(c)
 	}
 
 	if n.Text == nil || *n.Text == "" {
