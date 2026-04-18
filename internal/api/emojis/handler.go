@@ -47,7 +47,7 @@ func (h *Handler) Emojis(c echo.Context) error {
 // POST /api/emoji
 func (h *Handler) Emoji(c echo.Context) error {
 	var req struct {
-		Name string `json:"name"`
+		Name string `json:"name" query:"name"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" {
 		return c.JSON(http.StatusBadRequest, apierr.InvalidParam())

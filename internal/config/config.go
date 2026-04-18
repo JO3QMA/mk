@@ -385,9 +385,9 @@ func resolve(src *Source) (*Config, error) {
 		EnableIPRateLimit: enableIPRateLimit,
 		SetupPassword:     src.SetupPassword,
 
-		DB:             src.DB,
+		DB:             resolveDB(src.DB),
 		DBReplications: src.DBReplications,
-		DBSlaves:       src.DBSlaves,
+		DBSlaves:       resolveDBSlaves(src.DBSlaves),
 
 		Redis:             redis,
 		RedisForPubsub:    resolveRedisOrDefault(src.RedisForPubsub, redis, host),
@@ -453,6 +453,22 @@ func resolve(src *Source) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func resolveDB(opts DBOptions) DBOptions {
+	if opts.Port == 0 {
+		opts.Port = 5432
+	}
+	return opts
+}
+
+func resolveDBSlaves(slaves []DBSlaveOptions) []DBSlaveOptions {
+	for i := range slaves {
+		if slaves[i].Port == 0 {
+			slaves[i].Port = 5432
+		}
+	}
+	return slaves
 }
 
 func resolveRedis(opts RedisOptions, host string) RedisOptions {
