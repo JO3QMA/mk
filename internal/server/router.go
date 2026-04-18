@@ -723,7 +723,9 @@ func (s *Server) setupRoutes() {
 	// Emojis endpoints (public)
 	emojisHandler := apiemojis.NewHandler(emojiRepo)
 	api.POST("/emojis", emojisHandler.Emojis)
+	api.GET("/emojis", emojisHandler.Emojis)
 	api.POST("/emoji", emojisHandler.Emoji)
+	api.GET("/emoji", emojisHandler.Emoji)
 
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
@@ -751,6 +753,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/global-timeline", notesHandler.GlobalTimeline)
 	api.POST("/notes/hybrid-timeline", notesHandler.HybridTimeline, middleware.RequireAuth())
 	api.POST("/notes/reactions", notesHandler.Reactions)
+	api.GET("/notes/reactions", notesHandler.Reactions)
 	api.POST("/notes/reactions/create", notesHandler.ReactionsCreate, middleware.RequireAuth())
 	api.POST("/notes/reactions/delete", notesHandler.ReactionsDelete, middleware.RequireAuth())
 	api.POST("/notes/polls/vote", notesHandler.PollsVote, middleware.RequireAuth())
