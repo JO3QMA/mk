@@ -40,7 +40,7 @@ func SwDistDir() string {
 }
 
 // ClientAssetsDir returns the path to frontend client assets (game images, etc.).
-// 環���変数 MISSKEY_CLIENT_ASSETS_DIR で上書き可能。
+// 環境変数 MISSKEY_CLIENT_ASSETS_DIR で上書き可能。
 func ClientAssetsDir() string {
 	if v := os.Getenv("MISSKEY_CLIENT_ASSETS_DIR"); v != "" {
 		return v
