@@ -1832,18 +1832,12 @@ func (s *Server) setupRoutes() {
 		s.echo.Any("/vite/*", newViteProxy("http://localhost:5173"))
 	}
 
-	// フロントエンド配布アセット (locales, fonts等)
+	// フロントエンド配布アセット (locales, fonts等) + リポジトリアセット (ai.png等)
+	// Echo は同一パスに Static を 2 回登録すると上書きされるため、
+	// frontendDistDir → repoAssetsDir の順にフォールバックするハンドラを使う
 	frontendDistDir := FrontendDistDir()
-	if _, err := os.Stat(frontendDistDir); err == nil {
-		s.echo.Static("/assets", frontendDistDir)
-	}
-
-	// リポジトリトップレベルアセット (ai.png等)
-	// metaテーブルのmascotImageUrlデフォルト値 /assets/ai.png が参照する
 	repoAssetsDir := RepoAssetsDir()
-	if _, err := os.Stat(repoAssetsDir); err == nil {
-		s.echo.Static("/assets", repoAssetsDir)
-	}
+	s.echo.GET("/assets/*", assetsHandler(frontendDistDir, repoAssetsDir))
 
 	// twemoji SVG配信
 	twemojiDir := TwemojiDir()
@@ -1883,6 +1877,26 @@ func (s *Server) setupRoutes() {
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
+}
+
+// assetsHandler returns a handler that tries to serve files from primary dir
+// first, then falls back to fallback dir. This avoids Echo's limitation of
+// only supporting one handler per route pattern.
+func assetsHandler(primary, fallback string) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		name := c.Param("*")
+		// primaryディレクトリから探す
+		fp := filepath.Join(primary, filepath.Clean("/"+name))
+		if info, err := os.Stat(fp); err == nil && !info.IsDir() {
+			return c.File(fp)
+		}
+		// fallbackディレクトリから探す
+		fp = filepath.Join(fallback, filepath.Clean("/"+name))
+		if info, err := os.Stat(fp); err == nil && !info.IsDir() {
+			return c.File(fp)
+		}
+		return echo.ErrNotFound
+	}
 }
 
 // generateInviteCode creates a random invite code string.
