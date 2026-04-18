@@ -687,6 +687,10 @@ func defaultMentionLimit() int {
 // DriveFileRepo未設定ならskipする。
 // TS本家は user.id 所有の files のみ拾うが、Go の DriveFileRepo は ID ベース
 // の bulk 取得しか持たないため、取得後に userId 一致をチェックする。
+// 本家TSは Promise.all で個別解決するため fileIds に重複があっても通る。
+// Go 側も `WHERE id IN ?` の SQL 重複排除による false positive を避けるため、
+// 返却 file を「所有者一致の ID 集合」に畳んだ上で、入力 ID が全て集合に
+// 含まれることを確認する (Devin review #270)。
 func (s *CreateService) checkFileIDs(userID string, fileIDs []string) error {
 	if len(fileIDs) == 0 || s.driveFileRepo == nil {
 		return nil
@@ -695,11 +699,14 @@ func (s *CreateService) checkFileIDs(userID string, fileIDs []string) error {
 	if err != nil {
 		return err
 	}
-	if len(files) != len(fileIDs) {
-		return ErrNoSuchFile
-	}
+	owned := make(map[string]struct{}, len(files))
 	for _, f := range files {
-		if f.UserID == nil || *f.UserID != userID {
+		if f.UserID != nil && *f.UserID == userID {
+			owned[f.ID] = struct{}{}
+		}
+	}
+	for _, id := range fileIDs {
+		if _, ok := owned[id]; !ok {
 			return ErrNoSuchFile
 		}
 	}

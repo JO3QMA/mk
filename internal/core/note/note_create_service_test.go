@@ -846,3 +846,39 @@ func TestCreateService_InvisiblePureRenote_NoLeak_Renote(t *testing.T) {
 	assert.ErrorIs(t, err, note.ErrCannotRenoteInvisibleNote)
 	assert.NotErrorIs(t, err, note.ErrCannotRenoteToAPureRenote)
 }
+
+// Devin review #270: 重複 fileId で false positive にならないこと。
+func TestCreateService_DuplicateFileIDs_Accepted(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	svc.SetDriveFileRepo(fileRepo)
+
+	uid := "u1"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid}
+
+	text := "hello"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: uid},
+		Text:    &text,
+		FileIDs: []string{"f1", "f1"}, // 重複
+	})
+	assert.NoError(t, err)
+}
+
+// 所有者違いの file は拒否される (regression)。
+func TestCreateService_NoSuchFile_WrongOwner(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	svc.SetDriveFileRepo(fileRepo)
+
+	otherUID := "other_user"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &otherUID}
+
+	text := "hello"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: "u1"},
+		Text:    &text,
+		FileIDs: []string{"f1"},
+	})
+	assert.ErrorIs(t, err, note.ErrNoSuchFile)
+}
