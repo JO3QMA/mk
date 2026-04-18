@@ -65,11 +65,8 @@ jobs:
           go-version-file: go.mod
 
       # テスト対象は go list でテストファイルのあるパッケージのみに絞る。
-      # pipefail を明示的に立てないと `go test ... | tee` が失敗を握りつぶす
-      # (tee の exit 0 がパイプライン全体の結果になる) ため設定する。
       - name: Run all tests with coverage
         run: |
-          set -o pipefail
           PKGS=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | tr '\n' ' ')
           echo "Testing packages: $PKGS"
           go test $PKGS \

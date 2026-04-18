@@ -20,9 +20,9 @@ func openTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// allowlist テストは共有 test DB に行を挿入するため、パッケージ外テスト
-// (特に internal/repository/emoji_test.go の ListLocal 系) を汚染しないよう
-// 必ず t.Cleanup で削除する。
+// allowlistテストは共有test DBに行を挿入するため、パッケージ外テスト
+// (特にinternal/repository/emoji_test.goのListLocal系) を汚染しないよう
+// 必ずt.Cleanupで削除する。
 func cleanupRow(t *testing.T, db *gorm.DB, table, id string) {
 	t.Helper()
 	t.Cleanup(func() {

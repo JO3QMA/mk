@@ -146,12 +146,17 @@ func TestEmojiRepository_ListWithFilter_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// clearLocalEmoji は共有 test DB に残留したローカル絵文字を削除する。
-// 他パッケージ (例: internal/core/mediaproxy) のテストが emoji 行を残すと
-// ListLocal 系のテストが汚染されるため、境界を明示する目的で使う。
+// clearLocalEmojiは本ファイルのemojiテストが使うローカル絵文字行
+// (idがe_* / em_*で始まるもの) のみを削除する。
+// 並行実行される他パッケージ (例: internal/core/mediaproxy) のテストが
+// host IS NULLのemojiを挿入するため、広域なDELETEは競合を引き起こす
+// (Devin review #259: race condition指摘)。接頭辞で絞ることで本パッケージ
+// のテスト領域に限定する。
 func clearLocalEmoji(t *testing.T) {
 	t.Helper()
-	require.NoError(t, testDB.Exec(`DELETE FROM "emoji" WHERE host IS NULL`).Error)
+	require.NoError(t, testDB.Exec(
+		`DELETE FROM "emoji" WHERE host IS NULL AND (id LIKE 'e\_%' ESCAPE '\' OR id LIKE 'em\_%' ESCAPE '\')`,
+	).Error)
 }
 
 func TestEmojiRepository_ListLocal_Empty(t *testing.T) {
