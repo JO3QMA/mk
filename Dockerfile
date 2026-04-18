@@ -11,7 +11,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey
+RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
+    go build -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
 # Stage 2: Runtime
 FROM alpine:3.21
@@ -21,6 +22,7 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 COPY --from=builder /app/built/misskey /app/misskey
+COPY --from=builder /app/built/migrate /app/migrate
 COPY --from=builder /app/migration /app/migration
 
 # デフォルト設定ファイルをコピー (docker-compose でマウント上書き可能)
