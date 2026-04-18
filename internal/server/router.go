@@ -96,6 +96,7 @@ import (
 	corewebhook "github.com/shiroha-a/mk/internal/core/webhook"
 	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/frontendutil"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
@@ -1825,7 +1826,7 @@ func (s *Server) setupRoutes() {
 
 	// フロントエンドアセット配信
 	// ビルド済みアセットがあれば静的配信、なければVite dev serverプロキシ
-	frontendDir := FrontendDir()
+	frontendDir := frontendutil.FrontendDir()
 	if _, err := os.Stat(frontendDir); err == nil {
 		s.echo.Static("/vite", frontendDir)
 	} else {
@@ -1835,24 +1836,24 @@ func (s *Server) setupRoutes() {
 	// フロントエンド配布アセット (locales, fonts等) + リポジトリアセット (ai.png等)
 	// Echo は同一パスに Static を 2 回登録すると上書きされるため、
 	// frontendDistDir → repoAssetsDir の順にフォールバックするハンドラを使う
-	frontendDistDir := FrontendDistDir()
-	repoAssetsDir := RepoAssetsDir()
-	s.echo.GET("/assets/*", assetsHandler(frontendDistDir, repoAssetsDir))
+	frontendDistDir := frontendutil.FrontendDistDir()
+	repoAssetsDir := frontendutil.RepoAssetsDir()
+	s.echo.GET("/assets/*", frontendutil.AssetsHandler(frontendDistDir, repoAssetsDir))
 
 	// twemoji SVG配信
-	twemojiDir := TwemojiDir()
+	twemojiDir := frontendutil.TwemojiDir()
 	if _, err := os.Stat(twemojiDir); err == nil {
 		s.echo.Static("/twemoji", twemojiDir)
 	}
 
 	// client-assets配信 (バブルゲーム、フラッシュ等のフロントエンドアセット)
-	clientAssetsDir := ClientAssetsDir()
+	clientAssetsDir := frontendutil.ClientAssetsDir()
 	if _, err := os.Stat(clientAssetsDir); err == nil {
 		s.echo.Static("/client-assets", clientAssetsDir)
 	}
 
 	// 静的アセット配信 (favicon, splash, icons等)
-	staticDir := StaticDir()
+	staticDir := frontendutil.StaticDir()
 	if _, err := os.Stat(staticDir); err == nil {
 		s.echo.Static("/static-assets", staticDir)
 		s.echo.File("/favicon.ico", filepath.Join(staticDir, "favicon.ico"))
@@ -1870,33 +1871,13 @@ func (s *Server) setupRoutes() {
 	// Service Worker (sw.js) — Misskey frontend は GET /sw.js を登録しにくる。
 	// SPA catchall より前に登録しないと text/html にフォールバックしてしまい
 	// ブラウザが "unsupported MIME type" エラーで SW 登録を拒否する。
-	swDistDir := SwDistDir()
+	swDistDir := frontendutil.SwDistDir()
 	if _, err := os.Stat(filepath.Join(swDistDir, "sw.js")); err == nil {
 		s.echo.File("/sw.js", filepath.Join(swDistDir, "sw.js"))
 	}
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontendHTML(s.config, metaRepo))
-}
-
-// assetsHandler returns a handler that tries to serve files from primary dir
-// first, then falls back to fallback dir. This avoids Echo's limitation of
-// only supporting one handler per route pattern.
-func assetsHandler(primary, fallback string) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		name := c.Param("*")
-		// primaryディレクトリから探す
-		fp := filepath.Join(primary, filepath.Clean("/"+name))
-		if info, err := os.Stat(fp); err == nil && !info.IsDir() {
-			return c.File(fp)
-		}
-		// fallbackディレクトリから探す
-		fp = filepath.Join(fallback, filepath.Clean("/"+name))
-		if info, err := os.Stat(fp); err == nil && !info.IsDir() {
-			return c.File(fp)
-		}
-		return echo.ErrNotFound
-	}
 }
 
 // generateInviteCode creates a random invite code string.
