@@ -12,11 +12,18 @@ import (
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
+// ProxyAccountResolver returns the username of the "proxy" system account.
+// 呼び出し側 (router) が SystemAccountRepository + UserRepository を使って
+// type='proxy' の system_account から userId を辿り、username を返す。
+// 解決できないときは "" と false を返す。
+type ProxyAccountResolver func() (string, bool)
+
 // Handler handles meta-related API endpoints.
 type Handler struct {
-	config   *config.Config
-	metaRepo repository.MetaRepository
-	adRepo   repository.AdRepository
+	config           *config.Config
+	metaRepo         repository.MetaRepository
+	adRepo           repository.AdRepository
+	proxyAccountName ProxyAccountResolver
 }
 
 // NewHandler creates a new meta Handler.
@@ -29,6 +36,13 @@ func NewHandler(cfg *config.Config, metaRepo repository.MetaRepository) *Handler
 // without ad wiring keep passing.
 func (h *Handler) SetAdRepo(r repository.AdRepository) {
 	h.adRepo = r
+}
+
+// SetProxyAccountResolver wires the resolver used to populate the
+// `proxyAccountName` field on MetaDetailed responses. When unset (tests or
+// pre-setup instances), the field is reported as null.
+func (h *Handler) SetProxyAccountResolver(r ProxyAccountResolver) {
+	h.proxyAccountName = r
 }
 
 // Meta returns server metadata.
@@ -102,14 +116,14 @@ func (h *Handler) Meta(c echo.Context) error {
 		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
 		"requireSetup":                 m.RootUserID == nil,
 		"singleUserMode":               m.SingleUserMode,
-		"providesTarball":              false,
+		"providesTarball":              h.config.PublishTarballInsteadOfProvideRepositoryUrl,
 		"maxFileSize":                  h.config.MaxFileSize,
-		"proxyAccountName":             nil,
+		"proxyAccountName":             resolveProxyAccountName(h.proxyAccountName),
 		"enableMcaptcha":               m.EnableMcaptcha,
 		"mcaptchaSiteKey":              m.McaptchaSiteKey,
 		"mcaptchaInstanceUrl":          m.McaptchaInstanceURL,
 		"enableTestcaptcha":            m.EnableTestcaptcha,
-		"sentryForFrontend":            nil,
+		"sentryForFrontend":            sentryForFrontendJSON(h.config.SentryForFrontend),
 		"googleAnalyticsMeasurementId": m.GoogleAnalyticsMeasurementID,
 		// clientOptions は jsonb なのでそのまま返す。空 jsonb なら frontend が
 		// デフォルト値を使う前提。
@@ -191,6 +205,32 @@ func clientOptionsJSON(raw []byte) any {
 		return map[string]any{}
 	}
 	return out
+}
+
+// resolveProxyAccountName looks up the `proxyAccountName` field via the
+// optional resolver wired by the router. Returns nil when the resolver is
+// absent (tests, pre-setup instances) or cannot find the system account.
+// Returning nil keeps the JSON field as null, matching the TS behavior when
+// no proxy account is configured.
+func resolveProxyAccountName(r ProxyAccountResolver) any {
+	if r == nil {
+		return nil
+	}
+	name, ok := r()
+	if !ok {
+		return nil
+	}
+	return name
+}
+
+// sentryForFrontendJSON normalizes config.SentryForFrontend for JSON output.
+// Empty (nil or zero-length) map is treated as absent and returns nil so
+// the JSON response carries `null` (TS behavior: `?? null`).
+func sentryForFrontendJSON(m map[string]any) any {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // PolicyBool reads a boolean policy value from role.DefaultPolicies() output

@@ -21,7 +21,9 @@ import (
 // frontendHTML generates the HTML shell for the Misskey frontend.
 // ビルド済みアセットがある場合は CLIENT_ENTRY を設定して production モードで配信。
 // なければ Vite dev server 経由の development モードで配信。
-func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.HandlerFunc {
+// proxyAccountResolverは/api/metaのproxyAccountNameフィールド解決用で、
+// nilを渡すとその値はnullになる (pre-setup等)。
+func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository, proxyAccountResolver meta.ProxyAccountResolver) echo.HandlerFunc {
 	// ビルド済みアセットからCLIENT_ENTRYを取得
 	clientEntry := frontendutil.DetectClientEntry()
 
@@ -50,7 +52,7 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 			if m.MascotImageURL != nil && *m.MascotImageURL != "" {
 				mascotURL = *m.MascotImageURL
 			}
-			metaJSON = buildMetaJSON(cfg, m)
+			metaJSON = buildMetaJSON(cfg, m, proxyAccountResolver)
 		}
 
 		// CLIENT_ENTRYの設定
@@ -111,7 +113,7 @@ func frontendHTML(cfg *config.Config, metaRepo repository.MetaRepository) echo.H
 // buildMetaJSON constructs the /api/meta equivalent JSON for inline embedding.
 // /api/meta ハンドラ (meta/handler.go) と完全に同じフィールドを返す。
 // フロントエンドはこのJSONを先に読んで /api/meta の呼び出しを省略する。
-func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
+func buildMetaJSON(cfg *config.Config, m *model.Meta, proxyAccountResolver meta.ProxyAccountResolver) string {
 	// mascotImageUrl フォールバック
 	mascot := "/assets/ai.png"
 	if m.MascotImageURL != nil && *m.MascotImageURL != "" {
@@ -171,15 +173,15 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		"cacheRemoteSensitiveFiles":    m.CacheRemoteSensitiveFiles,
 		"requireSetup":                 m.RootUserID == nil,
 		"singleUserMode":               m.SingleUserMode,
-		"providesTarball":              false,
+		"providesTarball":              cfg.PublishTarballInsteadOfProvideRepositoryUrl,
 		"maxFileSize":                  cfg.MaxFileSize,
-		"proxyAccountName":             nil,
+		"proxyAccountName":             resolveProxyAccountNameForSSR(proxyAccountResolver),
 		"noteSearchableScope":          meta.NoteSearchableScope(cfg.Meilisearch),
 		"enableMcaptcha":               m.EnableMcaptcha,
 		"mcaptchaSiteKey":              m.McaptchaSiteKey,
 		"mcaptchaInstanceUrl":          m.McaptchaInstanceURL,
 		"enableTestcaptcha":            m.EnableTestcaptcha,
-		"sentryForFrontend":            nil,
+		"sentryForFrontend":            sentryForFrontendForSSR(cfg.SentryForFrontend),
 		"googleAnalyticsMeasurementId": m.GoogleAnalyticsMeasurementID,
 		"clientOptions":                clientOptionsJSON(m.ClientOptions),
 		"policies":                     role.DefaultPolicies(),
@@ -201,6 +203,48 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+// newProxyAccountResolverはtype='proxy'のsystem_accountから対応する
+// user.usernameを解決するmeta.ProxyAccountResolverを返す。読み取り専用で、
+// 未作成なら(_, false)を返す (TS版のfetchは未存在時に作成するが、
+// /api/metaの副作用として自動作成するのは避け、明示セットアップ経由に寄せる)。
+func newProxyAccountResolver(saRepo repository.SystemAccountRepository, userRepo repository.UserRepository) meta.ProxyAccountResolver {
+	return func() (string, bool) {
+		sa, err := saRepo.FindByType("proxy")
+		if err != nil || sa == nil {
+			return "", false
+		}
+		user, err := userRepo.FindByID(sa.UserID)
+		if err != nil || user == nil {
+			return "", false
+		}
+		return user.Username, true
+	}
+}
+
+// resolveProxyAccountNameForSSRはSSR埋め込みJSON向けのproxy account名解決。
+// /api/meta の resolveProxyAccountName と同じ挙動 (meta.ProxyAccountResolver は
+// meta パッケージ定義なのでロジックは共有されるが、SSR 側は独自の nil-safe
+// ラッパーで呼ぶ)。
+func resolveProxyAccountNameForSSR(r meta.ProxyAccountResolver) any {
+	if r == nil {
+		return nil
+	}
+	name, ok := r()
+	if !ok {
+		return nil
+	}
+	return name
+}
+
+// sentryForFrontendForSSR normalizes config.SentryForFrontend for SSR embed.
+// Empty map == null (TS: `?? null`).
+func sentryForFrontendForSSR(m map[string]any) any {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // clientOptionsJSON normalizes a jsonb byte slice into map[string]any.
