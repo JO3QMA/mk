@@ -271,10 +271,11 @@ func (s *Service) List(user *model.User, noteID, untilID, sinceID string, limit 
 	if limit <= 0 {
 		limit = 10
 	}
+	var reactions []string
 	if reaction != "" {
-		reaction = s.normalizeReaction(reaction)
+		reactions = reactionVariants(s.normalizeReaction(reaction))
 	}
-	return s.reactionRepo.ListByNoteID(target.ID, untilID, sinceID, limit, reaction)
+	return s.reactionRepo.ListByNoteID(target.ID, untilID, sinceID, limit, reactions)
 }
 
 // normalizeReaction returns the canonical form of a reaction string.
@@ -314,6 +315,19 @@ func (s *Service) normalizeReaction(raw string) string {
 		return FallbackReaction
 	}
 	return raw
+}
+
+// localCanonicalPattern matches the canonical local emoji form `:name@.:`.
+var localCanonicalPattern = regexp.MustCompile(`^:([\w+\-]+)@\.:$`)
+
+// reactionVariants returns a slice of reaction strings to match in the DB.
+// TS時代のレコードは `:name:` 形式、mk時代は `:name@.:` 形式で保存されて
+// いるため、ローカルカスタム絵文字の場合は両方の形式で検索する必要がある。
+func reactionVariants(normalized string) []string {
+	if m := localCanonicalPattern.FindStringSubmatch(normalized); m != nil {
+		return []string{normalized, ":" + m[1] + ":"}
+	}
+	return []string{normalized}
 }
 
 // isPureRenote reports whether the given note is a pure renote (no text/cw/files/poll).

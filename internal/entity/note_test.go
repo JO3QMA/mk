@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -192,6 +193,52 @@ func TestPackNote_NilVisibleUserIDs_Mentions(t *testing.T) {
 	assert.NotNil(t, entity.Mentions)
 	assert.Empty(t, entity.Mentions)
 	assert.False(t, entity.HasPoll)
+}
+
+func TestNormalizeReactionKey(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"local legacy", ":smile:", ":smile@.:"},
+		{"local canonical", ":smile@.:", ":smile@.:"},
+		{"remote", ":smile@remote.example:", ":smile@remote.example:"},
+		{"unicode emoji", "👍", "👍"},
+		{"heart", "❤", "❤"},
+		{"empty", "", ""},
+		{"hyphen name", ":cat-smile:", ":cat-smile@.:"},
+		{"plus name", ":thumbs+up:", ":thumbs+up@.:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, NormalizeReactionKey(tc.in))
+		})
+	}
+}
+
+func TestPackNote_ReactionsKeyNormalized(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	// TS時代の `:lifelog:` とmk時代の `:lifelog@.:` が混在
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{":lifelog:":1,":lifelog@.:" :1,"👍":3}`)),
+	}
+
+	e := PackNote(note, idGen)
+
+	var reactions map[string]float64
+	require.NoError(t, json.Unmarshal(e.Reactions, &reactions))
+	// `:lifelog:` と `:lifelog@.:` が統合される
+	assert.Equal(t, float64(2), reactions[":lifelog@.:"])
+	assert.Equal(t, float64(3), reactions["👍"])
+	_, hasLegacy := reactions[":lifelog:"]
+	assert.False(t, hasLegacy)
+	assert.Equal(t, 5, e.ReactionCount)
 }
 
 func TestPackNote_CreatedAtParsing(t *testing.T) {
