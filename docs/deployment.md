@@ -41,6 +41,13 @@ FROM misskey/misskey:2026.3.2 AS misskey-assets
 FROM ghcr.io/shiroha-a/mk:latest
 COPY --from=misskey-assets /misskey/built /frontend
 COPY --from=misskey-assets /misskey/packages/frontend/assets /client-assets
+COPY --from=misskey-assets /misskey/packages/backend/node_modules/@discordapp/twemoji/dist/svg /twemoji
+COPY --from=misskey-assets /misskey/packages/backend/assets /static
+ENV MISSKEY_FRONTEND_DIR=/frontend/_frontend_vite_
+ENV MISSKEY_FRONTEND_DIST_DIR=/frontend/_frontend_dist_
+ENV MISSKEY_TWEMOJI_DIR=/twemoji
+ENV MISSKEY_CLIENT_ASSETS_DIR=/client-assets
+ENV MISSKEY_STATIC_DIR=/static
 ```
 
 ## Docker Compose (UDS)
