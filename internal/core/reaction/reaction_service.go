@@ -296,6 +296,10 @@ func (s *Service) normalizeReaction(raw string) string {
 		if len(m) >= 3 {
 			host = m[2]
 		}
+		// "@." はローカルを表すcanonical suffix (TS互換)
+		if host == "." {
+			host = ""
+		}
 		var hostPtr *string
 		if host != "" {
 			hostPtr = &host
