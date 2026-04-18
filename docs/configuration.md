@@ -78,7 +78,9 @@ Docker環境ではコンテナ内の`.config/docker.yml`がデフォルトで読
 | `deliverJobMaxAttempts` | int | - | AP配信の最大リトライ回数 |
 | `inboxJobMaxAttempts` | int | - | Inbox処理の最大リトライ回数 |
 
-### メディア
+### メディ���
+
+ローカルストレージ (S3未設定時) のファイル保存先は`./drive-files`固定。Docker環境ではコンテナ内の`/app/drive-files`にボリュームマウントが必要。
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|

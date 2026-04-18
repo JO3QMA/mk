@@ -16,7 +16,7 @@ services:
       # MISSKEY_STATIC_DIR: /app/static
       TZ: Asia/Tokyo
     volumes:
-      - ./files:/app/files
+      - ./files:/app/drive-files
       # 設定ファイルを上書きする場合:
       # - ./.config/default.yml:/app/.config/default.yml:ro
     restart: unless-stopped
