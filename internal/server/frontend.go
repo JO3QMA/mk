@@ -170,6 +170,16 @@ func StaticDir() string {
 	return filepath.Join(frontendBase, "packages", "backend", "assets")
 }
 
+// RepoAssetsDir returns the path to the top-level repository assets directory
+// (ai.png, banner images, etc.).
+// 環境変数 MISSKEY_REPO_ASSETS_DIR で上書き可能。
+func RepoAssetsDir() string {
+	if v := os.Getenv("MISSKEY_REPO_ASSETS_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(frontendBase, "assets")
+}
+
 // clientEntryInfo holds the Vite entry point script and its CSS dependencies.
 type clientEntryInfo struct {
 	Script string

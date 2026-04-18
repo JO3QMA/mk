@@ -1838,6 +1838,13 @@ func (s *Server) setupRoutes() {
 		s.echo.Static("/assets", frontendDistDir)
 	}
 
+	// リポジトリトップレベルアセット (ai.png等)
+	// metaテーブルのmascotImageUrlデフォルト値 /assets/ai.png が参照する
+	repoAssetsDir := RepoAssetsDir()
+	if _, err := os.Stat(repoAssetsDir); err == nil {
+		s.echo.Static("/assets", repoAssetsDir)
+	}
+
 	// twemoji SVG配信
 	twemojiDir := TwemojiDir()
 	if _, err := os.Stat(twemojiDir); err == nil {
