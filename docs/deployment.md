@@ -24,6 +24,25 @@ docker compose up -d
 
 ファイルストレージは`./files`にマウントされる。
 
+### prebuilt imageについて
+
+`ghcr.io/shiroha-a/mk:latest`等のprebuilt imageにはGoバイナリとマイグレーションSQLのみが含まれ、フロントエンドアセットは同梱されていない。prebuilt imageを使用する場合は以下の環境変数でアセットディレクトリを指定する必要がある:
+
+- `MISSKEY_FRONTEND_DIR` — viteビルド出力
+- `MISSKEY_FRONTEND_DIST_DIR` — dist出力 (locales, fonts)
+- `MISSKEY_TWEMOJI_DIR` — twemoji SVG
+- `MISSKEY_CLIENT_ASSETS_DIR` — クライアントアセット
+- `MISSKEY_STATIC_DIR` — 静的ファイル
+
+TS版Misskeyのイメージからアセットをコピーすることも可能:
+
+```dockerfile
+FROM misskey/misskey:2026.3.2 AS misskey-assets
+FROM ghcr.io/shiroha-a/mk:latest
+COPY --from=misskey-assets /misskey/built /frontend
+COPY --from=misskey-assets /misskey/packages/frontend/assets /client-assets
+```
+
 ## Docker Compose (UDS)
 
 本番向け構成。UNIX Domain Socketのみで通信し、TCPポートの露出を最小化する。
