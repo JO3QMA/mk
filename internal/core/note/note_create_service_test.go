@@ -805,3 +805,44 @@ func strPtr254Str(i int) string {
 	}
 	return string(chars[i/36]) + string(chars[i%36])
 }
+
+// Devin review #270: IsPureRenote check must not leak note structure to
+// unauthorized viewers. invisible な pure renote への reply/renote では
+// 「見えない」エラーを返し、pure renote であることが推測できないようにする。
+func TestCreateService_InvisiblePureRenote_NoLeak_Reply(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteID := "invisible_pure_renote"
+	inner := "original_note"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "other_user",
+		Visibility: model.NoteVisibilityFollowers, // viewerはfollowしていない
+		RenoteID:   &inner,                        // pure renote
+	}
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User:    &model.User{ID: "u1"},
+		Text:    &text,
+		ReplyID: strPtr254(noteID),
+	})
+	// pure renote error ではなく invisible error が返るべき
+	assert.ErrorIs(t, err, note.ErrCannotReplyToInvisibleNote)
+	assert.NotErrorIs(t, err, note.ErrCannotReplyToAPureRenote)
+}
+
+func TestCreateService_InvisiblePureRenote_NoLeak_Renote(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteID := "invisible_pure_renote_2"
+	inner := "original_note"
+	noteRepo.Notes[noteID] = &model.Note{
+		ID: noteID, UserID: "other_user",
+		Visibility: model.NoteVisibilityFollowers,
+		RenoteID:   &inner,
+	}
+	_, err := svc.Create(note.CreateInput{
+		User:     &model.User{ID: "u1"},
+		RenoteID: strPtr254(noteID),
+	})
+	// pure renote error ではなく invisible error
+	assert.ErrorIs(t, err, note.ErrCannotRenoteInvisibleNote)
+	assert.NotErrorIs(t, err, note.ErrCannotRenoteToAPureRenote)
+}

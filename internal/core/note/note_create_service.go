@@ -310,12 +310,15 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		if err != nil {
 			return nil, ErrReplyTargetNotFound
 		}
+		// 可視性チェックを先に行う。FindByIDWithUserは無条件に行を返すため、
+		// 不可視noteに対して別error (pure renote 等) を返すと「対象noteが
+		// 何であるか」を攻撃者が推測できる情報漏洩になる。Devin review #270。
+		if !CanSeeNote(in.User, t, s.followingRepo) {
+			return nil, ErrCannotReplyToInvisibleNote
+		}
 		// pure renote (renoteIdあり、text/files/poll/cwなし) への返信は許可しない
 		if IsPureRenote(t) {
 			return nil, ErrCannotReplyToAPureRenote
-		}
-		if !CanSeeNote(in.User, t, s.followingRepo) {
-			return nil, ErrCannotReplyToInvisibleNote
 		}
 		// specified可視性noteへの返信時は visibility も specified でなければ拒否
 		if t.Visibility == model.NoteVisibilitySpecified && visibility != model.NoteVisibilitySpecified {
@@ -334,12 +337,13 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		if err != nil {
 			return nil, ErrRenoteTargetNotFound
 		}
+		// 可視性チェックを先に行う (Devin review #270 — 情報漏洩防止)。
+		if !CanSeeNote(in.User, t, s.followingRepo) {
+			return nil, ErrCannotRenoteInvisibleNote
+		}
 		// pure renoteを更にrenoteするのは禁止 (TS: isRenote && !isQuote)
 		if IsPureRenote(t) {
 			return nil, ErrCannotRenoteToAPureRenote
-		}
-		if !CanSeeNote(in.User, t, s.followingRepo) {
-			return nil, ErrCannotRenoteInvisibleNote
 		}
 		// renote対象のユーザーに block されていたら拒否
 		if t.UserID != in.User.ID {
