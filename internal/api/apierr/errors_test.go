@@ -120,3 +120,64 @@ func TestUUIDConstants_MatchUpstream(t *testing.T) {
 		})
 	}
 }
+
+// Phase 7-1 follow-up (#254): 新規追加ヘルパー関数のカバレッジテスト
+func TestCannotRenoteToAPureRenote(t *testing.T) {
+	errObj := CannotRenoteToAPureRenote()["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_RENOTE_TO_A_PURE_RENOTE", errObj["code"])
+	assert.Equal(t, UUIDCannotRenoteToAPureRenote, errObj["id"])
+}
+
+func TestCannotReplyToAPureRenote(t *testing.T) {
+	errObj := CannotReplyToAPureRenote()["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_REPLY_TO_A_PURE_RENOTE", errObj["code"])
+	assert.Equal(t, UUIDCannotReplyToAPureRenote, errObj["id"])
+}
+
+func TestCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility(t *testing.T) {
+	errObj := CannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility()["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_REPLY_TO_SPECIFIED_VISIBILITY_NOTE_WITH_EXTENDED_VISIBILITY", errObj["code"])
+	assert.Equal(t, UUIDCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility, errObj["id"])
+}
+
+func TestCannotCreateAlreadyExpiredPoll(t *testing.T) {
+	errObj := CannotCreateAlreadyExpiredPoll()["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_CREATE_ALREADY_EXPIRED_POLL", errObj["code"])
+	assert.Equal(t, UUIDCannotCreateAlreadyExpiredPoll, errObj["id"])
+}
+
+func TestYouHaveBeenBlocked(t *testing.T) {
+	errObj := YouHaveBeenBlocked()["error"].(map[string]any)
+	assert.Equal(t, "YOU_HAVE_BEEN_BLOCKED", errObj["code"])
+	assert.Equal(t, UUIDYouHaveBeenBlocked, errObj["id"])
+}
+
+func TestNoSuchFile(t *testing.T) {
+	errObj := NoSuchFile()["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_FILE", errObj["code"])
+	assert.Equal(t, UUIDNoSuchFile, errObj["id"])
+}
+
+func TestCannotRenoteOutsideOfChannel(t *testing.T) {
+	errObj := CannotRenoteOutsideOfChannel()["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_RENOTE_OUTSIDE_OF_CHANNEL", errObj["code"])
+	assert.Equal(t, UUIDCannotRenoteOutsideOfChannel, errObj["id"])
+}
+
+func TestContainsProhibitedWords(t *testing.T) {
+	errObj := ContainsProhibitedWords()["error"].(map[string]any)
+	assert.Equal(t, "CONTAINS_PROHIBITED_WORDS", errObj["code"])
+	assert.Equal(t, UUIDContainsProhibitedWords, errObj["id"])
+}
+
+func TestContainsTooManyMentions(t *testing.T) {
+	errObj := ContainsTooManyMentions()["error"].(map[string]any)
+	assert.Equal(t, "CONTAINS_TOO_MANY_MENTIONS", errObj["code"])
+	assert.Equal(t, UUIDContainsTooManyMentions, errObj["id"])
+}
+
+func TestFailedToResolveRemoteUser(t *testing.T) {
+	errObj := FailedToResolveRemoteUser()["error"].(map[string]any)
+	assert.Equal(t, "FAILED_TO_RESOLVE_REMOTE_USER", errObj["code"])
+	assert.Equal(t, UUIDFailedToResolveRemoteUser, errObj["id"])
+}

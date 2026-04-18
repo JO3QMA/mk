@@ -20,6 +20,12 @@ const MaxPinnedNotes = 5
 var (
 	// ErrUserNotFound is returned when the target user does not exist.
 	ErrUserNotFound = errors.New("user not found")
+	// ErrFailedToResolveRemoteUser is returned when ShowByUsername is called
+	// with a non-local host and remote resolution fails. The sentinel exists
+	// so handlers can map the dedicated FAILED_TO_RESOLVE_REMOTE_USER API
+	// error, but the service does not yet attempt remote resolution; the
+	// actual wiring (ActorResolver integration) is a follow-up task.
+	ErrFailedToResolveRemoteUser = errors.New("failed to resolve remote user")
 	// ErrInvalidParam is returned when neither userId nor username is given.
 	ErrInvalidParam = errors.New("userId or username is required")
 	// ErrNoteNotFound is returned when the target note does not exist or is

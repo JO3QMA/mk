@@ -102,3 +102,74 @@ func TestJSONNoSuchChannel(t *testing.T) {
 	assert.Equal(t, "NO_SUCH_CHANNEL", errObj["code"])
 	assert.Equal(t, UUIDNoSuchChannel, errObj["id"])
 }
+
+// Phase 7-1 follow-up (#254): 新規JSONヘルパーのカバレッジ
+func TestJSONCannotRenoteToAPureRenote(t *testing.T) {
+	code, body := invoke(t, JSONCannotRenoteToAPureRenote)
+	assert.Equal(t, http.StatusForbidden, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_RENOTE_TO_A_PURE_RENOTE", errObj["code"])
+}
+
+func TestJSONCannotReplyToAPureRenote(t *testing.T) {
+	code, body := invoke(t, JSONCannotReplyToAPureRenote)
+	assert.Equal(t, http.StatusForbidden, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_REPLY_TO_A_PURE_RENOTE", errObj["code"])
+}
+
+func TestJSONCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility(t *testing.T) {
+	code, body := invoke(t, JSONCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility)
+	assert.Equal(t, http.StatusForbidden, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_REPLY_TO_SPECIFIED_VISIBILITY_NOTE_WITH_EXTENDED_VISIBILITY", errObj["code"])
+}
+
+func TestJSONCannotCreateAlreadyExpiredPoll(t *testing.T) {
+	code, body := invoke(t, JSONCannotCreateAlreadyExpiredPoll)
+	assert.Equal(t, http.StatusBadRequest, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_CREATE_ALREADY_EXPIRED_POLL", errObj["code"])
+}
+
+func TestJSONYouHaveBeenBlocked(t *testing.T) {
+	code, body := invoke(t, JSONYouHaveBeenBlocked)
+	assert.Equal(t, http.StatusForbidden, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "YOU_HAVE_BEEN_BLOCKED", errObj["code"])
+}
+
+func TestJSONNoSuchFile(t *testing.T) {
+	code, body := invoke(t, JSONNoSuchFile)
+	assert.Equal(t, http.StatusBadRequest, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_FILE", errObj["code"])
+}
+
+func TestJSONCannotRenoteOutsideOfChannel(t *testing.T) {
+	code, body := invoke(t, JSONCannotRenoteOutsideOfChannel)
+	assert.Equal(t, http.StatusForbidden, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_RENOTE_OUTSIDE_OF_CHANNEL", errObj["code"])
+}
+
+func TestJSONContainsProhibitedWords(t *testing.T) {
+	code, body := invoke(t, JSONContainsProhibitedWords)
+	assert.Equal(t, http.StatusBadRequest, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CONTAINS_PROHIBITED_WORDS", errObj["code"])
+}
+
+func TestJSONContainsTooManyMentions(t *testing.T) {
+	code, body := invoke(t, JSONContainsTooManyMentions)
+	assert.Equal(t, http.StatusBadRequest, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CONTAINS_TOO_MANY_MENTIONS", errObj["code"])
+}
+
+func TestJSONFailedToResolveRemoteUser(t *testing.T) {
+	code, body := invoke(t, JSONFailedToResolveRemoteUser)
+	assert.Equal(t, http.StatusNotFound, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "FAILED_TO_RESOLVE_REMOTE_USER", errObj["code"])
+}

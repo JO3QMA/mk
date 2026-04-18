@@ -1,6 +1,7 @@
 package users
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -160,6 +161,9 @@ func (h *Handler) Show(c echo.Context) error {
 	}
 
 	if err != nil {
+		if errors.Is(err, user.ErrFailedToResolveRemoteUser) {
+			return apierr.JSONFailedToResolveRemoteUser(c)
+		}
 		return apierr.JSONNoSuchUser(c)
 	}
 

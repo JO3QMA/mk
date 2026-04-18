@@ -173,6 +173,12 @@ func (s *Server) setupRoutes() {
 	// ActivityPub 配信のためにローカルユーザーは RSA 鍵対を必要とする。
 	signupService.SetKeypairRepo(keypairRepo)
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
+	// Phase 7-1 follow-up (#254): 本家互換の残存 error 検出ロジック用依存を注入。
+	// Setter経由なのでテストでは任意に省略可能。
+	noteCreateService.SetBlockingRepo(repository.NewBlockingRepository(s.db))
+	noteCreateService.SetDriveFileRepo(driveFileRepo)
+	noteCreateService.SetMetaRepo(metaRepo)
+	noteCreateService.SetChannelRepo(repository.NewChannelRepository(s.db))
 	noteDeleteService := corenote.NewDeleteService(noteRepo)
 	noteQueryService := corenote.NewQueryService(noteRepo, followingRepo)
 	noteQueryService.SetFavoriteRepo(noteFavoriteRepo)

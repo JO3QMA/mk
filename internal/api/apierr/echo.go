@@ -55,3 +55,53 @@ func JSONCannotRenoteDueToVisibility(c echo.Context) error {
 func JSONNoSuchChannel(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, NoSuchChannel())
 }
+
+// JSONCannotRenoteToAPureRenote writes a 403 response.
+func JSONCannotRenoteToAPureRenote(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, CannotRenoteToAPureRenote())
+}
+
+// JSONCannotReplyToAPureRenote writes a 403 response.
+func JSONCannotReplyToAPureRenote(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, CannotReplyToAPureRenote())
+}
+
+// JSONCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility writes a 403.
+func JSONCannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, CannotReplyToSpecifiedVisibilityNoteWithExtendedVisibility())
+}
+
+// JSONCannotCreateAlreadyExpiredPoll writes a 400 response.
+func JSONCannotCreateAlreadyExpiredPoll(c echo.Context) error {
+	return c.JSON(http.StatusBadRequest, CannotCreateAlreadyExpiredPoll())
+}
+
+// JSONYouHaveBeenBlocked writes a 403 response.
+func JSONYouHaveBeenBlocked(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, YouHaveBeenBlocked())
+}
+
+// JSONNoSuchFile writes a 400 response.
+func JSONNoSuchFile(c echo.Context) error {
+	return c.JSON(http.StatusBadRequest, NoSuchFile())
+}
+
+// JSONCannotRenoteOutsideOfChannel writes a 403 response.
+func JSONCannotRenoteOutsideOfChannel(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, CannotRenoteOutsideOfChannel())
+}
+
+// JSONContainsProhibitedWords writes a 400 response.
+func JSONContainsProhibitedWords(c echo.Context) error {
+	return c.JSON(http.StatusBadRequest, ContainsProhibitedWords())
+}
+
+// JSONContainsTooManyMentions writes a 400 response.
+func JSONContainsTooManyMentions(c echo.Context) error {
+	return c.JSON(http.StatusBadRequest, ContainsTooManyMentions())
+}
+
+// JSONFailedToResolveRemoteUser writes a 404 response.
+func JSONFailedToResolveRemoteUser(c echo.Context) error {
+	return c.JSON(http.StatusNotFound, FailedToResolveRemoteUser())
+}
