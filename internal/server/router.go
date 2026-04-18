@@ -96,6 +96,7 @@ import (
 	corewebhook "github.com/shiroha-a/mk/internal/core/webhook"
 	corewebpush "github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/frontendutil"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
@@ -1828,33 +1829,34 @@ func (s *Server) setupRoutes() {
 
 	// フロントエンドアセット配信
 	// ビルド済みアセットがあれば静的配信、なければVite dev serverプロキシ
-	frontendDir := FrontendDir()
+	frontendDir := frontendutil.FrontendDir()
 	if _, err := os.Stat(frontendDir); err == nil {
 		s.echo.Static("/vite", frontendDir)
 	} else {
 		s.echo.Any("/vite/*", newViteProxy("http://localhost:5173"))
 	}
 
-	// フロントエンド配布アセット (locales, fonts等)
-	frontendDistDir := FrontendDistDir()
-	if _, err := os.Stat(frontendDistDir); err == nil {
-		s.echo.Static("/assets", frontendDistDir)
-	}
+	// フロントエンド配布アセット (locales, fonts等) + リポジトリアセット (ai.png等)
+	// Echo は同一パスに Static を 2 回登録すると上書きされるため、
+	// frontendDistDir → repoAssetsDir の順にフォールバックするハンドラを使う
+	frontendDistDir := frontendutil.FrontendDistDir()
+	repoAssetsDir := frontendutil.RepoAssetsDir()
+	s.echo.GET("/assets/*", frontendutil.AssetsHandler(frontendDistDir, repoAssetsDir))
 
 	// twemoji SVG配信
-	twemojiDir := TwemojiDir()
+	twemojiDir := frontendutil.TwemojiDir()
 	if _, err := os.Stat(twemojiDir); err == nil {
 		s.echo.Static("/twemoji", twemojiDir)
 	}
 
 	// client-assets配信 (バブルゲーム、フラッシュ等のフロントエンドアセット)
-	clientAssetsDir := ClientAssetsDir()
+	clientAssetsDir := frontendutil.ClientAssetsDir()
 	if _, err := os.Stat(clientAssetsDir); err == nil {
 		s.echo.Static("/client-assets", clientAssetsDir)
 	}
 
 	// 静的アセット配信 (favicon, splash, icons等)
-	staticDir := StaticDir()
+	staticDir := frontendutil.StaticDir()
 	if _, err := os.Stat(staticDir); err == nil {
 		s.echo.Static("/static-assets", staticDir)
 		s.echo.File("/favicon.ico", filepath.Join(staticDir, "favicon.ico"))
@@ -1872,7 +1874,7 @@ func (s *Server) setupRoutes() {
 	// Service Worker (sw.js) — Misskey frontend は GET /sw.js を登録しにくる。
 	// SPA catchall より前に登録しないと text/html にフォールバックしてしまい
 	// ブラウザが "unsupported MIME type" エラーで SW 登録を拒否する。
-	swDistDir := SwDistDir()
+	swDistDir := frontendutil.SwDistDir()
 	if _, err := os.Stat(filepath.Join(swDistDir, "sw.js")); err == nil {
 		s.echo.File("/sw.js", filepath.Join(swDistDir, "sw.js"))
 	}
