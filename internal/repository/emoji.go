@@ -149,7 +149,7 @@ func (r *emojiRepository) ListWithFilter(query, category string, local bool, lim
 	return emojis, nil
 }
 
-// v2SortAllowList はsortKeysに指定可能なカラム名の許可リスト
+// v2SortAllowList is the allow-list of column names accepted in sortKeys.
 var v2SortAllowList = map[string]string{
 	"id":          "id",
 	"updatedAt":   `"updatedAt"`,
@@ -222,25 +222,26 @@ func (r *emojiRepository) buildV2Query(filter model.EmojiV2Filter) *gorm.DB {
 func (r *emojiRepository) ListV2(filter model.EmojiV2Filter) ([]*model.Emoji, error) {
 	q := r.buildV2Query(filter)
 
-	// ソート
-	if len(filter.SortKeys) > 0 {
-		for _, sk := range filter.SortKeys {
-			if len(sk) < 2 {
-				continue
-			}
-			dir := sk[0]
-			col := sk[1:]
-			dbCol, ok := v2SortAllowList[col]
-			if !ok {
-				continue
-			}
-			if dir == '-' {
-				q = q.Order(fmt.Sprintf("%s DESC", dbCol))
-			} else {
-				q = q.Order(fmt.Sprintf("%s ASC", dbCol))
-			}
+	// 有効なsortKeyが1つもなければid DESCにfallbackする
+	applied := false
+	for _, sk := range filter.SortKeys {
+		if len(sk) < 2 {
+			continue
 		}
-	} else {
+		dir := sk[0]
+		col := sk[1:]
+		dbCol, ok := v2SortAllowList[col]
+		if !ok {
+			continue
+		}
+		if dir == '-' {
+			q = q.Order(fmt.Sprintf("%s DESC", dbCol))
+		} else {
+			q = q.Order(fmt.Sprintf("%s ASC", dbCol))
+		}
+		applied = true
+	}
+	if !applied {
 		q = q.Order("id DESC")
 	}
 

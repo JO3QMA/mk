@@ -284,3 +284,332 @@ func TestEmojiRepository_ListRemoteWithFilter(t *testing.T) {
 	_, err = repo.ListRemoteWithFilter("", host, 1000, 0) // clamped to 100
 	require.NoError(t, err)
 }
+
+func TestEmojiRepository_ListV2_Basic(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e1 := &model.Emoji{ID: "ev_b1", Name: "v2alpha", OriginalURL: "https://x"}
+	e2 := &model.Emoji{ID: "ev_b2", Name: "v2beta", OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(e1))
+	require.NoError(t, repo.Create(e2))
+	defer cleanupEmoji(t, e1.ID)
+	defer cleanupEmoji(t, e2.ID)
+
+	rows, err := repo.ListV2(model.EmojiV2Filter{Limit: 10})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(rows), 2)
+}
+
+func TestEmojiRepository_ListV2_HostType(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	local := &model.Emoji{ID: "ev_h1", Name: "v2local", OriginalURL: "https://x"}
+	host := "v2remote.example"
+	remote := &model.Emoji{ID: "ev_h2", Name: "v2remote", Host: &host, OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(local))
+	require.NoError(t, repo.Create(remote))
+	defer cleanupEmoji(t, local.ID)
+	defer cleanupEmoji(t, remote.ID)
+
+	// localのみ
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{HostType: "local", Name: "v2"},
+		Limit: 100,
+	})
+	require.NoError(t, err)
+	for _, r := range rows {
+		assert.Nil(t, r.Host)
+	}
+
+	// remoteのみ
+	rows, err = repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{HostType: "remote", Name: "v2"},
+		Limit: 100,
+	})
+	require.NoError(t, err)
+	for _, r := range rows {
+		assert.NotNil(t, r.Host)
+	}
+}
+
+func TestEmojiRepository_ListV2_NameFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e := &model.Emoji{ID: "ev_n1", Name: "v2uniquename", OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Name: "v2unique"},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+	assert.Equal(t, "ev_n1", rows[0].ID)
+}
+
+func TestEmojiRepository_ListV2_SortKeys(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e1 := &model.Emoji{ID: "ev_s1", Name: "v2zebra", OriginalURL: "https://x"}
+	e2 := &model.Emoji{ID: "ev_s2", Name: "v2apple", OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(e1))
+	require.NoError(t, repo.Create(e2))
+	defer cleanupEmoji(t, e1.ID)
+	defer cleanupEmoji(t, e2.ID)
+
+	// name ASC
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query:    &model.EmojiV2Query{Name: "v2"},
+		SortKeys: []string{"+name"},
+		Limit:    10,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(rows), 2)
+	// v2apple < v2zebra
+	for i := 0; i < len(rows)-1; i++ {
+		assert.LessOrEqual(t, rows[i].Name, rows[i+1].Name)
+	}
+}
+
+func TestEmojiRepository_ListV2_Pagination(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	ids := []string{"ev_p1", "ev_p2", "ev_p3"}
+	for i, id := range ids {
+		e := &model.Emoji{ID: id, Name: "v2page" + string(rune('a'+i)), OriginalURL: "https://x"}
+		require.NoError(t, repo.Create(e))
+		defer cleanupEmoji(t, id)
+	}
+
+	// page 1, limit 2
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Name: "v2page"},
+		Limit: 2,
+		Page:  1,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+
+	// page 2
+	rows, err = repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Name: "v2page"},
+		Limit: 2,
+		Page:  2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
+func TestEmojiRepository_ListV2_SinceUntilID(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e1 := &model.Emoji{ID: "ev_c1", Name: "v2cursor1", OriginalURL: "https://x"}
+	e2 := &model.Emoji{ID: "ev_c2", Name: "v2cursor2", OriginalURL: "https://y"}
+	require.NoError(t, repo.Create(e1))
+	require.NoError(t, repo.Create(e2))
+	defer cleanupEmoji(t, e1.ID)
+	defer cleanupEmoji(t, e2.ID)
+
+	// sinceId: ev_c1より後
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query:   &model.EmojiV2Query{Name: "v2cursor"},
+		SinceID: "ev_c1",
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	for _, r := range rows {
+		assert.Greater(t, r.ID, "ev_c1")
+	}
+
+	// untilId: ev_c2より前
+	rows, err = repo.ListV2(model.EmojiV2Filter{
+		Query:   &model.EmojiV2Query{Name: "v2cursor"},
+		UntilID: "ev_c2",
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	for _, r := range rows {
+		assert.Less(t, r.ID, "ev_c2")
+	}
+}
+
+func TestEmojiRepository_ListV2_BooleanFilters(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e := &model.Emoji{ID: "ev_bf1", Name: "v2sensitive", IsSensitive: true, LocalOnly: true, OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	boolTrue := true
+	boolFalse := false
+
+	// isSensitive=true
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Name: "v2sensitive", IsSensitive: &boolTrue},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+
+	// isSensitive=false
+	rows, err = repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Name: "v2sensitive", IsSensitive: &boolFalse},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+
+	// localOnly=true
+	rows, err = repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Name: "v2sensitive", LocalOnly: &boolTrue},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
+func TestEmojiRepository_ListV2_DefaultsAndLimitClamp(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	// limit=0 → default 10
+	rows, err := repo.ListV2(model.EmojiV2Filter{Limit: 0})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(rows), 10)
+
+	// limit > 100 → clamped
+	rows, err = repo.ListV2(model.EmojiV2Filter{Limit: 999})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(rows), 100)
+}
+
+func TestEmojiRepository_ListV2_InvalidSortKeyIgnored(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+	// 不正なsortKeyは無視されエラーにならない
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		SortKeys: []string{"+invalid", "x", "-name"},
+		Limit:    10,
+	})
+	require.NoError(t, err)
+	_ = rows
+}
+
+func TestEmojiRepository_ListV2_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewEmojiRepository(testDB.WithContext(ctx))
+	_, err := repo.ListV2(model.EmojiV2Filter{Limit: 10})
+	assert.Error(t, err)
+}
+
+func TestEmojiRepository_CountV2_Basic(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e := &model.Emoji{ID: "ev_ct1", Name: "v2countme", OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	count, err := repo.CountV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Name: "v2countme"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count)
+}
+
+func TestEmojiRepository_CountV2_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewEmojiRepository(testDB.WithContext(ctx))
+	_, err := repo.CountV2(model.EmojiV2Filter{})
+	assert.Error(t, err)
+}
+
+func TestEmojiRepository_ListV2_CategoryFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	cat := "v2animals"
+	e := &model.Emoji{ID: "ev_cf1", Name: "v2catfilter", Category: &cat, OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Category: "v2animal"},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+
+	rows, err = repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Category: "nonexistent"},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestEmojiRepository_ListV2_LicenseFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	lic := "CC-BY-4.0"
+	e := &model.Emoji{ID: "ev_lf1", Name: "v2licfilter", License: &lic, OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{License: "CC-BY"},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
+func TestEmojiRepository_ListV2_HostFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	host := "v2host.example"
+	e := &model.Emoji{ID: "ev_hf1", Name: "v2hostfilter", Host: &host, OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Host: "v2host"},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
+func TestEmojiRepository_ListV2_AliasesFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e := &model.Emoji{
+		ID: "ev_af1", Name: "v2aliasfilter",
+		Aliases:     []string{"v2happy", "v2joy"},
+		OriginalURL: "https://x",
+	}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Aliases: "v2happy"},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
+func TestEmojiRepository_ListV2_TypeFilter(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	tp := "image/webp"
+	e := &model.Emoji{ID: "ev_tf1", Name: "v2typefilter", Type: &tp, OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	rows, err := repo.ListV2(model.EmojiV2Filter{
+		Query: &model.EmojiV2Query{Type: "webp"},
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}

@@ -1022,7 +1022,7 @@ func (h *Handler) EmojiList(c echo.Context) error {
 }
 
 // EmojiListV2 handles POST /api/v2/admin/emoji/list.
-// v2はページネーション情報(allCount, allPages)を含むオブジェクトを返す。
+// Returns an object with pagination info (allCount, allPages) instead of a plain array.
 func (h *Handler) EmojiListV2(c echo.Context) error {
 	var req struct {
 		Query    *emojiV2QueryReq `json:"query"`

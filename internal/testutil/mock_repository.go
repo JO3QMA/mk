@@ -1226,7 +1226,7 @@ func (m *MockEmojiRepository) CountV2(filter model.EmojiV2Filter) (int64, error)
 	return int64(len(m.filterV2(filter))), nil
 }
 
-// filterV2 はv2フィルタに一致するemojiを抽出する
+// filterV2 extracts emojis matching the v2 filter criteria.
 func (m *MockEmojiRepository) filterV2(filter model.EmojiV2Filter) []*model.Emoji {
 	seen := make(map[string]bool)
 	var out []*model.Emoji
@@ -1290,9 +1290,18 @@ func (m *MockEmojiRepository) filterV2(filter model.EmojiV2Filter) []*model.Emoj
 	return out
 }
 
-// sortV2 はsortKeysに従ってemojiをソートする
+// sortV2 sorts emojis according to the given sortKeys.
+// Falls back to id DESC when no valid sort key is found.
 func (m *MockEmojiRepository) sortV2(emojis []*model.Emoji, sortKeys []string) {
-	if len(sortKeys) == 0 {
+	// 有効なsortKeyが1つもなければid DESCにfallback
+	hasValid := false
+	for _, sk := range sortKeys {
+		if len(sk) >= 2 {
+			hasValid = true
+			break
+		}
+	}
+	if !hasValid {
 		sortKeys = []string{"-id"}
 	}
 	sort.SliceStable(emojis, func(i, j int) bool {
