@@ -223,3 +223,139 @@ func TestDriveFileRepository_DeleteOrphansAndRemoteCache(t *testing.T) {
 	_, err = repo.FindByID(remoteCache.ID)
 	assert.Error(t, err)
 }
+
+// --- 追加テスト (#260 repository coverage) ---
+
+func TestDriveFileRepository_FindByIDs(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	seedUser(t, "df_ids_u1")
+	f1 := newTestDriveFile("df_ids_1", "df_ids_u1", "m1", nil)
+	f2 := newTestDriveFile("df_ids_2", "df_ids_u1", "m2", nil)
+	require.NoError(t, repo.Create(f1))
+	require.NoError(t, repo.Create(f2))
+	t.Cleanup(func() { cleanupDriveFile(t, f1.ID); cleanupDriveFile(t, f2.ID) })
+
+	files, err := repo.FindByIDs([]string{f1.ID, f2.ID, "missing"})
+	require.NoError(t, err)
+	assert.Len(t, files, 2)
+
+	empty, err := repo.FindByIDs(nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+func TestDriveFileRepository_FindByName(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	seedUser(t, "df_name_u1")
+	f := newTestDriveFile("df_name_1", "df_name_u1", "mn", nil)
+	f.Name = "uniq_name.png"
+	require.NoError(t, repo.Create(f))
+	t.Cleanup(func() { cleanupDriveFile(t, f.ID) })
+
+	// folderID nil path (root)
+	got, err := repo.FindByName("df_name_u1", "uniq_name.png", nil)
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+
+	// folderID non-nil path (should not match because no folder set)
+	other := "folder_dummy"
+	got, err = repo.FindByName("df_name_u1", "uniq_name.png", &other)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestDriveFileRepository_ExistsByMD5(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	seedUser(t, "df_md5_u1")
+	f := newTestDriveFile("df_md5_1", "df_md5_u1", "md5_unique", nil)
+	require.NoError(t, repo.Create(f))
+	t.Cleanup(func() { cleanupDriveFile(t, f.ID) })
+
+	ok, err := repo.ExistsByMD5("df_md5_u1", "md5_unique")
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	ok, err = repo.ExistsByMD5("df_md5_u1", "md5_nonexistent")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestDriveFileRepository_ListByFileIDs(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	seedUser(t, "df_lbf_u1")
+	f1 := newTestDriveFile("df_lbf_1", "df_lbf_u1", "lbf1", nil)
+	require.NoError(t, repo.Create(f1))
+	t.Cleanup(func() { cleanupDriveFile(t, f1.ID) })
+
+	got, err := repo.ListByFileIDs([]string{f1.ID})
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+
+	empty, err := repo.ListByFileIDs(nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+func TestDriveFileRepository_UsageByUser(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	seedUser(t, "df_usg_u1")
+	f := newTestDriveFile("df_usg_1", "df_usg_u1", "usg", nil)
+	f.Size = 1234
+	require.NoError(t, repo.Create(f))
+	t.Cleanup(func() { cleanupDriveFile(t, f.ID) })
+
+	total, err := repo.UsageByUser("df_usg_u1")
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, total, int64(1234))
+
+	// 存在しないユーザー
+	total, err = repo.UsageByUser("df_usg_none")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), total)
+}
+
+func TestDriveFileRepository_UpdateBulkFolder(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	seedUser(t, "df_bulk_u1")
+	// folderを作成
+	require.NoError(t, testDB.Exec(
+		`INSERT INTO "drive_folder" (id, name, "userId") VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+		"df_bulk_folder", "folder_x", "df_bulk_u1",
+	).Error)
+	f := newTestDriveFile("df_bulk_1", "df_bulk_u1", "bk", nil)
+	require.NoError(t, repo.Create(f))
+	t.Cleanup(func() {
+		cleanupDriveFile(t, f.ID)
+		testDB.Exec(`DELETE FROM "drive_folder" WHERE id = ?`, "df_bulk_folder")
+	})
+
+	target := "df_bulk_folder"
+	require.NoError(t, repo.UpdateBulkFolder([]string{f.ID}, &target))
+
+	got, err := repo.FindByID(f.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.FolderID)
+	assert.Equal(t, "df_bulk_folder", *got.FolderID)
+}
+
+func TestDriveFileRepository_DeleteByUser(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	seedUser(t, "df_del_u1")
+	f := newTestDriveFile("df_del_1", "df_del_u1", "dl", nil)
+	require.NoError(t, repo.Create(f))
+
+	// 空userIDはno-op
+	n, err := repo.DeleteByUser("")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+
+	// 該当ユーザー分が削除される
+	n, err = repo.DeleteByUser("df_del_u1")
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, int64(1))
+
+	_, err = repo.FindByID(f.ID)
+	assert.Error(t, err)
+}
+
+var _ = context.Background // import guard
