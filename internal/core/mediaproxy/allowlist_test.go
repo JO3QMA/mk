@@ -82,7 +82,7 @@ func TestDBAllowlistChecker_EmojiURL(t *testing.T) {
 	// hostをremoteに設定することでlocal emoji扱いから外し、並行実行される
 	// internal/repository/emoji_test.goのListLocal系テストに拾われないようにする
 	// (Devin review #259: cross-package race指摘)。allowlistはoriginalUrl/publicUrl
-	// のみを見てhostは参照しないので、本テストの assert に影響はない。
+	// のみを見てhostは参照しないので、本テストのassertに影響はない。
 	err := db.Exec(`INSERT INTO "emoji" (id, "updatedAt", name, host, "originalUrl", "publicUrl", type)
 		VALUES ('test-allow-em1', NOW(), 'allowemoji', 'remote.example', 'https://remote.example/emoji/allow.png', 'https://remote.example/emoji/allow.png', 'image/png')
 		ON CONFLICT (id) DO NOTHING`).Error
