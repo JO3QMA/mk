@@ -136,9 +136,9 @@ make docker-down
   - **最低ライン: 90%** — CIゲート。これを下回るとマージ不可。
   - **推奨ライン: 95%** — 通常のPRではここを目指す。
   - **目標ライン: 100%** — 新規パッケージや小規模パッケージでは積極的に狙う。
-  - 例外パッケージ（段階的に 90% へ引き上げ予定）：
+  - 例外パッケージ（段階的に90%へ引き上げ予定）：
     - `internal/api/admin`: 60%以上 — 権限分岐のDB統合寄りテストが主で、到達困難なパスがある
-    - `internal/repository`: 76%以上 — 0%関数が多数残っており、改善作業は [#260](https://github.com/shiroha-a/mk/issues/260) で扱う
+    - `internal/repository`: 76%以上 — 0%関数が多数残っており、改善作業は[#260](https://github.com/shiroha-a/mk/issues/260)で扱う
 - テストファイルは対象と同じパッケージに`_test.go`サフィックスで配置。
 
 ### 実行方法
@@ -308,7 +308,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 - 実行条件: `-race -count=1 -timeout 10m -coverprofile=coverage.out -covermode=atomic`
 - **カバレッジ閾値チェック**：
   - `internal/api/admin`配下: 60%以上
-  - `internal/repository`配下: 76%以上（[#260](https://github.com/shiroha-a/mk/issues/260) で 90% へ引き上げ作業中）
+  - `internal/repository`配下: 76%以上（[#260](https://github.com/shiroha-a/mk/issues/260)で90%へ引き上げ作業中）
   - それ以外のパッケージ: 90%以上
   - 未達の場合はジョブが失敗する。
 - カバレッジレポートは`coverage-report`アーティファクトとしてアップロード。
@@ -402,6 +402,6 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
-- **2026-04-18**: `internal/repository`パッケージの CI カバレッジ閾値を暫定的に 76% に緩和（#260 で 90% 復帰予定）。
+- **2026-04-18**: `internal/repository`パッケージのCIカバレッジ閾値を暫定的に76%に緩和（#260で90%復帰予定）。
 - **2026-04-12**: テストカバレッジ目標を追記（最低90% / 推奨95% / 目標100%）。
 - **2026-04-11**: 初版作成。
