@@ -502,7 +502,8 @@ func (h *Handler) resolveViewerFields(notes []entity.NoteEntity, viewer *model.U
 		if err == nil {
 			for i := range notes {
 				if r, ok := reactionMap[notes[i].ID]; ok {
-					notes[i].MyReaction = &r.Reaction
+					nr := entity.NormalizeReactionKey(r.Reaction)
+					notes[i].MyReaction = &nr
 				}
 			}
 		}

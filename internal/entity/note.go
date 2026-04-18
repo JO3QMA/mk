@@ -2,11 +2,15 @@ package entity
 
 import (
 	"encoding/json"
+	"regexp"
 
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/datatypes"
 )
+
+// localEmojiPattern matches `:name:` without `@host` suffix.
+var localEmojiPattern = regexp.MustCompile(`^:([\w+\-]+):$`)
 
 // NoteEntity is the note representation returned by API endpoints.
 type NoteEntity struct {
@@ -99,7 +103,7 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 		Visibility:         string(n.Visibility),
 		LocalOnly:          n.LocalOnly,
 		ReactionAcceptance: n.ReactionAcceptance,
-		Reactions:          n.Reactions,
+		Reactions:          normalizeReactionKeys(n.Reactions),
 		ReactionCount:      sumReactions(n.Reactions),
 		ReactionEmojis:     make(map[string]string),
 		RenoteCount:        n.RenoteCount,
@@ -124,6 +128,39 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 	}
 
 	return entity
+}
+
+// NormalizeReactionKey converts a legacy `:name:` key to the canonical
+// `:name@.:` form used by the frontend. Remote and non-custom reactions
+// are returned unchanged.
+func NormalizeReactionKey(key string) string {
+	if m := localEmojiPattern.FindStringSubmatch(key); m != nil {
+		return ":" + m[1] + "@.:"
+	}
+	return key
+}
+
+// normalizeReactionKeys rewrites reaction JSONB keys so that legacy
+// `:name:` entries are merged into `:name@.:`. TS時代のレコードと
+// mk時代のレコードが同一キーに集約される。
+func normalizeReactionKeys(raw datatypes.JSON) datatypes.JSON {
+	if len(raw) == 0 {
+		return raw
+	}
+	var m map[string]float64
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	normalized := make(map[string]float64, len(m))
+	for k, v := range m {
+		nk := NormalizeReactionKey(k)
+		normalized[nk] += v
+	}
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		return raw
+	}
+	return data
 }
 
 // sumReactions decodes the reactions JSONB and sums all values.
