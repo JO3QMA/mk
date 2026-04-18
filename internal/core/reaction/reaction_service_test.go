@@ -121,6 +121,15 @@ func TestService_Create_CustomEmojiRemote(t *testing.T) {
 	assert.Equal(t, ":smile@remote.example:", r)
 }
 
+func TestService_Create_CustomEmojiLocalWithDotHost(t *testing.T) {
+	svc, repo, _, emojiRepo, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	emojiRepo.Emojis["smile@"] = &model.Emoji{Name: "smile"}
+	r, err := svc.Create(&model.User{ID: "viewer"}, "n1", ":smile@.:")
+	require.NoError(t, err)
+	assert.Equal(t, ":smile@.:", r)
+}
+
 func TestService_Create_CustomEmojiNotFoundFallback(t *testing.T) {
 	svc, repo, _, _, _ := newService(t)
 	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
