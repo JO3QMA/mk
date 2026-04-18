@@ -750,6 +750,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/notes/global-timeline", notesHandler.GlobalTimeline)
 	api.POST("/notes/hybrid-timeline", notesHandler.HybridTimeline, middleware.RequireAuth())
 	api.POST("/notes/reactions", notesHandler.Reactions)
+	api.GET("/notes/reactions", notesHandler.Reactions)
 	api.POST("/notes/reactions/create", notesHandler.ReactionsCreate, middleware.RequireAuth())
 	api.POST("/notes/reactions/delete", notesHandler.ReactionsDelete, middleware.RequireAuth())
 	api.POST("/notes/polls/vote", notesHandler.PollsVote, middleware.RequireAuth())

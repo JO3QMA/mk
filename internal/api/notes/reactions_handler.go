@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/reaction"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
@@ -108,10 +109,14 @@ func (h *Handler) Reactions(c echo.Context) error {
 		if t, err := h.idGen.ParseTime(r.ID); err == nil {
 			createdAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
 		}
+		var userField any = map[string]any{"id": r.UserID}
+		if r.User != nil {
+			userField = entity.PackUserLite(r.User)
+		}
 		out = append(out, map[string]any{
 			"id":        r.ID,
 			"createdAt": createdAt,
-			"user":      map[string]any{"id": r.UserID},
+			"user":      userField,
 			"type":      r.Reaction,
 		})
 	}
