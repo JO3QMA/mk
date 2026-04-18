@@ -174,11 +174,11 @@ func (s *Server) setupRoutes() {
 	signupService.SetKeypairRepo(keypairRepo)
 	noteCreateService := corenote.NewCreateService(noteRepo, pollRepo, idGen, followingRepo)
 	// Phase 7-1 follow-up (#254): 本家互換の残存 error 検出ロジック用依存を注入。
-	// Setter経由なのでテストでは任意に省略可能。
-	noteCreateService.SetBlockingRepo(repository.NewBlockingRepository(s.db))
+	// Setter経由なのでテストでは任意に省略可能。既存の同repository変数を再利用。
+	noteCreateService.SetBlockingRepo(blockingRepo)
 	noteCreateService.SetDriveFileRepo(driveFileRepo)
 	noteCreateService.SetMetaRepo(metaRepo)
-	noteCreateService.SetChannelRepo(repository.NewChannelRepository(s.db))
+	noteCreateService.SetChannelRepo(channelRepo)
 	noteDeleteService := corenote.NewDeleteService(noteRepo)
 	noteQueryService := corenote.NewQueryService(noteRepo, followingRepo)
 	noteQueryService.SetFavoriteRepo(noteFavoriteRepo)
