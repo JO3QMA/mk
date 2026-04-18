@@ -1,9 +1,39 @@
 package repository
 
 import (
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
+
+// aidxTime2000Ms は aidx ID のタイムスタンプ部分 (最初の8文字 base36) の
+// epoch 起点 (2000-01-01T00:00:00Z in ms since Unix epoch)。
+// misc/id パッケージに同値の非公開定数があるが、本ファイル内で時刻→ID 先頭
+// 変換に使うため独自に定義する。
+const aidxTime2000Ms int64 = 946684800000
+
+// aidxCutoffID は与えられた time に対応する最小のaidx ID文字列を返す。
+// aidxは「時刻base36(8) + nodeID(4) + counter(4)」の 16 文字で、先頭 8 文字が
+// ms-since-2000 を base36 で表したもの。そのため lexicographic 比較で時刻順に
+// 並ぶ。時刻以降の全IDを 「id >= aidxCutoffID(t)」 で、時刻以前を
+// 「id < aidxCutoffID(t)」 で拾える。
+func aidxCutoffID(t time.Time) string {
+	ms := t.UnixMilli() - aidxTime2000Ms
+	if ms < 0 {
+		ms = 0
+	}
+	prefix := strconv.FormatInt(ms, 36)
+	if len(prefix) < 8 {
+		prefix = strings.Repeat("0", 8-len(prefix)) + prefix
+	} else if len(prefix) > 8 {
+		// 想定外 (2089年以降) だが安全側で末尾8文字を使う
+		prefix = prefix[len(prefix)-8:]
+	}
+	return prefix + "00000000"
+}
 
 // NoteRepository provides data access for notes.
 type NoteRepository interface {
@@ -454,22 +484,25 @@ func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, 
 	return notes, nil
 }
 
-// DeleteExpiredRemoteNotes はリモート���ート (userHost IS NOT NULL) のうち
-// expiryDays より前に作���されたものを batchSize 件ずつ削除する。
+// DeleteExpiredRemoteNotes はリモートノート (userHost IS NOT NULL) のうち
+// expiryDays より前に作成されたものを batchSize 件ずつ削除する。
 // ON DELETE CASCADE が reactions / replies 等に効く前提。
+// misskey-go の note テーブルには createdAt カラムが無い (aidx ID から時刻を
+// 導出する設計) ため、ID 文字列の lexicographic 比較で時刻切り捨てを行う。
 func (r *noteRepository) DeleteExpiredRemoteNotes(expiryDays, batchSize int) (int64, error) {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
+	cutoffID := aidxCutoffID(time.Now().Add(-time.Duration(expiryDays) * 24 * time.Hour))
 	var total int64
 	for {
 		res := r.db.Exec(`
 			DELETE FROM "note" WHERE id IN (
 				SELECT id FROM "note"
 				WHERE "userHost" IS NOT NULL
-				  AND "createdAt" < NOW() - INTERVAL '1 day' * ?
+				  AND id < ?
 				LIMIT ?
-			)`, expiryDays, batchSize)
+			)`, cutoffID, batchSize)
 		if res.Error != nil {
 			return total, res.Error
 		}

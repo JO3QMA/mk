@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -896,3 +897,115 @@ func TestNoteRepository_CountReplyTargets_Error(t *testing.T) {
 	_, err := repo.CountReplyTargets("me", 10)
 	assert.Error(t, err)
 }
+
+// --- 追加テスト (#260 repository coverage: 0%関数) ---
+
+func TestNoteRepository_ListByFileID(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_lbfi_1", "lbfiuser")
+	defer cleanupUser(t, user.ID)
+
+	text := "with file"
+	n := &model.Note{
+		ID:         "n_lbfi_1",
+		UserID:     user.ID,
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		FileIDs:    pq.StringArray{"file_abc"},
+	}
+	require.NoError(t, repo.Create(n))
+	defer cleanupNote(t, n.ID)
+
+	got, err := repo.ListByFileID("file_abc")
+	require.NoError(t, err)
+	assert.NotEmpty(t, got)
+
+	empty, err := repo.ListByFileID("file_nonexistent")
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+func TestNoteRepository_IncrementUserNotesCount(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_inc_1", "incuser")
+	defer cleanupUser(t, user.ID)
+
+	require.NoError(t, repo.IncrementUserNotesCount(user.ID, 3))
+	require.NoError(t, repo.IncrementUserNotesCount(user.ID, -1))
+
+	// 値はuserrepoから確認
+	ur := NewUserRepository(testDB)
+	got, err := ur.FindByID(user.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.NotesCount)
+}
+
+func TestNoteRepository_ListLocalTimeline(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_llt_1", "lltuser")
+	defer cleanupUser(t, user.ID)
+
+	text := "local"
+	n := &model.Note{
+		ID:         "n_llt_1",
+		UserID:     user.ID,
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(n))
+	defer cleanupNote(t, n.ID)
+
+	filter := model.TimelineDBFilter{}
+	rows, err := repo.ListLocalTimeline(50, "", "", filter)
+	require.NoError(t, err)
+	ids := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[n.ID])
+
+	// since/until分岐を通す
+	_, err = repo.ListLocalTimeline(50, "nonexistent", "", filter)
+	require.NoError(t, err)
+	_, err = repo.ListLocalTimeline(50, "", "nonexistent", filter)
+	require.NoError(t, err)
+}
+
+func TestNoteRepository_ListGlobalTimeline(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_lgt_1", "lgtuser")
+	defer cleanupUser(t, user.ID)
+
+	text := "global"
+	n := &model.Note{
+		ID:         "n_lgt_1",
+		UserID:     user.ID,
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(n))
+	defer cleanupNote(t, n.ID)
+
+	filter := model.TimelineDBFilter{}
+	rows, err := repo.ListGlobalTimeline(50, "", "", filter)
+	require.NoError(t, err)
+	ids := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[n.ID])
+
+	// since/until分岐
+	_, err = repo.ListGlobalTimeline(50, "nonexistent", "", filter)
+	require.NoError(t, err)
+	_, err = repo.ListGlobalTimeline(50, "", "nonexistent", filter)
+	require.NoError(t, err)
+}
+
+// DeleteExpiredRemoteNotesはnote."createdAt"列を参照するが、misskey-goの
+// noteテーブルはcreatedAt列を持たない (IDから導出する設計)。このため
+// 関数自体がSQL実行時に必ずエラーになる。本関数はバグで別issueで扱うため、
+// ここでは呼ばない。

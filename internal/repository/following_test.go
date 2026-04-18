@@ -7,6 +7,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 func insertFollowing(t *testing.T, id, followerID, followeeID string) *model.Following {
@@ -300,3 +301,129 @@ func TestFollowingRepository_ListFollowingByBirthday_Error(t *testing.T) {
 	_, err := repo.ListFollowingByBirthday("me", 1, 1231, 10, 0)
 	assert.Error(t, err)
 }
+
+// --- 追加テスト (#260 repository coverage: 0%関数) ---
+
+func TestFollowingRepository_ListFollowersByHost(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	localee := insertTestUser(t, "flh_e1", "localfollowee")
+	defer cleanupUser(t, localee.ID)
+
+	// remote user (host付き) を挿入
+	host := "remote.example"
+	remoteFollower := &model.User{
+		ID:                "flh_r1",
+		Username:          "remote_follower",
+		UsernameLower:     "remote_follower",
+		Host:              &host,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, testDB.Create(remoteFollower).Error)
+	defer cleanupUser(t, remoteFollower.ID)
+
+	f := &model.Following{
+		ID:           "flh_1",
+		FollowerID:   remoteFollower.ID,
+		FolloweeID:   localee.ID,
+		FollowerHost: &host,
+	}
+	require.NoError(t, repo.Create(f))
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, f.ID)
+
+	rows, err := repo.ListFollowersByHost(host, 10, 0)
+	require.NoError(t, err)
+	assert.NotEmpty(t, rows)
+
+	// limit のデフォルト (0 → 30) と cap (>100 → 100) の分岐を通す
+	_, err = repo.ListFollowersByHost(host, 0, 0)
+	require.NoError(t, err)
+	_, err = repo.ListFollowersByHost(host, 999, 0)
+	require.NoError(t, err)
+}
+
+func TestFollowingRepository_ListFollowingByHost(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	localr := insertTestUser(t, "flg_l1", "localfollower")
+	defer cleanupUser(t, localr.ID)
+
+	host := "remote.example"
+	remoteFollowee := &model.User{
+		ID:                "flg_r1",
+		Username:          "remote_followee",
+		UsernameLower:     "remote_followee",
+		Host:              &host,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, testDB.Create(remoteFollowee).Error)
+	defer cleanupUser(t, remoteFollowee.ID)
+
+	f := &model.Following{
+		ID:           "flg_1",
+		FollowerID:   localr.ID,
+		FolloweeID:   remoteFollowee.ID,
+		FolloweeHost: &host,
+	}
+	require.NoError(t, repo.Create(f))
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, f.ID)
+
+	rows, err := repo.ListFollowingByHost(host, 10, 0)
+	require.NoError(t, err)
+	assert.NotEmpty(t, rows)
+
+	_, err = repo.ListFollowingByHost(host, 0, 0)
+	require.NoError(t, err)
+	_, err = repo.ListFollowingByHost(host, 999, 0)
+	require.NoError(t, err)
+}
+
+func TestFollowingRepository_UpdateRelation(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	u1 := insertTestUser(t, "fur_u1", "fur_u1")
+	u2 := insertTestUser(t, "fur_u2", "fur_u2")
+	defer cleanupUser(t, u1.ID)
+	defer cleanupUser(t, u2.ID)
+
+	f := &model.Following{ID: "fur_1", FollowerID: u1.ID, FolloweeID: u2.ID}
+	require.NoError(t, repo.Create(f))
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, f.ID)
+
+	// 空fieldsはno-op
+	require.NoError(t, repo.UpdateRelation(u1.ID, u2.ID, map[string]any{}))
+
+	// followerHostを更新
+	newHost := "updated.example"
+	require.NoError(t, repo.UpdateRelation(u1.ID, u2.ID, map[string]any{"followerHost": newHost}))
+
+	found, err := repo.FindByPair(u1.ID, u2.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.FollowerHost)
+	assert.Equal(t, newHost, *found.FollowerHost)
+}
+
+func TestFollowingRepository_UpdateAllByFollower(t *testing.T) {
+	repo := NewFollowingRepository(testDB)
+	u1 := insertTestUser(t, "uab_u1", "uab_u1")
+	u2 := insertTestUser(t, "uab_u2", "uab_u2")
+	u3 := insertTestUser(t, "uab_u3", "uab_u3")
+	defer cleanupUser(t, u1.ID)
+	defer cleanupUser(t, u2.ID)
+	defer cleanupUser(t, u3.ID)
+
+	for _, id := range []string{"uab_1", "uab_2"} {
+		f := &model.Following{ID: id, FollowerID: u1.ID, FolloweeID: u2.ID}
+		if id == "uab_2" {
+			f.FolloweeID = u3.ID
+		}
+		require.NoError(t, repo.Create(f))
+		defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, id)
+	}
+
+	// 空fieldsはno-op
+	require.NoError(t, repo.UpdateAllByFollower(u1.ID, map[string]any{}))
+
+	// 一括更新
+	inbox := "https://remote.example/inbox"
+	require.NoError(t, repo.UpdateAllByFollower(u1.ID, map[string]any{"followerInbox": inbox}))
+}
+
+var _ = context.Background // import guard (used elsewhere in file)
