@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"fmt"
+
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
@@ -26,6 +28,10 @@ type EmojiRepository interface {
 	// ListRemoteWithFilter mirrors ListWithFilter for remote emojis. host empty
 	// matches any remote host.
 	ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error)
+	// ListV2 returns emojis matching v2 filters with sorting + pagination.
+	ListV2(filter model.EmojiV2Filter) ([]*model.Emoji, error)
+	// CountV2 returns total count of emojis matching v2 filters (pagination ignored).
+	CountV2(filter model.EmojiV2Filter) (int64, error)
 }
 
 type emojiRepository struct {
@@ -141,6 +147,131 @@ func (r *emojiRepository) ListWithFilter(query, category string, local bool, lim
 		return nil, err
 	}
 	return emojis, nil
+}
+
+// v2SortAllowList is the allow-list of column names accepted in sortKeys.
+var v2SortAllowList = map[string]string{
+	"id":          "id",
+	"updatedAt":   `"updatedAt"`,
+	"name":        "name",
+	"host":        "host",
+	"uri":         "uri",
+	"publicUrl":   `"publicUrl"`,
+	"type":        "type",
+	"category":    "category",
+	"license":     "license",
+	"isSensitive": `"isSensitive"`,
+	"localOnly":   `"localOnly"`,
+	"aliases":     "aliases",
+	"roleIdsThatCanBeUsedThisEmojiAsReaction": `"roleIdsThatCanBeUsedThisEmojiAsReaction"`,
+}
+
+// buildV2Query constructs the common WHERE clause for ListV2/CountV2.
+func (r *emojiRepository) buildV2Query(filter model.EmojiV2Filter) *gorm.DB {
+	q := r.db.Model(&model.Emoji{})
+	if filter.Query != nil {
+		fq := filter.Query
+		if fq.HostType == "local" {
+			q = q.Where("host IS NULL")
+		} else if fq.HostType == "remote" {
+			q = q.Where("host IS NOT NULL")
+		}
+		if fq.Name != "" {
+			q = q.Where("name ILIKE ?", "%"+fq.Name+"%")
+		}
+		if fq.Host != "" {
+			q = q.Where("host ILIKE ?", "%"+fq.Host+"%")
+		}
+		if fq.Category != "" {
+			q = q.Where("category ILIKE ?", "%"+fq.Category+"%")
+		}
+		if fq.Type != "" {
+			q = q.Where("type ILIKE ?", "%"+fq.Type+"%")
+		}
+		if fq.Aliases != "" {
+			q = q.Where("array_to_string(aliases, ',') ILIKE ?", "%"+fq.Aliases+"%")
+		}
+		if fq.License != "" {
+			q = q.Where("license ILIKE ?", "%"+fq.License+"%")
+		}
+		if fq.IsSensitive != nil {
+			q = q.Where(`"isSensitive" = ?`, *fq.IsSensitive)
+		}
+		if fq.LocalOnly != nil {
+			q = q.Where(`"localOnly" = ?`, *fq.LocalOnly)
+		}
+		if fq.UpdatedAtFrom != "" {
+			q = q.Where(`"updatedAt" >= ?`, fq.UpdatedAtFrom)
+		}
+		if fq.UpdatedAtTo != "" {
+			q = q.Where(`"updatedAt" <= ?`, fq.UpdatedAtTo)
+		}
+		if len(fq.RoleIDs) > 0 {
+			q = q.Where(`"roleIdsThatCanBeUsedThisEmojiAsReaction" && ARRAY[?]::varchar[]`, fq.RoleIDs)
+		}
+	}
+	if filter.SinceID != "" {
+		q = q.Where("id > ?", filter.SinceID)
+	}
+	if filter.UntilID != "" {
+		q = q.Where("id < ?", filter.UntilID)
+	}
+	return q
+}
+
+func (r *emojiRepository) ListV2(filter model.EmojiV2Filter) ([]*model.Emoji, error) {
+	q := r.buildV2Query(filter)
+
+	// 有効なsortKeyが1つもなければid DESCにfallbackする
+	applied := false
+	for _, sk := range filter.SortKeys {
+		if len(sk) < 2 {
+			continue
+		}
+		dir := sk[0]
+		col := sk[1:]
+		dbCol, ok := v2SortAllowList[col]
+		if !ok {
+			continue
+		}
+		if dir == '-' {
+			q = q.Order(fmt.Sprintf("%s DESC", dbCol))
+		} else {
+			q = q.Order(fmt.Sprintf("%s ASC", dbCol))
+		}
+		applied = true
+	}
+	if !applied {
+		q = q.Order("id DESC")
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit)
+
+	if filter.Page > 0 {
+		q = q.Offset((filter.Page - 1) * limit)
+	}
+
+	var emojis []*model.Emoji
+	if err := q.Find(&emojis).Error; err != nil {
+		return nil, err
+	}
+	return emojis, nil
+}
+
+func (r *emojiRepository) CountV2(filter model.EmojiV2Filter) (int64, error) {
+	q := r.buildV2Query(filter)
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // FindByNameAndHost looks up a custom emoji by its name and host.

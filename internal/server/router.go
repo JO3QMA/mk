@@ -1804,8 +1804,8 @@ func (s *Server) setupRoutes() {
 		return c.NoContent(http.StatusNoContent)
 	}, middleware.RequireAuth())
 
-	// v2/admin/emoji/list — v2 paginated emoji list (delegates to existing admin handler)
-	api.POST("/v2/admin/emoji/list", adminHandler.EmojiList, middleware.RequireAdmin(roleService))
+	// v2/admin/emoji/list — v2はページネーション情報付きオブジェクトを返す専用ハンドラ
+	api.POST("/v2/admin/emoji/list", adminHandler.EmojiListV2, middleware.RequireAdmin(roleService))
 
 	// --- その他の残りエンドポイント ---
 	// test — フロントエンドのテスト用

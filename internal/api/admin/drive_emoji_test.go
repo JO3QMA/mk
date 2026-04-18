@@ -11,6 +11,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type failingListV2EmojiRepo struct {
+	*testutil.MockEmojiRepository
+}
+
+func (f *failingListV2EmojiRepo) ListV2(_ model.EmojiV2Filter) ([]*model.Emoji, error) {
+	return nil, assert.AnError
+}
+
+func (f *failingListV2EmojiRepo) CountV2(_ model.EmojiV2Filter) (int64, error) {
+	return 0, assert.AnError
+}
+
 // --- Drive ------------------------------------------------------------------
 
 func TestDriveFiles_FiltersByOrigin(t *testing.T) {
@@ -278,4 +290,177 @@ func TestEmojiImportZip_UnknownFileReturns400(t *testing.T) {
 	h.SetEmojiImportEnqueuer(&stubEmojiImportEnqueuer{})
 	rec := doPost(h.EmojiImportZip, `{"fileId":"missing"}`, adminUser)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- EmojiListV2 -------------------------------------------------------------
+
+func TestEmojiListV2_Basic(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "smile"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e2", Name: "wave"}))
+	h.SetEmojiRepo(repo)
+
+	rec := doPost(h.EmojiListV2, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis := resp["emojis"].([]any)
+	assert.Len(t, emojis, 2)
+	assert.EqualValues(t, 2, resp["count"])
+	assert.EqualValues(t, 2, resp["allCount"])
+	assert.EqualValues(t, 1, resp["allPages"])
+}
+
+func TestEmojiListV2_NilRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiListV2, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp["emojis"].([]any), 0)
+	assert.EqualValues(t, 0, resp["allCount"])
+}
+
+func TestEmojiListV2_InvalidJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.EmojiListV2, `invalid`, adminUser)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestEmojiListV2_HostType(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	host := "remote.example"
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "local_only"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e2", Name: "remote_one", Host: &host}))
+	h.SetEmojiRepo(repo)
+
+	// local のみ
+	rec := doPost(h.EmojiListV2, `{"query":{"hostType":"local"}}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis := resp["emojis"].([]any)
+	assert.Len(t, emojis, 1)
+	assert.Equal(t, "e1", emojis[0].(map[string]any)["id"])
+
+	// remote のみ
+	rec = doPost(h.EmojiListV2, `{"query":{"hostType":"remote"}}`, adminUser)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis = resp["emojis"].([]any)
+	assert.Len(t, emojis, 1)
+	assert.Equal(t, "e2", emojis[0].(map[string]any)["id"])
+
+	// all（デフォルト）
+	rec = doPost(h.EmojiListV2, `{"query":{"hostType":"all"}}`, adminUser)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis = resp["emojis"].([]any)
+	assert.Len(t, emojis, 2)
+}
+
+func TestEmojiListV2_QueryFilter(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "cat_smile"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e2", Name: "dog_run"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e3", Name: "caterpillar"}))
+	h.SetEmojiRepo(repo)
+
+	rec := doPost(h.EmojiListV2, `{"query":{"name":"cat"}}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis := resp["emojis"].([]any)
+	assert.Len(t, emojis, 2, "cat_smile and caterpillar should match")
+	assert.EqualValues(t, 2, resp["allCount"])
+}
+
+func TestEmojiListV2_Pagination(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	for i := 0; i < 5; i++ {
+		id := "e" + string(rune('1'+i))
+		require.NoError(t, repo.Create(&model.Emoji{ID: id, Name: "emoji_" + id}))
+	}
+	h.SetEmojiRepo(repo)
+
+	// page 1, limit 2
+	rec := doPost(h.EmojiListV2, `{"limit":2,"page":1}`, adminUser)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis := resp["emojis"].([]any)
+	assert.Len(t, emojis, 2)
+	assert.EqualValues(t, 5, resp["allCount"])
+	assert.EqualValues(t, 3, resp["allPages"])
+
+	// page 3 — 残り1件
+	rec = doPost(h.EmojiListV2, `{"limit":2,"page":3}`, adminUser)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis = resp["emojis"].([]any)
+	assert.Len(t, emojis, 1)
+	assert.EqualValues(t, 1, resp["count"])
+}
+
+func TestEmojiListV2_SortKeys(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "beta"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e2", Name: "alpha"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e3", Name: "gamma"}))
+	h.SetEmojiRepo(repo)
+
+	// name ASC
+	rec := doPost(h.EmojiListV2, `{"sortKeys":["+name"]}`, adminUser)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis := resp["emojis"].([]any)
+	require.Len(t, emojis, 3)
+	assert.Equal(t, "alpha", emojis[0].(map[string]any)["name"])
+	assert.Equal(t, "beta", emojis[1].(map[string]any)["name"])
+	assert.Equal(t, "gamma", emojis[2].(map[string]any)["name"])
+
+	// デフォルト: id DESC
+	rec = doPost(h.EmojiListV2, `{}`, adminUser)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis = resp["emojis"].([]any)
+	require.Len(t, emojis, 3)
+	assert.Equal(t, "e3", emojis[0].(map[string]any)["id"])
+	assert.Equal(t, "e1", emojis[2].(map[string]any)["id"])
+}
+
+func TestEmojiListV2_SensitiveFilter(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "safe", IsSensitive: false}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e2", Name: "nsfw", IsSensitive: true}))
+	h.SetEmojiRepo(repo)
+
+	rec := doPost(h.EmojiListV2, `{"query":{"isSensitive":true}}`, adminUser)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	emojis := resp["emojis"].([]any)
+	assert.Len(t, emojis, 1)
+	assert.Equal(t, "e2", emojis[0].(map[string]any)["id"])
+}
+
+func TestEmojiListV2_LimitClamped(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "a"}))
+	h.SetEmojiRepo(repo)
+
+	// limit > 100 は100にクランプされる
+	rec := doPost(h.EmojiListV2, `{"limit":999}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.EqualValues(t, 1, resp["allPages"])
+}
+
+func TestEmojiListV2_ListV2Error(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiRepo(&failingListV2EmojiRepo{testutil.NewMockEmojiRepository()})
+	rec := doPost(h.EmojiListV2, `{}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

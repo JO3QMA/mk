@@ -194,5 +194,13 @@ func (r *failingEmojiRepo) ListRemoteWithFilter(q, host string, limit, offset in
 	return r.inner.ListRemoteWithFilter(q, host, limit, offset)
 }
 
+func (r *failingEmojiRepo) ListV2(filter model.EmojiV2Filter) ([]*model.Emoji, error) {
+	return r.inner.ListV2(filter)
+}
+
+func (r *failingEmojiRepo) CountV2(filter model.EmojiV2Filter) (int64, error) {
+	return r.inner.CountV2(filter)
+}
+
 // sanity: time import stay
 var _ = time.Now

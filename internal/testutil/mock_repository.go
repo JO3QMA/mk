@@ -1196,6 +1196,167 @@ func (m *MockEmojiRepository) ListRemoteWithFilter(query, host string, limit, of
 	return out[offset:end], nil
 }
 
+func (m *MockEmojiRepository) ListV2(filter model.EmojiV2Filter) ([]*model.Emoji, error) {
+	all := m.filterV2(filter)
+	m.sortV2(all, filter.SortKeys)
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	offset := 0
+	if filter.Page > 0 {
+		offset = (filter.Page - 1) * limit
+	}
+	if offset >= len(all) {
+		return []*model.Emoji{}, nil
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], nil
+}
+
+func (m *MockEmojiRepository) CountV2(filter model.EmojiV2Filter) (int64, error) {
+	return int64(len(m.filterV2(filter))), nil
+}
+
+// filterV2 extracts emojis matching the v2 filter criteria.
+func (m *MockEmojiRepository) filterV2(filter model.EmojiV2Filter) []*model.Emoji {
+	seen := make(map[string]bool)
+	var out []*model.Emoji
+	for _, e := range m.Emojis {
+		if seen[e.ID] {
+			continue
+		}
+		if filter.Query != nil {
+			fq := filter.Query
+			if fq.HostType == "local" && e.Host != nil {
+				continue
+			}
+			if fq.HostType == "remote" && e.Host == nil {
+				continue
+			}
+			if fq.Name != "" && !mockILIKE(e.Name, fq.Name) {
+				continue
+			}
+			if fq.Host != "" {
+				if e.Host == nil || !mockILIKE(*e.Host, fq.Host) {
+					continue
+				}
+			}
+			if fq.Category != "" {
+				if e.Category == nil || !mockILIKE(*e.Category, fq.Category) {
+					continue
+				}
+			}
+			if fq.Type != "" {
+				if e.Type == nil || !mockILIKE(*e.Type, fq.Type) {
+					continue
+				}
+			}
+			if fq.Aliases != "" {
+				aliasStr := strings.Join(e.Aliases, ",")
+				if !mockILIKE(aliasStr, fq.Aliases) {
+					continue
+				}
+			}
+			if fq.License != "" {
+				if e.License == nil || !mockILIKE(*e.License, fq.License) {
+					continue
+				}
+			}
+			if fq.IsSensitive != nil && e.IsSensitive != *fq.IsSensitive {
+				continue
+			}
+			if fq.LocalOnly != nil && e.LocalOnly != *fq.LocalOnly {
+				continue
+			}
+		}
+		if filter.SinceID != "" && e.ID <= filter.SinceID {
+			continue
+		}
+		if filter.UntilID != "" && e.ID >= filter.UntilID {
+			continue
+		}
+		seen[e.ID] = true
+		out = append(out, e)
+	}
+	return out
+}
+
+// sortV2 sorts emojis according to the given sortKeys.
+// Falls back to id DESC when no valid sort key is found.
+func (m *MockEmojiRepository) sortV2(emojis []*model.Emoji, sortKeys []string) {
+	// 有効なsortKeyが1つもなければid DESCにfallback
+	hasValid := false
+	for _, sk := range sortKeys {
+		if len(sk) >= 2 {
+			hasValid = true
+			break
+		}
+	}
+	if !hasValid {
+		sortKeys = []string{"-id"}
+	}
+	sort.SliceStable(emojis, func(i, j int) bool {
+		for _, sk := range sortKeys {
+			if len(sk) < 2 {
+				continue
+			}
+			asc := sk[0] == '+'
+			col := sk[1:]
+			cmp := mockEmojiCompare(emojis[i], emojis[j], col)
+			if cmp == 0 {
+				continue
+			}
+			if asc {
+				return cmp < 0
+			}
+			return cmp > 0
+		}
+		return false
+	})
+}
+
+func mockEmojiCompare(a, b *model.Emoji, col string) int {
+	switch col {
+	case "id":
+		return strings.Compare(a.ID, b.ID)
+	case "name":
+		return strings.Compare(a.Name, b.Name)
+	case "host":
+		ah, bh := "", ""
+		if a.Host != nil {
+			ah = *a.Host
+		}
+		if b.Host != nil {
+			bh = *b.Host
+		}
+		return strings.Compare(ah, bh)
+	case "category":
+		ac, bc := "", ""
+		if a.Category != nil {
+			ac = *a.Category
+		}
+		if b.Category != nil {
+			bc = *b.Category
+		}
+		return strings.Compare(ac, bc)
+	default:
+		return 0
+	}
+}
+
+func mockILIKE(value, substr string) bool {
+	return strings.Contains(strings.ToLower(value), strings.ToLower(substr))
+}
+
 // MockMetaRepository is a test double for repository.MetaRepository.
 type MockMetaRepository struct {
 	Meta *model.Meta
