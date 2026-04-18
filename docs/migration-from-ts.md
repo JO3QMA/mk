@@ -72,8 +72,11 @@ id: aidx             # Misskey-TS側のID生成方式と一致させること
 Misskey-Goは既存のMisskey-TSテーブルには手を加えず、独自のテーブルを追加する形で共存する。既存データは保持される。
 
 ```bash
-# Misskey-Goのマイグレーションを適用
+# ローカルビルドの場合
 go run ./cmd/migrate -direction up
+
+# Docker imageの場合 (migrateバイナリが同梱されている)
+docker compose exec app /app/migrate -config .config/default.yml -direction up
 ```
 
 これによりGo側で必要な追加テーブル (`app`, `auth_session`, `webhook`, `sw_subscription`, `chat_room`, `chat_message`, `bubble_game_record` 等) が作成される。

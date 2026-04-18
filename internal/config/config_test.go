@@ -85,6 +85,26 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 500, cfg.PerUserNotificationsMaxCount)
 }
 
+func TestLoad_DBPortDefault(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+db:
+  host: /var/run/postgresql
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+id: aidx
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 5432, cfg.DB.Port)
+}
+
 func TestLoad_HTTPScheme(t *testing.T) {
 	yaml := `
 url: http://localhost:3000

@@ -266,6 +266,57 @@ func TestReactions_List_OK(t *testing.T) {
 	assert.NotEmpty(t, resp[0]["createdAt"])
 }
 
+func TestReactions_List_PackUserLite(t *testing.T) {
+	h, repo, reactRepo := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+	idGen, _ := id.NewGenerator("aidx")
+	rxID := idGen.Generate(timeNow())
+	reactRepo.Reactions[rxID] = &model.NoteReaction{
+		ID: rxID, UserID: "u1", NoteID: "n1", Reaction: "❤",
+		User: &model.User{
+			ID:       "u1",
+			Username: "alice",
+			Host:     nil,
+		},
+	}
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions", `{"noteId":"n1"}`)
+	require.NoError(t, h.Reactions(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	user := resp[0]["user"].(map[string]any)
+	assert.Equal(t, "u1", user["id"])
+	assert.Equal(t, "alice", user["username"])
+	// PackUserLiteが返す追加フィールドの存在を確認
+	_, hasAvatar := user["avatarUrl"]
+	assert.True(t, hasAvatar, "PackUserLite should include avatarUrl")
+}
+
+func TestReactions_List_UserNil_Fallback(t *testing.T) {
+	h, repo, reactRepo := newReactionHandler(t)
+	seedReactionNote(repo, "n1", "public")
+	idGen, _ := id.NewGenerator("aidx")
+	rxID := idGen.Generate(timeNow())
+	reactRepo.Reactions[rxID] = &model.NoteReaction{
+		ID: rxID, UserID: "u2", NoteID: "n1", Reaction: "👍",
+		User: nil,
+	}
+
+	c, rec := newJSONRequest(t, "/api/notes/reactions", `{"noteId":"n1"}`)
+	require.NoError(t, h.Reactions(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	user := resp[0]["user"].(map[string]any)
+	assert.Equal(t, "u2", user["id"])
+	// User=nil時はPackUserLiteのフィールドがない
+	_, hasUsername := user["username"]
+	assert.False(t, hasUsername, "fallback should only have id")
+}
+
 func timeNow() time.Time {
 	return time.Now()
 }
