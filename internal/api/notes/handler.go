@@ -164,10 +164,16 @@ func (h *Handler) Create(c echo.Context) error {
 		switch {
 		case errors.Is(err, note.ErrNoteContentRequired):
 			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Text, fileIds, or renoteId is required.", apierr.UUIDInvalidParam))
-		case errors.Is(err, note.ErrReplyTargetNotFound), errors.Is(err, note.ErrRenoteTargetNotFound):
-			return c.JSON(http.StatusNotFound, apierr.NoSuchNote())
-		case errors.Is(err, note.ErrCannotReplyToInvisibleNote), errors.Is(err, note.ErrCannotRenoteInvisibleNote):
-			return c.JSON(http.StatusForbidden, apierr.Error("CANNOT_REPLY_TO_INVISIBLE_NOTE", "You can not see this note.", "44b07c37-2deb-4b34-9ec9-b1deeed42f0d"))
+		case errors.Is(err, note.ErrReplyTargetNotFound):
+			return apierr.JSONNoSuchReplyTarget(c)
+		case errors.Is(err, note.ErrRenoteTargetNotFound):
+			return apierr.JSONNoSuchRenoteTarget(c)
+		case errors.Is(err, note.ErrCannotReplyToInvisibleNote):
+			return apierr.JSONCannotReplyToAnInvisibleNote(c)
+		case errors.Is(err, note.ErrCannotRenoteInvisibleNote):
+			return apierr.JSONCannotRenoteDueToVisibility(c)
+		case errors.Is(err, note.ErrChannelNotFound):
+			return apierr.JSONNoSuchChannel(c)
 		}
 		return apierr.JSONInternalError(c)
 	}

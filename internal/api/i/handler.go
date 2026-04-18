@@ -595,7 +595,7 @@ func (h *Handler) Pin(c echo.Context) error {
 	if err := h.userService.PinNote(me.ID, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, user.ErrNoteNotFound):
-			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
+			return apierr.JSONNoSuchNote(c)
 		case errors.Is(err, user.ErrAlreadyPinned):
 			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_PINNED", "That note has already been pinned.", "8b18c2b7-68fe-4edb-9892-c0cbaeb6c913"))
 		case errors.Is(err, user.ErrPinLimitExceeded):
@@ -619,7 +619,7 @@ func (h *Handler) Unpin(c echo.Context) error {
 
 	if err := h.userService.UnpinNote(me.ID, req.NoteID); err != nil {
 		if errors.Is(err, user.ErrPinNotFound) {
-			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "24fcbfc6-2e37-42b6-8388-c29b32725715"))
+			return apierr.JSONNoSuchNote(c)
 		}
 		return apierr.JSONInternalError(c)
 	}

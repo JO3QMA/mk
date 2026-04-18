@@ -62,3 +62,43 @@ func TestJSONAccessDenied(t *testing.T) {
 	assert.Equal(t, "ACCESS_DENIED", errObj["code"])
 	assert.Equal(t, UUIDAccessDenied, errObj["id"])
 }
+
+func TestJSONNoSuchRenoteTarget(t *testing.T) {
+	code, body := invoke(t, JSONNoSuchRenoteTarget)
+	assert.Equal(t, http.StatusNotFound, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_RENOTE_TARGET", errObj["code"])
+	assert.Equal(t, UUIDNoSuchRenoteTarget, errObj["id"])
+}
+
+func TestJSONNoSuchReplyTarget(t *testing.T) {
+	code, body := invoke(t, JSONNoSuchReplyTarget)
+	assert.Equal(t, http.StatusNotFound, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_REPLY_TARGET", errObj["code"])
+	assert.Equal(t, UUIDNoSuchReplyTarget, errObj["id"])
+}
+
+func TestJSONCannotReplyToAnInvisibleNote(t *testing.T) {
+	code, body := invoke(t, JSONCannotReplyToAnInvisibleNote)
+	assert.Equal(t, http.StatusForbidden, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_REPLY_TO_AN_INVISIBLE_NOTE", errObj["code"])
+	assert.Equal(t, UUIDCannotReplyToAnInvisibleNote, errObj["id"])
+}
+
+func TestJSONCannotRenoteDueToVisibility(t *testing.T) {
+	code, body := invoke(t, JSONCannotRenoteDueToVisibility)
+	assert.Equal(t, http.StatusForbidden, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_RENOTE_DUE_TO_VISIBILITY", errObj["code"])
+	assert.Equal(t, UUIDCannotRenoteDueToVisibility, errObj["id"])
+}
+
+func TestJSONNoSuchChannel(t *testing.T) {
+	code, body := invoke(t, JSONNoSuchChannel)
+	assert.Equal(t, http.StatusNotFound, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_CHANNEL", errObj["code"])
+	assert.Equal(t, UUIDNoSuchChannel, errObj["id"])
+}

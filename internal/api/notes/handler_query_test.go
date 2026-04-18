@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/core/search"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -359,8 +360,8 @@ func (f *findFailQueryRepo) FindByIDWithUser(_ string) (*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
 
-// TestCreate_ReplyTargetNotFound triggers the new "No such note" branch in Create
-// when the reply target does not exist.
+// TestCreate_ReplyTargetNotFound triggers the NO_SUCH_REPLY_TARGET branch in
+// Create when the reply target does not exist.
 func TestCreate_ReplyTargetNotFound(t *testing.T) {
 	h, _ := newQueryHandler(t)
 	user := &model.User{ID: "u", Username: "u"}
@@ -370,10 +371,15 @@ func TestCreate_ReplyTargetNotFound(t *testing.T) {
 	setAuthUser(c, user)
 	require.NoError(t, h.Create(c))
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_REPLY_TARGET", errObj["code"])
+	assert.Equal(t, apierr.UUIDNoSuchReplyTarget, errObj["id"])
 }
 
-// TestCreate_RenoteTargetInvisible triggers the new "forbidden" branch when the
-// renote target is not visible to the actor.
+// TestCreate_RenoteTargetInvisible triggers the CANNOT_RENOTE_DUE_TO_VISIBILITY
+// branch when the renote target is not visible to the actor.
 func TestCreate_RenoteTargetInvisible(t *testing.T) {
 	h, repo := newQueryHandler(t)
 	repo.Notes["secret"] = &model.Note{
@@ -386,6 +392,11 @@ func TestCreate_RenoteTargetInvisible(t *testing.T) {
 	setAuthUser(c, user)
 	require.NoError(t, h.Create(c))
 	assert.Equal(t, http.StatusForbidden, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "CANNOT_RENOTE_DUE_TO_VISIBILITY", errObj["code"])
+	assert.Equal(t, apierr.UUIDCannotRenoteDueToVisibility, errObj["id"])
 }
 
 // TestShow_FallbackNoQueryService verifies the lookupVisible nil-queryService path.
