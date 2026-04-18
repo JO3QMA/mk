@@ -3028,6 +3028,17 @@ func (m *MockFollowRequestRepository) ListSent(userID string, limit, offset int)
 	return paginateRequests(rows, limit, offset), nil
 }
 
+// CountReceived returns the number of pending requests addressed to userID.
+func (m *MockFollowRequestRepository) CountReceived(userID string) (int64, error) {
+	var n int64
+	for _, r := range m.Requests {
+		if r.FolloweeID == userID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func paginate(rows []*model.Following, limit, offset int) []*model.Following {
 	if offset >= len(rows) {
 		return nil

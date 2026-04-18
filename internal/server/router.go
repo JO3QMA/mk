@@ -879,6 +879,12 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/favorites", iHandler.Favorites, middleware.RequireAuth())
 	api.POST("/i/regenerate-token", iHandler.RegenerateToken, middleware.RequireAuth())
 	iHandler.SetFavoriteRepo(noteFavoriteRepo)
+	// Phase 7-2 (#244): /api/i の未読系フィールドを実クエリ化。
+	iHandler.SetNotificationService(notificationService)
+	iHandler.SetFollowRequestRepo(followRequestRepo)
+	iHandler.SetChatRepo(chatRepo)
+	// announcementRepoは後続で構築されるため SetupAdditional() 相当の順序依存があるが、
+	// 現状 announcementRepo := ... の行がここより後にあるため下で wire する。
 
 	// i/export-* and i/import-* (Phase 9.4)
 	iHandler.SetTransferEnqueuer(s.queueClient)
@@ -1292,6 +1298,8 @@ func (s *Server) setupRoutes() {
 
 	// Announcements (Phase 6)
 	announcementRepo := repository.NewAnnouncementRepository(s.db)
+	// Phase 7-2 (#244): /api/i の hasUnreadAnnouncement / unreadAnnouncements 配線
+	iHandler.SetAnnouncementRepo(announcementRepo)
 	announcementHandler := apiannouncements.NewHandler(announcementRepo, idGen)
 	api.POST("/announcements", announcementHandler.List)
 	api.POST("/i/read-announcement", announcementHandler.ReadAnnouncement, middleware.RequireAuth())

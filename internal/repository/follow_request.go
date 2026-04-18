@@ -13,6 +13,9 @@ type FollowRequestRepository interface {
 	Exists(followerID, followeeID string) (bool, error)
 	ListReceived(userID string, limit, offset int) ([]*model.FollowRequest, error)
 	ListSent(userID string, limit, offset int) ([]*model.FollowRequest, error)
+	// CountReceived returns the number of pending follow requests received by
+	// userID. Used by /api/i to compute hasPendingReceivedFollowRequest.
+	CountReceived(userID string) (int64, error)
 }
 
 type followRequestRepository struct {
@@ -60,6 +63,16 @@ func (r *followRequestRepository) ListReceived(userID string, limit, offset int)
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (r *followRequestRepository) CountReceived(userID string) (int64, error) {
+	var count int64
+	if err := r.db.Model(&model.FollowRequest{}).
+		Where("\"followeeId\" = ?", userID).
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (r *followRequestRepository) ListSent(userID string, limit, offset int) ([]*model.FollowRequest, error) {
