@@ -116,23 +116,23 @@ func TestNoteReactionRepository_ListByNoteID(t *testing.T) {
 		defer cleanupReaction(t, rec.ID)
 	}
 
-	out, err := repo.ListByNoteID(note.ID, "", "", 10, "")
+	out, err := repo.ListByNoteID(note.ID, "", "", 10, nil)
 	require.NoError(t, err)
 	assert.Len(t, out, 2)
 
 	// 種類絞り込み
-	out, err = repo.ListByNoteID(note.ID, "", "", 10, "👍")
+	out, err = repo.ListByNoteID(note.ID, "", "", 10, []string{"👍"})
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 	assert.Equal(t, "👍", out[0].Reaction)
 
 	// untilID で絞り込み
-	out, err = repo.ListByNoteID(note.ID, "rx_l2", "", 10, "")
+	out, err = repo.ListByNoteID(note.ID, "rx_l2", "", 10, nil)
 	require.NoError(t, err)
 	assert.Len(t, out, 1)
 
 	// sinceID で絞り込み
-	out, err = repo.ListByNoteID(note.ID, "", "rx_l1", 10, "")
+	out, err = repo.ListByNoteID(note.ID, "", "rx_l1", 10, nil)
 	require.NoError(t, err)
 	assert.Len(t, out, 1)
 }
@@ -151,6 +151,6 @@ func TestNoteReactionRepository_QueryErrors(t *testing.T) {
 	_, err = repo.FindByPair("u", "n")
 	assert.Error(t, err)
 
-	_, err = repo.ListByNoteID("n", "", "", 10, "")
+	_, err = repo.ListByNoteID("n", "", "", 10, nil)
 	assert.Error(t, err)
 }
