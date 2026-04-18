@@ -1021,6 +1021,107 @@ func (h *Handler) EmojiList(c echo.Context) error {
 	return c.JSON(http.StatusOK, emojis)
 }
 
+// EmojiListV2 handles POST /api/v2/admin/emoji/list.
+// v2はページネーション情報(allCount, allPages)を含むオブジェクトを返す。
+func (h *Handler) EmojiListV2(c echo.Context) error {
+	var req struct {
+		Query    *emojiV2QueryReq `json:"query"`
+		SinceID  string           `json:"sinceId"`
+		UntilID  string           `json:"untilId"`
+		Limit    int              `json:"limit"`
+		Page     int              `json:"page"`
+		SortKeys []string         `json:"sortKeys"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if h.emojiRepo == nil {
+		return c.JSON(http.StatusOK, emojiListV2Response{
+			Emojis:   []*model.Emoji{},
+			Count:    0,
+			AllCount: 0,
+			AllPages: 0,
+		})
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	filter := model.EmojiV2Filter{
+		SinceID:  req.SinceID,
+		UntilID:  req.UntilID,
+		Limit:    limit,
+		Page:     req.Page,
+		SortKeys: req.SortKeys,
+	}
+	if req.Query != nil {
+		filter.Query = &model.EmojiV2Query{
+			Name:          req.Query.Name,
+			Host:          req.Query.Host,
+			HostType:      req.Query.HostType,
+			Category:      req.Query.Category,
+			Type:          req.Query.Type,
+			Aliases:       req.Query.Aliases,
+			License:       req.Query.License,
+			IsSensitive:   req.Query.IsSensitive,
+			LocalOnly:     req.Query.LocalOnly,
+			UpdatedAtFrom: req.Query.UpdatedAtFrom,
+			UpdatedAtTo:   req.Query.UpdatedAtTo,
+			RoleIDs:       req.Query.RoleIDs,
+		}
+	}
+
+	emojis, err := h.emojiRepo.ListV2(filter)
+	if err != nil {
+		slog.Error("EmojiListV2: ListV2 failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	allCount, err := h.emojiRepo.CountV2(filter)
+	if err != nil {
+		slog.Error("EmojiListV2: CountV2 failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	allPages := 0
+	if limit > 0 {
+		allPages = int((allCount + int64(limit) - 1) / int64(limit))
+	}
+
+	return c.JSON(http.StatusOK, emojiListV2Response{
+		Emojis:   emojis,
+		Count:    len(emojis),
+		AllCount: allCount,
+		AllPages: allPages,
+	})
+}
+
+type emojiV2QueryReq struct {
+	Name          string   `json:"name"`
+	Host          string   `json:"host"`
+	HostType      string   `json:"hostType"`
+	Category      string   `json:"category"`
+	Type          string   `json:"type"`
+	Aliases       string   `json:"aliases"`
+	License       string   `json:"license"`
+	IsSensitive   *bool    `json:"isSensitive"`
+	LocalOnly     *bool    `json:"localOnly"`
+	UpdatedAtFrom string   `json:"updatedAtFrom"`
+	UpdatedAtTo   string   `json:"updatedAtTo"`
+	RoleIDs       []string `json:"roleIds"`
+}
+
+type emojiListV2Response struct {
+	Emojis   []*model.Emoji `json:"emojis"`
+	Count    int            `json:"count"`
+	AllCount int64          `json:"allCount"`
+	AllPages int            `json:"allPages"`
+}
+
 // --- Abuse Report endpoints ---
 
 // AbuseReports handles POST /api/admin/abuse-user-reports.

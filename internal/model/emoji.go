@@ -25,3 +25,29 @@ type Emoji struct {
 }
 
 func (Emoji) TableName() string { return "emoji" }
+
+// EmojiV2Filter holds parameters for v2 admin emoji listing.
+type EmojiV2Filter struct {
+	Query    *EmojiV2Query
+	SinceID  string
+	UntilID  string
+	Limit    int // default 10, max 100
+	Page     int // 1-indexed; page > 0の場合はoffsetベース
+	SortKeys []string
+}
+
+// EmojiV2Query holds query parameters for v2 admin emoji filtering.
+type EmojiV2Query struct {
+	Name          string
+	Host          string
+	HostType      string // "local" | "remote" | "all"
+	Category      string
+	Type          string
+	Aliases       string
+	License       string
+	IsSensitive   *bool
+	LocalOnly     *bool
+	UpdatedAtFrom string
+	UpdatedAtTo   string
+	RoleIDs       []string
+}
