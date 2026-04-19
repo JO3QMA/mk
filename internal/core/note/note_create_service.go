@@ -146,7 +146,7 @@ type WebhookHook interface {
 // MainStreamPublisher emits real-time events to a single target user's `main`
 // WebSocket channel. Used here to deliver `reply`, `renote`, and `mention`
 // events so the frontend can reflect note-creation interactions immediately.
-// 循環依存を避けるため interface で受け取る (実装は internal/stream)。
+// 循環依存を避けるためinterfaceで受け取る(実装はinternal/stream)。
 type MainStreamPublisher interface {
 	PublishMainEvent(userID, eventType string, body any)
 }
@@ -516,8 +516,8 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	if s.webhookHook != nil {
 		s.webhookHook.OnNoteCreated(finalNote, in.User, replyTarget, renoteTarget)
 	}
-	// reply / renote / mention 各イベントを対象 local user の main に emit。
-	// Misskey本家 NoteCreateService と同じ fan-out 方針 (TS lines 792 / 809 / 935)。
+	// reply / renote / mention 各イベントを対象local userのmainにemit。
+	// Misskey本家NoteCreateServiceと同じfan-out方針 (TS lines 792 / 809 / 935)。
 	s.publishNoteMainEvents(finalNote, in.User, replyTarget, renoteTarget)
 
 	// ユーザーのnotesCountをインクリメント (ベストエフォート)
@@ -527,26 +527,26 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 }
 
 // publishNoteMainEvents fans out `reply`, `renote`, and `mention` events to
-// the relevant local users' main channels. TS本家と同じく dedup はせず、
-// 同一 user に対して複数イベント (例: 相手へのリプライかつメンション) が
-// 並列で届きうる (frontend はイベント種別ごとに意味付けるため)。
+// the relevant local users' main channels. TS本家と同じくdedupはせず、
+// 同一userに対して複数イベント(例: 相手へのリプライかつメンション)が
+// 並列で届きうる(frontendはイベント種別ごとに意味付けるため)。
 func (s *CreateService) publishNoteMainEvents(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
 	if s.mainStreamPublisher == nil {
 		return
 	}
 	packed := entity.PackNote(note, s.idGen)
-	// reply: reply 先が local (UserHost == nil) かつ 自分自身へのリプライで
-	// ない場合に emit。
+	// reply: reply先がlocal (UserHost == nil) かつ自分自身へのリプライで
+	// ない場合にemit。
 	if replyTarget != nil && replyTarget.UserHost == nil && replyTarget.UserID != author.ID {
 		s.mainStreamPublisher.PublishMainEvent(replyTarget.UserID, "reply", packed)
 	}
-	// renote: 同上 (TS: caller ≠ target author 条件あり)。
+	// renote: 同上 (TS: caller ≠ target author条件あり)。
 	if renoteTarget != nil && renoteTarget.UserHost == nil && renoteTarget.UserID != author.ID {
 		s.mainStreamPublisher.PublishMainEvent(renoteTarget.UserID, "renote", packed)
 	}
-	// mention: note.Mentions は (userRepo 設定時) user ID 配列なので、
-	// 各 user を fetch して local かつ author 自身でなければ emit する。
-	// userRepo 未設定時は Mentions が username 文字列のため解決不能でスキップ。
+	// mention: note.Mentionsは(userRepo設定時)user ID配列なので、
+	// 各userをfetchしてlocalかつauthor自身でなければemitする。
+	// userRepo未設定時はMentionsがusername文字列のため解決不能でスキップ。
 	if s.userRepo == nil {
 		return
 	}
@@ -559,7 +559,7 @@ func (s *CreateService) publishNoteMainEvents(note *model.Note, author *model.Us
 			continue
 		}
 		if u.Host != nil {
-			continue // remote user — AP 配送 (別レイヤ) が担当
+			continue // remote user — AP配送(別レイヤ)が担当
 		}
 		s.mainStreamPublisher.PublishMainEvent(uid, "mention", packed)
 	}
