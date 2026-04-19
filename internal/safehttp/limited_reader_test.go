@@ -3,6 +3,7 @@ package safehttp
 import (
 	"bytes"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -37,6 +38,13 @@ func TestReadAllLimit_ZeroOrNegativeDisablesCap(t *testing.T) {
 	data, err = ReadAllLimit(strings.NewReader("unbounded"), -1)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("unbounded"), data)
+}
+
+func TestReadAllLimit_MaxInt64DisablesCap(t *testing.T) {
+	// math.MaxInt64 を渡しても max+1 で overflow せず、unlimited 扱いになる。
+	data, err := ReadAllLimit(strings.NewReader("ok"), math.MaxInt64)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("ok"), data)
 }
 
 type errReader struct{ err error }

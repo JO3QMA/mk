@@ -74,16 +74,11 @@ func NewSSRFSafeTransport(allowedCIDRs []string) *http.Transport {
 				return nil, fmt.Errorf("safehttp: invalid address %q: %w", addr, err)
 			}
 
-			// DNS解決して実IPを取得
+			// DNS解決して実IPを取得。Goのresolverは「nil err + 空slice」を
+			// 返さない契約のため、以降のloopは必ず1回以上実行される。
 			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 			if err != nil {
 				return nil, fmt.Errorf("safehttp: DNS lookup failed for %q: %w", host, err)
-			}
-			// resolver が nil err で空 slice を返すケースはGoでは事実上起こら
-			// ないが DialContext contract (必ず conn か err を返す) 維持のため
-			// 明示的に error にする (defensive)。
-			if len(ips) == 0 {
-				return nil, fmt.Errorf("safehttp: no IP addresses resolved for %q", host)
 			}
 
 			// 全解決IPがプライベートでないか検証
