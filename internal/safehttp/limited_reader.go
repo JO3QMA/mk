@@ -10,17 +10,10 @@ import (
 // size. Callers should treat this as a protocol-level failure.
 var ErrResponseTooLarge = errors.New("safehttp: response body exceeds size limit")
 
-// Default caps used by outbound fetchers. Chosen to be comfortably larger
-// than typical ActivityPub / WebFinger payloads yet small enough to bound
-// attacker-controlled memory usage.
-const (
-	// DefaultAPBodyLimit caps AP object fetches and WebFinger responses.
-	// 1 MiB 程度。本家 TS も同オーダー。
-	DefaultAPBodyLimit int64 = 1 << 20
-	// DefaultURLPreviewBodyLimit caps URL preview HTML fetches.
-	// OGP の meta タグ探索が目的なので 512 KiB に抑える。
-	DefaultURLPreviewBodyLimit int64 = 512 << 10
-)
+// DefaultAPBodyLimit caps AP object fetches and WebFinger responses.
+// 1 MiB 程度。本家 TS も同オーダー。攻撃者制御 host からの memory
+// exhaustion を防ぎつつ典型的な AP/JRD payload には十分なサイズ。
+const DefaultAPBodyLimit int64 = 1 << 20
 
 // ReadAllLimit reads r up to max bytes. If r contains more than max bytes,
 // ErrResponseTooLarge is returned. max <= 0 disables the cap (matches
