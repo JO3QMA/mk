@@ -202,5 +202,9 @@ func (r *failingEmojiRepo) CountV2(filter model.EmojiV2Filter) (int64, error) {
 	return r.inner.CountV2(filter)
 }
 
+func (r *failingEmojiRepo) FindManyByNamesAndHost(names []string, host *string) ([]*model.Emoji, error) {
+	return r.inner.FindManyByNamesAndHost(names, host)
+}
+
 // sanity: time import stay
 var _ = time.Now

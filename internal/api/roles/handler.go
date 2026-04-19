@@ -23,6 +23,7 @@ type Handler struct {
 	notesQuery   RoleNotesQuery
 	idGen        id.Generator
 	instanceRepo repository.InstanceRepository
+	emojiRepo    repository.EmojiRepository
 }
 
 // NewHandler creates a new roles Handler. idGen is required for note packing
@@ -47,6 +48,19 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// SetEmojiRepo attaches an EmojiRepository so custom emoji shortcodes in
+// note text and user displayNames get resolved to URLs.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // List handles POST /api/roles/list.
@@ -133,7 +147,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
 		out = append(out, pn)

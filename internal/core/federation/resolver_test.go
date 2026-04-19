@@ -1279,3 +1279,531 @@ func TestRefreshActor_UpdatesIsBotOnTypeChange(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, user.IsBot)
 }
+
+// --- extractEmojiTags / upsertEmojis (#330) ----------------------------------
+
+func TestExtractEmojiTags(t *testing.T) {
+	t.Run("valid emoji tag", func(t *testing.T) {
+		tags := []any{
+			map[string]any{
+				"type": "Emoji",
+				"name": ":blobcat:",
+				"icon": map[string]any{
+					"type": "Image",
+					"url":  "https://remote.example/emojis/blobcat.webp",
+				},
+				"id":      "https://remote.example/emojis/blobcat",
+				"updated": "2025-01-01T00:00:00Z",
+			},
+		}
+		got := federation.ExtractEmojiTags(tags)
+		require.Len(t, got, 1)
+		assert.Equal(t, "Emoji", got[0].Type)
+		assert.Equal(t, ":blobcat:", got[0].Name)
+		assert.Equal(t, "https://remote.example/emojis/blobcat.webp", got[0].Icon.URL)
+		assert.Equal(t, "https://remote.example/emojis/blobcat", got[0].ID)
+		assert.Equal(t, "2025-01-01T00:00:00Z", got[0].Updated)
+	})
+
+	t.Run("non-emoji tags filtered out", func(t *testing.T) {
+		tags := []any{
+			map[string]any{
+				"type": "Mention",
+				"name": "@alice",
+				"href": "https://remote.example/users/alice",
+			},
+			map[string]any{
+				"type": "Hashtag",
+				"name": "#golang",
+				"href": "https://remote.example/tags/golang",
+			},
+			map[string]any{
+				"type": "Emoji",
+				"name": ":valid:",
+				"icon": map[string]any{"url": "https://remote.example/emojis/valid.png"},
+			},
+		}
+		got := federation.ExtractEmojiTags(tags)
+		require.Len(t, got, 1)
+		assert.Equal(t, ":valid:", got[0].Name)
+	})
+
+	t.Run("missing icon URL skipped", func(t *testing.T) {
+		tags := []any{
+			map[string]any{
+				"type": "Emoji",
+				"name": ":noicon:",
+				// icon未設定
+			},
+			map[string]any{
+				"type": "Emoji",
+				"name": ":emptyurl:",
+				"icon": map[string]any{"url": ""},
+			},
+		}
+		got := federation.ExtractEmojiTags(tags)
+		assert.Len(t, got, 0)
+	})
+
+	t.Run("empty name skipped", func(t *testing.T) {
+		tags := []any{
+			map[string]any{
+				"type": "Emoji",
+				"name": "",
+				"icon": map[string]any{"url": "https://remote.example/e.png"},
+			},
+		}
+		got := federation.ExtractEmojiTags(tags)
+		assert.Len(t, got, 0)
+	})
+
+	t.Run("nil and non-map entries skipped", func(t *testing.T) {
+		tags := []any{
+			nil,
+			"string entry",
+			42,
+			map[string]any{
+				"type": "Emoji",
+				"name": ":ok:",
+				"icon": map[string]any{"url": "https://remote.example/ok.png"},
+			},
+		}
+		got := federation.ExtractEmojiTags(tags)
+		require.Len(t, got, 1)
+		assert.Equal(t, ":ok:", got[0].Name)
+	})
+
+	t.Run("empty tags returns nil", func(t *testing.T) {
+		got := federation.ExtractEmojiTags(nil)
+		assert.Nil(t, got)
+		got = federation.ExtractEmojiTags([]any{})
+		assert.Nil(t, got)
+	})
+
+	t.Run("multiple valid emojis", func(t *testing.T) {
+		tags := []any{
+			map[string]any{
+				"type": "Emoji",
+				"name": ":cat:",
+				"icon": map[string]any{"url": "https://remote.example/cat.png"},
+			},
+			map[string]any{
+				"type": "Emoji",
+				"name": ":dog:",
+				"icon": map[string]any{"url": "https://remote.example/dog.png"},
+				"id":   "https://remote.example/emojis/dog",
+			},
+		}
+		got := federation.ExtractEmojiTags(tags)
+		require.Len(t, got, 2)
+		assert.Equal(t, ":cat:", got[0].Name)
+		assert.Equal(t, ":dog:", got[1].Name)
+	})
+}
+
+func TestUpsertEmojis(t *testing.T) {
+	t.Run("creates new emoji", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		r.SetEmojiRepo(emojiRepo)
+
+		tags := []activitypub.EmojiTag{
+			{
+				Type: "Emoji",
+				Name: ":blobcat:",
+				Icon: activitypub.Image{Type: "Image", URL: "https://remote.example/blobcat.webp"},
+				ID:   "https://remote.example/emojis/blobcat",
+			},
+		}
+		names := r.UpsertEmojis(tags, "remote.example")
+		assert.Equal(t, []string{"blobcat"}, []string(names))
+
+		// emojiRepoにcreateされたことを確認
+		e, err := emojiRepo.FindByNameAndHost("blobcat", strPtr("remote.example"))
+		require.NoError(t, err)
+		assert.Equal(t, "blobcat", e.Name)
+		assert.Equal(t, "https://remote.example/blobcat.webp", e.OriginalURL)
+		assert.Equal(t, "https://remote.example/blobcat.webp", e.PublicURL)
+		require.NotNil(t, e.URI)
+		assert.Equal(t, "https://remote.example/emojis/blobcat", *e.URI)
+		require.NotNil(t, e.Host)
+		assert.Equal(t, "remote.example", *e.Host)
+	})
+
+	t.Run("updates existing emoji URL", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		r.SetEmojiRepo(emojiRepo)
+
+		host := "remote.example"
+		// 既存の絵文字をrepoに配置
+		emojiRepo.Emojis["blobcat@remote.example"] = &model.Emoji{
+			ID:          "existing-id",
+			Name:        "blobcat",
+			Host:        &host,
+			OriginalURL: "https://remote.example/old-blobcat.webp",
+			PublicURL:   "https://remote.example/old-blobcat.webp",
+		}
+
+		tags := []activitypub.EmojiTag{
+			{
+				Type: "Emoji",
+				Name: ":blobcat:",
+				Icon: activitypub.Image{URL: "https://remote.example/new-blobcat.webp"},
+				ID:   "https://remote.example/emojis/blobcat",
+			},
+		}
+		names := r.UpsertEmojis(tags, "remote.example")
+		assert.Equal(t, []string{"blobcat"}, []string(names))
+
+		// URLが更新されたことを確認
+		e, err := emojiRepo.FindByNameAndHost("blobcat", &host)
+		require.NoError(t, err)
+		assert.Equal(t, "https://remote.example/new-blobcat.webp", e.OriginalURL)
+	})
+
+	t.Run("nil emojiRepo returns empty array", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		// emojiRepo未設定
+
+		tags := []activitypub.EmojiTag{
+			{Name: ":x:", Icon: activitypub.Image{URL: "https://example.com/x.png"}},
+		}
+		names := r.UpsertEmojis(tags, "example.com")
+		assert.Empty(t, names)
+	})
+
+	t.Run("empty tags returns empty array", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		r.SetEmojiRepo(emojiRepo)
+
+		names := r.UpsertEmojis(nil, "example.com")
+		assert.Empty(t, names)
+	})
+
+	t.Run("colon-only name skipped", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		r.SetEmojiRepo(emojiRepo)
+
+		// "::" → Trim(":") → "" → スキップ
+		tags := []activitypub.EmojiTag{
+			{Name: "::", Icon: activitypub.Image{URL: "https://example.com/x.png"}},
+		}
+		names := r.UpsertEmojis(tags, "example.com")
+		assert.Empty(t, names)
+	})
+
+	t.Run("emoji without URI does not set URI field", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		r.SetEmojiRepo(emojiRepo)
+
+		tags := []activitypub.EmojiTag{
+			{Name: ":nouri:", Icon: activitypub.Image{URL: "https://example.com/nouri.png"}},
+		}
+		names := r.UpsertEmojis(tags, "remote.example")
+		assert.Equal(t, []string{"nouri"}, []string(names))
+
+		e, err := emojiRepo.FindByNameAndHost("nouri", strPtr("remote.example"))
+		require.NoError(t, err)
+		assert.Nil(t, e.URI)
+	})
+}
+
+// sampleActorWithEmoji is a Person JSON with emoji tags in the tag array.
+const sampleActorWithEmoji = `{
+	"id": "https://remote.example/users/alice",
+	"type": "Person",
+	"preferredUsername": "alice",
+	"name": "Alice :blobcat:",
+	"inbox": "https://remote.example/users/alice/inbox",
+	"endpoints": {"sharedInbox": "https://remote.example/inbox"},
+	"publicKey": {
+		"id": "https://remote.example/users/alice#main-key",
+		"owner": "https://remote.example/users/alice",
+		"publicKeyPem": "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----"
+	},
+	"tag": [
+		{
+			"type": "Emoji",
+			"name": ":blobcat:",
+			"icon": {"type": "Image", "url": "https://remote.example/emojis/blobcat.webp"},
+			"id": "https://remote.example/emojis/blobcat"
+		},
+		{
+			"type": "Mention",
+			"name": "@bob",
+			"href": "https://remote.example/users/bob"
+		}
+	]
+}`
+
+func TestResolveActor_EmojiTagExtraction(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActorWithEmoji)}, idGen)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	r.SetEmojiRepo(emojiRepo)
+
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+
+	// user.Emojisに絵文字名 (コロンなし) が含まれることを確認
+	require.Len(t, user.Emojis, 1)
+	assert.Equal(t, "blobcat", user.Emojis[0])
+
+	// emojiRepoに新規作成されたことを確認
+	e, err := emojiRepo.FindByNameAndHost("blobcat", strPtr("remote.example"))
+	require.NoError(t, err)
+	assert.Equal(t, "blobcat", e.Name)
+	assert.Equal(t, "https://remote.example/emojis/blobcat.webp", e.OriginalURL)
+	require.NotNil(t, e.Host)
+	assert.Equal(t, "remote.example", *e.Host)
+}
+
+func TestResolveActor_EmojiTagExtraction_NoEmojiRepo(t *testing.T) {
+	// emojiRepoが未設定の場合、Emojisは空になるがエラーにはならない
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActorWithEmoji)}, idGen)
+	// SetEmojiRepoを呼ばない
+
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+	assert.Empty(t, user.Emojis)
+}
+
+func TestRefreshActor_EmojiTagExtraction(t *testing.T) {
+	// TTL超過でrefreshが走る場合、Tag配列から絵文字が抽出されることを確認
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+
+	uri := "https://remote.example/users/alice"
+	host := "remote.example"
+	stale := time.Now().Add(-48 * time.Hour)
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		Host:          &host,
+		LastFetchedAt: &stale,
+	}
+
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActorWithEmoji)}, idGen)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	r.SetEmojiRepo(emojiRepo)
+
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+
+	// refreshActorでEmojisが更新されたことを確認
+	require.Len(t, user.Emojis, 1)
+	assert.Equal(t, "blobcat", user.Emojis[0])
+
+	// emojiRepoに作成されたことを確認
+	e, err := emojiRepo.FindByNameAndHost("blobcat", &host)
+	require.NoError(t, err)
+	assert.Equal(t, "blobcat", e.Name)
+}
+
+// sampleNoteWithEmoji is a Note JSON with emoji tags in the tag array.
+const sampleNoteWithEmoji = `{
+	"id": "https://remote.example/notes/emoji1",
+	"type": "Note",
+	"attributedTo": "https://remote.example/users/alice",
+	"content": "<p>Hello :blobcat: :partyparrot:</p>",
+	"to": ["https://www.w3.org/ns/activitystreams#Public"],
+	"tag": [
+		{
+			"type": "Emoji",
+			"name": ":blobcat:",
+			"icon": {"type": "Image", "url": "https://remote.example/emojis/blobcat.webp"},
+			"id": "https://remote.example/emojis/blobcat"
+		},
+		{
+			"type": "Emoji",
+			"name": ":partyparrot:",
+			"icon": {"type": "Image", "url": "https://remote.example/emojis/partyparrot.gif"},
+			"id": "https://remote.example/emojis/partyparrot"
+		},
+		{
+			"type": "Mention",
+			"name": "@alice",
+			"href": "https://remote.example/users/alice"
+		}
+	]
+}`
+
+func TestIngestNote_EmojiTagExtraction(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	// IngestNoteではまずNote JSONを処理してからactorを解決するためscriptedFetcherを使う
+	// ただしIngestNoteは直接body []byteを受け取るので、actorの解決にだけfetcherが使われる
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActorWithEmoji)}, idGen)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	r.SetEmojiRepo(emojiRepo)
+
+	note, err := r.IngestNote([]byte(sampleNoteWithEmoji))
+	require.NoError(t, err)
+
+	// note.Emojisに絵文字名 (コロンなし) が含まれることを確認
+	require.Len(t, note.Emojis, 2)
+	assert.Contains(t, []string(note.Emojis), "blobcat")
+	assert.Contains(t, []string(note.Emojis), "partyparrot")
+
+	// emojiRepoに2つの絵文字が作成されたことを確認
+	host := "remote.example"
+	e1, err := emojiRepo.FindByNameAndHost("blobcat", &host)
+	require.NoError(t, err)
+	assert.Equal(t, "https://remote.example/emojis/blobcat.webp", e1.OriginalURL)
+
+	e2, err := emojiRepo.FindByNameAndHost("partyparrot", &host)
+	require.NoError(t, err)
+	assert.Equal(t, "https://remote.example/emojis/partyparrot.gif", e2.OriginalURL)
+}
+
+func TestIngestNote_EmojiTagExtraction_NoEmojiRepo(t *testing.T) {
+	// emojiRepoが未設定の場合でもIngestNoteは成功する (Emojisは空)
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	// SetEmojiRepoを呼ばない
+
+	note, err := r.IngestNote([]byte(sampleNoteWithEmoji))
+	require.NoError(t, err)
+	assert.Empty(t, note.Emojis)
+}
+
+func TestUpdateRemoteNote_EmojiTagExtraction(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/emoji1"
+	host := "remote.example"
+	original := "original text"
+	noteRepo.Notes["emoji1"] = &model.Note{
+		ID: "emoji1", URI: &uri, UserID: "alice-id", UserHost: &host, Text: &original,
+	}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	r.SetEmojiRepo(emojiRepo)
+
+	updateBody := []byte(`{
+		"id": "https://remote.example/notes/emoji1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "updated :blobcat:",
+		"tag": [
+			{
+				"type": "Emoji",
+				"name": ":blobcat:",
+				"icon": {"type": "Image", "url": "https://remote.example/emojis/blobcat.webp"},
+				"id": "https://remote.example/emojis/blobcat"
+			}
+		]
+	}`)
+	got, err := r.UpdateRemoteNote(updateBody)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	// Emojisが更新されたことを確認
+	require.Len(t, got.Emojis, 1)
+	assert.Equal(t, "blobcat", got.Emojis[0])
+
+	// emojiRepoに作成されたことを確認
+	e, err := emojiRepo.FindByNameAndHost("blobcat", &host)
+	require.NoError(t, err)
+	assert.Equal(t, "blobcat", e.Name)
+	assert.Equal(t, "https://remote.example/emojis/blobcat.webp", e.OriginalURL)
+}
+
+func TestUpdateRemoteNote_EmojiTagExtraction_ExistingEmoji(t *testing.T) {
+	// 既存の絵文字がある場合、URLが変わっていればupdateされることを確認
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	uri := "https://remote.example/notes/emoji1"
+	host := "remote.example"
+	original := "original text"
+	noteRepo.Notes["emoji1"] = &model.Note{
+		ID: "emoji1", URI: &uri, UserID: "alice-id", UserHost: &host, Text: &original,
+	}
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	r.SetEmojiRepo(emojiRepo)
+
+	// 既存の絵文字を配置
+	emojiRepo.Emojis["blobcat@remote.example"] = &model.Emoji{
+		ID:          "old-emoji-id",
+		Name:        "blobcat",
+		Host:        &host,
+		OriginalURL: "https://remote.example/emojis/old-blobcat.webp",
+		PublicURL:   "https://remote.example/emojis/old-blobcat.webp",
+	}
+
+	updateBody := []byte(`{
+		"id": "https://remote.example/notes/emoji1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "updated :blobcat:",
+		"tag": [
+			{
+				"type": "Emoji",
+				"name": ":blobcat:",
+				"icon": {"type": "Image", "url": "https://remote.example/emojis/new-blobcat.webp"},
+				"id": "https://remote.example/emojis/blobcat"
+			}
+		]
+	}`)
+	got, err := r.UpdateRemoteNote(updateBody)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Emojis, 1)
+	assert.Equal(t, "blobcat", got.Emojis[0])
+
+	// URLが更新されたことを確認
+	e, err := emojiRepo.FindByNameAndHost("blobcat", &host)
+	require.NoError(t, err)
+	assert.Equal(t, "https://remote.example/emojis/new-blobcat.webp", e.OriginalURL)
+}
+
+// strPtr is a helper that returns a pointer to its argument.
+func strPtr(s string) *string { return &s }

@@ -1039,12 +1039,49 @@ func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) err
 					if ts, ok := v.(time.Time); ok {
 						e.UpdatedAt = &ts
 					}
+				case "originalUrl":
+					if s, ok := v.(string); ok {
+						e.OriginalURL = s
+					}
+				case "publicUrl":
+					if s, ok := v.(string); ok {
+						e.PublicURL = s
+					}
+				case "uri":
+					if sp, ok := v.(*string); ok {
+						e.URI = sp
+					}
 				}
 			}
 			return nil
 		}
 	}
 	return ErrNotFound
+}
+
+// FindManyByNamesAndHost returns emojis matching any of the given names for a specific host.
+func (m *MockEmojiRepository) FindManyByNamesAndHost(names []string, host *string) ([]*model.Emoji, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	nameSet := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		nameSet[n] = struct{}{}
+	}
+	var out []*model.Emoji
+	for _, e := range m.Emojis {
+		if _, ok := nameSet[e.Name]; !ok {
+			continue
+		}
+		if host == nil && e.Host != nil {
+			continue
+		}
+		if host != nil && (e.Host == nil || *e.Host != *host) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 func (m *MockEmojiRepository) Delete(id string) error {

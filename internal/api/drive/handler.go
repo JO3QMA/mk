@@ -25,6 +25,7 @@ type Handler struct {
 	noteRepo     repository.NoteRepository
 	userRepo     repository.UserRepository
 	instanceRepo repository.InstanceRepository
+	emojiRepo    repository.EmojiRepository
 }
 
 // NewHandler creates a new drive Handler.
@@ -57,6 +58,19 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// SetEmojiRepo attaches an EmojiRepository so custom emoji shortcodes in
+// note text and user displayNames get resolved to URLs.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // packDriveFileFull packs a drive file and, when repositories are wired,
@@ -446,7 +460,7 @@ func (h *Handler) FilesAttachedNotes(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	return c.JSON(http.StatusOK, out)
 }
 

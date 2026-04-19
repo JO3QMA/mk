@@ -22,13 +22,20 @@ type PubSubPublisher interface {
 // in NoteEntity.User and publishes the JSON to a Redis pubsub topic. これは
 // core/timeline.StreamingPublisher を実装する。
 type NotePublisher struct {
-	pub   PubSubPublisher
-	idGen id.Generator
+	pub         PubSubPublisher
+	idGen       id.Generator
+	emojiLookup entity.EmojiLookup
 }
 
 // NewNotePublisher constructs a NotePublisher.
 func NewNotePublisher(pub PubSubPublisher, idGen id.Generator) *NotePublisher {
 	return &NotePublisher{pub: pub, idGen: idGen}
+}
+
+// SetEmojiLookup attaches an EmojiLookup so published notes get their
+// custom emoji shortcodes resolved to URLs (#330).
+func (p *NotePublisher) SetEmojiLookup(lookup entity.EmojiLookup) {
+	p.emojiLookup = lookup
 }
 
 // PublishNote implements core/timeline.StreamingPublisher.
@@ -38,6 +45,11 @@ func (p *NotePublisher) PublishNote(topic string, n *model.Note, author *model.U
 	}
 	pn := entity.PackNote(n, p.idGen)
 	pn.User = entity.PackUserLite(author)
+	// 絵文字解決: authorをnoteに一時的にセットしてEmojiResolverに渡す
+	notes := []*model.Note{{Emojis: n.Emojis, UserHost: n.UserHost, User: author}}
+	emojiResolver := entity.NewEmojiResolver(p.emojiLookup, notes)
+	emojiResolver.PopulateNoteEmojis(n, &pn)
+	emojiResolver.PopulateUserEmojis(author, &pn.User)
 	body, err := json.Marshal(pn)
 	if err != nil {
 		slog.Warn("note publisher: marshal failed", "err", err)

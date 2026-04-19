@@ -39,6 +39,7 @@ type Handler struct {
 	renoteMutingRepo     repository.RenoteMutingRepository
 	followRequestRepo    repository.FollowRequestRepository
 	instanceRepo         repository.InstanceRepository
+	emojiRepo            repository.EmojiRepository
 	userListFavoriteRepo UserListFavoriteRepository
 	userListRepo         repository.UserListRepository
 	clipRepo             repository.ClipRepository
@@ -101,6 +102,11 @@ func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 	h.instanceRepo = r
 }
 
+// SetEmojiRepo attaches an EmojiRepository for custom emoji resolution.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
 // instanceLookup adapts instanceRepo to entity.InstanceLookup. Returns nil
 // when no repo is wired (entity.PackNotes treats nil as "skip Instance").
 func (h *Handler) instanceLookup() entity.InstanceLookup {
@@ -108,6 +114,15 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// emojiLookup adapts emojiRepo to entity.EmojiLookup. Returns nil
+// when no repo is wired (entity.PackNotes treats nil as "skip Emoji").
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // NewHandler creates a new users Handler.
@@ -369,7 +384,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	return c.JSON(http.StatusOK, out)
 }
 
@@ -526,7 +541,7 @@ func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed
 			detailed.PinnedNoteIDs = ids
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 					packed := make([]any, 0, len(entities))
 					for _, pn := range entities {
 						packed = append(packed, pn)
