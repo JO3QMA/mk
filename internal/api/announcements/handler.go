@@ -15,8 +15,8 @@ import (
 
 // MainStreamPublisher emits events to a user's `main` WebSocket channel.
 // Used here to publish `announcementCreated` (per-user announcements) and
-// `readAllAnnouncements`. 循環依存を避けるためinterfaceで受け取る
-// (実装はinternal/stream)。
+// `readAllAnnouncements`. Accepted as an interface to avoid a hard
+// dependency on internal/stream (循環依存回避)。
 type MainStreamPublisher interface {
 	PublishMainEvent(userID, eventType string, body any)
 }
@@ -54,9 +54,9 @@ func (h *Handler) List(c echo.Context) error {
 	if req.IsActive != nil {
 		activeOnly = *req.IsActive
 	}
-	// 認証ユーザーがいれば per-user announcement の対象を自分に限定した
-	// ListForUser を使い、他ユーザー宛のannouncementを除外する。未認証は
-	// ListGlobal (userId IS NULLのみ)を使い、targetedなannouncementを
+	// 認証ユーザーがいればper-user announcementの対象を自分に限定した
+	// ListForUserを使い、他ユーザー宛のannouncementを除外する。未認証は
+	// ListGlobal(userId IS NULLのみ)を使い、targetedなannouncementを
 	// 漏らさない。
 	user := middleware.GetUser(c)
 	var items []*model.Announcement
@@ -91,7 +91,14 @@ func (h *Handler) ReadAnnouncement(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.AnnouncementID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "announcementId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	if _, err := h.repo.FindByID(req.AnnouncementID); err != nil {
+	a, err := h.repo.FindByID(req.AnnouncementID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
+	}
+	// per-user announcementのうち他ユーザー宛ては、そのユーザー以外は
+	// 閲覧できないので「存在しない」扱いで弾く(IDから本人宛てか推測
+	// されるのを防ぐため)。
+	if a.UserID != nil && *a.UserID != user.ID {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
 	}
 	already, _ := h.repo.IsRead(user.ID, req.AnnouncementID)
@@ -106,8 +113,8 @@ func (h *Handler) ReadAnnouncement(c echo.Context) error {
 	if err := h.repo.MarkRead(read); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	// TS本家 AnnouncementService.read (line 220): 残unread数が0になった時点で
-	// main に readAllAnnouncements を publish する (body: null)。
+	// TS本家AnnouncementService.read(line 220): 残unread数が0になった時点で
+	// mainにreadAllAnnouncementsをpublishする(body: null)。
 	if h.mainStreamPublisher != nil {
 		if unread, err := h.repo.UnreadForUser(user.ID); err == nil && len(unread) == 0 {
 			h.mainStreamPublisher.PublishMainEvent(user.ID, "readAllAnnouncements", nil)
@@ -150,7 +157,7 @@ func (h *Handler) AdminCreate(c echo.Context) error {
 	if err := h.repo.Create(a); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	// TS本家 AnnouncementService.create (line 87): per-user announcement
+	// TS本家AnnouncementService.create(line 87): per-user announcement
 	// (userId指定)の場合のみmainにpublishする。global announcementは
 	// publishBroadcastStream経由だがGo側では別インフラ未実装なのでskip。
 	if h.mainStreamPublisher != nil && a.UserID != nil {

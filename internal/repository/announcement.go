@@ -138,8 +138,8 @@ func (r *announcementRepository) IsRead(userID, announcementID string) (bool, er
 
 func (r *announcementRepository) UnreadForUser(userID string) ([]*model.Announcement, error) {
 	var announcements []*model.Announcement
-	// per-user announcement (userId!=null) はその対象ユーザーのみ含める。
-	// global announcement (userId IS NULL) は全ユーザーに見せる。
+	// per-user announcement(userId!=null)はその対象ユーザーのみ含める。
+	// global announcement(userId IS NULL)は全ユーザーに見せる。
 	err := r.db.Where(
 		`"isActive" = true AND ("userId" IS NULL OR "userId" = ?) AND id NOT IN (?)`,
 		userID,
