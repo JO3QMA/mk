@@ -1344,6 +1344,7 @@ func (s *Server) setupRoutes() {
 	// Phase 7-2 (#244): /api/i の hasUnreadAnnouncement / unreadAnnouncements 配線
 	iHandler.SetAnnouncementRepo(announcementRepo)
 	announcementHandler := apiannouncements.NewHandler(announcementRepo, idGen)
+	announcementHandler.SetMainStreamPublisher(mainStreamPublisher)
 	api.POST("/announcements", announcementHandler.List)
 	api.POST("/i/read-announcement", announcementHandler.ReadAnnouncement, middleware.RequireAuth())
 

@@ -124,6 +124,83 @@ func TestAdminCreate_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// stubMainStreamPublisher captures PublishMainEvent calls.
+type stubMainStreamPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+func TestAdminCreate_PerUserPublishesAnnouncementCreated(t *testing.T) {
+	h, _ := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	rec := doPost(h.AdminCreate, `{"title":"You","text":"Hi","userId":"u1"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "announcementCreated", pub.calls[0].eventType)
+	body, ok := pub.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	// TSと同じく {announcement: <packed>} でラップ。
+	packed, ok := body["announcement"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "You", packed["title"])
+	assert.Equal(t, true, packed["forYou"])
+	assert.Equal(t, false, packed["isRead"])
+}
+
+func TestAdminCreate_GlobalDoesNotPublish(t *testing.T) {
+	h, _ := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	// userId 未指定 → global announcement。main にはemitしない (TSの
+	// publishBroadcastStream相当は別レイヤ)。
+	rec := doPost(h.AdminCreate, `{"title":"All","text":"Everyone"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, pub.calls)
+}
+
+func TestReadAnnouncement_PublishesReadAllWhenUnreadEmpty(t *testing.T) {
+	h, repo := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}
+
+	// 唯一のannouncementを読むとunread=0になるのでreadAllAnnouncementsがemit。
+	rec := doPost(h.ReadAnnouncement, `{"announcementId":"a1"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "readAllAnnouncements", pub.calls[0].eventType)
+	assert.Nil(t, pub.calls[0].body)
+}
+
+func TestReadAnnouncement_DoesNotPublishWhenUnreadRemains(t *testing.T) {
+	h, repo := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}
+	repo.Items["a2"] = &model.Announcement{ID: "a2", IsActive: true}
+
+	// a1 を読んでも a2 が未読のためemit無し。
+	rec := doPost(h.ReadAnnouncement, `{"announcementId":"a1"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, pub.calls)
+}
+
 func TestAdminUpdate_Success(t *testing.T) {
 	h, repo := newTestHandler(t)
 	repo.Items["a1"] = &model.Announcement{ID: "a1", Title: "Old"}

@@ -6,21 +6,38 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
+// MainStreamPublisher emits events to a user's `main` WebSocket channel.
+// Used here to publish `announcementCreated` (per-user announcements) and
+// `readAllAnnouncements`. 循環依存を避けるためinterfaceで受け取る
+// (実装はinternal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
 // Handler handles announcement-related API endpoints.
 type Handler struct {
-	repo  repository.AnnouncementRepository
-	idGen id.Generator
+	repo                repository.AnnouncementRepository
+	idGen               id.Generator
+	mainStreamPublisher MainStreamPublisher
 }
 
 // NewHandler creates a new announcements Handler.
 func NewHandler(repo repository.AnnouncementRepository, idGen id.Generator) *Handler {
 	return &Handler{repo: repo, idGen: idGen}
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `main` channel
+// events (`announcementCreated` / `readAllAnnouncements`). Optional — nil
+// disables emit.
+func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
+	h.mainStreamPublisher = p
 }
 
 // List handles POST /api/announcements.
@@ -80,6 +97,13 @@ func (h *Handler) ReadAnnouncement(c echo.Context) error {
 	if err := h.repo.MarkRead(read); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	// TS本家 AnnouncementService.read (line 220): 残unread数が0になった時点で
+	// main に readAllAnnouncements を publish する (body: null)。
+	if h.mainStreamPublisher != nil {
+		if unread, err := h.repo.UnreadForUser(user.ID); err == nil && len(unread) == 0 {
+			h.mainStreamPublisher.PublishMainEvent(user.ID, "readAllAnnouncements", nil)
+		}
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -93,6 +117,7 @@ func (h *Handler) AdminCreate(c echo.Context) error {
 		ImageURL *string `json:"imageUrl"`
 		Icon     string  `json:"icon"`
 		Display  string  `json:"display"`
+		UserID   *string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.Title == "" || req.Text == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "title and text are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -111,9 +136,17 @@ func (h *Handler) AdminCreate(c echo.Context) error {
 		Icon:     req.Icon,
 		Display:  req.Display,
 		IsActive: true,
+		UserID:   req.UserID,
 	}
 	if err := h.repo.Create(a); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	// TS本家 AnnouncementService.create (line 87): per-user announcement
+	// (userId指定)の場合のみmainにpublishする。global announcementは
+	// publishBroadcastStream経由だがGo側では別インフラ未実装なのでskip。
+	if h.mainStreamPublisher != nil && a.UserID != nil {
+		body := map[string]any{"announcement": entity.PackAnnouncement(a, h.idGen, false)}
+		h.mainStreamPublisher.PublishMainEvent(*a.UserID, "announcementCreated", body)
 	}
 	return c.JSON(http.StatusOK, a)
 }
@@ -175,23 +208,14 @@ func (h *Handler) AdminList(c echo.Context) error {
 	return c.JSON(http.StatusOK, items)
 }
 
+// packAnnouncement wraps entity.PackAnnouncement for handler use. isRead
+// defaults to false at this layer; the caller overrides after viewer check.
+// Retains `forExistingUsers` / `isActive` which List pre-existing API
+// clients may rely on (entity packer targets the event body which TS
+// doesn't include these two).
 func packAnnouncement(a *model.Announcement, idGen id.Generator) map[string]any {
-	createdAt := ""
-	if t, err := idGen.ParseTime(a.ID); err == nil {
-		createdAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
-	}
-	return map[string]any{
-		"id":                     a.ID,
-		"createdAt":              createdAt,
-		"updatedAt":              a.UpdatedAt,
-		"title":                  a.Title,
-		"text":                   a.Text,
-		"imageUrl":               a.ImageURL,
-		"icon":                   a.Icon,
-		"display":                a.Display,
-		"needConfirmationToRead": a.NeedConfirmationToRead,
-		"silence":                a.Silence,
-		"forExistingUsers":       a.ForExistingUsers,
-		"isActive":               a.IsActive,
-	}
+	out := entity.PackAnnouncement(a, idGen, false)
+	out["forExistingUsers"] = a.ForExistingUsers
+	out["isActive"] = a.IsActive
+	return out
 }
