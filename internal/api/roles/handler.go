@@ -23,19 +23,15 @@ type Handler struct {
 	idGen       id.Generator
 }
 
-// NewHandler creates a new roles Handler.
-func NewHandler(roleService *role.Service) *Handler {
-	return &Handler{roleService: roleService}
+// NewHandler creates a new roles Handler. idGen is required for note packing
+// under /api/roles/notes.
+func NewHandler(roleService *role.Service, idGen id.Generator) *Handler {
+	return &Handler{roleService: roleService, idGen: idGen}
 }
 
 // SetNotesQuery attaches a RoleNotesQuery for the roles/notes endpoint.
 func (h *Handler) SetNotesQuery(q RoleNotesQuery) {
 	h.notesQuery = q
-}
-
-// SetIDGen attaches an ID generator for note packing.
-func (h *Handler) SetIDGen(g id.Generator) {
-	h.idGen = g
 }
 
 // List handles POST /api/roles/list.

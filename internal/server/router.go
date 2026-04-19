@@ -1294,9 +1294,8 @@ func (s *Server) setupRoutes() {
 	// federation の残ルートは上で登録済 (federationHandler 初期化直後)
 
 	// Public roles (Phase 6)
-	rolesHandler := apiroles.NewHandler(roleService)
+	rolesHandler := apiroles.NewHandler(roleService, idGen)
 	rolesHandler.SetNotesQuery(repository.NewRoleNotesQuery(s.db))
-	rolesHandler.SetIDGen(idGen)
 	api.POST("/roles/list", rolesHandler.List)
 	api.POST("/roles/show", rolesHandler.Show)
 	api.POST("/roles/users", rolesHandler.Users)
