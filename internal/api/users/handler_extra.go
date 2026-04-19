@@ -122,6 +122,7 @@ func (h *Handler) SearchByUsernameAndHost(c echo.Context) error {
 	for _, u := range users {
 		lite := entity.PackUserLite(u)
 		resolver.FillUserLite(&lite)
+		h.populateUserEmojis(u, &lite)
 		result = append(result, lite)
 	}
 	return c.JSON(http.StatusOK, result)

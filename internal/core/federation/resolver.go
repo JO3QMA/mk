@@ -745,17 +745,17 @@ func (r *Resolver) upsertEmojis(tags []activitypub.EmojiTag, host string) pq.Str
 		}
 		existing, err := r.emojiRepo.FindByNameAndHost(name, &host)
 		if err == nil {
-			// 既存絵文字: URLが変わっていればupdate
+			// 既存絵文字: URL/URIが変わっていればまとめてupdate
+			updates := map[string]any{}
 			if existing.OriginalURL != tag.Icon.URL {
-				_ = r.emojiRepo.UpdateFields(existing.ID, map[string]any{
-					"originalUrl": tag.Icon.URL,
-					"publicUrl":   tag.Icon.URL,
-				})
+				updates["originalUrl"] = tag.Icon.URL
+				updates["publicUrl"] = tag.Icon.URL
 			}
 			if tag.ID != "" && (existing.URI == nil || *existing.URI != tag.ID) {
-				_ = r.emojiRepo.UpdateFields(existing.ID, map[string]any{
-					"uri": &tag.ID,
-				})
+				updates["uri"] = &tag.ID
+			}
+			if len(updates) > 0 {
+				_ = r.emojiRepo.UpdateFields(existing.ID, updates)
 			}
 		} else {
 			// 新規絵文字: create

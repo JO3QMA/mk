@@ -125,6 +125,28 @@ func (h *Handler) emojiLookup() entity.EmojiLookup {
 	return h.emojiRepo
 }
 
+// populateUserEmojis resolves custom emoji names in user.Emojis to URLs and
+// sets lite.Emojis. PackNotes経由でなくUserLite/UserDetailedを直接返す
+// パス (users/show等) で使用する。
+func (h *Handler) populateUserEmojis(u *model.User, lite *entity.UserLite) {
+	if h.emojiRepo == nil || u == nil || lite == nil || len(u.Emojis) == 0 {
+		return
+	}
+	emojis, err := h.emojiRepo.FindManyByNamesAndHost(u.Emojis, u.Host)
+	if err != nil || len(emojis) == 0 {
+		return
+	}
+	m := make(map[string]string, len(emojis))
+	for _, e := range emojis {
+		url := e.PublicURL
+		if url == "" {
+			url = e.OriginalURL
+		}
+		m[e.Name] = url
+	}
+	lite.Emojis = m
+}
+
 // NewHandler creates a new users Handler.
 // followingService, noteRepo, idGen are optional for the bare /show endpoint.
 func NewHandler(
@@ -187,6 +209,7 @@ func (h *Handler) Show(c echo.Context) error {
 		for _, b := range bundles {
 			lite := entity.PackUserLite(b.User)
 			resolver.FillUserLite(&lite)
+			h.populateUserEmojis(b.User, &lite)
 			out = append(out, lite)
 		}
 		return c.JSON(http.StatusOK, out)
@@ -241,6 +264,9 @@ func (h *Handler) Show(c echo.Context) error {
 			}
 		}
 	}
+
+	// ユーザーdisplayNameのカスタム絵文字を解決 (#330)
+	h.populateUserEmojis(bundle.User, &detailed.UserLite)
 
 	// Phase 7-3 (#245): ピン止めnote / ピン止めpage を埋める。
 	h.fillPinned(bundle.User, bundle.Profile, &detailed)
