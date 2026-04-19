@@ -42,5 +42,10 @@ Thumbs.db
 .config/
 drive-files/
 
+# Benchmark results
+tests/bench/results/*.json
+tests/bench/results/*.md
+!tests/bench/results/.gitkeep
+
 # Claude Code local state
 .claude/

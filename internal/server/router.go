@@ -527,6 +527,16 @@ func (s *Server) setupRoutes() {
 
 	api := s.echo.Group("/api")
 
+	// Rate limiter: Redisバックエンドのsliding window、Misskey TS互換。
+	// auth.Authenticate()がグローバルミドルウェアとして先に実行されるため、
+	// GetUser(c)で認証済みユーザーを取得できる。
+	rateLimiter := middleware.NewRedisRateLimiter(
+		s.redis.Default,
+		s.config.EnableIPRateLimit,
+		middleware.DefaultEndpointLimits,
+	)
+	api.Use(rateLimiter.Middleware())
+
 	// Meta endpoint (public)
 	metaHandler := meta.NewHandler(s.config, metaRepo)
 	metaHandler.SetAdRepo(repository.NewAdRepository(s.db))
