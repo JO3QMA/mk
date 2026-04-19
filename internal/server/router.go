@@ -535,6 +535,7 @@ func (s *Server) setupRoutes() {
 		pprofGroup.GET("/cmdline", echo.WrapHandler(http.HandlerFunc(pprof.Cmdline)))
 		pprofGroup.GET("/profile", echo.WrapHandler(http.HandlerFunc(pprof.Profile)))
 		pprofGroup.GET("/symbol", echo.WrapHandler(http.HandlerFunc(pprof.Symbol)))
+		pprofGroup.POST("/symbol", echo.WrapHandler(http.HandlerFunc(pprof.Symbol)))
 		pprofGroup.GET("/trace", echo.WrapHandler(http.HandlerFunc(pprof.Trace)))
 		pprofGroup.GET("/:name", func(c echo.Context) error {
 			pprof.Handler(c.Param("name")).ServeHTTP(c.Response(), c.Request())

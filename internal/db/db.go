@@ -89,7 +89,12 @@ func New(cfg *config.Config) (*gorm.DB, error) {
 		if err := gdb.Use(dbresolver.Register(dbresolver.Config{
 			Replicas: replicas,
 			Policy:   dbresolver.RandomPolicy{},
-		})); err != nil {
+		}).
+			SetMaxOpenConns(maxOpen).
+			SetMaxIdleConns(maxIdle).
+			SetConnMaxLifetime(connMaxLifetime).
+			SetConnMaxIdleTime(connMaxIdleTime),
+		); err != nil {
 			return nil, fmt.Errorf("failed to register db replicas: %w", err)
 		}
 		slog.Info("registered PostgreSQL read replicas", "count", len(cfg.DBSlaves))
