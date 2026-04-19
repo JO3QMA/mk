@@ -38,6 +38,8 @@ type Handler struct {
 	channelRepo       repository.ChannelRepository
 	channelMutingRepo repository.ChannelMutingRepository
 	instanceRepo      repository.InstanceRepository
+	driveFolderRepo   repository.DriveFolderRepository
+	userRepo          repository.UserRepository
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
@@ -79,6 +81,18 @@ func (h *Handler) SetChannelRepo(r repository.ChannelRepository) {
 // note responses get their `instance` field populated (#277).
 func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 	h.instanceRepo = r
+}
+
+// SetDriveFolderRepo attaches a DriveFolderRepository so attached DriveFiles
+// in note responses can embed the owning folder (#317).
+func (h *Handler) SetDriveFolderRepo(r repository.DriveFolderRepository) {
+	h.driveFolderRepo = r
+}
+
+// SetUserRepo attaches a UserRepository so attached DriveFiles in note
+// responses can embed the owning user (#317).
+func (h *Handler) SetUserRepo(r repository.UserRepository) {
+	h.userRepo = r
 }
 
 // instanceLookup returns the repository as an entity.InstanceLookup, or nil
@@ -511,19 +525,60 @@ func (h *Handler) resolveFiles(notes []entity.NoteEntity) {
 	for _, f := range files {
 		fileMap[f.ID] = f
 	}
-	// 各ノートのFilesに設定。
-	// NOTE: TS本家は attachmentに folder / user を embed するが、notes
-	// handler には folderRepo / userRepo が未配線のため現状はIDのみ返す。
-	// 完全対応は follow-up issue #317 で検討。
+	// folder / user を best-effort で pre-fetch して embed する (#317)。
+	// 添付ファイル経由で重複して参照される folder/user を最小限の read に
+	// 抑えるため、unique ID を集めて cache に流し込む。N+1 は残るが attachment
+	// 数は実用上少ないので許容 (batch 最適化は follow-up)。
+	folderCache, userCache := h.resolveFileOwners(files)
+
 	for i := range notes {
 		packed := make([]any, 0, len(notes[i].FileIDs))
 		for _, fid := range notes[i].FileIDs {
-			if f, ok := fileMap[fid]; ok {
-				packed = append(packed, entity.PackDriveFile(f, h.idGen))
+			f, ok := fileMap[fid]
+			if !ok {
+				continue
 			}
+			var folder *model.DriveFolder
+			if f.FolderID != nil {
+				folder = folderCache[*f.FolderID]
+			}
+			var user *model.User
+			if f.UserID != nil {
+				user = userCache[*f.UserID]
+			}
+			packed = append(packed, entity.PackDriveFileWithRelations(f, h.idGen, folder, user))
 		}
 		notes[i].Files = packed
 	}
+}
+
+// resolveFileOwners builds id→model caches for folder / user by iterating
+// the unique IDs referenced by files. Missing repos / lookup failures are
+// silently treated as "no embed" (PackDriveFileWithRelations handles nil).
+func (h *Handler) resolveFileOwners(files []*model.DriveFile) (map[string]*model.DriveFolder, map[string]*model.User) {
+	folderCache := map[string]*model.DriveFolder{}
+	userCache := map[string]*model.User{}
+	for _, f := range files {
+		if h.driveFolderRepo != nil && f.FolderID != nil {
+			if _, seen := folderCache[*f.FolderID]; !seen {
+				if folder, err := h.driveFolderRepo.FindByID(*f.FolderID); err == nil {
+					folderCache[*f.FolderID] = folder
+				} else {
+					folderCache[*f.FolderID] = nil
+				}
+			}
+		}
+		if h.userRepo != nil && f.UserID != nil {
+			if _, seen := userCache[*f.UserID]; !seen {
+				if u, err := h.userRepo.FindByID(*f.UserID); err == nil {
+					userCache[*f.UserID] = u
+				} else {
+					userCache[*f.UserID] = nil
+				}
+			}
+		}
+	}
+	return folderCache, userCache
 }
 
 // resolveViewerFields populates viewer-dependent fields (MyReaction, Channel)

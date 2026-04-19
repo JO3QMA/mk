@@ -181,6 +181,128 @@ func TestShow_Success(t *testing.T) {
 	assert.Equal(t, "existing note", resp["text"])
 }
 
+func TestShow_AttachmentEmbedsFolderAndUser(t *testing.T) {
+	// #317: 添付ファイルの folder / user を best-effort で埋めることを検証。
+	h, noteRepo := newTestHandler(t)
+
+	fileRepo := testutil.NewMockDriveFileRepository()
+	folderRepo := testutil.NewMockDriveFolderRepository()
+	userRepo := testutil.NewMockUserRepository()
+
+	ownerID := "user1"
+	folderID := "folder1"
+	fileURL := "https://example.com/f.png"
+	fileRepo.Files["file1"] = &model.DriveFile{
+		ID:       "file1",
+		UserID:   &ownerID,
+		FolderID: &folderID,
+		Type:     "image/png",
+		URL:      fileURL,
+		Name:     "pic.png",
+	}
+	folderRepo.Folders[folderID] = &model.DriveFolder{
+		ID:     folderID,
+		Name:   "My Folder",
+		UserID: &ownerID,
+	}
+	userRepo.Users[ownerID] = &model.User{
+		ID:                ownerID,
+		Username:          "testuser",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+
+	h.SetDriveFileRepo(fileRepo)
+	h.SetDriveFolderRepo(folderRepo)
+	h.SetUserRepo(userRepo)
+
+	text := "note with attachment"
+	noteRepo.Notes["n1"] = &model.Note{
+		ID:         "n1",
+		UserID:     ownerID,
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		FileIDs:    []string{"file1"},
+		User: &model.User{
+			ID:                ownerID,
+			Username:          "testuser",
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+	}
+
+	body := `{"noteId": "n1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	filesRaw, ok := resp["files"].([]any)
+	require.True(t, ok)
+	require.Len(t, filesRaw, 1)
+	file := filesRaw[0].(map[string]any)
+	folder, ok := file["folder"].(map[string]any)
+	require.True(t, ok, "attachment must embed folder")
+	assert.Equal(t, "My Folder", folder["name"])
+	user, ok := file["user"].(map[string]any)
+	require.True(t, ok, "attachment must embed user")
+	assert.Equal(t, "testuser", user["username"])
+}
+
+func TestShow_AttachmentWithoutRepos_OmitsFolderUser(t *testing.T) {
+	// folderRepo / userRepo 未配線のときは folder/user を埋めず、
+	// 従来通り file オブジェクトに folder/user が null になる。
+	h, noteRepo := newTestHandler(t)
+
+	fileRepo := testutil.NewMockDriveFileRepository()
+	ownerID := "user1"
+	fileURL := "https://example.com/f.png"
+	fileRepo.Files["file1"] = &model.DriveFile{
+		ID:     "file1",
+		UserID: &ownerID,
+		Type:   "image/png",
+		URL:    fileURL,
+		Name:   "pic.png",
+	}
+	h.SetDriveFileRepo(fileRepo)
+
+	text := "note with attachment"
+	noteRepo.Notes["n1"] = &model.Note{
+		ID:         "n1",
+		UserID:     ownerID,
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		FileIDs:    []string{"file1"},
+		User: &model.User{
+			ID:                ownerID,
+			Username:          "testuser",
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+	}
+
+	body := `{"noteId": "n1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Show(c))
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	filesRaw := resp["files"].([]any)
+	require.Len(t, filesRaw, 1)
+	file := filesRaw[0].(map[string]any)
+	assert.Nil(t, file["folder"])
+	assert.Nil(t, file["user"])
+}
+
 func TestShow_PopulatesUserInstanceForRemoteAuthor(t *testing.T) {
 	h, noteRepo := newTestHandler(t)
 
