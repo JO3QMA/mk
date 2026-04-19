@@ -2,7 +2,8 @@
 	federation-misskey-build federation-misskey-up federation-misskey-test \
 	federation-misskey-down federation-misskey-logs \
 	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
-	uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps
+	uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
+	bench-up bench-run bench-down bench-logs
 
 # Binary output
 BINARY=misskey
@@ -156,3 +157,20 @@ uds-logs:
 
 uds-ps:
 	docker compose -f $(UDS_COMPOSE) ps
+
+# Benchmark ― mk-go vs 本家 Misskey のストレステスト比較。
+# k6 (Docker) で同一エンドポイントに負荷をかけ、レイテンシ・スループットを比較する。
+# 結果は tests/bench/results/report.md に出力される。
+BENCH_COMPOSE=tests/bench/docker-compose.bench.yml
+
+bench-up:
+	docker compose -f $(BENCH_COMPOSE) up -d --build
+
+bench-run:
+	docker compose -f $(BENCH_COMPOSE) --profile bench up --abort-on-container-exit compare
+
+bench-down:
+	docker compose -f $(BENCH_COMPOSE) down -v
+
+bench-logs:
+	docker compose -f $(BENCH_COMPOSE) logs -f
