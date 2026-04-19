@@ -30,6 +30,8 @@ type RedisOptions struct {
 	DB       int    `mapstructure:"db"`
 	Prefix   string `mapstructure:"prefix"`
 	Username string `mapstructure:"username"`
+	// Pool tuning (Go固有。Misskey TS設定にはない)
+	PoolSize *int `mapstructure:"poolSize"`
 }
 
 // DBOptions represents PostgreSQL connection configuration.
@@ -41,6 +43,11 @@ type DBOptions struct {
 	Pass         string            `mapstructure:"pass"`
 	DisableCache bool              `mapstructure:"disableCache"`
 	Extra        map[string]string `mapstructure:"extra"`
+	// Pool tuning (Go固有。Misskey TS設定にはない)
+	MaxOpenConns    *int `mapstructure:"maxOpenConns"`
+	MaxIdleConns    *int `mapstructure:"maxIdleConns"`
+	ConnMaxLifetime *int `mapstructure:"connMaxLifetime"` // 秒
+	ConnMaxIdleTime *int `mapstructure:"connMaxIdleTime"` // 秒
 }
 
 // DBSlaveOptions represents a single read-replica PostgreSQL connection.
@@ -158,6 +165,10 @@ type Source struct {
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
 	TestMode bool `mapstructure:"testMode"`
 
+	// EnablePprof registers net/http/pprof handlers at /debug/pprof/*.
+	// For local profiling only; must not be enabled in production.
+	EnablePprof bool `mapstructure:"enablePprof"`
+
 	// SentryForBackend enables Sentry error tracking for the Go server. Nil
 	// disables Sentry entirely (production default).
 	SentryForBackend *SentryBackendOptions `mapstructure:"sentryForBackend"`
@@ -251,6 +262,9 @@ type Config struct {
 	// Must never be enabled in production. Can be overridden via MK_TESTMODE=1.
 	TestMode bool
 
+	// EnablePprof registers net/http/pprof handlers at /debug/pprof/*.
+	EnablePprof bool
+
 	// SentryForBackend, when non-nil, enables Sentry error tracking for the
 	// Go server.
 	SentryForBackend *SentryBackendOptions
@@ -309,6 +323,12 @@ func bindEnvKeys(v *viper.Viper) {
 		"redisForTimelines.family", "redisForTimelines.prefix", "redisForTimelines.db", "redisForTimelines.username",
 		"redisForReactions.host", "redisForReactions.port", "redisForReactions.pass",
 		"redisForReactions.family", "redisForReactions.prefix", "redisForReactions.db", "redisForReactions.username",
+		"db.maxOpenConns", "db.maxIdleConns", "db.connMaxLifetime", "db.connMaxIdleTime",
+		"redis.poolSize",
+		"redisForPubsub.poolSize",
+		"redisForJobQueue.poolSize",
+		"redisForTimelines.poolSize",
+		"redisForReactions.poolSize",
 		"id", "maxFileSize",
 		"mediaProxySecret",
 		"testMode",
@@ -319,6 +339,7 @@ func bindEnvKeys(v *viper.Viper) {
 		"mediaProxy",
 		"logging.sql.disableQueryTruncation",
 		"logging.sql.enableQueryParamLogging",
+		"enablePprof",
 		"sentryForBackend.options.dsn",
 		"sentryForBackend.options.environment",
 	}
@@ -442,7 +463,8 @@ func resolve(src *Source) (*Config, error) {
 
 		TrustProxy: resolveTrustProxy(src.TrustProxy),
 
-		TestMode: src.TestMode,
+		TestMode:    src.TestMode,
+		EnablePprof: src.EnablePprof,
 
 		SentryForBackend:  src.SentryForBackend,
 		SentryForFrontend: src.SentryForFrontend,
@@ -454,6 +476,11 @@ func resolve(src *Source) (*Config, error) {
 		// TestMode は /api/reset-db のような破壊的エンドポイントを有効化する。
 		// 本番で誤って有効化されていないか気付けるよう、起動時に強く警告する。
 		slog.Warn("config: TestMode is enabled; destructive test endpoints (e.g. /api/reset-db) are active. DO NOT enable this in production.",
+			"url", cfg.URL)
+	}
+
+	if cfg.EnablePprof {
+		slog.Warn("config: EnablePprof is enabled; /debug/pprof/* endpoints expose runtime internals. DO NOT enable this in production.",
 			"url", cfg.URL)
 	}
 

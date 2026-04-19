@@ -77,6 +77,7 @@ func TestBuildRedisOptions_TCP(t *testing.T) {
 	assert.Equal(t, "secret", opts.Password)
 	assert.Equal(t, 3, opts.DB)
 	assert.Equal(t, "alice", opts.Username)
+	assert.Equal(t, 0, opts.PoolSize) // 未指定時はgo-redisデフォルト
 }
 
 func TestBuildRedisOptions_UnixSocket(t *testing.T) {
@@ -93,6 +94,27 @@ func TestBuildRedisOptions_UnixSocket(t *testing.T) {
 	assert.Equal(t, "secret", opts.Password)
 	assert.Equal(t, 1, opts.DB)
 	assert.Equal(t, "bob", opts.Username)
+	assert.Equal(t, 0, opts.PoolSize) // 未指定時はgo-redisデフォルト
+}
+
+func TestBuildRedisOptions_PoolSize(t *testing.T) {
+	poolSize := 50
+	opts := buildRedisOptions(config.RedisOptions{
+		Host:     "localhost",
+		Port:     6379,
+		PoolSize: &poolSize,
+	})
+	assert.Equal(t, 50, opts.PoolSize)
+}
+
+func TestBuildRedisOptions_PoolSize_UnixSocket(t *testing.T) {
+	poolSize := 100
+	opts := buildRedisOptions(config.RedisOptions{
+		Host:     "/var/run/redis/redis.sock",
+		PoolSize: &poolSize,
+	})
+	assert.Equal(t, "unix", opts.Network)
+	assert.Equal(t, 100, opts.PoolSize)
 }
 
 func TestKeyPrefix(t *testing.T) {
