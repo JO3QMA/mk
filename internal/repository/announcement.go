@@ -95,7 +95,10 @@ func (r *announcementRepository) ListGlobal(activeOnly bool, limit, offset int) 
 }
 
 func (r *announcementRepository) ListForUser(userID string, activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
-	q := r.db.Where(`"userId" IS NULL OR "userId" = ?`, userID).Order("id DESC")
+	// GORMは連続.WhereをANDで繋ぐがraw SQL側のORはデフォルトでは括弧で
+	// 囲まれないので、明示的に囲まないとAND側の他フィルタ(isActive等)を
+	// バイパスしてしまう(SQL優先順位: AND > OR)。note.go:423と同じ gotcha。
+	q := r.db.Where(`("userId" IS NULL OR "userId" = ?)`, userID).Order("id DESC")
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}

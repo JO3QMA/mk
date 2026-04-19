@@ -203,6 +203,23 @@ func TestAnnouncementRepository_ListForUser_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// OR の括弧漏れで isActive filter が効かなくなる GORM gotcha
+// (SQL優先順位 AND > OR) の回帰防止テスト。
+func TestAnnouncementRepository_ListForUser_ActiveOnlyAppliesToGlobal(t *testing.T) {
+	repo := NewAnnouncementRepository(testDB)
+	inactive := &model.Announcement{ID: "ann_ra_g", Title: "G-off", Text: "t", Icon: "info", Display: "normal", IsActive: false}
+	defer cleanupAnnouncement(t, inactive.ID)
+	require.NoError(t, repo.Create(inactive))
+
+	// activeOnly=true の場合、inactive な global announcement も除外される
+	// はず(括弧無しだと isActive filter が global に適用されず漏れる)。
+	items, err := repo.ListForUser("some_user", true, 100, 0)
+	require.NoError(t, err)
+	for _, a := range items {
+		assert.NotEqual(t, inactive.ID, a.ID)
+	}
+}
+
 func TestAnnouncementRepository_ReadManagement(t *testing.T) {
 	repo := NewAnnouncementRepository(testDB)
 	createTestUser(t, "ann_reader")
