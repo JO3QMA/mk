@@ -207,9 +207,13 @@ func TestAnnouncementRepository_ListForUser_Error(t *testing.T) {
 // (SQL優先順位 AND > OR) の回帰防止テスト。
 func TestAnnouncementRepository_ListForUser_ActiveOnlyAppliesToGlobal(t *testing.T) {
 	repo := NewAnnouncementRepository(testDB)
-	inactive := &model.Announcement{ID: "ann_ra_g", Title: "G-off", Text: "t", Icon: "info", Display: "normal", IsActive: false}
+	// model.Announcement の gorm tag に default:true があり、Goのbool zero
+	// valueをGORMが「未指定」と見なしてDB defaultを適用してしまうため、
+	// 一度IsActive=trueで作ってからUpdateFieldsでfalseに落とす。
+	inactive := &model.Announcement{ID: "ann_ra_g", Title: "G-off", Text: "t", Icon: "info", Display: "normal", IsActive: true}
 	defer cleanupAnnouncement(t, inactive.ID)
 	require.NoError(t, repo.Create(inactive))
+	require.NoError(t, repo.UpdateFields(inactive.ID, map[string]any{"isActive": false}))
 
 	// activeOnly=true の場合、inactive な global announcement も除外される
 	// はず(括弧無しだと isActive filter が global に適用されず漏れる)。
