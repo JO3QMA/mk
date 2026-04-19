@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	urlpkg "net/url"
 	"os"
 	"path/filepath"
@@ -524,6 +525,25 @@ func (s *Server) setupRoutes() {
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	// pprof: enablePprof=true のときだけ公開する。
+	// ランタイムプロファイリング用。本番では絶対に有効化してはならない。
+	if s.config.EnablePprof {
+		pprofGroup := s.echo.Group("/debug/pprof")
+		pprofGroup.GET("", func(c echo.Context) error {
+			return c.Redirect(http.StatusMovedPermanently, "/debug/pprof/")
+		})
+		pprofGroup.GET("/", echo.WrapHandler(http.HandlerFunc(pprof.Index)))
+		pprofGroup.GET("/cmdline", echo.WrapHandler(http.HandlerFunc(pprof.Cmdline)))
+		pprofGroup.GET("/profile", echo.WrapHandler(http.HandlerFunc(pprof.Profile)))
+		pprofGroup.GET("/symbol", echo.WrapHandler(http.HandlerFunc(pprof.Symbol)))
+		pprofGroup.POST("/symbol", echo.WrapHandler(http.HandlerFunc(pprof.Symbol)))
+		pprofGroup.GET("/trace", echo.WrapHandler(http.HandlerFunc(pprof.Trace)))
+		pprofGroup.GET("/:name", func(c echo.Context) error {
+			pprof.Handler(c.Param("name")).ServeHTTP(c.Response(), c.Request())
+			return nil
+		})
+	}
 
 	api := s.echo.Group("/api")
 

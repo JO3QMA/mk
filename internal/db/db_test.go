@@ -102,6 +102,37 @@ func TestNew_BadDSNFails(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestNew_PoolSettings(t *testing.T) {
+	skipIfNoTestDB(t)
+	cfg := testCfgFromEnv(t)
+	maxOpen, maxIdle := 10, 5
+	lifetime, idleTime := 120, 60
+	cfg.DB.MaxOpenConns = &maxOpen
+	cfg.DB.MaxIdleConns = &maxIdle
+	cfg.DB.ConnMaxLifetime = &lifetime
+	cfg.DB.ConnMaxIdleTime = &idleTime
+
+	gdb, err := db.New(cfg)
+	require.NoError(t, err)
+
+	sqlDB, err := gdb.DB()
+	require.NoError(t, err)
+	assert.Equal(t, 10, sqlDB.Stats().MaxOpenConnections)
+}
+
+func TestNew_PoolDefaults(t *testing.T) {
+	skipIfNoTestDB(t)
+	cfg := testCfgFromEnv(t)
+
+	gdb, err := db.New(cfg)
+	require.NoError(t, err)
+
+	sqlDB, err := gdb.DB()
+	require.NoError(t, err)
+	// デフォルト値25が適用される
+	assert.Equal(t, 25, sqlDB.Stats().MaxOpenConnections)
+}
+
 func TestNew_QueryParamLogEnabled(t *testing.T) {
 	// Logging.SQL.EnableQueryParamLog のパスを通すためのケース。
 	// ログ出力自体は副作用なので接続成功だけ確認する。
