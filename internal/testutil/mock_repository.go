@@ -2940,6 +2940,19 @@ func (m *MockNoteUnreadRepository) DeleteByUserNote(userID, noteID string) error
 	return nil
 }
 
+// DeleteAllByUser removes every row owned by userID.
+func (m *MockNoteUnreadRepository) DeleteAllByUser(userID string) error {
+	out := m.Rows[:0]
+	for _, r := range m.Rows {
+		if r.UserID == userID {
+			continue
+		}
+		out = append(out, r)
+	}
+	m.Rows = out
+	return nil
+}
+
 // MockUserKeypairRepository is a test double for repository.UserKeypairRepository.
 type MockUserKeypairRepository struct {
 	Keypairs map[string]*model.UserKeypair // keyed by userID

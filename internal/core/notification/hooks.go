@@ -89,11 +89,15 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 	}
 	ctx := context.Background()
 
+	// note.Mentions は ID/username が混在するため、1 回 DB で解決してから
+	// 両 path (通知 / note_unread) で共有する。userRepo 未配線なら空スライス。
+	mentionedIDs := h.resolveMentionIDs(n, author.ID)
+
 	// specified note の visibleUserIds / mentions 経由で note_unread を
 	// 差し込む。通知の有無に関係なく DB に永続化するため、通知抑制 (mute 等)
 	// や通知未生成のケース (visibleUserIds に含まれるが mention されていない
 	// ユーザー) もここで捕捉できる。
-	h.recordNoteUnreads(n, author)
+	h.recordNoteUnreads(n, author, mentionedIDs)
 
 	// reply: 親ノートの投稿者がローカルユーザーなら通知
 	if replyTarget != nil && replyTarget.UserID != author.ID {
@@ -121,23 +125,8 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 		})
 	}
 
-	// mentions: note.Mentions はユーザーIDのリスト (またはレガシーのユーザー名)
-	for _, idOrName := range n.Mentions {
-		if idOrName == "" {
-			continue
-		}
-		// まずIDとして解決を試みる。失敗したらユーザー名として解決する。
-		mentionedID := idOrName
-		if _, err := h.userRepo.FindByID(idOrName); err != nil {
-			mentioned, err := h.userRepo.FindByUsernameLower(idOrName, nil)
-			if err != nil {
-				continue
-			}
-			mentionedID = mentioned.ID
-		}
-		if mentionedID == author.ID {
-			continue
-		}
+	// mention 通知: resolveMentionIDs で解決済みの ID を使う
+	for _, mentionedID := range mentionedIDs {
 		// reply先と同じユーザーには replyとmentionの両方を出さない
 		if replyTarget != nil && replyTarget.UserID == mentionedID {
 			continue
@@ -150,6 +139,40 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 			NoteVisibility: string(n.Visibility),
 		})
 	}
+}
+
+// resolveMentionIDs turns n.Mentions (a mix of user IDs and usernames) into a
+// unique slice of resolved user IDs, skipping blanks, self-mentions, and
+// unresolvable entries. 空 slice を返すケース: userRepo 未配線 / n.Mentions
+// が空 / 全 entry が失敗。
+func (h *Hook) resolveMentionIDs(n *model.Note, authorID string) []string {
+	if h.userRepo == nil || len(n.Mentions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(n.Mentions))
+	seen := map[string]struct{}{}
+	for _, idOrName := range n.Mentions {
+		if idOrName == "" {
+			continue
+		}
+		mentionedID := idOrName
+		if _, err := h.userRepo.FindByID(idOrName); err != nil {
+			m, err := h.userRepo.FindByUsernameLower(idOrName, nil)
+			if err != nil {
+				continue
+			}
+			mentionedID = m.ID
+		}
+		if mentionedID == authorID {
+			continue
+		}
+		if _, dup := seen[mentionedID]; dup {
+			continue
+		}
+		seen[mentionedID] = struct{}{}
+		out = append(out, mentionedID)
+	}
+	return out
 }
 
 // OnFollowed records a follow notification on the followee's stream.
@@ -206,7 +229,8 @@ func (h *Hook) OnPollVote(notifieeID, notifierID, noteID string, choice int) {
 // specified-visibility note or a note that mentions them. 本家 TS の
 // noteUnreadInsert 相当で、isSpecified / isMentioned flag は OR で集約する
 // (upsert)。repo 未配線 / noteUnreadRepo == nil のときは no-op。
-func (h *Hook) recordNoteUnreads(n *model.Note, author *model.User) {
+// mentionedIDs は resolveMentionIDs で解決済みの user ID リスト。
+func (h *Hook) recordNoteUnreads(n *model.Note, author *model.User, mentionedIDs []string) {
 	if h.noteUnreadRepo == nil {
 		return
 	}
@@ -229,23 +253,7 @@ func (h *Hook) recordNoteUnreads(n *model.Note, author *model.User) {
 		}
 	}
 
-	for _, idOrName := range n.Mentions {
-		if idOrName == "" {
-			continue
-		}
-		// まず ID として解決、失敗したらユーザー名として解決 (notification の
-		// mention フローと同じ解決戦略)。
-		mentionedID := idOrName
-		if _, err := h.userRepo.FindByID(idOrName); err != nil {
-			m, err := h.userRepo.FindByUsernameLower(idOrName, nil)
-			if err != nil {
-				continue
-			}
-			mentionedID = m.ID
-		}
-		if mentionedID == author.ID {
-			continue
-		}
+	for _, mentionedID := range mentionedIDs {
 		t := targets[mentionedID]
 		if t == nil {
 			t = &flags{}

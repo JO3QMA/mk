@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -245,11 +246,16 @@ func (s *Service) List(ctx context.Context, userID string, limit int) ([]*Notifi
 // MarkAllAsRead records the latest notification id as read for the user.
 // 既読位置を更新するだけで、ストリーム自体は変更しない。成功時に
 // `readAllNotifications` を main stream に publish する。
+// note_unread repository が注入されていれば同時にユーザー分の行を全削除する
+// (hasUnreadSpecifiedNotes / hasUnreadMentions を false に戻すため)。
 func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", "-", 1).Result()
 	if err != nil {
 		return err
 	}
+	// 既読対象が無い場合でも note_unread は clean up する (frontend の UI
+	// 状態を完全に reset するため)。
+	s.clearNoteUnread(userID)
 	if len(res) == 0 {
 		// 既読対象が無い場合でも (frontend の既読フラグ同期のため)
 		// readAllNotifications を emit する。TS本家と同じ挙動。
@@ -265,6 +271,19 @@ func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 		s.mainStreamPublisher.PublishMainEvent(userID, "readAllNotifications", nil)
 	}
 	return nil
+}
+
+// clearNoteUnread is a best-effort helper that deletes the user's note_unread
+// rows when the repo is wired. Failures are logged but not surfaced because
+// the Redis read marker (primary source of unread state) has already been
+// updated by the caller.
+func (s *Service) clearNoteUnread(userID string) {
+	if s.noteUnreadRepo == nil {
+		return
+	}
+	if err := s.noteUnreadRepo.DeleteAllByUser(userID); err != nil {
+		slog.Warn("note_unread DeleteAllByUser failed", "userID", userID, "err", err)
+	}
 }
 
 // LatestReadID returns the most recently read notification id for the user.
@@ -382,7 +401,7 @@ func exclusive(readID string) string {
 
 // Flush deletes all notifications and the read marker for a user (used in tests
 // and account deletion). Emits `notificationFlushed` to the user's main stream
-// on success.
+// on success. note_unread repo が注入されていれば同時に clear する。
 func (s *Service) Flush(ctx context.Context, userID string) error {
 	if err := s.client.Del(ctx, streamKey(userID)).Err(); err != nil {
 		return err
@@ -390,6 +409,7 @@ func (s *Service) Flush(ctx context.Context, userID string) error {
 	if err := s.client.Del(ctx, readKey(userID)).Err(); err != nil {
 		return err
 	}
+	s.clearNoteUnread(userID)
 	if s.mainStreamPublisher != nil {
 		s.mainStreamPublisher.PublishMainEvent(userID, "notificationFlushed", nil)
 	}

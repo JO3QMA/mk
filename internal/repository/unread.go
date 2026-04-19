@@ -96,8 +96,12 @@ type NoteUnreadRepository interface {
 	// with isMentioned = true. Available for future hasUnreadMentions wiring.
 	HasAnyMentioned(userID string) (bool, error)
 	// DeleteByUserNote removes the row for (userID, noteID). Invoked when the
-	// user explicitly reads the note or marks all notifications as read.
+	// user explicitly reads the note.
 	DeleteByUserNote(userID, noteID string) error
+	// DeleteAllByUser removes every note_unread row owned by userID. Invoked
+	// by notification MarkAllAsRead / Flush so the unread indicator resets
+	// when the user reads everything.
+	DeleteAllByUser(userID string) error
 }
 
 type noteUnreadRepository struct{ db *gorm.DB }
@@ -142,4 +146,8 @@ func (r *noteUnreadRepository) HasAnyMentioned(userID string) (bool, error) {
 func (r *noteUnreadRepository) DeleteByUserNote(userID, noteID string) error {
 	return r.db.Where(`"userId" = ? AND "noteId" = ?`, userID, noteID).
 		Delete(&model.NoteUnread{}).Error
+}
+
+func (r *noteUnreadRepository) DeleteAllByUser(userID string) error {
+	return r.db.Where(`"userId" = ?`, userID).Delete(&model.NoteUnread{}).Error
 }
