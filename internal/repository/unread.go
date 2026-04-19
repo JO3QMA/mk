@@ -31,11 +31,14 @@ func (r *antennaNoteUnreadRepository) Create(m *model.AntennaNoteUnread) error {
 }
 
 func (r *antennaNoteUnreadRepository) HasAnyByUser(userID string) (bool, error) {
-	var count int64
-	err := r.db.Model(&model.AntennaNoteUnread{}).
-		Where(`"userId" = ?`, userID).
-		Count(&count).Error
-	return count > 0, err
+	// SELECT EXISTS(...) は 1 行見つかった時点で short-circuit するため
+	// COUNT(*) より効率的 (未読が多いユーザーで効く)。
+	var exists bool
+	err := r.db.Raw(
+		`SELECT EXISTS(SELECT 1 FROM "antenna_note_unread" WHERE "userId" = ?)`,
+		userID,
+	).Scan(&exists).Error
+	return exists, err
 }
 
 func (r *antennaNoteUnreadRepository) DeleteByAntennaUser(userID, antennaID string) error {
@@ -66,11 +69,12 @@ func (r *channelNoteUnreadRepository) Create(m *model.ChannelNoteUnread) error {
 }
 
 func (r *channelNoteUnreadRepository) HasAnyByUser(userID string) (bool, error) {
-	var count int64
-	err := r.db.Model(&model.ChannelNoteUnread{}).
-		Where(`"userId" = ?`, userID).
-		Count(&count).Error
-	return count > 0, err
+	var exists bool
+	err := r.db.Raw(
+		`SELECT EXISTS(SELECT 1 FROM "channel_note_unread" WHERE "userId" = ?)`,
+		userID,
+	).Scan(&exists).Error
+	return exists, err
 }
 
 func (r *channelNoteUnreadRepository) DeleteByChannelUser(userID, channelID string) error {
