@@ -418,6 +418,38 @@ func TestService_HasUnreadOfTypes_NoMatch(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestService_HasUnreadSpecifiedNotes_Match(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID:     "alice",
+		NotifierID:     "bob",
+		Type:           TypeMention,
+		NoteID:         "n1",
+		NoteVisibility: "specified",
+	})
+	require.NoError(t, err)
+	ok, err := svc.HasUnreadSpecifiedNotes(ctx, "alice")
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestService_HasUnreadSpecifiedNotes_NoMatch(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID:     "alice",
+		NotifierID:     "bob",
+		Type:           TypeMention,
+		NoteID:         "n1",
+		NoteVisibility: "public",
+	})
+	require.NoError(t, err)
+	ok, err := svc.HasUnreadSpecifiedNotes(ctx, "alice")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
 func TestService_HasUnreadOfTypes_EmptyList(t *testing.T) {
 	svc := newTestSvc(t)
 	ctx := context.Background()

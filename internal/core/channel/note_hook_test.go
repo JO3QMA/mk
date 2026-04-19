@@ -27,6 +27,6 @@ func TestNoteCreateHook_OnNotePosted(t *testing.T) {
 	svc, repo, _, _ := newSvc(t)
 	repo.Channels["c1"] = &model.Channel{ID: "c1"}
 	hook := channel.NewNoteCreateHook(svc)
-	hook.OnNotePosted("c1")
+	hook.OnNotePosted("c1", "", "")
 	assert.Equal(t, 1, repo.Channels["c1"].NotesCount)
 }

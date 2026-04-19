@@ -1028,6 +1028,7 @@ func TestSetEmailSender(t *testing.T) {
 type stubUnreadNotification struct {
 	count        int64
 	hasTypes     bool
+	hasSpecified bool
 	gotTypesArgs []notification.Type
 }
 
@@ -1037,6 +1038,9 @@ func (s *stubUnreadNotification) UnreadCount(_ context.Context, _ string) (int64
 func (s *stubUnreadNotification) HasUnreadOfTypes(_ context.Context, _ string, types []notification.Type) (bool, error) {
 	s.gotTypesArgs = types
 	return s.hasTypes, nil
+}
+func (s *stubUnreadNotification) HasUnreadSpecifiedNotes(_ context.Context, _ string) (bool, error) {
+	return s.hasSpecified, nil
 }
 
 type stubAnnouncementRepo struct {
@@ -1148,10 +1152,30 @@ func TestMe_UnreadFieldsDefaults(t *testing.T) {
 	assert.Equal(t, false, resp["hasPendingReceivedFollowRequest"])
 	assert.Equal(t, false, resp["hasUnreadAnnouncement"])
 	assert.Equal(t, false, resp["hasUnreadChatMessages"])
-	// 別issue (#271 等) で追跡: antenna / channel / specifiedNotes
 	assert.Equal(t, false, resp["hasUnreadAntenna"])
 	assert.Equal(t, false, resp["hasUnreadChannel"])
 	assert.Equal(t, false, resp["hasUnreadSpecifiedNotes"])
+}
+
+// stubUnreadSource is a minimal AntennaUnread / ChannelUnreadSource stub.
+type stubUnreadSource struct{ has bool }
+
+func (s *stubUnreadSource) HasAnyByUser(_ string) (bool, error) { return s.has, nil }
+
+func TestMe_UnreadAntennaAndChannel_Populated(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	h.SetAntennaUnreadRepo(&stubUnreadSource{has: true})
+	h.SetChannelUnreadRepo(&stubUnreadSource{has: true})
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, true, resp["hasUnreadAntenna"])
+	assert.Equal(t, true, resp["hasUnreadChannel"])
+}
+
+func TestMe_HasUnreadSpecifiedNotes_Populated(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	h.SetNotificationService(&stubUnreadNotification{hasSpecified: true})
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, true, resp["hasUnreadSpecifiedNotes"])
 }
 
 // --- Phase 7-3 (#245): pinnedNotes / pinnedPage ---

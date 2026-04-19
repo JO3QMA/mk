@@ -82,10 +82,11 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 	// reply: 親ノートの投稿者がローカルユーザーなら通知
 	if replyTarget != nil && replyTarget.UserID != author.ID {
 		h.notifyLocalUser(ctx, replyTarget.UserID, CreateInput{
-			NotifieeID: replyTarget.UserID,
-			NotifierID: author.ID,
-			Type:       TypeReply,
-			NoteID:     n.ID,
+			NotifieeID:     replyTarget.UserID,
+			NotifierID:     author.ID,
+			Type:           TypeReply,
+			NoteID:         n.ID,
+			NoteVisibility: string(n.Visibility),
 		})
 	}
 
@@ -96,10 +97,11 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 			t = TypeQuote
 		}
 		h.notifyLocalUser(ctx, renoteTarget.UserID, CreateInput{
-			NotifieeID: renoteTarget.UserID,
-			NotifierID: author.ID,
-			Type:       t,
-			NoteID:     n.ID,
+			NotifieeID:     renoteTarget.UserID,
+			NotifierID:     author.ID,
+			Type:           t,
+			NoteID:         n.ID,
+			NoteVisibility: string(n.Visibility),
 		})
 	}
 
@@ -125,10 +127,11 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 			continue
 		}
 		h.notifyLocalUser(ctx, mentionedID, CreateInput{
-			NotifieeID: mentionedID,
-			NotifierID: author.ID,
-			Type:       TypeMention,
-			NoteID:     n.ID,
+			NotifieeID:     mentionedID,
+			NotifierID:     author.ID,
+			Type:           TypeMention,
+			NoteID:         n.ID,
+			NoteVisibility: string(n.Visibility),
 		})
 	}
 }

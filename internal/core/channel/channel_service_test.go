@@ -353,9 +353,35 @@ func TestTimeline_ChannelNotFound(t *testing.T) {
 func TestOnNotePosted_UpdatesCounters(t *testing.T) {
 	svc, repo, _, _ := newSvc(t)
 	repo.Channels["c1"] = &model.Channel{ID: "c1"}
-	svc.OnNotePosted("c1")
+	svc.OnNotePosted("c1", "", "")
 	assert.Equal(t, 1, repo.Channels["c1"].NotesCount)
 	require.NotNil(t, repo.Channels["c1"].LastNotedAt)
+}
+
+func TestOnNotePosted_FansOutUnreadToFollowers(t *testing.T) {
+	svc, repo, followRepo, _ := newSvc(t)
+	repo.Channels["c1"] = &model.Channel{ID: "c1"}
+	// 2 followers, 1 is the author (self) — skipped
+	followRepo.Followings["f1"] = &model.ChannelFollowing{ID: "f1", FollowerID: "alice", FolloweeID: "c1"}
+	followRepo.Followings["f2"] = &model.ChannelFollowing{ID: "f2", FollowerID: "author", FolloweeID: "c1"}
+	unread := testutil.NewMockChannelNoteUnreadRepository()
+	svc.SetUnreadRepo(unread)
+
+	svc.OnNotePosted("c1", "n1", "author")
+
+	// 1 row expected (alice), author is skipped
+	require.Len(t, unread.Rows, 1)
+	assert.Equal(t, "alice", unread.Rows[0].UserID)
+	assert.Equal(t, "c1", unread.Rows[0].ChannelID)
+	assert.Equal(t, "n1", unread.Rows[0].NoteID)
+}
+
+func TestOnNotePosted_NoUnreadRepoSkipsFanout(t *testing.T) {
+	svc, repo, _, _ := newSvc(t)
+	repo.Channels["c1"] = &model.Channel{ID: "c1"}
+	// unread repo未配線でも counter更新は動作する
+	svc.OnNotePosted("c1", "n1", "author")
+	assert.Equal(t, 1, repo.Channels["c1"].NotesCount)
 }
 
 // --- SetClock --------------------------------------------------------------

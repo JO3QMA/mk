@@ -108,8 +108,10 @@ type ChannelHook interface {
 	// EnsureChannelExists is called before insertion. Returning a non-nil
 	// error aborts the note creation.
 	EnsureChannelExists(channelID string) error
-	// OnNotePosted is called after the note row has been persisted.
-	OnNotePosted(channelID string)
+	// OnNotePosted is called after the note row has been persisted. noteID
+	// / authorID are passed so the hook can fan out per-follower unread
+	// tracking (hasUnreadChannel) while skipping self-posts.
+	OnNotePosted(channelID, noteID, authorID string)
 }
 
 // AntennaHook is invoked after a note has been persisted so antenna service
@@ -497,7 +499,9 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	}
 	if s.channelHook != nil && in.ChannelID != nil && *in.ChannelID != "" {
 		chID := *in.ChannelID
-		safeGo(func() { s.channelHook.OnNotePosted(chID) })
+		noteID := finalNote.ID
+		authorID := in.User.ID
+		safeGo(func() { s.channelHook.OnNotePosted(chID, noteID, authorID) })
 	}
 	if s.antennaHook != nil {
 		safeGo(func() { s.antennaHook.OnNoteCreated(finalNote, in.User) })

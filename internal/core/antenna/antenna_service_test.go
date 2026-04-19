@@ -335,6 +335,39 @@ func TestOnNoteCreated_HappyPath(t *testing.T) {
 	assert.Equal(t, []string{"n1"}, rows)
 }
 
+func TestOnNoteCreated_InsertsUnreadRow(t *testing.T) {
+	svc, repo := newSvc(t)
+	repo.Antennas["a1"] = makeAntenna(t, "a1", "owner", [][]string{{"hit"}})
+	unread := testutil.NewMockAntennaNoteUnreadRepository()
+	svc.SetUnreadRepo(unread)
+
+	text := "hit this"
+	svc.OnNoteCreated(
+		&model.Note{ID: "n1", UserID: "author", Text: &text, Visibility: model.NoteVisibilityPublic},
+		&model.User{ID: "author", Username: "a"},
+	)
+	// 1 row should be inserted for antenna owner (not the author)
+	require.Len(t, unread.Rows, 1)
+	assert.Equal(t, "owner", unread.Rows[0].UserID)
+	assert.Equal(t, "a1", unread.Rows[0].AntennaID)
+	assert.Equal(t, "n1", unread.Rows[0].NoteID)
+}
+
+func TestOnNoteCreated_SelfAuthoredSkipsUnread(t *testing.T) {
+	svc, repo := newSvc(t)
+	// antenna owner == note author → unread を出さない
+	repo.Antennas["a1"] = makeAntenna(t, "a1", "author", [][]string{{"hit"}})
+	unread := testutil.NewMockAntennaNoteUnreadRepository()
+	svc.SetUnreadRepo(unread)
+
+	text := "hit this"
+	svc.OnNoteCreated(
+		&model.Note{ID: "n1", UserID: "author", Text: &text, Visibility: model.NoteVisibilityPublic},
+		&model.User{ID: "author", Username: "a"},
+	)
+	assert.Empty(t, unread.Rows)
+}
+
 func TestOnNoteCreated_NilArgsAreNoOp(t *testing.T) {
 	svc, _ := newSvc(t)
 	svc.OnNoteCreated(nil, &model.User{})
