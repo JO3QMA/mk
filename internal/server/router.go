@@ -195,6 +195,7 @@ func (s *Server) setupRoutes() {
 	// Phase DB-compat (#51): meta から timeline cache cap を動的に読む。
 	// 4 つのカラム (perLocal / perRemote / perHome / perList) が反映される。
 	timelineFanoutHook.SetCacheLimitsProvider(coretimeline.NewMetaRepoCacheLimits(metaRepo))
+	timelineFanoutHook.SetUserListRepo(userListRepo)
 	noteCreateService.SetFanoutHook(timelineFanoutHook)
 
 	// Channels (Phase 4.2)
@@ -817,6 +818,7 @@ func (s *Server) setupRoutes() {
 	notesHandler.SetEmojiRepo(emojiRepo)
 	notesHandler.SetDriveFolderRepo(driveFolderRepo)
 	notesHandler.SetUserRepo(userRepo)
+	notesHandler.SetUserListRepo(userListRepo)
 	if m, err := metaRepo.Fetch(); err == nil {
 		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
 		if m.DeeplAuthKey != nil && *m.DeeplAuthKey != "" {
@@ -1342,6 +1344,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
 	federationProcessor.SetRelayMarker(relaySvc)
 	federationProcessor.SetChatService(chatService)
+	federationProcessor.SetFanoutHook(timelineFanoutHook)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)

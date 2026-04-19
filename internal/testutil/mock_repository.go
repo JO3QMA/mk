@@ -824,6 +824,10 @@ func (m *MockNoteRepository) DeleteByUserBatch(userID string, batchSize int) (in
 	return n, nil
 }
 
+func (m *MockNoteRepository) ListByUserList(_ string, _ int, _, _ string) ([]*model.Note, error) {
+	return nil, nil
+}
+
 func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
 	if limit <= 0 {
 		limit = 10
@@ -3432,6 +3436,16 @@ func (m *MockUserListRepository) UpdateMembership(listID, userID string, withRep
 		}
 	}
 	return gorm.ErrRecordNotFound
+}
+
+func (m *MockUserListRepository) ListIDsByMember(userID string) ([]string, error) {
+	var ids []string
+	for _, mem := range m.Members {
+		if mem.UserID == userID {
+			ids = append(ids, mem.UserListID)
+		}
+	}
+	return ids, nil
 }
 
 func (m *MockUserListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {

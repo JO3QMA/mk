@@ -41,6 +41,7 @@ type Handler struct {
 	emojiRepo         repository.EmojiRepository
 	driveFolderRepo   repository.DriveFolderRepository
 	userRepo          repository.UserRepository
+	userListRepo      repository.UserListRepository
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
@@ -100,6 +101,11 @@ func (h *Handler) SetDriveFolderRepo(r repository.DriveFolderRepository) {
 // responses can embed the owning user (#317).
 func (h *Handler) SetUserRepo(r repository.UserRepository) {
 	h.userRepo = r
+}
+
+// SetUserListRepo attaches a UserListRepository for user-list-timeline.
+func (h *Handler) SetUserListRepo(r repository.UserListRepository) {
+	h.userListRepo = r
 }
 
 // instanceLookup returns the repository as an entity.InstanceLookup, or nil

@@ -19,6 +19,9 @@ type UserListRepository interface {
 	// ListsContainingMember returns lists owned by ownerID that include
 	// memberUserID as a member. Used by users/lists/get-memberships.
 	ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error)
+	// ListIDsByMember returns all list IDs that contain userID as a member.
+	// Used by timeline fanout to push notes to user list timelines.
+	ListIDsByMember(userID string) ([]string, error)
 }
 
 type userListRepository struct {
@@ -85,6 +88,17 @@ func (r *userListRepository) UpdateMembership(listID, userID string, withReplies
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func (r *userListRepository) ListIDsByMember(userID string) ([]string, error) {
+	var ids []string
+	err := r.db.Model(&model.UserListMembership{}).
+		Where(`"userId" = ?`, userID).
+		Pluck(`"userListId"`, &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func (r *userListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {
