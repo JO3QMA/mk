@@ -1,6 +1,7 @@
 package activitypub
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shiroha-a/mk/internal/safehttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -96,6 +98,17 @@ func TestWebFingerClient_LookupActorURI_SelfLinkEmptyHref(t *testing.T) {
 	})
 	_, err := c.LookupActorURI("alice", "example.com")
 	require.Error(t, err)
+}
+
+func TestWebFingerClient_LookupActorURI_ResponseTooLarge(t *testing.T) {
+	// #323: size cap を超えるレスポンスは ErrResponseTooLarge を伝搬する。
+	oversized := make([]byte, int(MaxBodyBytes)+10)
+	c, _ := newTestWebFingerClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(oversized)
+	})
+	_, err := c.LookupActorURI("alice", "example.com")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, safehttp.ErrResponseTooLarge))
 }
 
 func TestWebFingerClient_LookupActorURI_InvalidJSON(t *testing.T) {

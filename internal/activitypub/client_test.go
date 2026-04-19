@@ -1,11 +1,13 @@
 package activitypub
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/shiroha-a/mk/internal/safehttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -136,6 +138,34 @@ func TestClient_FetchJSON_NonOK(t *testing.T) {
 	c := NewClient(nil, "")
 	_, err := c.FetchJSON(srv.URL, key)
 	assert.Error(t, err)
+}
+
+func TestClient_FetchJSON_ResponseTooLarge(t *testing.T) {
+	// #323: MaxBodyBytes を超えたレスポンスは ErrResponseTooLarge でエラーになる。
+	key, _ := newTestKey(t)
+	oversized := make([]byte, int(MaxBodyBytes)+10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(oversized)
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "")
+	_, err := c.FetchJSON(srv.URL, key)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, safehttp.ErrResponseTooLarge))
+}
+
+func TestClient_FetchUnsigned_ResponseTooLarge(t *testing.T) {
+	oversized := make([]byte, int(MaxBodyBytes)+10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(oversized)
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "")
+	_, err := c.FetchUnsigned(srv.URL)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, safehttp.ErrResponseTooLarge))
 }
 
 func TestClient_FetchJSON_Error(t *testing.T) {

@@ -122,6 +122,9 @@ func TestMain(m *testing.M) {
 		RedisForJobQueue:  redisOptsA,
 		RedisForTimelines: redisOptsA,
 		RedisForReactions: redisOptsA,
+		// e2e tests bind httptest servers on 127.0.0.1; explicitly allow
+		// loopback so the SSRF-safe transport (#323) does not block them.
+		AllowedPrivateNetworks: []string{"127.0.0.0/8"},
 	}
 
 	srvA := server.New(cfgA, testDB.DB, redisClientsA)
@@ -149,20 +152,21 @@ func TestMain(m *testing.M) {
 	}
 
 	cfgB := &config.Config{
-		URL:               serverB.BaseURL,
-		Port:              lnB.Addr().(*net.TCPAddr).Port,
-		Host:              addrB,
-		Hostname:          "127.0.0.1",
-		Scheme:            "http",
-		WsScheme:          "ws",
-		Version:           "2026.3.2",
-		TestMode:          true,
-		ID:                "aidx",
-		Redis:             redisOptsB,
-		RedisForPubsub:    redisOptsB,
-		RedisForJobQueue:  redisOptsB,
-		RedisForTimelines: redisOptsB,
-		RedisForReactions: redisOptsB,
+		URL:                    serverB.BaseURL,
+		Port:                   lnB.Addr().(*net.TCPAddr).Port,
+		Host:                   addrB,
+		Hostname:               "127.0.0.1",
+		Scheme:                 "http",
+		WsScheme:               "ws",
+		Version:                "2026.3.2",
+		TestMode:               true,
+		ID:                     "aidx",
+		Redis:                  redisOptsB,
+		RedisForPubsub:         redisOptsB,
+		RedisForJobQueue:       redisOptsB,
+		RedisForTimelines:      redisOptsB,
+		RedisForReactions:      redisOptsB,
+		AllowedPrivateNetworks: []string{"127.0.0.0/8"},
 	}
 
 	srvB := server.New(cfgB, dbB, redisClientsB)

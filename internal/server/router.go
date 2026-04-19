@@ -105,6 +105,7 @@ import (
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/safehttp"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/shiroha-a/mk/internal/stream/channels"
@@ -377,7 +378,13 @@ func (s *Server) setupRoutes() {
 		localHost = u.Host
 		apRenderer.SetHost(localHost)
 	}
-	apClient := activitypub.NewClient(nil, s.config.UserAgent)
+	// AP outbound client: SSRF-safe transport を適用 (#323)。
+	// config.AllowedPrivateNetworks で開発時の self-loop を許可できる。
+	apHTTPClient := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+	}
+	apClient := activitypub.NewClient(apHTTPClient, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
 	if m, err := metaRepo.Fetch(); err == nil && !m.AllowExternalApRedirect {
 		apClient.DisableRedirect()
@@ -396,7 +403,10 @@ func (s *Server) setupRoutes() {
 	// を共有すると apClient.DisableRedirect() のグローバル汚染を拾ってしまう。
 	// 専用の *http.Client を明示的に渡して分離する。Timeout は user-facing API
 	// 経由で呼ばれるので応答性優先で 10s に設定する。
-	webfingerClient := activitypub.NewWebFingerClient(&http.Client{Timeout: 10 * time.Second}, s.config.UserAgent)
+	webfingerClient := activitypub.NewWebFingerClient(&http.Client{
+		Timeout:   10 * time.Second,
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+	}, s.config.UserAgent)
 	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
 		webfingerClient, federationResolver, userRepo, localHost,
 	))

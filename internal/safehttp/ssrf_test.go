@@ -1,4 +1,4 @@
-package mediaproxy
+package safehttp
 
 import (
 	"net"
