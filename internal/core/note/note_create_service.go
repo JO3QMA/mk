@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -142,25 +143,34 @@ type WebhookHook interface {
 	OnNoteCreated(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note)
 }
 
+// MainStreamPublisher emits real-time events to a single target user's `main`
+// WebSocket channel. Used here to deliver `reply`, `renote`, and `mention`
+// events so the frontend can reflect note-creation interactions immediately.
+// 循環依存を避けるためinterfaceで受け取る(実装はinternal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
 // CreateService provides note creation logic.
 type CreateService struct {
-	noteRepo         repository.NoteRepository
-	pollRepo         repository.PollRepository
-	followingRepo    repository.FollowingRepository
-	idGen            id.Generator
-	fanoutHook       TimelineFanoutHook
-	notificationHook NotificationHook
-	federationHook   FederationHook
-	channelHook      ChannelHook
-	antennaHook      AntennaHook
-	indexHook        IndexHook
-	chartHook        ChartHook
-	webhookHook      WebhookHook
-	userRepo         repository.UserRepository
-	blockingRepo     repository.BlockingRepository
-	driveFileRepo    repository.DriveFileRepository
-	metaRepo         repository.MetaRepository
-	channelRepo      repository.ChannelRepository
+	noteRepo            repository.NoteRepository
+	pollRepo            repository.PollRepository
+	followingRepo       repository.FollowingRepository
+	idGen               id.Generator
+	fanoutHook          TimelineFanoutHook
+	notificationHook    NotificationHook
+	federationHook      FederationHook
+	channelHook         ChannelHook
+	antennaHook         AntennaHook
+	indexHook           IndexHook
+	chartHook           ChartHook
+	webhookHook         WebhookHook
+	mainStreamPublisher MainStreamPublisher
+	userRepo            repository.UserRepository
+	blockingRepo        repository.BlockingRepository
+	driveFileRepo       repository.DriveFileRepository
+	metaRepo            repository.MetaRepository
+	channelRepo         repository.ChannelRepository
 }
 
 // SetUserRepo attaches a UserRepository for resolving mention usernames to IDs.
@@ -255,6 +265,12 @@ func (s *CreateService) SetChartHook(h ChartHook) {
 // user webhooks subscribed to note / reply / renote / mention events can fire.
 func (s *CreateService) SetWebhookHook(h WebhookHook) {
 	s.webhookHook = h
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `reply`, `renote`,
+// and `mention` events to the main channel. Optional — nil disables emit.
+func (s *CreateService) SetMainStreamPublisher(p MainStreamPublisher) {
+	s.mainStreamPublisher = p
 }
 
 // Create creates a new note. It returns the persisted note (with the User
@@ -500,11 +516,53 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	if s.webhookHook != nil {
 		s.webhookHook.OnNoteCreated(finalNote, in.User, replyTarget, renoteTarget)
 	}
+	// reply / renote / mention 各イベントを対象local userのmainにemit。
+	// Misskey本家NoteCreateServiceと同じfan-out方針 (TS lines 792 / 809 / 935)。
+	s.publishNoteMainEvents(finalNote, in.User, replyTarget, renoteTarget)
 
 	// ユーザーのnotesCountをインクリメント (ベストエフォート)
 	_ = s.noteRepo.IncrementUserNotesCount(in.User.ID, 1)
 
 	return finalNote, nil
+}
+
+// publishNoteMainEvents fans out `reply`, `renote`, and `mention` events to
+// the relevant local users' main channels. TS本家と同じくdedupはせず、
+// 同一userに対して複数イベント(例: 相手へのリプライかつメンション)が
+// 並列で届きうる(frontendはイベント種別ごとに意味付けるため)。
+func (s *CreateService) publishNoteMainEvents(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
+	if s.mainStreamPublisher == nil {
+		return
+	}
+	packed := entity.PackNote(note, s.idGen)
+	// reply: reply先がlocal (UserHost == nil) かつ自分自身へのリプライで
+	// ない場合にemit。
+	if replyTarget != nil && replyTarget.UserHost == nil && replyTarget.UserID != author.ID {
+		s.mainStreamPublisher.PublishMainEvent(replyTarget.UserID, "reply", packed)
+	}
+	// renote: 同上 (TS: caller ≠ target author条件あり)。
+	if renoteTarget != nil && renoteTarget.UserHost == nil && renoteTarget.UserID != author.ID {
+		s.mainStreamPublisher.PublishMainEvent(renoteTarget.UserID, "renote", packed)
+	}
+	// mention: note.Mentionsは(userRepo設定時)user ID配列なので、
+	// 各userをfetchしてlocalかつauthor自身でなければemitする。
+	// userRepo未設定時はMentionsがusername文字列のため解決不能でスキップ。
+	if s.userRepo == nil {
+		return
+	}
+	for _, uid := range note.Mentions {
+		if uid == author.ID {
+			continue
+		}
+		u, err := s.userRepo.FindByID(uid)
+		if err != nil || u == nil {
+			continue
+		}
+		if u.Host != nil {
+			continue // remote user — AP配送(別レイヤ)が担当
+		}
+		s.mainStreamPublisher.PublishMainEvent(uid, "mention", packed)
+	}
 }
 
 // mentionRegex matches @username and @username@host occurrences anywhere in
