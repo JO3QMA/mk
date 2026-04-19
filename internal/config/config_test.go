@@ -713,3 +713,94 @@ func TestLoad_SentryDisabledByDefault(t *testing.T) {
 	assert.Nil(t, cfg.SentryForBackend)
 	assert.Nil(t, cfg.SentryForFrontend)
 }
+
+func TestLoad_DBPoolConfig(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+  maxOpenConns: 50
+  maxIdleConns: 30
+  connMaxLifetime: 600
+  connMaxIdleTime: 300
+redis:
+  host: localhost
+  port: 6379
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.DB.MaxOpenConns)
+	assert.Equal(t, 50, *cfg.DB.MaxOpenConns)
+	require.NotNil(t, cfg.DB.MaxIdleConns)
+	assert.Equal(t, 30, *cfg.DB.MaxIdleConns)
+	require.NotNil(t, cfg.DB.ConnMaxLifetime)
+	assert.Equal(t, 600, *cfg.DB.ConnMaxLifetime)
+	require.NotNil(t, cfg.DB.ConnMaxIdleTime)
+	assert.Equal(t, 300, *cfg.DB.ConnMaxIdleTime)
+}
+
+func TestLoad_DBPoolConfig_Defaults(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Nil(t, cfg.DB.MaxOpenConns)
+	assert.Nil(t, cfg.DB.MaxIdleConns)
+	assert.Nil(t, cfg.DB.ConnMaxLifetime)
+	assert.Nil(t, cfg.DB.ConnMaxIdleTime)
+}
+
+func TestLoad_RedisPoolSize(t *testing.T) {
+	yaml := `
+url: https://example.com
+port: 3000
+db:
+  host: localhost
+  port: 5432
+  db: misskey
+  user: postgres
+  pass: secret
+redis:
+  host: localhost
+  port: 6379
+  poolSize: 100
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.Redis.PoolSize)
+	assert.Equal(t, 100, *cfg.Redis.PoolSize)
+}
+
+func TestLoad_RedisPoolSize_Default(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Nil(t, cfg.Redis.PoolSize)
+}
+
+func TestLoad_EnablePprof(t *testing.T) {
+	yaml := testYAML + `
+enablePprof: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.EnablePprof)
+}
+
+func TestLoad_EnablePprof_DefaultFalse(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.EnablePprof)
+}
