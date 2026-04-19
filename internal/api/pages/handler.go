@@ -313,8 +313,12 @@ func (h *Handler) PagePush(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.PageID == "" || req.Event == "" {
 		return apierr.JSONInvalidParam(c)
 	}
-	// pageが存在しなければ404。caller(requester)自身の権限チェックは
-	// TS本家にも無いので省略(publicページならcaller IDだけで閲覧可能)。
+	// Show() は pageが存在しない場合に加え、followers/specified可視性で
+	// callerが閲覧権限を持たない場合もerrorを返す。本エンドポイントでは
+	// 可視ページに限定して emit する(TS本家は secure:true endpoint だが
+	// 権限チェック自体は無い仕様。Go側は Show() の visibility check を
+	// そのまま活用して隔離性を確保)。エラーは全て 404 に丸めて、ID
+	// enumeration を防ぐ。
 	p, err := h.svc.Show(caller.ID, req.PageID)
 	if err != nil {
 		return notFound(c)
@@ -324,7 +328,9 @@ func (h *Handler) PagePush(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	bundle, err := h.userSource.ShowByID(caller.ID)
-	if err != nil || bundle == nil {
+	if err != nil || bundle == nil || bundle.User == nil {
+		// bundle.Userは現実装のShowByIDでは常にnon-nilだが、interface
+		// 経由で将来実装が変わる可能性に備えて防御的にcheck。
 		return c.NoContent(http.StatusNoContent)
 	}
 	body := map[string]any{
