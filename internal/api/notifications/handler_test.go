@@ -180,6 +180,18 @@ func TestFlush_NilService(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+func TestFlush_RedisError(t *testing.T) {
+	closed := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	_ = closed.Close()
+	svc := notification.NewService(closed, idGen)
+	h := NewHandler(svc, idGen)
+
+	c, rec := newJSONRequest(t, "/api/notifications/flush", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Flush(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
 func TestTestNotification_Success(t *testing.T) {
 	h, _ := newTestHandler(t)
 	c, rec := newJSONRequest(t, "/api/notifications/test-notification", `{}`)
