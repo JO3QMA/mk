@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -776,16 +777,19 @@ func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[
 	// Notification (Redis Streams): 1 回の UnreadSummary で 3 値を集約する
 	// (#321)。従来は UnreadCount / HasUnreadOfTypes / HasUnreadSpecifiedNotes
 	// の 3 XRevRange scan に分かれていたが、hot path 最適化のため統合した。
+	// err 時も summary に格納済みの部分結果は採用する (Redis 成功 + DB 失敗
+	// で mentions 判定までは保持する partial resilience)。
 	if h.notificationSvc != nil {
 		summary, err := h.notificationSvc.UnreadSummary(ctx, u.ID, []notification.Type{
 			notification.TypeMention, notification.TypeReply,
 		})
-		if err == nil {
-			resp["unreadNotificationsCount"] = summary.TotalCount
-			resp["hasUnreadNotification"] = summary.TotalCount > 0
-			resp["hasUnreadMentions"] = summary.HasMentions
-			resp["hasUnreadSpecifiedNotes"] = summary.HasSpecifiedNote
+		if err != nil {
+			slog.Warn("UnreadSummary partial failure", "userID", u.ID, "err", err)
 		}
+		resp["unreadNotificationsCount"] = summary.TotalCount
+		resp["hasUnreadNotification"] = summary.TotalCount > 0
+		resp["hasUnreadMentions"] = summary.HasMentions
+		resp["hasUnreadSpecifiedNotes"] = summary.HasSpecifiedNote
 	}
 
 	// FollowRequest (DB)
