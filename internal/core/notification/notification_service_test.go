@@ -238,3 +238,96 @@ func TestService_List_SkipsBadEntries(t *testing.T) {
 	require.Len(t, out, 1)
 	assert.Equal(t, TypeFollow, out[0].Type)
 }
+
+// Phase 7-2 (#244): UnreadCount / HasUnreadOfTypes のテスト
+func TestService_UnreadCount_NoReadMarker(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	// 通知が無ければ0
+	n, err := svc.UnreadCount(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+
+	// 通知を3件作成し、readMarker未設定なら全件unread
+	for i := 0; i < 3; i++ {
+		_, err := svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeFollow, NotifierID: "bob"})
+		require.NoError(t, err)
+	}
+
+	n, err = svc.UnreadCount(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n)
+}
+
+func TestService_UnreadCount_AfterMarkAllAsRead(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		_, err := svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeFollow, NotifierID: "bob"})
+		require.NoError(t, err)
+	}
+	require.NoError(t, svc.MarkAllAsRead(ctx, "alice"))
+
+	// 既読マーカー以降は0
+	n, err := svc.UnreadCount(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+
+	// 新規通知が1件来たら1
+	_, err = svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeReaction, NotifierID: "bob"})
+	require.NoError(t, err)
+	n, err = svc.UnreadCount(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+}
+
+func TestService_HasUnreadOfTypes_Match(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeMention, NotifierID: "bob"})
+	require.NoError(t, err)
+
+	ok, err := svc.HasUnreadOfTypes(ctx, "alice", []Type{TypeMention, TypeReply})
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestService_HasUnreadOfTypes_NoMatch(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeFollow, NotifierID: "bob"})
+	require.NoError(t, err)
+
+	ok, err := svc.HasUnreadOfTypes(ctx, "alice", []Type{TypeMention, TypeReply})
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestService_HasUnreadOfTypes_EmptyList(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeMention, NotifierID: "bob"})
+	require.NoError(t, err)
+
+	ok, err := svc.HasUnreadOfTypes(ctx, "alice", nil)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestService_HasUnreadOfTypes_AfterMarkAllAsRead(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeMention, NotifierID: "bob"})
+	require.NoError(t, err)
+	require.NoError(t, svc.MarkAllAsRead(ctx, "alice"))
+
+	ok, err := svc.HasUnreadOfTypes(ctx, "alice", []Type{TypeMention})
+	require.NoError(t, err)
+	assert.False(t, ok, "readMarker以降は該当typeがなくfalse")
+}

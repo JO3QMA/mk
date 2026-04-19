@@ -1,6 +1,7 @@
 package i
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/core/notification"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -976,4 +978,136 @@ func TestSetServerURL(t *testing.T) {
 func TestSetEmailSender(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	h.SetEmailSender(func(to, subject, body string) {})
+}
+
+// --- Phase 7-2 (#244): 未読系フィールド実装 ---
+
+// stubUnreadNotification is a local UnreadNotificationSource for tests.
+type stubUnreadNotification struct {
+	count        int64
+	hasTypes     bool
+	gotTypesArgs []notification.Type
+}
+
+func (s *stubUnreadNotification) UnreadCount(_ context.Context, _ string) (int64, error) {
+	return s.count, nil
+}
+func (s *stubUnreadNotification) HasUnreadOfTypes(_ context.Context, _ string, types []notification.Type) (bool, error) {
+	s.gotTypesArgs = types
+	return s.hasTypes, nil
+}
+
+type stubAnnouncementRepo struct {
+	rows []*model.Announcement
+}
+
+func (s *stubAnnouncementRepo) UnreadForUser(_ string) ([]*model.Announcement, error) {
+	return s.rows, nil
+}
+
+type stubChatRepo struct{ n int64 }
+
+func (s *stubChatRepo) CountUnread(_ string) (int64, error) { return s.n, nil }
+
+// runMe invokes h.Me with a minimal user + profile seeded and returns the
+// decoded response.
+func runMe(t *testing.T, h *Handler, userRepo *testutil.MockUserRepository, userID string) map[string]any {
+	t.Helper()
+	u := &model.User{
+		ID: userID, Username: "u", AvatarDecorations: datatypes.JSON([]byte("[]")),
+		ChatScope: "mutual",
+	}
+	userRepo.Profiles[userID] = &model.UserProfile{
+		UserID: userID, Fields: datatypes.JSON([]byte("[]")),
+	}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), u)
+	require.NoError(t, h.Me(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	return resp
+}
+
+func TestMe_UnreadNotification_Populated(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	stub := &stubUnreadNotification{count: 3, hasTypes: true}
+	h.SetNotificationService(stub)
+
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, float64(3), resp["unreadNotificationsCount"])
+	assert.Equal(t, true, resp["hasUnreadNotification"])
+	assert.Equal(t, true, resp["hasUnreadMentions"])
+	assert.Equal(t, []notification.Type{notification.TypeMention, notification.TypeReply}, stub.gotTypesArgs)
+}
+
+func TestMe_UnreadNotification_ZeroCount(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	h.SetNotificationService(&stubUnreadNotification{count: 0, hasTypes: false})
+
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, float64(0), resp["unreadNotificationsCount"])
+	assert.Equal(t, false, resp["hasUnreadNotification"])
+	assert.Equal(t, false, resp["hasUnreadMentions"])
+}
+
+func TestMe_PendingFollowRequest(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	frRepo := testutil.NewMockFollowRequestRepository()
+	require.NoError(t, frRepo.Create(&model.FollowRequest{ID: "fr1", FollowerID: "other", FolloweeID: "u1"}))
+	h.SetFollowRequestRepo(frRepo)
+
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, true, resp["hasPendingReceivedFollowRequest"])
+}
+
+func TestMe_UnreadAnnouncement(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	h.SetAnnouncementRepo(&stubAnnouncementRepo{
+		rows: []*model.Announcement{{ID: "a1", Title: "hello", Text: "world"}},
+	})
+
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, true, resp["hasUnreadAnnouncement"])
+	arr := resp["unreadAnnouncements"].([]any)
+	assert.Len(t, arr, 1)
+	first := arr[0].(map[string]any)
+	assert.Equal(t, "a1", first["id"])
+	assert.Equal(t, "hello", first["title"])
+}
+
+func TestMe_UnreadAnnouncement_Empty(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	h.SetAnnouncementRepo(&stubAnnouncementRepo{rows: nil})
+
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, false, resp["hasUnreadAnnouncement"])
+	arr := resp["unreadAnnouncements"].([]any)
+	assert.Empty(t, arr)
+}
+
+func TestMe_UnreadChatMessages(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	h.SetChatRepo(&stubChatRepo{n: 5})
+
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, true, resp["hasUnreadChatMessages"])
+}
+
+func TestMe_UnreadFieldsDefaults(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Equal(t, float64(0), resp["unreadNotificationsCount"])
+	assert.Equal(t, false, resp["hasUnreadNotification"])
+	assert.Equal(t, false, resp["hasUnreadMentions"])
+	assert.Equal(t, false, resp["hasPendingReceivedFollowRequest"])
+	assert.Equal(t, false, resp["hasUnreadAnnouncement"])
+	assert.Equal(t, false, resp["hasUnreadChatMessages"])
+	// 別issue (#271 等) で追跡: antenna / channel / specifiedNotes
+	assert.Equal(t, false, resp["hasUnreadAntenna"])
+	assert.Equal(t, false, resp["hasUnreadChannel"])
+	assert.Equal(t, false, resp["hasUnreadSpecifiedNotes"])
 }

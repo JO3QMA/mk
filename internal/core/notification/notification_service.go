@@ -195,6 +195,71 @@ func (s *Service) LatestReadID(ctx context.Context, userID string) (string, erro
 	return val, nil
 }
 
+// UnreadCount returns the number of notifications in the user's stream that
+// are newer than the stored latest-read id. When there is no read marker (i.e.
+// the user has never marked anything as read) the full stream length is
+// returned. Callers typically derive hasUnreadNotification = UnreadCount > 0.
+func (s *Service) UnreadCount(ctx context.Context, userID string) (int64, error) {
+	readID, err := s.LatestReadID(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	// Redis Streams は ID 単調増加。XLen で全件数を取り、readID 以前の
+	// 件数を差し引く方が O(1) でシンプルだが、readID より古いエントリが
+	// MAXLEN で削除されている場合があるので XRevRange で直接数える。
+	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(res)), nil
+}
+
+// HasUnreadOfTypes reports whether the user has any unread notification whose
+// type is in the provided list. Used by /api/i to compute hasUnreadMentions
+// (types: mention/reply). Returns false when types is empty.
+// readID 以降のエントリを XRevRange で読み、一件でもマッチしたら true。
+func (s *Service) HasUnreadOfTypes(ctx context.Context, userID string, types []Type) (bool, error) {
+	if len(types) == 0 {
+		return false, nil
+	}
+	readID, err := s.LatestReadID(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	if err != nil {
+		return false, err
+	}
+	wanted := make(map[Type]struct{}, len(types))
+	for _, t := range types {
+		wanted[t] = struct{}{}
+	}
+	for _, msg := range res {
+		raw, ok := msg.Values["data"].(string)
+		if !ok {
+			continue
+		}
+		var n Notification
+		if err := json.Unmarshal([]byte(raw), &n); err != nil {
+			continue
+		}
+		if _, ok := wanted[n.Type]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// exclusive returns the exclusive lower-bound string for XRevRange, i.e. the
+// boundary that means "strictly newer than this id". Empty readID becomes "-"
+// (stream head); non-empty uses the "(<id>" exclusive marker.
+func exclusive(readID string) string {
+	if readID == "" {
+		return "-"
+	}
+	return "(" + readID
+}
+
 // Flush deletes all notifications and the read marker for a user (used in tests
 // and account deletion).
 func (s *Service) Flush(ctx context.Context, userID string) error {

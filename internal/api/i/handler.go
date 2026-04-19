@@ -1,6 +1,7 @@
 package i
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/notification"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/core/user"
@@ -42,22 +44,46 @@ type AccountMover interface {
 
 // Handler handles account-related API endpoints.
 type Handler struct {
-	userService      *user.Service
-	idGen            id.Generator
-	roleProvider     RoleProvider
-	registryRepo     repository.RegistryRepository
-	favoriteRepo     repository.NoteFavoriteRepository
-	transferEnqueuer TransferEnqueuer
-	webauthnSvc      *twofactor.WebAuthnService
-	securityKeyRepo  repository.UserSecurityKeyRepository
-	metaRepo         repository.MetaRepository
-	emailSender      EmailSender
-	serverURL        string
-	signinRepo       repository.SigninRepository
-	accessTokenRepo  repository.AccessTokenRepository
-	galleryRepo      GalleryRepository
-	pageLikeRepo     repository.PageLikeRepository
-	mover            AccountMover
+	userService       *user.Service
+	idGen             id.Generator
+	roleProvider      RoleProvider
+	registryRepo      repository.RegistryRepository
+	favoriteRepo      repository.NoteFavoriteRepository
+	transferEnqueuer  TransferEnqueuer
+	webauthnSvc       *twofactor.WebAuthnService
+	securityKeyRepo   repository.UserSecurityKeyRepository
+	metaRepo          repository.MetaRepository
+	emailSender       EmailSender
+	serverURL         string
+	signinRepo        repository.SigninRepository
+	accessTokenRepo   repository.AccessTokenRepository
+	galleryRepo       GalleryRepository
+	pageLikeRepo      repository.PageLikeRepository
+	mover             AccountMover
+	notificationSvc   UnreadNotificationSource
+	followRequestRepo repository.FollowRequestRepository
+	announcementRepo  AnnouncementUnreadSource
+	chatRepo          ChatUnreadSource
+}
+
+// UnreadNotificationSource is the subset of notification.Service used by /api/i
+// to compute hasUnreadNotification / unreadNotificationsCount / hasUnreadMentions.
+// Keeping this as a local interface avoids pulling core/notification into the
+// handler test harness and lets the tests inject a stub.
+type UnreadNotificationSource interface {
+	UnreadCount(ctx context.Context, userID string) (int64, error)
+	HasUnreadOfTypes(ctx context.Context, userID string, types []notification.Type) (bool, error)
+}
+
+// AnnouncementUnreadSource lists active announcements the user has not read.
+// Mirrors the subset of AnnouncementRepository needed here.
+type AnnouncementUnreadSource interface {
+	UnreadForUser(userID string) ([]*model.Announcement, error)
+}
+
+// ChatUnreadSource returns the number of unread chat messages for a user.
+type ChatUnreadSource interface {
+	CountUnread(userID string) (int64, error)
 }
 
 // GalleryRepository is the subset of repository.GalleryRepository used by
@@ -132,6 +158,31 @@ func (h *Handler) SetFavoriteRepo(r repository.NoteFavoriteRepository) {
 // returns 501 so the endpoint fails loudly instead of silently no-oping.
 func (h *Handler) SetAccountMover(m AccountMover) {
 	h.mover = m
+}
+
+// SetNotificationService wires the notification service used to compute
+// hasUnreadNotification / unreadNotificationsCount / hasUnreadMentions on
+// /api/i. When unset those fields fall back to default (false/0).
+func (h *Handler) SetNotificationService(s UnreadNotificationSource) {
+	h.notificationSvc = s
+}
+
+// SetFollowRequestRepo wires the follow_request repository used to compute
+// hasPendingReceivedFollowRequest on /api/i.
+func (h *Handler) SetFollowRequestRepo(r repository.FollowRequestRepository) {
+	h.followRequestRepo = r
+}
+
+// SetAnnouncementRepo wires the announcement repository used to compute
+// hasUnreadAnnouncement / unreadAnnouncements on /api/i.
+func (h *Handler) SetAnnouncementRepo(r AnnouncementUnreadSource) {
+	h.announcementRepo = r
+}
+
+// SetChatRepo wires the chat repository used to compute hasUnreadChatMessages
+// on /api/i.
+func (h *Handler) SetChatRepo(r ChatUnreadSource) {
+	h.chatRepo = r
 }
 
 // NewHandler creates a new account Handler.
@@ -384,16 +435,10 @@ func (h *Handler) Me(c echo.Context) error {
 	resp["isModerator"] = isMod
 	resp["isDeleted"] = u.IsDeleted
 	resp["isExplorable"] = u.IsExplorable
-	resp["hasUnreadNotification"] = false
-	resp["hasPendingReceivedFollowRequest"] = false
-	resp["hasUnreadAnnouncement"] = false
-	resp["hasUnreadAntenna"] = false
-	resp["hasUnreadChannel"] = false
-	resp["hasUnreadMentions"] = false
-	resp["hasUnreadSpecifiedNotes"] = false
-	resp["hasUnreadChatMessages"] = false
-	resp["unreadNotificationsCount"] = 0
-	resp["unreadAnnouncements"] = []any{}
+	// 未読系フィールドを依存する repo / service から実際に引く。
+	// 未wireのものは false/0/[] にフォールバックする (テスト互換)。
+	// antenna / channel / specifiedNotes は別issueで追跡中のためここでは false 固定。
+	h.fillUnreadFields(c.Request().Context(), u, resp)
 	resp["pinnedNoteIds"] = []string{}
 	resp["pinnedNotes"] = []any{}
 	resp["pinnedPageId"] = nil
@@ -625,4 +670,68 @@ func (h *Handler) Unpin(c echo.Context) error {
 	}
 
 	return h.Me(c)
+}
+
+// fillUnreadFields writes the unread-related flags/counts onto resp.
+// 依存が未wireのフィールドはdefault (false/0/[]) にフォールバックする。
+// antenna / channel / specifiedNotes 系は別issueで追跡 (#244 の scope 外)
+// のため引き続き false 固定。
+func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[string]any) {
+	// Defaults
+	resp["hasUnreadNotification"] = false
+	resp["unreadNotificationsCount"] = 0
+	resp["hasUnreadMentions"] = false
+	resp["hasPendingReceivedFollowRequest"] = false
+	resp["hasUnreadAnnouncement"] = false
+	resp["unreadAnnouncements"] = []any{}
+	resp["hasUnreadChatMessages"] = false
+	// 別issueで追跡中 (Phase 7-2 follow-up)
+	resp["hasUnreadAntenna"] = false
+	resp["hasUnreadChannel"] = false
+	resp["hasUnreadSpecifiedNotes"] = false
+
+	// Notification (Redis Streams)
+	if h.notificationSvc != nil {
+		if n, err := h.notificationSvc.UnreadCount(ctx, u.ID); err == nil {
+			resp["unreadNotificationsCount"] = n
+			resp["hasUnreadNotification"] = n > 0
+		}
+		// hasUnreadMentions: 未読 notification のうち type=mention / reply
+		if ok, err := h.notificationSvc.HasUnreadOfTypes(ctx, u.ID, []notification.Type{
+			notification.TypeMention, notification.TypeReply,
+		}); err == nil {
+			resp["hasUnreadMentions"] = ok
+		}
+	}
+
+	// FollowRequest (DB)
+	if h.followRequestRepo != nil {
+		if n, err := h.followRequestRepo.CountReceived(u.ID); err == nil {
+			resp["hasPendingReceivedFollowRequest"] = n > 0
+		}
+	}
+
+	// Announcement (DB)
+	if h.announcementRepo != nil {
+		if ann, err := h.announcementRepo.UnreadForUser(u.ID); err == nil {
+			resp["hasUnreadAnnouncement"] = len(ann) > 0
+			out := make([]map[string]any, 0, len(ann))
+			for _, a := range ann {
+				out = append(out, map[string]any{
+					"id":       a.ID,
+					"title":    a.Title,
+					"text":     a.Text,
+					"imageUrl": a.ImageURL,
+				})
+			}
+			resp["unreadAnnouncements"] = out
+		}
+	}
+
+	// Chat (Redis set, wrapped in ChatRepository)
+	if h.chatRepo != nil {
+		if n, err := h.chatRepo.CountUnread(u.ID); err == nil {
+			resp["hasUnreadChatMessages"] = n > 0
+		}
+	}
 }
