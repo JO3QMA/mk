@@ -77,6 +77,23 @@ func PackDriveFile(f *model.DriveFile, idGen id.Generator) DriveFileEntity {
 	}
 }
 
+// PackDriveFileWithRelations is PackDriveFile + optional folder/user
+// embedding. The caller is responsible for fetching the related rows (so
+// batch/cached access is possible). Pass nil for fields you do not want to
+// expose — omitempty keeps the JSON output clean.
+func PackDriveFileWithRelations(f *model.DriveFile, idGen id.Generator, folder *model.DriveFolder, user *model.User) DriveFileEntity {
+	out := PackDriveFile(f, idGen)
+	if folder != nil {
+		packed := PackDriveFolder(folder, idGen)
+		out.Folder = &packed
+	}
+	if user != nil {
+		lite := PackUserLite(user)
+		out.User = &lite
+	}
+	return out
+}
+
 // DriveFolderEntity is the drive folder representation returned by API endpoints.
 type DriveFolderEntity struct {
 	ID        string  `json:"id"`

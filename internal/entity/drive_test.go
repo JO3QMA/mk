@@ -191,3 +191,28 @@ func TestPackDriveFile_WithFolderAndUser(t *testing.T) {
 	require.NotNil(t, out.User)
 	assert.Equal(t, "alice", out.User.Username)
 }
+
+func TestPackDriveFileWithRelations_BothSet(t *testing.T) {
+	idGen := newTestIDGen(t)
+	fileID := idGen.Generate(time.Now())
+	folderID := idGen.Generate(time.Now())
+	userID := "u1"
+	f := &model.DriveFile{ID: fileID, Name: "a.jpg", URL: "x", FolderID: &folderID, UserID: &userID}
+	folder := &model.DriveFolder{ID: folderID, Name: "Pictures"}
+	user := &model.User{ID: userID, Username: "alice"}
+
+	out := PackDriveFileWithRelations(f, idGen, folder, user)
+	require.NotNil(t, out.Folder)
+	assert.Equal(t, "Pictures", out.Folder.Name)
+	require.NotNil(t, out.User)
+	assert.Equal(t, "alice", out.User.Username)
+}
+
+func TestPackDriveFileWithRelations_NilRelations(t *testing.T) {
+	idGen := newTestIDGen(t)
+	f := &model.DriveFile{ID: idGen.Generate(time.Now()), Name: "a", URL: "x"}
+	// folder/user が nil のときは omitempty で省略される
+	out := PackDriveFileWithRelations(f, idGen, nil, nil)
+	assert.Nil(t, out.Folder)
+	assert.Nil(t, out.User)
+}

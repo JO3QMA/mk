@@ -48,21 +48,25 @@ func (h *Handler) SetUserRepo(r repository.UserRepository) {
 // packDriveFileFull packs a drive file and, when repositories are wired,
 // embeds the owning folder/user as nested objects. Matches Misskey's
 // packDriveFileSchema which exposes both `folder` and `user`.
+//
+// Note: called inside list loops (FilesList / FilesFind / Stream) it issues
+// up to 2 DB reads per file (O(N) queries). 1ページ上限は 10-100 程度なので
+// 実害は小さいが、大量ファイルを返す admin list 等では batch 化の余地あり
+// (別 issue で対応検討)。
 func (h *Handler) packDriveFileFull(f *model.DriveFile) entity.DriveFileEntity {
-	out := entity.PackDriveFile(f, h.idGen)
+	var folder *model.DriveFolder
 	if h.folderRepo != nil && f.FolderID != nil {
-		if folder, err := h.folderRepo.FindByID(*f.FolderID); err == nil && folder != nil {
-			packed := entity.PackDriveFolder(folder, h.idGen)
-			out.Folder = &packed
+		if fo, err := h.folderRepo.FindByID(*f.FolderID); err == nil {
+			folder = fo
 		}
 	}
+	var user *model.User
 	if h.userRepo != nil && f.UserID != nil {
-		if u, err := h.userRepo.FindByID(*f.UserID); err == nil && u != nil {
-			lite := entity.PackUserLite(u)
-			out.User = &lite
+		if u, err := h.userRepo.FindByID(*f.UserID); err == nil {
+			user = u
 		}
 	}
-	return out
+	return entity.PackDriveFileWithRelations(f, h.idGen, folder, user)
 }
 
 // readMultipartFile extracts the uploaded file's bytes and original filename.

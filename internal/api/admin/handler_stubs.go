@@ -452,9 +452,23 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 	}
 	out := make([]entity.DriveFileEntity, 0, len(files))
 	for _, f := range files {
-		out = append(out, entity.PackDriveFile(f, h.idGen))
+		out = append(out, h.packDriveFileAdmin(f))
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// packDriveFileAdmin は admin drive list/show 向けに owner user を embed
+// した DriveFileEntity を返す。folder はここでは含めない (admin handler
+// に folderRepo が wire されていない。必要になれば拡張)。user repo 未設定
+// 時は nil で fallback。
+func (h *Handler) packDriveFileAdmin(f *model.DriveFile) entity.DriveFileEntity {
+	var user *model.User
+	if h.userRepo != nil && f.UserID != nil {
+		if u, err := h.userRepo.FindByID(*f.UserID); err == nil {
+			user = u
+		}
+	}
+	return entity.PackDriveFileWithRelations(f, h.idGen, nil, user)
 }
 
 // DriveShowFile handles POST /api/admin/drive/show-file.
@@ -475,7 +489,7 @@ func (h *Handler) DriveShowFile(c echo.Context) error {
 		if err != nil {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
 		}
-		return c.JSON(http.StatusOK, entity.PackDriveFile(file, h.idGen))
+		return c.JSON(http.StatusOK, h.packDriveFileAdmin(file))
 	}
 	// url 指定時は adminDB を使って url / thumbnailUrl / webpublicUrl いずれか
 	// に一致する 1 件を引く。 driveFileRepo には該当 API が無いため raw query で。
@@ -489,7 +503,7 @@ func (h *Handler) DriveShowFile(c echo.Context) error {
 	).First(&file).Error; err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "ac4f7b11-1a6e-47e3-bf3d-3dce9a0e07ab"))
 	}
-	return c.JSON(http.StatusOK, entity.PackDriveFile(&file, h.idGen))
+	return c.JSON(http.StatusOK, h.packDriveFileAdmin(&file))
 }
 
 // --- emoji bulk ops ---
