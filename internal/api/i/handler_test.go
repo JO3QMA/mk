@@ -849,6 +849,48 @@ func TestRegistrySet_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestRegistrySet_PublishesRegistryUpdated_WhenDomainNil(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	pub := &stubIMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	rec := post(h.RegistrySet, `{"key":"theme","value":"dark","scope":["client"]}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "registryUpdated", pub.calls[0].eventType)
+	body, ok := pub.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "theme", body["key"])
+	// scope は []string で渡される
+	scope, ok := body["scope"].([]string)
+	require.True(t, ok)
+	assert.Equal(t, []string{"client"}, scope)
+	// value は json.RawMessage (生バイトを frontend にそのまま渡すため)
+	val, ok := body["value"].(json.RawMessage)
+	require.True(t, ok)
+	assert.Equal(t, `"dark"`, string(val))
+}
+
+func TestRegistrySet_SkipsPublishWhenDomainSpecified(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	pub := &stubIMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	// domain 指定時は TS 本家同様 emit しない (サードパーティアプリ領域)
+	rec := post(h.RegistrySet, `{"key":"k","value":"v","domain":"app.example"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, pub.calls)
+}
+
+func TestRegistrySet_NoPublisher_NoEmit(t *testing.T) {
+	h, _ := newHandlerWithRegistry(t)
+	// publisher 未設定でも通常動作すること
+	rec := post(h.RegistrySet, `{"key":"k","value":"v"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
 func TestRegistryGet_Success(t *testing.T) {
 	h, _ := newHandlerWithRegistry(t)
 	user := &model.User{ID: "u1"}
