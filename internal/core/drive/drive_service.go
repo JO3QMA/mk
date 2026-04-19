@@ -10,6 +10,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -31,10 +32,18 @@ var (
 
 // StreamingPublisher receives drive file life-cycle events so that
 // WebSocket subscribers (the "drive" channel) can be pushed in real time.
-// パッケージ間の循環依存を避けるため interface で受け取る (実装は internal/
-// stream)。eventType は "fileCreated" / "fileUpdated" / "fileDeleted"。
+// パッケージ間の循環依存を避けるためinterfaceで受け取る(実装はinternal/
+// stream)。eventTypeは"fileCreated"/"fileUpdated"/"fileDeleted"。
 type StreamingPublisher interface {
 	PublishDriveEvent(userID, eventType string, file *model.DriveFile)
+}
+
+// MainStreamPublisher emits real-time events to a single target user's `main`
+// WebSocket channel. Used here to deliver `driveFileCreated` so the frontend
+// can reflect uploads across screens (e.g. drop-upload UI).
+// 循環依存を避けるためinterfaceで受け取る(実装はinternal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
 }
 
 // ChartHook is invoked after a drive file has been uploaded or deleted
@@ -48,14 +57,15 @@ type ChartHook interface {
 
 // Service manages drive files and folders.
 type Service struct {
-	fileRepo       repository.DriveFileRepository
-	folderRepo     repository.DriveFolderRepository
-	storage        Storage
-	idGen          id.Generator
-	publisher      StreamingPublisher
-	chartHook      ChartHook
-	imageProcessor ImageProcessor
-	videoProcessor VideoProcessor
+	fileRepo            repository.DriveFileRepository
+	folderRepo          repository.DriveFolderRepository
+	storage             Storage
+	idGen               id.Generator
+	publisher           StreamingPublisher
+	mainStreamPublisher MainStreamPublisher
+	chartHook           ChartHook
+	imageProcessor      ImageProcessor
+	videoProcessor      VideoProcessor
 	// Sensitive media detection
 	sensitiveDetector SensitiveDetector
 	sensitiveCfg      SensitiveConfig
@@ -86,6 +96,13 @@ func NewService(
 // after Upload / Update / Delete succeed.
 func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 	s.publisher = p
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `driveFileCreated`
+// on the uploader's main channel. Optional — nil disables main-stream emit
+// but the drive-channel `fileCreated` event remains unaffected.
+func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
+	s.mainStreamPublisher = p
 }
 
 // SetChartHook attaches a ChartHook invoked best-effort after a drive
@@ -245,6 +262,12 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		return nil, err
 	}
 	s.publishEvent(in.User.ID, "fileCreated", f)
+	// Misskey本家 DriveService.addFileはdrive topicに加えてmainにも
+	// driveFileCreatedをemitしてUploader自身のUI (ドロップアップロード等)
+	// を即時反映させる (TS: DriveService.ts:665)。
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(in.User.ID, "driveFileCreated", entity.PackDriveFile(f, s.idGen))
+	}
 	if s.chartHook != nil {
 		s.chartHook.OnFileUploaded(f)
 	}
