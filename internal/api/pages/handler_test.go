@@ -532,7 +532,7 @@ func TestPagePush_PublishesPageEvent(t *testing.T) {
 	h.SetUserSource(&stubUserSource{
 		bundle: &coreuser.UserWithProfile{User: &model.User{ID: "alice", Username: "alice"}},
 	})
-	// public page so that h.svc.Show は success 扱い。
+	// public pageでh.svc.FindByIDがsuccess扱い。
 	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner", Name: "test", Visibility: model.PageVisibilityPublic}
 
 	c, rec := newReq(t, `{"pageId":"p1","event":"click","var":{"x":1}}`)
@@ -548,7 +548,7 @@ func TestPagePush_PublishesPageEvent(t *testing.T) {
 	assert.Equal(t, "p1", body["pageId"])
 	assert.Equal(t, "click", body["event"])
 	assert.Equal(t, "alice", body["userId"])
-	// var は json.RawMessage として透過 (non-nil であること確認)
+	// varはjson.RawMessageとして透過(non-nilであること確認)
 	assert.NotNil(t, body["var"])
 }
 
@@ -576,7 +576,7 @@ func TestPagePush_InvalidParam(t *testing.T) {
 func TestPagePush_NoPublisher_NoEmit(t *testing.T) {
 	h, repo, _ := newHandler(t)
 	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner", Visibility: model.PageVisibilityPublic}
-	// publisher / userSource 未設定でも 204 を返すこと
+	// publisher / userSource未設定でも204を返すこと
 	c, rec := newReq(t, `{"pageId":"p1","event":"x"}`)
 	setUser(c, "alice")
 	require.NoError(t, h.PagePush(c))

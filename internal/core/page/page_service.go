@@ -131,8 +131,9 @@ func (s *Service) Create(in CreateInput) (*model.Page, error) {
 }
 
 // FindByID returns a page by id without any visibility check. Intended
-// for endpoints that need to access the raw page (e.g. /api/page-push,
-// which TS本家 でも 権限チェックなし)。ErrPageNotFound for missing rows.
+// for endpoints that need raw access regardless of visibility (e.g.
+// /api/page-push, which matches the TS original's behaviour of skipping
+// permission checks). Returns ErrPageNotFound when the row is missing.
 func (s *Service) FindByID(pageID string) (*model.Page, error) {
 	p, err := s.repo.FindByID(pageID)
 	if err != nil {

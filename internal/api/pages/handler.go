@@ -315,15 +315,15 @@ func (h *Handler) PagePush(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.PageID == "" || req.Event == "" {
 		return apierr.JSONInvalidParam(c)
 	}
-	// TS本家は findOneBy のみで可視性チェックをしないので FindByID を
-	// 使って合わせる。見つからなければ 404 に丸め、存在するIDだけに
-	// emit する。
+	// TS本家はfindOneByのみで可視性チェックをしないのでFindByIDを
+	// 使って合わせる。見つからなければ404に丸め、存在するIDだけに
+	// emitする。
 	p, err := h.svc.FindByID(req.PageID)
 	if err != nil {
 		return notFound(c)
 	}
 	if h.mainStreamPublisher == nil || h.userSource == nil {
-		// 配線未完了なら emit せず 204 を返す(API互換のため)。
+		// 配線未完了ならemitせず204を返す(API互換のため)。
 		return c.NoContent(http.StatusNoContent)
 	}
 	bundle, err := h.userSource.ShowByID(caller.ID)

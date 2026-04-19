@@ -128,6 +128,31 @@ func TestShow_PrivateOwnerOK(t *testing.T) {
 	assert.Equal(t, "p1", got.ID)
 }
 
+// --- FindByID (visibility チェック無し) -----------------------------------
+
+func TestFindByID_HappyPath_Public(t *testing.T) {
+	svc, repo, _ := newSvc(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "u1", Visibility: model.PageVisibilityPublic}
+	got, err := svc.FindByID("p1")
+	require.NoError(t, err)
+	assert.Equal(t, "p1", got.ID)
+}
+
+func TestFindByID_Returns_Private_Regardless_Of_Visibility(t *testing.T) {
+	svc, repo, _ := newSvc(t)
+	// followers visibilityでも visibility checkはせず返すことを確認
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "u1", Visibility: model.PageVisibilityFollowers}
+	got, err := svc.FindByID("p1")
+	require.NoError(t, err)
+	assert.Equal(t, "p1", got.ID)
+}
+
+func TestFindByID_NotFound(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	_, err := svc.FindByID("missing")
+	assert.ErrorIs(t, err, page.ErrPageNotFound)
+}
+
 // --- ShowByName ------------------------------------------------------------
 
 func TestShowByName_HappyPath(t *testing.T) {
