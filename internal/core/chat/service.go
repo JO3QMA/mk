@@ -266,8 +266,9 @@ func (s *Service) CreateMessageToRoom(ctx context.Context, fromUserID, roomID, t
 	return msg, nil
 }
 
-// isRoomMemberWith is IsRoomMember のうち room 取得済みケース向けバリアント。
-// owner は membership レコードが無くても implicit member 扱い。
+// isRoomMemberWith reports whether userID is a member of the given room,
+// reusing an already-fetched room object to avoid a second FindRoomByID.
+// The owner is treated as an implicit member even without a membership row.
 func (s *Service) isRoomMemberWith(room *model.ChatRoom, userID, roomID string) (bool, error) {
 	if room != nil && room.OwnerID == userID {
 		return true, nil
