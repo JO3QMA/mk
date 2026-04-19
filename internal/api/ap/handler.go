@@ -36,12 +36,35 @@ type Handler struct {
 	idGen          id.Generator
 	remoteFetcher  RemoteFetcher
 	remoteResolver RemoteResolver
+	nonAPFallback  echo.HandlerFunc
 }
 
 // SetRemote attaches remote AP fetcher and resolver.
 func (h *Handler) SetRemote(fetcher RemoteFetcher, resolver RemoteResolver) {
 	h.remoteFetcher = fetcher
 	h.remoteResolver = resolver
+}
+
+// SetNonAPFallback registers a handler to serve when the incoming Accept
+// header does not request an ActivityPub document. Typically the SPA HTML
+// frontend is registered here so that browser reloads on actor/note URLs
+// render the frontend instead of returning a bare 404 JSON. Echo does not
+// re-dispatch errored handlers to the catch-all route, so this delegation
+// has to happen inside the AP handler itself.
+func (h *Handler) SetNonAPFallback(fn echo.HandlerFunc) {
+	h.nonAPFallback = fn
+}
+
+// serveNonAP is called from AP resource handlers when the client did not
+// request application/activity+json. When a fallback is wired (runtime)
+// it renders the frontend HTML; otherwise (tests) it returns ErrNotFound
+// so the behavior degrades gracefully when the handler is used in
+// isolation.
+func (h *Handler) serveNonAP(c echo.Context) error {
+	if h.nonAPFallback != nil {
+		return h.nonAPFallback(c)
+	}
+	return echo.ErrNotFound
 }
 
 // NewHandler constructs a Handler.
@@ -61,12 +84,14 @@ func NewHandler(
 	}
 }
 
-// User handles GET /users/:id.
-//
-// Acceptヘッダ application/activity+json (または HTML 経由でない場合) なら
-// AS Person を返す。HTMLリクエストは将来のWebUIでハンドルする想定だが、現状
-// はリダイレクトせず常にAP表現を返す。
+// User handles GET /users/:id with ActivityPub content negotiation.
+// AP clients (Accept: application/activity+json) receive the Person
+// document; other callers (browser reloads) are handed off to the
+// frontend fallback.
 func (h *Handler) User(c echo.Context) error {
+	if !wantsActivityJSON(c.Request().Header.Get("Accept")) {
+		return h.serveNonAP(c)
+	}
 	id := c.Param("id")
 	bundle, err := h.userService.ShowByID(id)
 	if err != nil {
@@ -87,12 +112,12 @@ func (h *Handler) User(c echo.Context) error {
 // UserByAcct handles GET /@:acct with ActivityPub content negotiation.
 // When the Accept header prefers application/activity+json (which is how
 // other AP implementations resolve actors that they discovered via
-// WebFinger or a raw link), return the Person document. Otherwise fall
-// through to the HTML frontend by returning echo.ErrNotFound so the
-// catch-all route can handle it.
+// WebFinger or a raw link), return the Person document. Otherwise
+// delegate to the non-AP fallback so browser reloads render the SPA
+// frontend instead of a bare 404.
 func (h *Handler) UserByAcct(c echo.Context) error {
 	if !wantsActivityJSON(c.Request().Header.Get("Accept")) {
-		return echo.ErrNotFound
+		return h.serveNonAP(c)
 	}
 	acct := c.Param("acct")
 	// /@alice or /@alice@host 形式。ローカルのみ扱う。
@@ -323,8 +348,13 @@ func (h *Handler) APNotes(c echo.Context) error {
 	return c.JSON(http.StatusOK, []any{})
 }
 
-// Note handles GET /notes/:id.
+// Note handles GET /notes/:id with ActivityPub content negotiation.
+// AP clients receive the AS Note object; browser reloads are handed
+// off to the frontend fallback so the SPA renders the note permalink.
 func (h *Handler) Note(c echo.Context) error {
+	if !wantsActivityJSON(c.Request().Header.Get("Accept")) {
+		return h.serveNonAP(c)
+	}
 	noteID := c.Param("id")
 	// 公開ノートのみAPでフェッチ可能 (非ログインから取得されるため viewer=nil)
 	n, err := h.queryService.Show(nil, noteID)
