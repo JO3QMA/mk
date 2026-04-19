@@ -1160,8 +1160,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/clips/notes", clipsHandler.Notes)
 
 	// Pages endpoints (Phase 4.5)
-	pagesHandler := pages.NewHandler(pageService)
-	pagesHandler.SetIDGen(idGen)
+	pagesHandler := pages.NewHandler(pageService, idGen)
 	api.POST("/pages/create", pagesHandler.Create, middleware.RequireAuth())
 	api.POST("/pages/show", pagesHandler.Show)
 	api.POST("/pages/update", pagesHandler.Update, middleware.RequireAuth())
