@@ -21,15 +21,10 @@ type Handler struct {
 	idGen id.Generator
 }
 
-// NewHandler creates a new pages Handler.
-func NewHandler(svc *corepage.Service) *Handler {
-	return &Handler{svc: svc}
-}
-
-// SetIDGen attaches an ID generator so responses include createdAt derived
-// from the aidx-encoded page ID.
-func (h *Handler) SetIDGen(g id.Generator) {
-	h.idGen = g
+// NewHandler creates a new pages Handler. idGen is required so that
+// responses include createdAt derived from the aidx-encoded page ID.
+func NewHandler(svc *corepage.Service, idGen id.Generator) *Handler {
+	return &Handler{svc: svc, idGen: idGen}
 }
 
 // CreateRequest is the request body for pages/create. Content / Variables

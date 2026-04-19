@@ -24,11 +24,7 @@ func newHandler(t *testing.T) (*Handler, *testutil.MockPageRepository, *testutil
 	likeRepo := testutil.NewMockPageLikeRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, likeRepo, idGen)
-	h := NewHandler(svc)
-	// 実ハンドラと同様に idGen を wiring して entity.PackPage の createdAt パスが
-	// テストでも走るようにする。
-	h.SetIDGen(idGen)
-	return h, repo, likeRepo
+	return NewHandler(svc, idGen), repo, likeRepo
 }
 
 func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {
@@ -100,7 +96,7 @@ func TestCreate_RepoError(t *testing.T) {
 	repo := &failingPageRepo{MockPageRepository: mock}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, idGen)
 	c, rec := newReq(t, `{"title":"t","name":"alpha"}`)
 	setUser(c, "alice")
 	require.NoError(t, h.Create(c))
@@ -231,7 +227,7 @@ func TestUpdate_RepoError(t *testing.T) {
 	repo := &failingUpdateRepo{MockPageRepository: mock}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, idGen)
 	c, rec := newReq(t, `{"pageId":"p1","title":"x"}`)
 	setUser(c, "alice")
 	require.NoError(t, h.Update(c))
@@ -287,7 +283,7 @@ func TestDelete_RepoError(t *testing.T) {
 	repo := &failingDeleteRepo{MockPageRepository: mock}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, idGen)
 	c, rec := newReq(t, `{"pageId":"p1"}`)
 	setUser(c, "alice")
 	require.NoError(t, h.Delete(c))
@@ -327,7 +323,7 @@ func TestMy_RepoError(t *testing.T) {
 	repo := &listFailRepo{MockPageRepository: testutil.NewMockPageRepository()}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, idGen)
 	c, rec := newReq(t, `{}`)
 	setUser(c, "alice")
 	require.NoError(t, h.My(c))
@@ -364,7 +360,7 @@ func TestFeatured_RepoError(t *testing.T) {
 	repo := &featuredFailRepo{MockPageRepository: testutil.NewMockPageRepository()}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, testutil.NewMockPageLikeRepository(), idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, idGen)
 	c, rec := newReq(t, `{}`)
 	require.NoError(t, h.Featured(c))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
@@ -433,7 +429,7 @@ func TestLike_RepoError(t *testing.T) {
 	likeRepo := &failingCreateLikeRepo{MockPageLikeRepository: testutil.NewMockPageLikeRepository()}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, likeRepo, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, idGen)
 	c, rec := newReq(t, `{"pageId":"p1"}`)
 	setUser(c, "bob")
 	require.NoError(t, h.Like(c))
@@ -496,7 +492,7 @@ func TestUnlike_RepoError(t *testing.T) {
 	likeRepo := &failingDeleteLikeRepo{MockPageLikeRepository: mock}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, likeRepo, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, idGen)
 	c, rec := newReq(t, `{"pageId":"p1"}`)
 	setUser(c, "bob")
 	require.NoError(t, h.Unlike(c))
