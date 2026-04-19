@@ -321,6 +321,90 @@ func (s *Service) UnreadCount(ctx context.Context, userID string) (int64, error)
 	return int64(len(res)), nil
 }
 
+// UnreadSummary is the aggregated result of a single pass over the user's
+// notification stream. Populated by UnreadSummary() so /api/i can resolve all
+// of its unread-related fields in one Redis round-trip instead of three (#321).
+type UnreadSummary struct {
+	// TotalCount is UnreadCount equivalent: number of stream entries newer
+	// than the user's read marker.
+	TotalCount int64
+	// HasMentions reports whether any unread entry's type matches one of
+	// the MentionTypes passed to UnreadSummary. Caller typically passes
+	// {TypeMention, TypeReply} for the /api/i hasUnreadMentions flag.
+	HasMentions bool
+	// HasSpecifiedNote reports whether any unread specified-visibility note
+	// targets the user. Sourced from noteUnreadRepo when wired (本家互換)
+	// and derived from the same stream scan (legacy NoteVisibility proxy)
+	// otherwise.
+	HasSpecifiedNote bool
+}
+
+// UnreadSummary computes the /api/i unread bundle in a single stream scan.
+// mentionTypes limits the HasMentions calculation; pass nil to skip that
+// computation (TotalCount / HasSpecifiedNote still populated). Errors from
+// Redis or the note_unread repo are returned unmodified; partial results are
+// preserved when possible.
+func (s *Service) UnreadSummary(ctx context.Context, userID string, mentionTypes []Type) (UnreadSummary, error) {
+	var summary UnreadSummary
+	readID, err := s.LatestReadID(ctx, userID)
+	if err != nil {
+		return summary, err
+	}
+	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	if err != nil {
+		return summary, err
+	}
+	summary.TotalCount = int64(len(res))
+
+	// mentionTypes が空なら HasMentions 判定をスキップ。noteUnreadRepo
+	// が wired なら HasSpecifiedNote は DB 経由なので stream 走査不要。
+	needMentionPass := len(mentionTypes) > 0
+	needSpecifiedPass := s.noteUnreadRepo == nil
+	if needMentionPass || needSpecifiedPass {
+		var wanted map[Type]struct{}
+		if needMentionPass {
+			wanted = make(map[Type]struct{}, len(mentionTypes))
+			for _, t := range mentionTypes {
+				wanted[t] = struct{}{}
+			}
+		}
+		for _, msg := range res {
+			// 必要な flag が全部埋まったら早期終了
+			if (!needMentionPass || summary.HasMentions) && (!needSpecifiedPass || summary.HasSpecifiedNote) {
+				break
+			}
+			raw, ok := msg.Values["data"].(string)
+			if !ok {
+				continue
+			}
+			var n Notification
+			if err := json.Unmarshal([]byte(raw), &n); err != nil {
+				continue
+			}
+			if needMentionPass && !summary.HasMentions {
+				if _, ok := wanted[n.Type]; ok {
+					summary.HasMentions = true
+				}
+			}
+			if needSpecifiedPass && !summary.HasSpecifiedNote {
+				if n.NoteVisibility == "specified" {
+					summary.HasSpecifiedNote = true
+				}
+			}
+		}
+	}
+
+	if s.noteUnreadRepo != nil {
+		has, err := s.noteUnreadRepo.HasAnySpecified(userID)
+		if err != nil {
+			return summary, err
+		}
+		summary.HasSpecifiedNote = has
+	}
+
+	return summary, nil
+}
+
 // HasUnreadOfTypes reports whether the user has any unread notification whose
 // type is in the provided list. Used by /api/i to compute hasUnreadMentions
 // (types: mention/reply). Returns false when types is empty.

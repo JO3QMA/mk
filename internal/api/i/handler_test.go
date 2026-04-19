@@ -1032,15 +1032,13 @@ type stubUnreadNotification struct {
 	gotTypesArgs []notification.Type
 }
 
-func (s *stubUnreadNotification) UnreadCount(_ context.Context, _ string) (int64, error) {
-	return s.count, nil
-}
-func (s *stubUnreadNotification) HasUnreadOfTypes(_ context.Context, _ string, types []notification.Type) (bool, error) {
+func (s *stubUnreadNotification) UnreadSummary(_ context.Context, _ string, types []notification.Type) (notification.UnreadSummary, error) {
 	s.gotTypesArgs = types
-	return s.hasTypes, nil
-}
-func (s *stubUnreadNotification) HasUnreadSpecifiedNotes(_ context.Context, _ string) (bool, error) {
-	return s.hasSpecified, nil
+	return notification.UnreadSummary{
+		TotalCount:       s.count,
+		HasMentions:      s.hasTypes,
+		HasSpecifiedNote: s.hasSpecified,
+	}, nil
 }
 
 type stubAnnouncementRepo struct {
