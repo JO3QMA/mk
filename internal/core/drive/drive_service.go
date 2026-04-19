@@ -48,7 +48,7 @@ type MainStreamPublisher interface {
 
 // ChartHook is invoked after a drive file has been uploaded or deleted
 // so the chart subsystem can record the byte / count delta. パッケージ
-// 間の循環依存を避けるため interface で受け取る (実装は core/chart/
+// 間の循環依存を避けるためinterfaceで受け取る(実装はcore/chart/
 // charthook)。
 type ChartHook interface {
 	OnFileUploaded(file *model.DriveFile)
