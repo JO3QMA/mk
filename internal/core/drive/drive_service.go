@@ -262,9 +262,9 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		return nil, err
 	}
 	s.publishEvent(in.User.ID, "fileCreated", f)
-	// Misskey本家 DriveService.addFileはdrive topicに加えてmainにも
-	// driveFileCreatedをemitしてUploader自身のUI (ドロップアップロード等)
-	// を即時反映させる (TS: DriveService.ts:665)。
+	// Misskey本家DriveService.addFileはdrive topicに加えてmainにも
+	// driveFileCreatedをemitしてUploader自身のUI(ドロップアップロード等)
+	// を即時反映させる(TS: DriveService.ts:665)。
 	if s.mainStreamPublisher != nil {
 		s.mainStreamPublisher.PublishMainEvent(in.User.ID, "driveFileCreated", entity.PackDriveFile(f, s.idGen))
 	}
