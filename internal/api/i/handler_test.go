@@ -878,7 +878,7 @@ func TestRegistrySet_SkipsPublishWhenDomainSpecified(t *testing.T) {
 	pub := &stubIMainStreamPublisher{}
 	h.SetMainStreamPublisher(pub)
 
-	// domain 指定時は TS 本家同様 emit しない (サードパーティアプリ領域)
+	// domain指定時はTS本家同様emitしない(サードパーティアプリ領域)
 	rec := post(h.RegistrySet, `{"key":"k","value":"v","domain":"app.example"}`, &model.User{ID: "u1"})
 	require.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Empty(t, pub.calls)
