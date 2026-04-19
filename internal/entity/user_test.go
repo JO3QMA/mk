@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/lib/pq"
@@ -200,4 +201,112 @@ func TestPackUserDetailed_NilProfile(t *testing.T) {
 	assert.Nil(t, detailed.Location)
 	assert.Nil(t, detailed.Birthday)
 	assert.Nil(t, detailed.Lang)
+}
+
+// --- Phase 7-5a (#247): UserLite 追加 optional フィールド ---
+
+func TestPackUserLite_RequireSigninToViewContents_TrueExposed(t *testing.T) {
+	u := &model.User{
+		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
+		RequireSigninToViewContents: true,
+	}
+	lite := PackUserLite(u)
+	require.NotNil(t, lite.RequireSigninToViewContents)
+	assert.Equal(t, true, *lite.RequireSigninToViewContents)
+}
+
+func TestPackUserLite_RequireSigninToViewContents_FalseOmitted(t *testing.T) {
+	u := &model.User{
+		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
+		RequireSigninToViewContents: false,
+	}
+	lite := PackUserLite(u)
+	// false → nil (TS で undefined、JSONはomit)
+	assert.Nil(t, lite.RequireSigninToViewContents)
+
+	// JSONマーシャル結果でもキーが出ないこと
+	b, err := json.Marshal(lite)
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "requireSigninToViewContents")
+}
+
+func TestPackUserLite_MakeNotesBefore(t *testing.T) {
+	// makeNotes*Before は integer カラム (TS MiUser.ts:208) で「秒単位、
+	// マイナスで相対時間」と定義されている。int32 (~2.1B) 範囲内の値を使う
+	// こと (ms timestamp 等の大きい値は DB round-trip で overflow する)。
+	followersSec := 1700000000 // 2023-11-14T22:13:20Z 相当の UNIX 秒
+	hiddenRelSec := -86400     // 過去 1 日 (相対時間の例)
+	u := &model.User{
+		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
+		MakeNotesFollowersOnlyBefore: &followersSec,
+		MakeNotesHiddenBefore:        &hiddenRelSec,
+	}
+	lite := PackUserLite(u)
+	require.NotNil(t, lite.MakeNotesFollowersOnlyBefore)
+	assert.Equal(t, 1700000000, *lite.MakeNotesFollowersOnlyBefore)
+	require.NotNil(t, lite.MakeNotesHiddenBefore)
+	assert.Equal(t, -86400, *lite.MakeNotesHiddenBefore)
+}
+
+func TestPackUserLite_MakeNotesBefore_NilOmitted(t *testing.T) {
+	u := &model.User{
+		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
+		// MakeNotes*Before は nil
+	}
+	lite := PackUserLite(u)
+	assert.Nil(t, lite.MakeNotesFollowersOnlyBefore)
+	assert.Nil(t, lite.MakeNotesHiddenBefore)
+
+	b, err := json.Marshal(lite)
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "makeNotesFollowersOnlyBefore")
+	assert.NotContains(t, string(b), "makeNotesHiddenBefore")
+}
+
+func TestPackUserLite_Instance_NilByDefault(t *testing.T) {
+	u := &model.User{
+		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	lite := PackUserLite(u)
+	// PackUserLite 自体は Instance を設定しない (caller がpre-fetchしてセット)
+	assert.Nil(t, lite.Instance)
+
+	b, err := json.Marshal(lite)
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "\"instance\"")
+}
+
+func TestUserLite_Instance_WhenSet(t *testing.T) {
+	u := &model.User{
+		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	lite := PackUserLite(u)
+	name := "example.com"
+	iconURL := "https://example.com/icon.png"
+	lite.Instance = &InstanceLite{Name: &name, IconURL: &iconURL}
+
+	b, err := json.Marshal(lite)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "\"instance\"")
+	assert.Contains(t, string(b), "example.com")
+}
+
+// UserDetailed は UserLite を埋め込むため、Instance 等もそこに含まれる
+// ことを確認する (移動に伴う regression guard)。
+func TestUserDetailed_EmbedsUserLiteOptionalFields(t *testing.T) {
+	req := true
+	u := &model.User{
+		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
+		RequireSigninToViewContents: req,
+	}
+	detailed := PackUserDetailed(u, nil)
+	require.NotNil(t, detailed.RequireSigninToViewContents)
+	assert.True(t, *detailed.RequireSigninToViewContents)
+
+	// Instance 設定も embed 経由で動く
+	host := "remote.example"
+	detailed.Instance = &InstanceLite{Name: &host}
+	b, err := json.Marshal(detailed)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "\"instance\"")
 }
