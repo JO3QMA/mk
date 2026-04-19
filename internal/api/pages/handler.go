@@ -19,7 +19,8 @@ import (
 // MainStreamPublisher emits events to a user's `main` WebSocket channel.
 // Used here to publish `pageEvent` when /api/page-push is called so the
 // page owner's UI can react to custom events emitted from the page script.
-// 循環依存を避けるためinterfaceで受け取る(実装はinternal/stream)。
+// Accepted as an interface to avoid importing internal/stream here
+// (循環依存回避)。
 type MainStreamPublisher interface {
 	PublishMainEvent(userID, eventType string, body any)
 }
@@ -305,21 +306,19 @@ type PagePushRequest struct {
 }
 
 // PagePush handles POST /api/page-push. Triggered by page scripts to emit
-// a custom event to the page owner's `main` WebSocket channel. Body mirrors
-// Misskey本家 endpoints/page-push.ts (pageId / event / var / userId / user)。
+// a custom event to the page owner's `main` WebSocket channel. Body shape
+// mirrors the Misskey original endpoints/page-push.ts
+// (pageId / event / var / userId / user).
 func (h *Handler) PagePush(c echo.Context) error {
 	caller := middleware.GetUser(c)
 	var req PagePushRequest
 	if err := c.Bind(&req); err != nil || req.PageID == "" || req.Event == "" {
 		return apierr.JSONInvalidParam(c)
 	}
-	// Show() は pageが存在しない場合に加え、followers/specified可視性で
-	// callerが閲覧権限を持たない場合もerrorを返す。本エンドポイントでは
-	// 可視ページに限定して emit する(TS本家は secure:true endpoint だが
-	// 権限チェック自体は無い仕様。Go側は Show() の visibility check を
-	// そのまま活用して隔離性を確保)。エラーは全て 404 に丸めて、ID
-	// enumeration を防ぐ。
-	p, err := h.svc.Show(caller.ID, req.PageID)
+	// TS本家は findOneBy のみで可視性チェックをしないので FindByID を
+	// 使って合わせる。見つからなければ 404 に丸め、存在するIDだけに
+	// emit する。
+	p, err := h.svc.FindByID(req.PageID)
 	if err != nil {
 		return notFound(c)
 	}
@@ -344,9 +343,10 @@ func (h *Handler) PagePush(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// rawJSONBytes returns b as json.RawMessage, or nil when empty.
-// TS本家のpage-pushは varが omitted なら undefined として JSON null に
-// シリアライズされるため、emptyは nilに丸めておく。
+// rawJSONBytes returns b as json.RawMessage, or nil when empty. Empty
+// bytes are mapped to nil so that json.Marshal serialises the field as
+// null — matching the TS original's behaviour of sending `undefined`
+// when the optional `var` parameter is omitted.
 func rawJSONBytes(b []byte) any {
 	if len(b) == 0 {
 		return nil
