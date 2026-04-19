@@ -391,8 +391,9 @@ func (s *Server) setupRoutes() {
 	// を引いてから federationResolver.ResolveActor で User row を upsert する。
 	// WebFinger は redirect を追う必要があるため、apClient と同じ http.DefaultClient
 	// を共有すると apClient.DisableRedirect() のグローバル汚染を拾ってしまう。
-	// 専用の *http.Client を明示的に渡して分離する。
-	webfingerClient := activitypub.NewWebFingerClient(&http.Client{}, s.config.UserAgent)
+	// 専用の *http.Client を明示的に渡して分離する。Timeout は user-facing API
+	// 経由で呼ばれるので応答性優先で 10s に設定する。
+	webfingerClient := activitypub.NewWebFingerClient(&http.Client{Timeout: 10 * time.Second}, s.config.UserAgent)
 	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
 		webfingerClient, federationResolver, userRepo, localHost,
 	))
