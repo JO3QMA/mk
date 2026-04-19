@@ -81,3 +81,73 @@ func (r *channelNoteUnreadRepository) DeleteByChannelUser(userID, channelID stri
 	return r.db.Where(`"userId" = ? AND "channelId" = ?`, userID, channelID).
 		Delete(&model.ChannelNoteUnread{}).Error
 }
+
+// NoteUnreadRepository tracks per-user-per-note unread rows for specified /
+// mentioned notes. 本家 Misskey の note_unread 相当。
+type NoteUnreadRepository interface {
+	// Upsert inserts a row, or updates isSpecified / isMentioned by OR-ing
+	// with any existing flags (so a row can be a specified DM and a mention
+	// at the same time). ID is only used on first insert.
+	Upsert(m *model.NoteUnread) error
+	// HasAnySpecified reports whether the user has any unread note_unread row
+	// with isSpecified = true. Used by /api/i for hasUnreadSpecifiedNotes.
+	HasAnySpecified(userID string) (bool, error)
+	// HasAnyMentioned reports whether the user has any unread note_unread row
+	// with isMentioned = true. Available for future hasUnreadMentions wiring.
+	HasAnyMentioned(userID string) (bool, error)
+	// DeleteByUserNote removes the row for (userID, noteID). Invoked when the
+	// user explicitly reads the note.
+	DeleteByUserNote(userID, noteID string) error
+	// DeleteAllByUser removes every note_unread row owned by userID. Invoked
+	// by notification MarkAllAsRead / Flush so the unread indicator resets
+	// when the user reads everything.
+	DeleteAllByUser(userID string) error
+}
+
+type noteUnreadRepository struct{ db *gorm.DB }
+
+// NewNoteUnreadRepository constructs a NoteUnreadRepository backed by db.
+func NewNoteUnreadRepository(db *gorm.DB) NoteUnreadRepository {
+	return &noteUnreadRepository{db: db}
+}
+
+func (r *noteUnreadRepository) Upsert(m *model.NoteUnread) error {
+	// (userId, noteId) unique 制約に対して ON CONFLICT DO UPDATE で flag を
+	// OR 集約する。isSpecified / isMentioned はそれぞれ一度 true になった
+	// ら永続的に true のまま。
+	return r.db.Exec(
+		`INSERT INTO "note_unread" ("id", "userId", "noteId", "noteUserId", "isSpecified", "isMentioned")
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT ("userId", "noteId") DO UPDATE SET
+		     "isSpecified" = "note_unread"."isSpecified" OR EXCLUDED."isSpecified",
+		     "isMentioned" = "note_unread"."isMentioned" OR EXCLUDED."isMentioned"`,
+		m.ID, m.UserID, m.NoteID, m.NoteUserID, m.IsSpecified, m.IsMentioned,
+	).Error
+}
+
+func (r *noteUnreadRepository) HasAnySpecified(userID string) (bool, error) {
+	var exists bool
+	err := r.db.Raw(
+		`SELECT EXISTS(SELECT 1 FROM "note_unread" WHERE "userId" = ? AND "isSpecified" = true)`,
+		userID,
+	).Scan(&exists).Error
+	return exists, err
+}
+
+func (r *noteUnreadRepository) HasAnyMentioned(userID string) (bool, error) {
+	var exists bool
+	err := r.db.Raw(
+		`SELECT EXISTS(SELECT 1 FROM "note_unread" WHERE "userId" = ? AND "isMentioned" = true)`,
+		userID,
+	).Scan(&exists).Error
+	return exists, err
+}
+
+func (r *noteUnreadRepository) DeleteByUserNote(userID, noteID string) error {
+	return r.db.Where(`"userId" = ? AND "noteId" = ?`, userID, noteID).
+		Delete(&model.NoteUnread{}).Error
+}
+
+func (r *noteUnreadRepository) DeleteAllByUser(userID string) error {
+	return r.db.Where(`"userId" = ?`, userID).Delete(&model.NoteUnread{}).Error
+}

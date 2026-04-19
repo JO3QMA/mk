@@ -2883,6 +2883,76 @@ func (m *MockChannelNoteUnreadRepository) DeleteByChannelUser(userID, channelID 
 	return nil
 }
 
+// MockNoteUnreadRepository is a test double for repository.NoteUnreadRepository.
+type MockNoteUnreadRepository struct {
+	Rows []*model.NoteUnread
+}
+
+// NewMockNoteUnreadRepository returns an empty repository.
+func NewMockNoteUnreadRepository() *MockNoteUnreadRepository {
+	return &MockNoteUnreadRepository{}
+}
+
+// Upsert records an unread row. Flags are OR-merged on conflict to mirror the
+// real repository's behaviour.
+func (m *MockNoteUnreadRepository) Upsert(row *model.NoteUnread) error {
+	for _, existing := range m.Rows {
+		if existing.UserID == row.UserID && existing.NoteID == row.NoteID {
+			existing.IsSpecified = existing.IsSpecified || row.IsSpecified
+			existing.IsMentioned = existing.IsMentioned || row.IsMentioned
+			return nil
+		}
+	}
+	m.Rows = append(m.Rows, row)
+	return nil
+}
+
+// HasAnySpecified returns whether any specified-flagged row exists for user.
+func (m *MockNoteUnreadRepository) HasAnySpecified(userID string) (bool, error) {
+	for _, r := range m.Rows {
+		if r.UserID == userID && r.IsSpecified {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// HasAnyMentioned returns whether any mentioned-flagged row exists for user.
+func (m *MockNoteUnreadRepository) HasAnyMentioned(userID string) (bool, error) {
+	for _, r := range m.Rows {
+		if r.UserID == userID && r.IsMentioned {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// DeleteByUserNote removes the row matching (userID, noteID), if any.
+func (m *MockNoteUnreadRepository) DeleteByUserNote(userID, noteID string) error {
+	out := m.Rows[:0]
+	for _, r := range m.Rows {
+		if r.UserID == userID && r.NoteID == noteID {
+			continue
+		}
+		out = append(out, r)
+	}
+	m.Rows = out
+	return nil
+}
+
+// DeleteAllByUser removes every row owned by userID.
+func (m *MockNoteUnreadRepository) DeleteAllByUser(userID string) error {
+	out := m.Rows[:0]
+	for _, r := range m.Rows {
+		if r.UserID == userID {
+			continue
+		}
+		out = append(out, r)
+	}
+	m.Rows = out
+	return nil
+}
+
 // MockUserKeypairRepository is a test double for repository.UserKeypairRepository.
 type MockUserKeypairRepository struct {
 	Keypairs map[string]*model.UserKeypair // keyed by userID

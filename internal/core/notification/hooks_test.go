@@ -145,6 +145,207 @@ func TestHook_OnNoteCreated_MentionDedupedWithReply(t *testing.T) {
 	assert.Equal(t, TypeReply, out[0].Type)
 }
 
+func TestHook_OnNoteCreated_NoteUnreadSpecified(t *testing.T) {
+	// specified-visibility note の visibleUserIds に含まれる local user に対し
+	// note_unread (isSpecified=true) 行が作られる。
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	addLocalUser(repo, "bob", "bob")
+	addLocalUser(repo, "carol", "carol")
+
+	unread := testutil.NewMockNoteUnreadRepository()
+	h.SetNoteUnreadRepo(unread)
+
+	note := &model.Note{
+		ID:             "n_spec",
+		UserID:         "bob",
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: pq.StringArray{"alice", "carol", "bob"}, // bob 自身は skip
+	}
+	h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, nil)
+
+	require.Len(t, unread.Rows, 2)
+	for _, r := range unread.Rows {
+		assert.True(t, r.IsSpecified, r.UserID)
+		assert.False(t, r.IsMentioned, r.UserID)
+		assert.Equal(t, "n_spec", r.NoteID)
+		assert.Equal(t, "bob", r.NoteUserID)
+	}
+}
+
+func TestHook_OnNoteCreated_NoteUnreadMentionMergesFlags(t *testing.T) {
+	// visibleUserIds と mentions 両方に含まれる場合、isSpecified と
+	// isMentioned が両方 true になる。
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	addLocalUser(repo, "bob", "bob")
+
+	unread := testutil.NewMockNoteUnreadRepository()
+	h.SetNoteUnreadRepo(unread)
+
+	note := &model.Note{
+		ID:             "n_both",
+		UserID:         "bob",
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: pq.StringArray{"alice"},
+		Mentions:       pq.StringArray{"alice"},
+	}
+	h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, nil)
+
+	require.Len(t, unread.Rows, 1)
+	assert.True(t, unread.Rows[0].IsSpecified)
+	assert.True(t, unread.Rows[0].IsMentioned)
+}
+
+func TestHook_OnNoteCreated_NoteUnreadSkipsRemoteUsers(t *testing.T) {
+	// visibleUserIds に remote user が含まれていても note_unread は作らない。
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	addRemoteUser(repo, "remote1", "remote1", "other.example")
+	addLocalUser(repo, "bob", "bob")
+
+	unread := testutil.NewMockNoteUnreadRepository()
+	h.SetNoteUnreadRepo(unread)
+
+	note := &model.Note{
+		ID:             "n_mix",
+		UserID:         "bob",
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: pq.StringArray{"alice", "remote1"},
+	}
+	h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, nil)
+
+	require.Len(t, unread.Rows, 1)
+	assert.Equal(t, "alice", unread.Rows[0].UserID)
+}
+
+func TestHook_OnNoteCreated_NoteUnreadSkippedWhenRepoUnset(t *testing.T) {
+	// repo 未配線なら何もせず panic もしない。
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	addLocalUser(repo, "bob", "bob")
+
+	note := &model.Note{
+		ID:             "n_spec",
+		UserID:         "bob",
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: pq.StringArray{"alice"},
+	}
+	h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, nil)
+	// no panic, no rows anywhere
+}
+
+func TestHook_OnNoteCreated_NoteUnreadPublicNoop(t *testing.T) {
+	// public / home 等の specified でない note は isSpecified=false。
+	// mention があれば isMentioned=true の行のみ作る。
+	h, _, repo := newTestHook(t)
+	addLocalUser(repo, "alice", "alice")
+	addLocalUser(repo, "bob", "bob")
+
+	unread := testutil.NewMockNoteUnreadRepository()
+	h.SetNoteUnreadRepo(unread)
+
+	note := &model.Note{
+		ID:         "n_pub",
+		UserID:     "bob",
+		Visibility: model.NoteVisibilityPublic,
+		Mentions:   pq.StringArray{"alice"},
+	}
+	h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, nil)
+
+	require.Len(t, unread.Rows, 1)
+	assert.False(t, unread.Rows[0].IsSpecified)
+	assert.True(t, unread.Rows[0].IsMentioned)
+}
+
+func TestService_MarkAllAsRead_ClearsNoteUnread(t *testing.T) {
+	// MarkAllAsRead が呼ばれたら note_unread 行を全削除し、
+	// HasUnreadSpecifiedNotes が false に戻ることを確認する (#319 BUG 修正)。
+	svc := NewService(testRedis.Client, idGen)
+	unread := testutil.NewMockNoteUnreadRepository()
+	svc.SetNoteUnreadRepo(unread)
+
+	_ = unread.Upsert(&model.NoteUnread{
+		ID: "nu1", UserID: "alice", NoteID: "n1", NoteUserID: "bob", IsSpecified: true,
+	})
+	_ = unread.Upsert(&model.NoteUnread{
+		ID: "nu2", UserID: "alice", NoteID: "n2", NoteUserID: "carol", IsMentioned: true,
+	})
+
+	has, _ := svc.HasUnreadSpecifiedNotes(context.Background(), "alice")
+	require.True(t, has)
+
+	require.NoError(t, svc.MarkAllAsRead(context.Background(), "alice"))
+
+	has, err := svc.HasUnreadSpecifiedNotes(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.False(t, has)
+	assert.Empty(t, unread.Rows, "alice の note_unread は全削除される")
+}
+
+func TestService_Flush_ClearsNoteUnread(t *testing.T) {
+	// Flush (account deletion 等) でも note_unread を clear する。
+	testRedis.FlushAll(context.Background())
+	svc := NewService(testRedis.Client, idGen)
+	unread := testutil.NewMockNoteUnreadRepository()
+	svc.SetNoteUnreadRepo(unread)
+
+	_ = unread.Upsert(&model.NoteUnread{
+		ID: "nu1", UserID: "alice", NoteID: "n1", NoteUserID: "bob", IsSpecified: true,
+	})
+
+	require.NoError(t, svc.Flush(context.Background(), "alice"))
+	assert.Empty(t, unread.Rows)
+}
+
+func TestHook_OnNoteCreated_NoteUnreadSkipsMentionWithoutUserRepo(t *testing.T) {
+	// userRepo が未配線でも mention 解決を試みずに panic せず、
+	// visibleUserIds 経由の note_unread だけ作られる (nil deref 回避)。
+	testRedis.FlushAll(context.Background())
+	svc := NewService(testRedis.Client, idGen)
+	h := NewHook(svc, nil) // userRepo 未配線
+
+	unread := testutil.NewMockNoteUnreadRepository()
+	h.SetNoteUnreadRepo(unread)
+
+	note := &model.Note{
+		ID:             "n_nur",
+		UserID:         "bob",
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: pq.StringArray{"alice"},
+		Mentions:       pq.StringArray{"alice", "unknown"},
+	}
+	// userRepo nil のため notifyLocalUser は no-op になり、recordNoteUnreads
+	// は visibleUserIds の alice のみ採用する。
+	assert.NotPanics(t, func() {
+		h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, nil)
+	})
+	require.Len(t, unread.Rows, 1)
+	assert.Equal(t, "alice", unread.Rows[0].UserID)
+	assert.True(t, unread.Rows[0].IsSpecified)
+	assert.False(t, unread.Rows[0].IsMentioned, "userRepo 未配線のため mention 判定は保留")
+}
+
+func TestService_HasUnreadSpecifiedNotes_UsesRepoWhenSet(t *testing.T) {
+	// repo 注入時は Redis scan でなく repo.HasAnySpecified を参照する。
+	svc := NewService(testRedis.Client, idGen)
+	unread := testutil.NewMockNoteUnreadRepository()
+	svc.SetNoteUnreadRepo(unread)
+
+	// 空 repo: false
+	got, err := svc.HasUnreadSpecifiedNotes(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	// repo に行を追加 → true
+	_ = unread.Upsert(&model.NoteUnread{
+		ID: "nu1", UserID: "alice", NoteID: "n1", NoteUserID: "bob", IsSpecified: true,
+	})
+	got, err = svc.HasUnreadSpecifiedNotes(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.True(t, got)
+}
+
 func TestHook_OnFollowed(t *testing.T) {
 	h, svc, repo := newTestHook(t)
 	addLocalUser(repo, "alice", "alice")

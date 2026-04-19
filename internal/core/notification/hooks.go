@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -37,12 +38,13 @@ type UserPacker interface {
 // services. Single struct in order to share the underlying Service and
 // userRepo dependencies.
 type Hook struct {
-	svc         *Service
-	userRepo    repository.UserRepository
-	muteChecker MuteChecker
-	webpush     WebPushPublisher
-	notePacker  NotePacker
-	userPacker  UserPacker
+	svc            *Service
+	userRepo       repository.UserRepository
+	muteChecker    MuteChecker
+	webpush        WebPushPublisher
+	notePacker     NotePacker
+	userPacker     UserPacker
+	noteUnreadRepo repository.NoteUnreadRepository
 }
 
 // NewHook constructs a Hook bound to a NotificationService and userRepo.
@@ -71,6 +73,14 @@ func (h *Hook) SetPackers(u UserPacker, n NotePacker) {
 	h.notePacker = n
 }
 
+// SetNoteUnreadRepo attaches a NoteUnreadRepository so specified-visibility
+// and mention notes create note_unread rows for local recipients (#319).
+// Optional — nil disables note_unread tracking; callers fall back to the
+// notification-proxy implementation of HasUnreadSpecifiedNotes.
+func (h *Hook) SetNoteUnreadRepo(r repository.NoteUnreadRepository) {
+	h.noteUnreadRepo = r
+}
+
 // OnNoteCreated is called by note.CreateService after persisting a new note.
 // Reply/Renote/Mention の通知を非同期に作成する。
 func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
@@ -78,6 +88,16 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 		return
 	}
 	ctx := context.Background()
+
+	// note.MentionsはID/usernameが混在するため、1回DBで解決してから
+	// 両path (通知 / note_unread) で共有する。userRepo未配線なら空スライス。
+	mentionedIDs := h.resolveMentionIDs(n, author.ID)
+
+	// specified noteのvisibleUserIds / mentions経由でnote_unreadを
+	// 差し込む。通知の有無に関係なくDBに永続化するため、通知抑制 (mute等)
+	// や通知未生成のケース (visibleUserIdsに含まれるがmentionされていない
+	// ユーザー) もここで捕捉できる。
+	h.recordNoteUnreads(n, author, mentionedIDs)
 
 	// reply: 親ノートの投稿者がローカルユーザーなら通知
 	if replyTarget != nil && replyTarget.UserID != author.ID {
@@ -105,24 +125,9 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 		})
 	}
 
-	// mentions: note.Mentions はユーザーIDのリスト (またはレガシーのユーザー名)
-	for _, idOrName := range n.Mentions {
-		if idOrName == "" {
-			continue
-		}
-		// まずIDとして解決を試みる。失敗したらユーザー名として解決する。
-		mentionedID := idOrName
-		if _, err := h.userRepo.FindByID(idOrName); err != nil {
-			mentioned, err := h.userRepo.FindByUsernameLower(idOrName, nil)
-			if err != nil {
-				continue
-			}
-			mentionedID = mentioned.ID
-		}
-		if mentionedID == author.ID {
-			continue
-		}
-		// reply先と同じユーザーには replyとmentionの両方を出さない
+	// mention通知: resolveMentionIDsで解決済みのIDを使う
+	for _, mentionedID := range mentionedIDs {
+		// reply先と同じユーザーにはreplyとmentionの両方を出さない
 		if replyTarget != nil && replyTarget.UserID == mentionedID {
 			continue
 		}
@@ -134,6 +139,40 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 			NoteVisibility: string(n.Visibility),
 		})
 	}
+}
+
+// resolveMentionIDs turns n.Mentions (a mix of user IDs and usernames) into a
+// unique slice of resolved user IDs, skipping blanks, self-mentions, and
+// unresolvable entries. 空sliceを返すケース: userRepo未配線 / n.Mentionsが空
+// / 全entryが失敗。
+func (h *Hook) resolveMentionIDs(n *model.Note, authorID string) []string {
+	if h.userRepo == nil || len(n.Mentions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(n.Mentions))
+	seen := map[string]struct{}{}
+	for _, idOrName := range n.Mentions {
+		if idOrName == "" {
+			continue
+		}
+		mentionedID := idOrName
+		if _, err := h.userRepo.FindByID(idOrName); err != nil {
+			m, err := h.userRepo.FindByUsernameLower(idOrName, nil)
+			if err != nil {
+				continue
+			}
+			mentionedID = m.ID
+		}
+		if mentionedID == authorID {
+			continue
+		}
+		if _, dup := seen[mentionedID]; dup {
+			continue
+		}
+		seen[mentionedID] = struct{}{}
+		out = append(out, mentionedID)
+	}
+	return out
 }
 
 // OnFollowed records a follow notification on the followee's stream.
@@ -184,6 +223,71 @@ func (h *Hook) OnPollVote(notifieeID, notifierID, noteID string, choice int) {
 		NoteID:     noteID,
 		Choice:     &c,
 	})
+}
+
+// recordNoteUnreads inserts note_unread rows for local recipients of a
+// specified-visibility note or a note that mentions them. 本家TSの
+// noteUnreadInsert相当で、isSpecified / isMentioned flagはORで集約する
+// (upsert)。repo未配線 / noteUnreadRepo == nilのときはno-op。
+// mentionedIDsはresolveMentionIDsで解決済みのuser IDリスト。
+func (h *Hook) recordNoteUnreads(n *model.Note, author *model.User, mentionedIDs []string) {
+	if h.noteUnreadRepo == nil {
+		return
+	}
+	// targets: userID → (isSpecified, isMentioned)
+	type flags struct{ specified, mentioned bool }
+	targets := map[string]*flags{}
+	isSpecifiedNote := n.Visibility == model.NoteVisibilitySpecified
+
+	if isSpecifiedNote {
+		for _, uid := range n.VisibleUserIDs {
+			if uid == "" || uid == author.ID {
+				continue
+			}
+			t := targets[uid]
+			if t == nil {
+				t = &flags{}
+				targets[uid] = t
+			}
+			t.specified = true
+		}
+	}
+
+	for _, mentionedID := range mentionedIDs {
+		t := targets[mentionedID]
+		if t == nil {
+			t = &flags{}
+			targets[mentionedID] = t
+		}
+		t.mentioned = true
+	}
+
+	if len(targets) == 0 {
+		return
+	}
+
+	// notifieeがローカルユーザーでない場合はnote_unreadを作らない
+	// (リモートユーザーには自インスタンスのDB未読表示が発生しないため)。
+	now := time.Now()
+	for uid, f := range targets {
+		if h.userRepo != nil {
+			u, err := h.userRepo.FindByID(uid)
+			if err != nil || u == nil || u.Host != nil {
+				continue
+			}
+		}
+		row := &model.NoteUnread{
+			ID:          h.svc.idGen.Generate(now),
+			UserID:      uid,
+			NoteID:      n.ID,
+			NoteUserID:  author.ID,
+			IsSpecified: f.specified,
+			IsMentioned: f.mentioned,
+		}
+		if err := h.noteUnreadRepo.Upsert(row); err != nil {
+			slog.Warn("note_unread upsert failed", "userID", uid, "noteID", n.ID, "err", err)
+		}
+	}
 }
 
 // notifyLocalUser dispatches a notification only when the notifiee is a local
