@@ -1250,6 +1250,8 @@ func (s *Server) setupRoutes() {
 	noteCreateService.SetMainStreamPublisher(mainStreamPublisher)
 	signinHandler.SetMainStreamPublisher(mainStreamPublisher)
 	iHandler.SetMainStreamPublisher(mainStreamPublisher)
+	pagesHandler.SetMainStreamPublisher(mainStreamPublisher)
+	pagesHandler.SetUserSource(userService)
 
 	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
 	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)
@@ -1859,10 +1861,8 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, map[string]any{"items": []any{}})
 	})
 
-	// page-push — push event to page subscribers (stub)
-	api.POST("/page-push", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}, middleware.RequireAuth())
+	// page-push — page scriptが任意のeventをpage所有者のmainに emit する。
+	api.POST("/page-push", pagesHandler.PagePush, middleware.RequireAuth())
 
 	// v2/admin/emoji/list — v2はページネーション情報付きオブジェクトを返す専用ハンドラ
 	api.POST("/v2/admin/emoji/list", adminHandler.EmojiListV2, middleware.RequireAdmin(roleService))
