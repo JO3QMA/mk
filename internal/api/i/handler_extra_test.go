@@ -192,6 +192,36 @@ func TestRegenerateToken_NoProfile(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
+// stubIMainStreamPublisher captures PublishMainEvent calls for assertion.
+type stubIMainStreamPublisher struct {
+	calls []iMainEventCall
+}
+
+type iMainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubIMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, iMainEventCall{userID, eventType, body})
+}
+
+func TestRegenerateToken_PublishesMyTokenRegenerated(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	pub := &stubIMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	rec := postExtra(h.RegenerateToken, `{"password":"pass"}`, user)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "myTokenRegenerated", pub.calls[0].eventType)
+	// TS本家はbody無し (type のみ) のため nil であること。
+	assert.Nil(t, pub.calls[0].body)
+}
+
 // --- Error path tests ---
 
 type failingUpdateUserRepo struct {

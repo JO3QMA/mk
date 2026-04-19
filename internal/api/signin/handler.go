@@ -13,6 +13,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/core/captcha"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -25,16 +26,25 @@ type IPLogger interface {
 	Upsert(userID, ip string) error
 }
 
+// MainStreamPublisher emits real-time events to a single user's `main`
+// WebSocket channel. Used here to publish the `signin` event so other
+// sessions / devices of the same user learn about the new login.
+// 循環依存を避けるためinterfaceで受け取る(実装はinternal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
 // Handler handles signin-related API endpoints.
 type Handler struct {
-	userRepo        repository.UserRepository
-	webauthnSvc     *twofactor.WebAuthnService
-	securityKeyRepo repository.UserSecurityKeyRepository
-	captchaSvc      *captcha.Service
-	ipLogger        IPLogger
-	ipLoggingOn     bool
-	signinRepo      repository.SigninRepository
-	idGen           id.Generator
+	userRepo            repository.UserRepository
+	webauthnSvc         *twofactor.WebAuthnService
+	securityKeyRepo     repository.UserSecurityKeyRepository
+	captchaSvc          *captcha.Service
+	ipLogger            IPLogger
+	ipLoggingOn         bool
+	signinRepo          repository.SigninRepository
+	idGen               id.Generator
+	mainStreamPublisher MainStreamPublisher
 }
 
 // SetIPLogger attaches an IPLogger and enables IP logging.
@@ -66,6 +76,12 @@ func (h *Handler) SetCaptcha(svc *captcha.Service) {
 func (h *Handler) SetWebAuthn(svc *twofactor.WebAuthnService, repo repository.UserSecurityKeyRepository) {
 	h.webauthnSvc = svc
 	h.securityKeyRepo = repo
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit the `signin`
+// event after a successful login. Optional — nil disables emit.
+func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
+	h.mainStreamPublisher = p
 }
 
 // Signin handles POST /api/signin.
@@ -307,6 +323,12 @@ func (h *Handler) recordSignin(userID, ip string, headers http.Header) {
 	}
 	if err := h.signinRepo.Create(s); err != nil {
 		slog.Warn("failed to record signin", "userId", userID, "err", err)
+		return
+	}
+	// TS本家 SigninService.ts:49 と同じく、signin成功後にmainへ publish する。
+	// multi-device間で新規ログインを即時同期する用途。
+	if h.mainStreamPublisher != nil {
+		h.mainStreamPublisher.PublishMainEvent(userID, "signin", entity.PackSignin(s, h.idGen))
 	}
 }
 

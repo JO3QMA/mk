@@ -134,6 +134,12 @@ func (h *Handler) RegenerateToken(c echo.Context) error {
 	if err := h.userService.UpdateUserFields(u.ID, map[string]any{"token": newToken}); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	// TS本家 regenerate-token.ts:60 と同じく、 token 再生成成功後に main へ
+	// publish する。body は無し (type のみで、他セッションは token 無効化を
+	// 検知してログアウトする用途)。
+	if h.mainStreamPublisher != nil {
+		h.mainStreamPublisher.PublishMainEvent(u.ID, "myTokenRegenerated", nil)
+	}
 	return c.JSON(http.StatusOK, map[string]any{"token": newToken})
 }
 
