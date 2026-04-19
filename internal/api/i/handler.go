@@ -341,7 +341,7 @@ func (h *Handler) Me(c echo.Context) error {
 
 	profile := h.userService.GetProfile(u.ID)
 
-	detailed := entity.PackUserDetailed(u, profile)
+	detailed := entity.PackUserDetailed(u, profile, h.idGen)
 
 	// /api/i returns additional private fields
 	resp := map[string]any{
@@ -636,7 +636,7 @@ func (h *Handler) Update(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile))
+	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile, h.idGen))
 }
 
 // PinRequest is the request body for i/pin and i/unpin.

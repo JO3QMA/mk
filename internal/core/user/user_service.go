@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -39,12 +40,21 @@ var (
 	ErrPinNotFound = errors.New("pin not found")
 )
 
+// MainStreamPublisher emits real-time events to a single target user's `main`
+// WebSocket channel. Used here for `meUpdated` so the frontend can reflect
+// profile changes immediately. 循環依存を避けるため interface で受け取る
+// (実装は internal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
 // Service provides user-related business logic.
 type Service struct {
-	userRepo   repository.UserRepository
-	noteRepo   repository.NoteRepository
-	piningRepo repository.UserNotePiningRepository
-	idGen      id.Generator
+	userRepo            repository.UserRepository
+	noteRepo            repository.NoteRepository
+	piningRepo          repository.UserNotePiningRepository
+	idGen               id.Generator
+	mainStreamPublisher MainStreamPublisher
 }
 
 // NewService creates a new user Service.
@@ -62,6 +72,12 @@ func NewService(
 		piningRepo: piningRepo,
 		idGen:      idGen,
 	}
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `main` channel
+// events (currently `meUpdated`). Optional — nil disables emit.
+func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
+	s.mainStreamPublisher = p
 }
 
 // UserWithProfile bundles a user and its profile for handlers.
@@ -213,7 +229,22 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 		return nil, err
 	}
 
-	return s.ShowByID(userID)
+	bundle, err := s.ShowByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	// TS本家 UserEntityService.updateMe() 完了後に `meUpdated` を自分の main
+	// に publish する (プロフィールページ / UI 側 state を即時再描画させる
+	// ため)。body は packed UserDetailed full object。profile update は
+	// 頻度が低いので hot path 最適化は不要で full pack する。
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(
+			userID,
+			"meUpdated",
+			entity.PackUserDetailed(bundle.User, bundle.Profile, s.idGen),
+		)
+	}
+	return bundle, nil
 }
 
 // PinNote pins the given note to the user's profile.
