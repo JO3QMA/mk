@@ -248,6 +248,8 @@ func (s *Service) Timeline(channelID, untilID, sinceID string, limit int) ([]*mo
 // hasUnreadChannel. Best-effort: errors are ignored.
 //
 // 呼び出し元: NoteCreateService 経由 (ChannelHook interface 経由で疎結合)。
+// note.CreateService は safeGo でこのメソッドを呼ぶため、フォロワー数が
+// 多いチャンネルでもループ全体が note 作成のレスポンスをブロックしない。
 // authorID は自身の投稿を自身の未読にしないための除外キー。
 func (s *Service) OnNotePosted(channelID, noteID, authorID string) {
 	now := s.clock()
@@ -256,22 +258,38 @@ func (s *Service) OnNotePosted(channelID, noteID, authorID string) {
 	if s.unreadRepo == nil || noteID == "" {
 		return
 	}
-	// follower ID 一覧を取得して、author 以外にunreadをinsertする。
-	// Limit 1000は popular channel 対策 (TS は pipeline 化するが Go では
-	// sequentialで十分 / 大規模時は別 issue でbatch化検討)。
-	followerIDs, err := s.followingRepo.ListFollowerIDs(channelID, 1000)
-	if err != nil {
-		return
-	}
-	for _, fid := range followerIDs {
-		if fid == authorID {
-			continue
+	// cursor-based pagination で全フォロワーを走査する (#320)。1 page ごとに
+	// bulk INSERT ... ON CONFLICT DO NOTHING するため、popular channel でも
+	// O(followers / batchSize) 回のラウンドトリップで fanout 完了する。
+	const batchSize = 500
+	cursor := ""
+	for {
+		ids, next, err := s.followingRepo.ListFollowerIDsPage(channelID, cursor, batchSize)
+		if err != nil {
+			return
 		}
-		_ = s.unreadRepo.Create(&model.ChannelNoteUnread{
-			ID:        s.idGen.Generate(now),
-			ChannelID: channelID,
-			NoteID:    noteID,
-			UserID:    fid,
-		})
+		if len(ids) == 0 {
+			return
+		}
+		rows := make([]*model.ChannelNoteUnread, 0, len(ids))
+		for _, fid := range ids {
+			if fid == authorID {
+				continue
+			}
+			rows = append(rows, &model.ChannelNoteUnread{
+				ID:        s.idGen.Generate(now),
+				ChannelID: channelID,
+				NoteID:    noteID,
+				UserID:    fid,
+			})
+		}
+		if len(rows) > 0 {
+			_ = s.unreadRepo.CreateMany(rows)
+		}
+		// 最終ページ (limit 未満) に達したら終了。
+		if len(ids) < batchSize {
+			return
+		}
+		cursor = next
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -448,6 +449,76 @@ func TestService_HasUnreadSpecifiedNotes_NoMatch(t *testing.T) {
 	ok, err := svc.HasUnreadSpecifiedNotes(ctx, "alice")
 	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+func TestService_UnreadSummary_AggregatesCountMentionsSpecified(t *testing.T) {
+	// #321: 1 度の UnreadSummary で 3 値を集約できることを確認する。
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID:     "alice",
+		NotifierID:     "bob",
+		Type:           TypeMention,
+		NoteID:         "n1",
+		NoteVisibility: "specified",
+	})
+	require.NoError(t, err)
+	_, err = svc.Create(ctx, CreateInput{NotifieeID: "alice", Type: TypeFollow, NotifierID: "carol"})
+	require.NoError(t, err)
+
+	summary, err := svc.UnreadSummary(ctx, "alice", []Type{TypeMention, TypeReply})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), summary.TotalCount)
+	assert.True(t, summary.HasMentions, "mention 1 件あるので true")
+	assert.True(t, summary.HasSpecifiedNote, "specified note の mention あり")
+}
+
+func TestService_UnreadSummary_NoMentionTypesSkipsMentionPass(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID:     "alice",
+		NotifierID:     "bob",
+		Type:           TypeMention,
+		NoteID:         "n1",
+		NoteVisibility: "public",
+	})
+	require.NoError(t, err)
+
+	// mentionTypes nil → HasMentions は常に false。count / specified のみ計算。
+	summary, err := svc.UnreadSummary(ctx, "alice", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), summary.TotalCount)
+	assert.False(t, summary.HasMentions)
+	assert.False(t, summary.HasSpecifiedNote)
+}
+
+func TestService_UnreadSummary_EmptyStream(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+	summary, err := svc.UnreadSummary(ctx, "alice", []Type{TypeMention})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), summary.TotalCount)
+	assert.False(t, summary.HasMentions)
+	assert.False(t, summary.HasSpecifiedNote)
+}
+
+func TestService_UnreadSummary_UsesNoteUnreadRepoForSpecified(t *testing.T) {
+	// noteUnreadRepo が wired なら stream に specified note が無くても
+	// DB 経由で HasSpecifiedNote=true になる (本家互換経路 #319)。
+	svc := newTestSvc(t)
+	ctx := context.Background()
+	unread := testutil.NewMockNoteUnreadRepository()
+	svc.SetNoteUnreadRepo(unread)
+	_ = unread.Upsert(&model.NoteUnread{
+		ID: "nu1", UserID: "alice", NoteID: "n1", NoteUserID: "bob", IsSpecified: true,
+	})
+
+	summary, err := svc.UnreadSummary(ctx, "alice", []Type{TypeMention})
+	require.NoError(t, err)
+	assert.True(t, summary.HasSpecifiedNote)
 }
 
 func TestService_HasUnreadOfTypes_EmptyList(t *testing.T) {

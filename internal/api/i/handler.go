@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -106,10 +107,10 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 // hasUnreadMentions / hasUnreadSpecifiedNotes. Keeping this as a local
 // interface avoids pulling core/notification into the handler test harness
 // and lets the tests inject a stub.
+//
+// 3 フラグを 1 度の Redis scan で集約する UnreadSummary を採用済み (#321)。
 type UnreadNotificationSource interface {
-	UnreadCount(ctx context.Context, userID string) (int64, error)
-	HasUnreadOfTypes(ctx context.Context, userID string, types []notification.Type) (bool, error)
-	HasUnreadSpecifiedNotes(ctx context.Context, userID string) (bool, error)
+	UnreadSummary(ctx context.Context, userID string, mentionTypes []notification.Type) (notification.UnreadSummary, error)
 }
 
 // AntennaUnreadSource reports whether a user has any unread antenna notes.
@@ -773,22 +774,22 @@ func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[
 	resp["hasUnreadChannel"] = false
 	resp["hasUnreadSpecifiedNotes"] = false
 
-	// Notification (Redis Streams)
+	// Notification (Redis Streams): 1 回の UnreadSummary で 3 値を集約する
+	// (#321)。従来は UnreadCount / HasUnreadOfTypes / HasUnreadSpecifiedNotes
+	// の 3 XRevRange scan に分かれていたが、hot path 最適化のため統合した。
+	// err 時も summary に格納済みの部分結果は採用する (Redis 成功 + DB 失敗
+	// で mentions 判定までは保持する partial resilience)。
 	if h.notificationSvc != nil {
-		if n, err := h.notificationSvc.UnreadCount(ctx, u.ID); err == nil {
-			resp["unreadNotificationsCount"] = n
-			resp["hasUnreadNotification"] = n > 0
-		}
-		// hasUnreadMentions: 未読 notification のうち type=mention / reply
-		if ok, err := h.notificationSvc.HasUnreadOfTypes(ctx, u.ID, []notification.Type{
+		summary, err := h.notificationSvc.UnreadSummary(ctx, u.ID, []notification.Type{
 			notification.TypeMention, notification.TypeReply,
-		}); err == nil {
-			resp["hasUnreadMentions"] = ok
+		})
+		if err != nil {
+			slog.Warn("UnreadSummary partial failure", "userID", u.ID, "err", err)
 		}
-		// hasUnreadSpecifiedNotes: NoteVisibility=="specified" のunread有無
-		if ok, err := h.notificationSvc.HasUnreadSpecifiedNotes(ctx, u.ID); err == nil {
-			resp["hasUnreadSpecifiedNotes"] = ok
-		}
+		resp["unreadNotificationsCount"] = summary.TotalCount
+		resp["hasUnreadNotification"] = summary.TotalCount > 0
+		resp["hasUnreadMentions"] = summary.HasMentions
+		resp["hasUnreadSpecifiedNotes"] = summary.HasSpecifiedNote
 	}
 
 	// FollowRequest (DB)

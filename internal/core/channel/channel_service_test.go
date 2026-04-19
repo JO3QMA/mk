@@ -2,6 +2,7 @@ package channel_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -374,6 +375,56 @@ func TestOnNotePosted_FansOutUnreadToFollowers(t *testing.T) {
 	assert.Equal(t, "alice", unread.Rows[0].UserID)
 	assert.Equal(t, "c1", unread.Rows[0].ChannelID)
 	assert.Equal(t, "n1", unread.Rows[0].NoteID)
+}
+
+func TestOnNotePosted_FansOutUnreadToManyFollowersAcrossPages(t *testing.T) {
+	// #320: 1000 を超えるフォロワー数でも全員に unread row が作られることを確認。
+	svc, repo, followRepo, _ := newSvc(t)
+	repo.Channels["c1"] = &model.Channel{ID: "c1"}
+	const n = 1500
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("f_%05d", i)
+		userID := fmt.Sprintf("u_%05d", i)
+		followRepo.Followings[id] = &model.ChannelFollowing{ID: id, FollowerID: userID, FolloweeID: "c1"}
+	}
+	unread := testutil.NewMockChannelNoteUnreadRepository()
+	svc.SetUnreadRepo(unread)
+
+	svc.OnNotePosted("c1", "n1", "author")
+
+	// 全 1500 followers に対応する unread row が作られる
+	require.Len(t, unread.Rows, n)
+	// ユーザーが重複していないこと
+	seen := map[string]struct{}{}
+	for _, r := range unread.Rows {
+		assert.Equal(t, "c1", r.ChannelID)
+		assert.Equal(t, "n1", r.NoteID)
+		_, dup := seen[r.UserID]
+		assert.False(t, dup, "userID %s is duplicated across pages", r.UserID)
+		seen[r.UserID] = struct{}{}
+	}
+}
+
+func TestOnNotePosted_FansOutSkipsAuthorAcrossPages(t *testing.T) {
+	// 作者 ID はどのページに入ってもスキップされる。
+	svc, repo, followRepo, _ := newSvc(t)
+	repo.Channels["c1"] = &model.Channel{ID: "c1"}
+	for i := 0; i < 600; i++ {
+		id := fmt.Sprintf("f_%05d", i)
+		userID := fmt.Sprintf("u_%05d", i)
+		followRepo.Followings[id] = &model.ChannelFollowing{ID: id, FollowerID: userID, FolloweeID: "c1"}
+	}
+	authorID := "u_00501"
+	unread := testutil.NewMockChannelNoteUnreadRepository()
+	svc.SetUnreadRepo(unread)
+
+	svc.OnNotePosted("c1", "n1", authorID)
+
+	// 599 行 (著者以外)
+	require.Len(t, unread.Rows, 599)
+	for _, r := range unread.Rows {
+		assert.NotEqual(t, authorID, r.UserID)
+	}
 }
 
 func TestOnNotePosted_NoUnreadRepoSkipsFanout(t *testing.T) {
