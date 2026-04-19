@@ -11,6 +11,7 @@ import (
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -22,6 +23,7 @@ type Handler struct {
 	fileRepo   repository.DriveFileRepository
 	folderRepo repository.DriveFolderRepository
 	noteRepo   repository.NoteRepository
+	userRepo   repository.UserRepository
 }
 
 // NewHandler creates a new drive Handler.
@@ -34,6 +36,33 @@ func (h *Handler) SetRepos(fileRepo repository.DriveFileRepository, folderRepo r
 	h.fileRepo = fileRepo
 	h.folderRepo = folderRepo
 	h.noteRepo = noteRepo
+}
+
+// SetUserRepo attaches a UserRepository so drive file responses can embed
+// the owning user as `user` (TS schema: DriveFile.user: UserLite). Without
+// it the `user` field is omitted.
+func (h *Handler) SetUserRepo(r repository.UserRepository) {
+	h.userRepo = r
+}
+
+// packDriveFileFull packs a drive file and, when repositories are wired,
+// embeds the owning folder/user as nested objects. Matches Misskey's
+// packDriveFileSchema which exposes both `folder` and `user`.
+func (h *Handler) packDriveFileFull(f *model.DriveFile) entity.DriveFileEntity {
+	out := entity.PackDriveFile(f, h.idGen)
+	if h.folderRepo != nil && f.FolderID != nil {
+		if folder, err := h.folderRepo.FindByID(*f.FolderID); err == nil && folder != nil {
+			packed := entity.PackDriveFolder(folder, h.idGen)
+			out.Folder = &packed
+		}
+	}
+	if h.userRepo != nil && f.UserID != nil {
+		if u, err := h.userRepo.FindByID(*f.UserID); err == nil && u != nil {
+			lite := entity.PackUserLite(u)
+			out.User = &lite
+		}
+	}
+	return out
 }
 
 // readMultipartFile extracts the uploaded file's bytes and original filename.
@@ -93,7 +122,7 @@ func (h *Handler) FilesCreate(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, entity.PackDriveFile(f, h.idGen))
+	return c.JSON(http.StatusOK, h.packDriveFileFull(f))
 }
 
 // FileIDRequest is the body for show/delete and similar single-file ops.
@@ -112,7 +141,7 @@ func (h *Handler) FilesShow(c echo.Context) error {
 	if err != nil {
 		return mapFileError(c, err)
 	}
-	return c.JSON(http.StatusOK, entity.PackDriveFile(f, h.idGen))
+	return c.JSON(http.StatusOK, h.packDriveFileFull(f))
 }
 
 // FilesUpdateRequest is the body for drive/files/update.
@@ -153,7 +182,7 @@ func (h *Handler) FilesUpdate(c echo.Context) error {
 	if err != nil {
 		return mapFileError(c, err)
 	}
-	return c.JSON(http.StatusOK, entity.PackDriveFile(f, h.idGen))
+	return c.JSON(http.StatusOK, h.packDriveFileFull(f))
 }
 
 // FilesDelete handles POST /api/drive/files/delete.
@@ -185,7 +214,7 @@ func (h *Handler) FilesFindByHash(c echo.Context) error {
 	if err != nil {
 		return mapFileError(c, err)
 	}
-	return c.JSON(http.StatusOK, []entity.DriveFileEntity{entity.PackDriveFile(f, h.idGen)})
+	return c.JSON(http.StatusOK, []entity.DriveFileEntity{h.packDriveFileFull(f)})
 }
 
 // FoldersCreateRequest is the body for drive/folders/create.
@@ -339,7 +368,7 @@ func (h *Handler) FilesList(c echo.Context) error {
 	}
 	out := make([]entity.DriveFileEntity, 0, len(files))
 	for _, f := range files {
-		out = append(out, entity.PackDriveFile(f, h.idGen))
+		out = append(out, h.packDriveFileFull(f))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -363,7 +392,7 @@ func (h *Handler) FilesFind(c echo.Context) error {
 	}
 	out := make([]entity.DriveFileEntity, 0, len(files))
 	for _, f := range files {
-		out = append(out, entity.PackDriveFile(f, h.idGen))
+		out = append(out, h.packDriveFileFull(f))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -458,7 +487,7 @@ func (h *Handler) Stream(c echo.Context) error {
 	}
 	out := make([]entity.DriveFileEntity, 0, len(files))
 	for _, f := range files {
-		out = append(out, entity.PackDriveFile(f, h.idGen))
+		out = append(out, h.packDriveFileFull(f))
 	}
 	return c.JSON(http.StatusOK, out)
 }

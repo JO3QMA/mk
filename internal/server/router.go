@@ -1049,6 +1049,7 @@ func (s *Server) setupRoutes() {
 	// Drive endpoints
 	driveHandler := drive.NewHandler(driveService, idGen)
 	driveHandler.SetRepos(driveFileRepo, driveFolderRepo, noteRepo)
+	driveHandler.SetUserRepo(userRepo)
 	api.POST("/drive", driveHandler.Usage, middleware.RequireAuth())
 	api.POST("/drive/files", driveHandler.FilesList, middleware.RequireAuth())
 	api.POST("/drive/files/create", driveHandler.FilesCreate, middleware.RequireAuth())
