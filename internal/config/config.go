@@ -479,6 +479,11 @@ func resolve(src *Source) (*Config, error) {
 			"url", cfg.URL)
 	}
 
+	if cfg.EnablePprof {
+		slog.Warn("config: EnablePprof is enabled; /debug/pprof/* endpoints expose runtime internals. DO NOT enable this in production.",
+			"url", cfg.URL)
+	}
+
 	// HTTP socket と TCP port は両立しない。両方設定されていた場合は
 	// socket を優先する旨警告ログを出し、運用者に気付けるようにする。
 	if cfg.Socket != "" && cfg.Port != 0 {
