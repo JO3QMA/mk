@@ -36,10 +36,14 @@ type WebFingerClient struct {
 }
 
 // NewWebFingerClient constructs a WebFingerClient. Pass nil for httpClient to
-// use http.DefaultClient.
+// get a fresh `&http.Client{}` dedicated to WebFinger.
+//
+// http.DefaultClient をデフォルトにしないのは、別所で `DisableRedirect()` 等で
+// グローバル DefaultClient が汚染されるのを拾うのを防ぐため。WebFinger は
+// RFC 7033 §4.2 で redirect を追う必要があるので分離しておきたい。
 func NewWebFingerClient(httpClient *http.Client, userAgent string) *WebFingerClient {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{}
 	}
 	return &WebFingerClient{httpClient: httpClient, userAgent: userAgent}
 }
