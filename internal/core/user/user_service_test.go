@@ -87,6 +87,109 @@ func TestService_ShowByUsername_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, user.ErrUserNotFound))
 }
 
+// stubRemoteResolver implements user.RemoteUserResolver for unit tests.
+type stubRemoteResolver struct {
+	calls []struct{ username, host string }
+	user  *model.User
+	err   error
+}
+
+func (s *stubRemoteResolver) ResolveByUsernameHost(username, host string) (*model.User, error) {
+	s.calls = append(s.calls, struct{ username, host string }{username, host})
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.user, nil
+}
+
+func TestService_ShowByUsername_RemoteFallback_NoResolver_ReturnsErrUserNotFound(t *testing.T) {
+	// host が指定されていても resolver が未注入なら従来どおり ErrUserNotFound
+	// を返すこと (後方互換)。
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+
+	host := "remote.example"
+	_, err := svc.ShowByUsername("ghost", &host)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, user.ErrUserNotFound))
+}
+
+func TestService_ShowByUsername_RemoteFallback_EmptyHostIgnoresResolver(t *testing.T) {
+	// host が空文字列の場合は resolver を呼ばずに ErrUserNotFound を返す。
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+	resolver := &stubRemoteResolver{}
+	svc.SetRemoteUserResolver(resolver)
+
+	empty := ""
+	_, err := svc.ShowByUsername("ghost", &empty)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, user.ErrUserNotFound))
+	assert.Empty(t, resolver.calls)
+}
+
+func TestService_ShowByUsername_RemoteFallback_ResolverSucceeds(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+	host := "remote.example"
+	resolved := &model.User{ID: "u9", Username: "remote", UsernameLower: "remote", Host: &host}
+	resolver := &stubRemoteResolver{user: resolved}
+	svc.SetRemoteUserResolver(resolver)
+
+	desc := "imported"
+	repo.Profiles["u9"] = &model.UserProfile{UserID: "u9", Description: &desc}
+
+	bundle, err := svc.ShowByUsername("remote", &host)
+	require.NoError(t, err)
+	assert.Equal(t, "u9", bundle.User.ID)
+	require.NotNil(t, bundle.Profile)
+	assert.Equal(t, "imported", *bundle.Profile.Description)
+	require.Len(t, resolver.calls, 1)
+	assert.Equal(t, "remote", resolver.calls[0].username)
+	assert.Equal(t, host, resolver.calls[0].host)
+}
+
+func TestService_ShowByUsername_RemoteFallback_ResolverFails(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+	resolver := &stubRemoteResolver{err: errors.New("webfinger: dial timeout")}
+	svc.SetRemoteUserResolver(resolver)
+
+	host := "remote.example"
+	_, err := svc.ShowByUsername("ghost", &host)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, user.ErrFailedToResolveRemoteUser))
+	require.Len(t, resolver.calls, 1)
+}
+
+func TestService_ShowByUsername_RemoteFallback_ResolverReturnsNil(t *testing.T) {
+	// resolver が (nil, nil) を返した場合も失敗扱いにする (防御的実装)。
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+	resolver := &stubRemoteResolver{user: nil}
+	svc.SetRemoteUserResolver(resolver)
+
+	host := "remote.example"
+	_, err := svc.ShowByUsername("ghost", &host)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, user.ErrFailedToResolveRemoteUser))
+}
+
+func TestService_ShowByUsername_LocalHit_ResolverNotCalled(t *testing.T) {
+	// ローカル DB hit の場合は resolver を呼ばずに即返す。
+	repo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	repo.Users["u3"] = &model.User{ID: "u3", Username: "cached", UsernameLower: "cached", Host: &host}
+	svc := user.NewService(repo, nil, nil, nil)
+	resolver := &stubRemoteResolver{err: errors.New("should not be called")}
+	svc.SetRemoteUserResolver(resolver)
+
+	bundle, err := svc.ShowByUsername("cached", &host)
+	require.NoError(t, err)
+	assert.Equal(t, "u3", bundle.User.ID)
+	assert.Empty(t, resolver.calls)
+}
+
 func TestService_GetProfile_Found(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
 	desc := "hi"

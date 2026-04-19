@@ -383,6 +383,18 @@ func (s *Server) setupRoutes() {
 	federationResolver.SetPollRepo(pollRepo)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 
+	// users/show 経由で host が指定されたリモートユーザーをローカル DB に
+	// キャッシュが無くても解決できるようにする (#269)。webfinger で actor URI
+	// を引いてから federationResolver.ResolveActor で User row を upsert する。
+	localHost := ""
+	if u, err := urlpkg.Parse(s.config.URL); err == nil {
+		localHost = u.Host
+	}
+	webfingerClient := activitypub.NewWebFingerClient(nil, s.config.UserAgent)
+	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
+		webfingerClient, federationResolver, userRepo, localHost,
+	))
+
 	// Instance management (Phase 3 Step H)
 	instanceService := coreinstance.NewService(instanceRepo, metaRepo, idGen)
 	federationResolver.SetInstanceTracker(instanceService)
