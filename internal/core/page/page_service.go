@@ -130,6 +130,18 @@ func (s *Service) Create(in CreateInput) (*model.Page, error) {
 	return p, nil
 }
 
+// FindByID returns a page by id without any visibility check. Intended
+// for endpoints that need raw access regardless of visibility (e.g.
+// /api/page-push, which matches the TS original's behaviour of skipping
+// permission checks). Returns ErrPageNotFound when the row is missing.
+func (s *Service) FindByID(pageID string) (*model.Page, error) {
+	p, err := s.repo.FindByID(pageID)
+	if err != nil {
+		return nil, ErrPageNotFound
+	}
+	return p, nil
+}
+
 // Show returns a page by id. requesterID は閲覧者で、空文字なら anonymous
 // 扱い。followers / specified visibility のページは所有者だけがアクセスできる
 // (簡易実装。フォロー判定や visibleUserIds の評価はフェーズ後半で拡張)。

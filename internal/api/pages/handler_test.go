@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	corepage "github.com/shiroha-a/mk/internal/core/page"
+	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -497,4 +498,101 @@ func TestUnlike_RepoError(t *testing.T) {
 	setUser(c, "bob")
 	require.NoError(t, h.Unlike(c))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- PagePush --------------------------------------------------------------
+
+type stubMainStreamPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+type stubUserSource struct {
+	bundle *coreuser.UserWithProfile
+	err    error
+}
+
+func (s *stubUserSource) ShowByID(_ string) (*coreuser.UserWithProfile, error) {
+	return s.bundle, s.err
+}
+
+func TestPagePush_PublishesPageEvent(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	h.SetUserSource(&stubUserSource{
+		bundle: &coreuser.UserWithProfile{User: &model.User{ID: "alice", Username: "alice"}},
+	})
+	// public pageでh.svc.FindByIDがsuccess扱い。
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner", Name: "test", Visibility: model.PageVisibilityPublic}
+
+	c, rec := newReq(t, `{"pageId":"p1","event":"click","var":{"x":1}}`)
+	setUser(c, "alice")
+	require.NoError(t, h.PagePush(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "owner", pub.calls[0].userID)
+	assert.Equal(t, "pageEvent", pub.calls[0].eventType)
+	body, ok := pub.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "p1", body["pageId"])
+	assert.Equal(t, "click", body["event"])
+	assert.Equal(t, "alice", body["userId"])
+	// varはjson.RawMessageとして透過(non-nilであること確認)
+	assert.NotNil(t, body["var"])
+}
+
+func TestPagePush_PageNotFound(t *testing.T) {
+	h, _, _ := newHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	h.SetUserSource(&stubUserSource{bundle: &coreuser.UserWithProfile{User: &model.User{ID: "alice"}}})
+
+	c, rec := newReq(t, `{"pageId":"ghost","event":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.PagePush(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Empty(t, pub.calls)
+}
+
+func TestPagePush_InvalidParam(t *testing.T) {
+	h, _, _ := newHandler(t)
+	c, rec := newReq(t, `{"pageId":""}`)
+	setUser(c, "alice")
+	require.NoError(t, h.PagePush(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPagePush_NoPublisher_NoEmit(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner", Visibility: model.PageVisibilityPublic}
+	// publisher / userSource未設定でも204を返すこと
+	c, rec := newReq(t, `{"pageId":"p1","event":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.PagePush(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestPagePush_UserSourceError_NoEmit(t *testing.T) {
+	h, repo, _ := newHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	h.SetUserSource(&stubUserSource{err: errors.New("boom")})
+	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "owner", Visibility: model.PageVisibilityPublic}
+
+	c, rec := newReq(t, `{"pageId":"p1","event":"x"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.PagePush(c))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, pub.calls)
 }

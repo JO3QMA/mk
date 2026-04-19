@@ -9,22 +9,54 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	corepage "github.com/shiroha-a/mk/internal/core/page"
+	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
+// MainStreamPublisher emits events to a user's `main` WebSocket channel.
+// Used here to publish `pageEvent` when /api/page-push is called so the
+// page owner's UI can react to custom events emitted from the page script.
+// Accepted as an interface to avoid importing internal/stream here
+// (循環依存回避)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
+// UserBundleSource fetches a user + profile bundle used to pack the caller
+// for the `pageEvent` body. Narrow interface — satisfied by
+// *core/user.Service.
+type UserBundleSource interface {
+	ShowByID(id string) (*coreuser.UserWithProfile, error)
+}
+
 // Handler handles page-related API endpoints.
 type Handler struct {
-	svc   *corepage.Service
-	idGen id.Generator
+	svc                 *corepage.Service
+	idGen               id.Generator
+	mainStreamPublisher MainStreamPublisher
+	userSource          UserBundleSource
 }
 
 // NewHandler creates a new pages Handler. idGen is required so that
 // responses include createdAt derived from the aidx-encoded page ID.
 func NewHandler(svc *corepage.Service, idGen id.Generator) *Handler {
 	return &Handler{svc: svc, idGen: idGen}
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `pageEvent` on
+// /api/page-push. Optional — nil disables emit.
+func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
+	h.mainStreamPublisher = p
+}
+
+// SetUserSource attaches a user bundle fetcher used to pack the caller in
+// `pageEvent` bodies. Optional — without it page-push returns 204 without
+// emitting (caller info missing).
+func (h *Handler) SetUserSource(s UserBundleSource) {
+	h.userSource = s
 }
 
 // CreateRequest is the request body for pages/create. Content / Variables
@@ -264,6 +296,62 @@ func (h *Handler) Like(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// PagePushRequest is the request body for /api/page-push.
+type PagePushRequest struct {
+	PageID string          `json:"pageId"`
+	Event  string          `json:"event"`
+	Var    json.RawMessage `json:"var"`
+}
+
+// PagePush handles POST /api/page-push. Triggered by page scripts to emit
+// a custom event to the page owner's `main` WebSocket channel. Body shape
+// mirrors the Misskey original endpoints/page-push.ts
+// (pageId / event / var / userId / user).
+func (h *Handler) PagePush(c echo.Context) error {
+	caller := middleware.GetUser(c)
+	var req PagePushRequest
+	if err := c.Bind(&req); err != nil || req.PageID == "" || req.Event == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+	// TS本家はfindOneByのみで可視性チェックをしないのでFindByIDを
+	// 使って合わせる。見つからなければ404に丸め、存在するIDだけに
+	// emitする。
+	p, err := h.svc.FindByID(req.PageID)
+	if err != nil {
+		return notFound(c)
+	}
+	if h.mainStreamPublisher == nil || h.userSource == nil {
+		// 配線未完了ならemitせず204を返す(API互換のため)。
+		return c.NoContent(http.StatusNoContent)
+	}
+	bundle, err := h.userSource.ShowByID(caller.ID)
+	if err != nil || bundle == nil || bundle.User == nil {
+		// bundle.Userは現実装のShowByIDでは常にnon-nilだが、interface
+		// 経由で将来実装が変わる可能性に備えて防御的にcheck。
+		return c.NoContent(http.StatusNoContent)
+	}
+	body := map[string]any{
+		"pageId": p.ID,
+		"event":  req.Event,
+		"var":    rawJSONBytes(req.Var),
+		"userId": caller.ID,
+		"user":   entity.PackUserDetailed(bundle.User, bundle.Profile, h.idGen),
+	}
+	h.mainStreamPublisher.PublishMainEvent(p.UserID, "pageEvent", body)
+	return c.NoContent(http.StatusNoContent)
+}
+
+// rawJSONBytes returns b as json.RawMessage, or nil when empty. Empty
+// bytes are mapped to nil so that json.Marshal serialises the field as
+// null — matching the TS original's behaviour of sending `undefined`
+// when the optional `var` parameter is omitted.
+func rawJSONBytes(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
 }
 
 // Unlike handles POST /api/pages/unlike.
