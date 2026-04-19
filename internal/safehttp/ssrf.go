@@ -79,6 +79,12 @@ func NewSSRFSafeTransport(allowedCIDRs []string) *http.Transport {
 			if err != nil {
 				return nil, fmt.Errorf("safehttp: DNS lookup failed for %q: %w", host, err)
 			}
+			// resolver が nil err で空 slice を返すケースはGoでは事実上起こら
+			// ないが DialContext contract (必ず conn か err を返す) 維持のため
+			// 明示的に error にする (defensive)。
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("safehttp: no IP addresses resolved for %q", host)
+			}
 
 			// 全解決IPがプライベートでないか検証
 			for _, ipAddr := range ips {
