@@ -4,6 +4,7 @@ package user
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -241,12 +242,14 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 }
 
 // publishMeUpdated emits `meUpdated` to the user's main channel with the
-// packed UserDetailed object. No-op when no publisher is attached. profile
-// update / pin / unpin は頻度が低く hot path ではないため full pack する。
+// packed UserDetailed object. No-op when no publisher is attached or the
+// bundle is missing its User.
 func (s *Service) publishMeUpdated(bundle *UserWithProfile) {
 	if s.mainStreamPublisher == nil || bundle == nil || bundle.User == nil {
 		return
 	}
+	// profile update / pin / unpin は頻度が低く hot path ではないため
+	// full pack する (UserLite ではなく UserDetailed)。
 	s.mainStreamPublisher.PublishMainEvent(
 		bundle.User.ID,
 		"meUpdated",
@@ -291,6 +294,8 @@ func (s *Service) PinNote(userID, noteID string) error {
 	// ShowByID 失敗は emit 省略、pin 自体の成功は返す。
 	if bundle, err := s.ShowByID(userID); err == nil {
 		s.publishMeUpdated(bundle)
+	} else {
+		slog.Warn("user.PinNote: ShowByID failed, skipping meUpdated emit", "userID", userID, "err", err)
 	}
 	return nil
 }
@@ -305,8 +310,12 @@ func (s *Service) UnpinNote(userID, noteID string) error {
 	if err := s.piningRepo.Delete(p); err != nil {
 		return err
 	}
+	// pin と同じく best-effort emit。ShowByID 失敗時は警告ログに
+	// 記録するが unpin 自体の成功は返す。
 	if bundle, err := s.ShowByID(userID); err == nil {
 		s.publishMeUpdated(bundle)
+	} else {
+		slog.Warn("user.UnpinNote: ShowByID failed, skipping meUpdated emit", "userID", userID, "err", err)
 	}
 	return nil
 }
