@@ -18,8 +18,9 @@ type InstanceResolver struct {
 }
 
 // NewInstanceResolver extracts the set of remote hosts referenced by `users`
-// and fetches their Instance rows in a single query. Missing hosts are cached
-// as nil so repeated Resolve calls do not trigger extra work.
+// and fetches their Instance rows in a single query. Hosts absent from the
+// lookup result stay out of the cache; `Resolve` then returns the map zero
+// value (`nil`) for them, avoiding any repeat fetch.
 //
 // lookup が nil なら cache は空 (Resolve は常に nil を返す) のリゾルバを返す。
 // users は可変長で reply/renote のユーザーもまとめて渡せる。

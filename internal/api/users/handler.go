@@ -438,18 +438,35 @@ func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]relationItem, 0, len(rows))
+	// 一旦 bundle を全件集めてから resolver を 1 度構築する。ShowByID は
+	// N+1 のままだが、instance は batch 1 回に集約できる (#277)。
+	type resolved struct {
+		f      *model.Following
+		bundle *user.UserWithProfile
+	}
+	pending := make([]resolved, 0, len(rows))
+	remoteUsers := make([]*model.User, 0, len(rows))
 	for _, f := range rows {
-		// カーソルベースページネーション
 		if req.SinceID != "" && f.ID <= req.SinceID {
 			continue
 		}
 		if req.UntilID != "" && f.ID >= req.UntilID {
 			continue
 		}
-		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
+		r := resolved{f: f}
 		if b, err := h.userService.ShowByID(f.FollowerID); err == nil {
-			d := entity.PackUserDetailed(b.User, b.Profile, h.idGen)
+			r.bundle = b
+			remoteUsers = append(remoteUsers, b.User)
+		}
+		pending = append(pending, r)
+	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), remoteUsers...)
+	out := make([]relationItem, 0, len(pending))
+	for _, r := range pending {
+		item := relationItem{ID: r.f.ID, FollowerID: r.f.FollowerID, FolloweeID: r.f.FolloweeID}
+		if r.bundle != nil {
+			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
+			resolver.FillUserLite(&d.UserLite)
 			item.Follower = &d
 		}
 		out = append(out, item)
@@ -462,7 +479,12 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]relationItem, 0, len(rows))
+	type resolved struct {
+		f      *model.Following
+		bundle *user.UserWithProfile
+	}
+	pending := make([]resolved, 0, len(rows))
+	remoteUsers := make([]*model.User, 0, len(rows))
 	for _, f := range rows {
 		if req.SinceID != "" && f.ID <= req.SinceID {
 			continue
@@ -470,9 +492,20 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		if req.UntilID != "" && f.ID >= req.UntilID {
 			continue
 		}
-		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
+		r := resolved{f: f}
 		if b, err := h.userService.ShowByID(f.FolloweeID); err == nil {
-			d := entity.PackUserDetailed(b.User, b.Profile, h.idGen)
+			r.bundle = b
+			remoteUsers = append(remoteUsers, b.User)
+		}
+		pending = append(pending, r)
+	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), remoteUsers...)
+	out := make([]relationItem, 0, len(pending))
+	for _, r := range pending {
+		item := relationItem{ID: r.f.ID, FollowerID: r.f.FollowerID, FolloweeID: r.f.FolloweeID}
+		if r.bundle != nil {
+			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
+			resolver.FillUserLite(&d.UserLite)
 			item.Followee = &d
 		}
 		out = append(out, item)
