@@ -44,29 +44,45 @@ type AccountMover interface {
 
 // Handler handles account-related API endpoints.
 type Handler struct {
-	userService       *user.Service
-	idGen             id.Generator
-	roleProvider      RoleProvider
-	registryRepo      repository.RegistryRepository
-	favoriteRepo      repository.NoteFavoriteRepository
-	transferEnqueuer  TransferEnqueuer
-	webauthnSvc       *twofactor.WebAuthnService
-	securityKeyRepo   repository.UserSecurityKeyRepository
-	metaRepo          repository.MetaRepository
-	emailSender       EmailSender
-	serverURL         string
-	signinRepo        repository.SigninRepository
-	accessTokenRepo   repository.AccessTokenRepository
-	galleryRepo       GalleryRepository
-	pageLikeRepo      repository.PageLikeRepository
-	mover             AccountMover
-	notificationSvc   UnreadNotificationSource
-	followRequestRepo repository.FollowRequestRepository
-	announcementRepo  AnnouncementUnreadSource
-	chatRepo          ChatUnreadSource
-	piningRepo        repository.UserNotePiningRepository
-	noteRepo          repository.NoteRepository
-	pageRepo          repository.PageRepository
+	userService         *user.Service
+	idGen               id.Generator
+	roleProvider        RoleProvider
+	registryRepo        repository.RegistryRepository
+	favoriteRepo        repository.NoteFavoriteRepository
+	transferEnqueuer    TransferEnqueuer
+	webauthnSvc         *twofactor.WebAuthnService
+	securityKeyRepo     repository.UserSecurityKeyRepository
+	metaRepo            repository.MetaRepository
+	emailSender         EmailSender
+	serverURL           string
+	signinRepo          repository.SigninRepository
+	accessTokenRepo     repository.AccessTokenRepository
+	galleryRepo         GalleryRepository
+	pageLikeRepo        repository.PageLikeRepository
+	mover               AccountMover
+	notificationSvc     UnreadNotificationSource
+	followRequestRepo   repository.FollowRequestRepository
+	announcementRepo    AnnouncementUnreadSource
+	chatRepo            ChatUnreadSource
+	piningRepo          repository.UserNotePiningRepository
+	noteRepo            repository.NoteRepository
+	pageRepo            repository.PageRepository
+	mainStreamPublisher MainStreamPublisher
+}
+
+// MainStreamPublisher emits events to a single user's `main` WebSocket
+// channel. Used here to publish `myTokenRegenerated` so other sessions of
+// the same user learn that their API token was invalidated.
+// 循環依存を避けるためinterfaceで受け取る(実装はinternal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit events on
+// /api/i/* endpoints (currently `myTokenRegenerated`). Optional — nil
+// disables emit.
+func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
+	h.mainStreamPublisher = p
 }
 
 // UnreadNotificationSource is the subset of notification.Service used by /api/i

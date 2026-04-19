@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -305,6 +306,52 @@ func TestSignin_RecordsSigninHistory(t *testing.T) {
 	// goroutineでsigninレコードが作成されるのを待つ
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, 1, signinRepo.Len())
+}
+
+// stubMainStreamPublisher captures PublishMainEvent calls.
+type stubMainStreamPublisher struct {
+	mu    sync.Mutex
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+func TestSignin_PublishesSigninEvent(t *testing.T) {
+	h, repo := newTestHandler(t)
+	user := createTestUser(repo, "testuser", "password123")
+
+	signinRepo := testutil.NewMockSigninRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	h.SetSigninRepo(signinRepo, idGen)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	rec := doPost(h.Signin, `{"username":"testuser","password":"password123"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// 非同期goroutineのrecordSignin完了を待つ
+	time.Sleep(100 * time.Millisecond)
+
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, user.ID, pub.calls[0].userID)
+	assert.Equal(t, "signin", pub.calls[0].eventType)
+	// body は PackSignin の map。最低限 id/success が含まれる。
+	body, ok := pub.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.NotEmpty(t, body["id"])
+	assert.Equal(t, true, body["success"])
 }
 
 func TestSignin_IPLogging(t *testing.T) {
