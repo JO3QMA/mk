@@ -452,7 +452,7 @@ func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed
 		detailed.PinnedPageID = profile.PinnedPageID
 		if h.pageRepo != nil {
 			if p, err := h.pageRepo.FindByID(*profile.PinnedPageID); err == nil {
-				detailed.PinnedPage = entity.PackPage(p)
+				detailed.PinnedPage = entity.PackPage(p, h.idGen)
 			}
 		}
 	}

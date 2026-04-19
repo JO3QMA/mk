@@ -790,7 +790,7 @@ func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, re
 		resp["pinnedPageId"] = profile.PinnedPageID
 		if h.pageRepo != nil {
 			if p, err := h.pageRepo.FindByID(*profile.PinnedPageID); err == nil {
-				resp["pinnedPage"] = entity.PackPage(p)
+				resp["pinnedPage"] = entity.PackPage(p, h.idGen)
 			}
 		}
 	}

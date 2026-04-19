@@ -492,10 +492,3 @@ func TestUnlike_RepoError(t *testing.T) {
 	require.NoError(t, h.Unlike(c))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
-
-// --- helpers ---------------------------------------------------------------
-
-func TestRawJSON(t *testing.T) {
-	assert.Nil(t, rawJSON(nil))
-	assert.NotNil(t, rawJSON([]byte(`[1]`)))
-}

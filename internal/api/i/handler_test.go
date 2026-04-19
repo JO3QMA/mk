@@ -1165,7 +1165,6 @@ func (s *stubPageRepo) Delete(*model.Page) error                                
 func (s *stubPageRepo) ListByUser(string, int, int) ([]*model.Page, error)       { return nil, nil }
 func (s *stubPageRepo) ListPublicByUser(string, int, int) ([]*model.Page, error) { return nil, nil }
 func (s *stubPageRepo) ListFeatured(int, int) ([]*model.Page, error)             { return nil, nil }
-func (s *stubPageRepo) Search(string, int, int) ([]*model.Page, error)           { return nil, nil }
 func (s *stubPageRepo) IncrementCount(string, string, int) error                 { return nil }
 
 func TestMe_PinnedPage_Populated(t *testing.T) {
