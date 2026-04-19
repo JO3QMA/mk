@@ -48,12 +48,11 @@ func (h *Handler) SetUserRepo(r repository.UserRepository) {
 // packDriveFileFull packs a drive file and, when repositories are wired,
 // embeds the owning folder/user as nested objects. Matches Misskey's
 // packDriveFileSchema which exposes both `folder` and `user`.
-//
-// Note: called inside list loops (FilesList / FilesFind / Stream) it issues
-// up to 2 DB reads per file (O(N) queries). 1ページ上限は 10-100 程度なので
-// 実害は小さいが、大量ファイルを返す admin list 等では batch 化の余地あり
-// (別 issue で対応検討)。
 func (h *Handler) packDriveFileFull(f *model.DriveFile) entity.DriveFileEntity {
+	// list loop (FilesList / FilesFind / Stream) からも呼ばれ、1ファイル
+	// 当たり最大2 DB read (O(N) queries)が発生する。1ページ上限が10-100
+	// 程度なので実害は小さいが、大量ファイルを返す admin list 等では
+	// batch化の余地あり (follow-up issueで検討)。
 	var folder *model.DriveFolder
 	if h.folderRepo != nil && f.FolderID != nil {
 		if fo, err := h.folderRepo.FindByID(*f.FolderID); err == nil {
