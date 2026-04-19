@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -88,6 +89,16 @@ func (h *Handler) Favorites(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	// 複数の favorite note について remote user の instance を 1 回の batch
+	// fetch で resolve する。
+	notes := make([]*model.Note, 0, len(favs))
+	for _, f := range favs {
+		if f.Note != nil {
+			notes = append(notes, f.Note)
+		}
+	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), collectNoteAuthors(notes)...)
+
 	result := make([]map[string]any, 0, len(favs))
 	for _, f := range favs {
 		item := map[string]any{
@@ -95,11 +106,26 @@ func (h *Handler) Favorites(c echo.Context) error {
 			"noteId": f.NoteID,
 		}
 		if f.Note != nil {
-			item["note"] = entity.PackNote(f.Note, h.idGen)
+			pn := entity.PackNote(f.Note, h.idGen)
+			resolver.FillUserLite(&pn.User)
+			item["note"] = pn
 		}
 		result = append(result, item)
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+// collectNoteAuthors returns the author User pointer of each note that has
+// one preloaded. Used to build an entity.InstanceResolver over a set of
+// notes without pulling in the full model package in entity.
+func collectNoteAuthors(notes []*model.Note) []*model.User {
+	out := make([]*model.User, 0, len(notes))
+	for _, n := range notes {
+		if n != nil && n.User != nil {
+			out = append(out, n.User)
+		}
+	}
+	return out
 }
 
 // NotificationsGrouped handles POST /api/i/notifications-grouped.

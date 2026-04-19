@@ -181,6 +181,53 @@ func TestShow_Success(t *testing.T) {
 	assert.Equal(t, "existing note", resp["text"])
 }
 
+func TestShow_PopulatesUserInstanceForRemoteAuthor(t *testing.T) {
+	h, noteRepo := newTestHandler(t)
+
+	// InstanceRepo を注入して remote host に対応する Instance row を用意する。
+	instanceRepo := testutil.NewMockInstanceRepository()
+	name := "Remote Misskey"
+	instanceRepo.Instances["remote.example"] = &model.Instance{
+		Host: "remote.example",
+		Name: &name,
+	}
+	h.SetInstanceRepo(instanceRepo)
+
+	host := "remote.example"
+	text := "remote note"
+	noteRepo.Notes["n1"] = &model.Note{
+		ID:         "n1",
+		UserID:     "uR",
+		Text:       &text,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User: &model.User{
+			ID:                "uR",
+			Username:          "remoteuser",
+			Host:              &host,
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+	}
+
+	body := `{"noteId": "n1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	user, ok := resp["user"].(map[string]any)
+	require.True(t, ok, "response must contain user object")
+	instance, ok := user["instance"].(map[string]any)
+	require.True(t, ok, "user must have instance field populated for remote author")
+	assert.Equal(t, "Remote Misskey", instance["name"])
+}
+
 func TestShow_NotFound(t *testing.T) {
 	h, _ := newTestHandler(t)
 

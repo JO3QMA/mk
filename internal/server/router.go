@@ -795,6 +795,7 @@ func (s *Server) setupRoutes() {
 	notesHandler.SetNoteReactionRepo(reactionRepo)
 	notesHandler.SetChannelRepo(channelRepo)
 	notesHandler.SetChannelMutingRepo(channelMutingRepo)
+	notesHandler.SetInstanceRepo(instanceRepo)
 	if m, err := metaRepo.Fetch(); err == nil {
 		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
 		if m.DeeplAuthKey != nil && *m.DeeplAuthKey != "" {
@@ -944,6 +945,7 @@ func (s *Server) setupRoutes() {
 	iHandler.SetPiningRepo(piningRepo)
 	iHandler.SetNoteRepo(noteRepo)
 	iHandler.SetPageRepo(pageRepo)
+	iHandler.SetInstanceRepo(instanceRepo)
 	// announcementRepoは後続で構築されるため SetupAdditional() 相当の順序依存があるが、
 	// 現状 announcementRepo := ... の行がここより後にあるため下で wire する。
 
@@ -1076,6 +1078,7 @@ func (s *Server) setupRoutes() {
 	driveHandler := drive.NewHandler(driveService, idGen)
 	driveHandler.SetRepos(driveFileRepo, driveFolderRepo, noteRepo)
 	driveHandler.SetUserRepo(userRepo)
+	driveHandler.SetInstanceRepo(instanceRepo)
 	api.POST("/drive", driveHandler.Usage, middleware.RequireAuth())
 	api.POST("/drive/files", driveHandler.FilesList, middleware.RequireAuth())
 	api.POST("/drive/files/create", driveHandler.FilesCreate, middleware.RequireAuth())
@@ -1184,9 +1187,11 @@ func (s *Server) setupRoutes() {
 	api.POST("/channels/featured", channelsHandler.Featured)
 	api.POST("/channels/search", channelsHandler.Search)
 	api.POST("/channels/timeline", channelsHandler.Timeline)
+	channelsHandler.SetInstanceRepo(instanceRepo)
 
 	// Antennas endpoints (Phase 4.3)
 	antennasHandler := antennas.NewHandler(antennaService, noteRepo, idGen)
+	antennasHandler.SetInstanceRepo(instanceRepo)
 	api.POST("/antennas/create", antennasHandler.Create, middleware.RequireAuth())
 	api.POST("/antennas/show", antennasHandler.Show, middleware.RequireAuth())
 	api.POST("/antennas/update", antennasHandler.Update, middleware.RequireAuth())
@@ -1197,6 +1202,7 @@ func (s *Server) setupRoutes() {
 	// Clips endpoints (Phase 4.4)
 	clipsHandler := clips.NewHandler(clipService, idGen)
 	clipsHandler.SetFavoriteRepo(clipFavoriteRepo)
+	clipsHandler.SetInstanceRepo(instanceRepo)
 	api.POST("/clips/create", clipsHandler.Create, middleware.RequireAuth())
 	api.POST("/clips/show", clipsHandler.Show)
 	api.POST("/clips/update", clipsHandler.Update, middleware.RequireAuth())
@@ -1356,6 +1362,7 @@ func (s *Server) setupRoutes() {
 	// Public roles (Phase 6)
 	rolesHandler := apiroles.NewHandler(roleService, idGen)
 	rolesHandler.SetNotesQuery(repository.NewRoleNotesQuery(s.db))
+	rolesHandler.SetInstanceRepo(instanceRepo)
 	api.POST("/roles/list", rolesHandler.List)
 	api.POST("/roles/show", rolesHandler.Show)
 	api.POST("/roles/users", rolesHandler.Users)

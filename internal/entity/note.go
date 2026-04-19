@@ -130,6 +130,48 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 	return entity
 }
 
+// PackNotes packs a slice of notes and populates UserLite.Instance for remote
+// users in a single batch fetch via lookup. lookup == nil keeps Instance as
+// nil (convenient for handlers not yet wired or for contexts where instance
+// embed is unnecessary).
+//
+// reply / renote の User も instance resolver の対象に含めるため、ここで
+// collectUsers により集約してから resolver を作る。
+func PackNotes(notes []*model.Note, idGen id.Generator, lookup InstanceLookup) []NoteEntity {
+	resolver := NewInstanceResolver(lookup, collectNoteUsers(notes)...)
+	out := make([]NoteEntity, 0, len(notes))
+	for _, n := range notes {
+		packed := PackNote(n, idGen)
+		resolver.FillUserLite(&packed.User)
+		// reply / renote は PackNote 呼び出し側が別途 populate する運用のため
+		// ここでは top-level note のみ埋める。
+		out = append(out, packed)
+	}
+	return out
+}
+
+// PackNoteWithInstance is a single-note convenience wrapper: pack + populate.
+func PackNoteWithInstance(n *model.Note, idGen id.Generator, lookup InstanceLookup) NoteEntity {
+	packed := PackNote(n, idGen)
+	resolver := NewInstanceResolver(lookup, collectNoteUsers([]*model.Note{n})...)
+	resolver.FillUserLite(&packed.User)
+	return packed
+}
+
+// collectNoteUsers extracts User pointers from a slice of notes for instance
+// resolution. 現状は note.User のみ (reply/renote は NoteEntity で別埋めする
+// 運用)。
+func collectNoteUsers(notes []*model.Note) []*model.User {
+	users := make([]*model.User, 0, len(notes))
+	for _, n := range notes {
+		if n == nil || n.User == nil {
+			continue
+		}
+		users = append(users, n.User)
+	}
+	return users
+}
+
 // NormalizeReactionKey converts a legacy `:name:` key to the canonical
 // `:name@.:` form used by the frontend. Remote and non-custom reactions
 // are returned unchanged.

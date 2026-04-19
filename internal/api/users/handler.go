@@ -101,6 +101,15 @@ func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 	h.instanceRepo = r
 }
 
+// instanceLookup adapts instanceRepo to entity.InstanceLookup. Returns nil
+// when no repo is wired (entity.PackNotes treats nil as "skip Instance").
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
+}
+
 // NewHandler creates a new users Handler.
 // followingService, noteRepo, idGen are optional for the bare /show endpoint.
 func NewHandler(
@@ -344,10 +353,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	out := make([]entity.NoteEntity, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, entity.PackNote(n, h.idGen))
-	}
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
 	return c.JSON(http.StatusOK, out)
 }
 
@@ -471,9 +477,10 @@ func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed
 			detailed.PinnedNoteIDs = ids
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					packed := make([]any, 0, len(notes))
-					for _, n := range notes {
-						packed = append(packed, entity.PackNote(n, h.idGen))
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+					packed := make([]any, 0, len(entities))
+					for _, pn := range entities {
+						packed = append(packed, pn)
 					}
 					detailed.PinnedNotes = packed
 				}

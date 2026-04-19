@@ -41,6 +41,37 @@ func TestInstanceRepository_FindByHost_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestInstanceRepository_FindManyByHosts(t *testing.T) {
+	repo := NewInstanceRepository(testDB)
+	inst1 := newTestInstance("i_fmbh_1", "fmbh1.example")
+	inst2 := newTestInstance("i_fmbh_2", "fmbh2.example")
+	inst3 := newTestInstance("i_fmbh_3", "fmbh3.example")
+	require.NoError(t, repo.Create(inst1))
+	defer cleanupInstance(t, inst1.ID)
+	require.NoError(t, repo.Create(inst2))
+	defer cleanupInstance(t, inst2.ID)
+	require.NoError(t, repo.Create(inst3))
+	defer cleanupInstance(t, inst3.ID)
+
+	// batch fetch 2 existing + 1 missing host
+	got, err := repo.FindManyByHosts([]string{"fmbh1.example", "fmbh3.example", "missing.example"})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	hosts := []string{got[0].Host, got[1].Host}
+	assert.ElementsMatch(t, []string{"fmbh1.example", "fmbh3.example"}, hosts)
+}
+
+func TestInstanceRepository_FindManyByHosts_Empty(t *testing.T) {
+	repo := NewInstanceRepository(testDB)
+	got, err := repo.FindManyByHosts(nil)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	got, err = repo.FindManyByHosts([]string{})
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
 func TestInstanceRepository_UpdateFields(t *testing.T) {
 	repo := NewInstanceRepository(testDB)
 	inst := newTestInstance("i_ir_2", "beta.example")

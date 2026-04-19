@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 )
 
 // RoleNotesQuery provides a way to fetch notes by role.
@@ -18,9 +19,10 @@ type RoleNotesQuery interface {
 
 // Handler handles public role API endpoints.
 type Handler struct {
-	roleService *role.Service
-	notesQuery  RoleNotesQuery
-	idGen       id.Generator
+	roleService  *role.Service
+	notesQuery   RoleNotesQuery
+	idGen        id.Generator
+	instanceRepo repository.InstanceRepository
 }
 
 // NewHandler creates a new roles Handler. idGen is required for note packing
@@ -32,6 +34,19 @@ func NewHandler(roleService *role.Service, idGen id.Generator) *Handler {
 // SetNotesQuery attaches a RoleNotesQuery for the roles/notes endpoint.
 func (h *Handler) SetNotesQuery(q RoleNotesQuery) {
 	h.notesQuery = q
+}
+
+// SetInstanceRepo attaches an InstanceRepository so roles/notes populates
+// UserLite.Instance for remote users (#277).
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
+}
+
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
 }
 
 // List handles POST /api/roles/list.
@@ -118,9 +133,10 @@ func (h *Handler) Notes(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	out := make([]any, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, entity.PackNote(n, h.idGen))
+	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	out := make([]any, 0, len(entities))
+	for _, pn := range entities {
+		out = append(out, pn)
 	}
 	return c.JSON(http.StatusOK, out)
 }

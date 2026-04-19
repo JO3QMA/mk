@@ -69,6 +69,7 @@ type Handler struct {
 	piningRepo          repository.UserNotePiningRepository
 	noteRepo            repository.NoteRepository
 	pageRepo            repository.PageRepository
+	instanceRepo        repository.InstanceRepository
 	mainStreamPublisher MainStreamPublisher
 }
 
@@ -85,6 +86,19 @@ type MainStreamPublisher interface {
 // disables emit.
 func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
 	h.mainStreamPublisher = p
+}
+
+// SetInstanceRepo attaches an InstanceRepository so favorites/notifications
+// note embeds populate UserLite.Instance for remote users (#277).
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
+}
+
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
 }
 
 // UnreadNotificationSource is the subset of notification.Service used by /api/i
@@ -844,9 +858,10 @@ func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, re
 
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					packed := make([]any, 0, len(notes))
-					for _, n := range notes {
-						packed = append(packed, entity.PackNote(n, h.idGen))
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+					packed := make([]any, 0, len(entities))
+					for _, pn := range entities {
+						packed = append(packed, pn)
 					}
 					resp["pinnedNotes"] = packed
 				}

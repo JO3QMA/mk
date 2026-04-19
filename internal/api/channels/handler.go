@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
@@ -20,6 +21,20 @@ type Handler struct {
 	idGen        id.Generator
 	favoriteRepo ChannelFavoriteRepository
 	mutingRepo   ChannelMutingRepository
+	instanceRepo repository.InstanceRepository
+}
+
+// SetInstanceRepo attaches an InstanceRepository so channel timeline responses
+// populate UserLite.Instance for remote users (#277).
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
+}
+
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
 }
 
 // ChannelFavoriteRepository is the interface for channel favorite operations.
@@ -267,9 +282,10 @@ func (h *Handler) Timeline(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	out := make([]any, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, entity.PackNote(n, h.idGen))
+	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	out := make([]any, 0, len(entities))
+	for _, pn := range entities {
+		out = append(out, pn)
 	}
 	return c.JSON(http.StatusOK, out)
 }

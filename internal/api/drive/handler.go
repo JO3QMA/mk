@@ -18,12 +18,13 @@ import (
 
 // Handler handles drive-related API endpoints.
 type Handler struct {
-	svc        *coredrive.Service
-	idGen      id.Generator
-	fileRepo   repository.DriveFileRepository
-	folderRepo repository.DriveFolderRepository
-	noteRepo   repository.NoteRepository
-	userRepo   repository.UserRepository
+	svc          *coredrive.Service
+	idGen        id.Generator
+	fileRepo     repository.DriveFileRepository
+	folderRepo   repository.DriveFolderRepository
+	noteRepo     repository.NoteRepository
+	userRepo     repository.UserRepository
+	instanceRepo repository.InstanceRepository
 }
 
 // NewHandler creates a new drive Handler.
@@ -43,6 +44,19 @@ func (h *Handler) SetRepos(fileRepo repository.DriveFileRepository, folderRepo r
 // it the `user` field is omitted.
 func (h *Handler) SetUserRepo(r repository.UserRepository) {
 	h.userRepo = r
+}
+
+// SetInstanceRepo attaches an InstanceRepository so drive/files/attached-notes
+// populates UserLite.Instance for remote users (#277).
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
+}
+
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
 }
 
 // packDriveFileFull packs a drive file and, when repositories are wired,
@@ -432,10 +446,7 @@ func (h *Handler) FilesAttachedNotes(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	out := make([]entity.NoteEntity, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, entity.PackNote(n, h.idGen))
-	}
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
 	return c.JSON(http.StatusOK, out)
 }
 

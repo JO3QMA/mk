@@ -8,6 +8,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/reaction"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
@@ -103,6 +104,15 @@ func (h *Handler) Reactions(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
+	// リモート user の instance を 1 回の batch fetch で resolve する。
+	reactionUsers := make([]*model.User, 0, len(rows))
+	for _, r := range rows {
+		if r.User != nil {
+			reactionUsers = append(reactionUsers, r.User)
+		}
+	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), reactionUsers...)
+
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		createdAt := ""
@@ -111,7 +121,9 @@ func (h *Handler) Reactions(c echo.Context) error {
 		}
 		var userField any = map[string]any{"id": r.UserID}
 		if r.User != nil {
-			userField = entity.PackUserLite(r.User)
+			lite := entity.PackUserLite(r.User)
+			resolver.FillUserLite(&lite)
+			userField = lite
 		}
 		out = append(out, map[string]any{
 			"id":        r.ID,
