@@ -1216,12 +1216,14 @@ func (s *Server) setupRoutes() {
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)
 	reversiPublisher := stream.NewReversiGamePublisher(streamPubSub)
+	mainStreamPublisher := stream.NewMainStreamPublisher(streamPubSub)
 
 	// 4. 既存サービスへ publisher を注入する。これらはいずれも nil 安全な
 	//    setter で、未設定なら何もしない (テスト互換)。
 	timelineFanoutHook.SetStreamingPublisher(notePublisher)
 	notificationService.SetStreamingPublisher(notificationPublisher)
 	driveService.SetStreamingPublisher(drivePublisher)
+	followingService.SetMainStreamPublisher(mainStreamPublisher)
 
 	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
 	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)

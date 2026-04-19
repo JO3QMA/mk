@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -78,17 +79,26 @@ type WebhookHook interface {
 	OnFollowed(follower, followee *model.User)
 }
 
+// MainStreamPublisher emits real-time events to a single target user's `main`
+// WebSocket channel. Used here to deliver `receiveFollowRequest` to the
+// followee when a locked user receives a follow request. 循環依存を避けるため
+// interface で受け取る (実装は internal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
 // Service manages following relationships and follow requests.
 type Service struct {
-	userRepo          repository.UserRepository
-	followingRepo     repository.FollowingRepository
-	followRequestRepo repository.FollowRequestRepository
-	idGen             id.Generator
-	notificationHook  NotificationHook
-	blockingChecker   BlockingChecker
-	federationHook    FederationHook
-	chartHook         ChartHook
-	webhookHook       WebhookHook
+	userRepo            repository.UserRepository
+	followingRepo       repository.FollowingRepository
+	followRequestRepo   repository.FollowRequestRepository
+	idGen               id.Generator
+	notificationHook    NotificationHook
+	blockingChecker     BlockingChecker
+	federationHook      FederationHook
+	chartHook           ChartHook
+	webhookHook         WebhookHook
+	mainStreamPublisher MainStreamPublisher
 }
 
 // NewService creates a new following Service.
@@ -131,6 +141,12 @@ func (s *Service) SetChartHook(h ChartHook) {
 // follow-accepted events so user webhooks subscribed to follow events fire.
 func (s *Service) SetWebhookHook(h WebhookHook) {
 	s.webhookHook = h
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `main` channel
+// events (currently `receiveFollowRequest`). Optional — nil disables emit.
+func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
+	s.mainStreamPublisher = p
 }
 
 // Follow creates a following relationship from follower to followee.
@@ -195,6 +211,14 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		}
 		if s.notificationHook != nil {
 			s.notificationHook.OnFollowRequested(followerID, followeeID)
+		}
+		// TS本家: UserFollowingService は `receiveFollowRequest` を
+		// followee の main stream に publish する。body は follower User。
+		// UserLite で送るのは他のWSイベント (notification内のuser等) と
+		// 揃える意図。Instance情報は PackUserLite に含まれないが、
+		// frontend は undefined 許容。
+		if s.mainStreamPublisher != nil {
+			s.mainStreamPublisher.PublishMainEvent(followeeID, "receiveFollowRequest", entity.PackUserLite(follower))
 		}
 		return &FollowResult{Request: req}, nil
 	}

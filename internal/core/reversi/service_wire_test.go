@@ -156,6 +156,28 @@ func TestService_UpdateReady_Both_TriggersStart(t *testing.T) {
 	assert.Contains(t, kinds, "started")
 }
 
+// TS本家 reversiGame.changeReadyStates の body shape は
+// `{ user1: boolean; user2: boolean }`。Go 側の emit がそのまま一致して
+// いることを確認する (Phase 7-4 疎通検証)。
+func TestService_UpdateReady_ChangeReadyStatesBodyShape(t *testing.T) {
+	game, _, pub, svc := newPendingGame(t)
+	ctx := context.Background()
+
+	require.NoError(t, svc.UpdateReady(ctx, game.ID, "alice", true))
+
+	// 最初の event が changeReadyStates で body が期待形式であることを確認。
+	require.GreaterOrEqual(t, len(pub.events), 1)
+	first := pub.events[0]
+	assert.Equal(t, "g1", first.gameID)
+	assert.Equal(t, "changeReadyStates", first.kind)
+	body, ok := first.body.(map[string]any)
+	require.True(t, ok, "body should be map")
+	assert.Equal(t, true, body["user1"])
+	assert.Equal(t, false, body["user2"])
+	// TS 型にない余計なキーが混入していないこと。
+	assert.Len(t, body, 2)
+}
+
 func TestService_UpdateReady_NotPlayer(t *testing.T) {
 	game, _, _, svc := newPendingGame(t)
 	err := svc.UpdateReady(context.Background(), game.ID, "carol", true)
