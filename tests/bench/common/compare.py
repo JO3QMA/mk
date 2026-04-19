@@ -43,13 +43,15 @@ def extract_metrics(summary: dict) -> dict[str, dict]:
         endpoint = key.split("endpoint:")[1].rstrip("}")
 
         if "http_req_duration" in key:
+            # k6 --summary-exportはバージョンによってフラット or values サブキー
+            v = val.get("values", val)
             results.setdefault(endpoint, {}).update({
-                "med": val.get("med", 0),
-                "p90": val.get("p(90)", 0),
-                "p95": val.get("p(95)", 0),
-                "avg": val.get("avg", 0),
-                "min": val.get("min", 0),
-                "max": val.get("max", 0),
+                "med": v.get("med", 0),
+                "p90": v.get("p(90)", 0),
+                "p95": v.get("p(95)", 0),
+                "avg": v.get("avg", 0),
+                "min": v.get("min", 0),
+                "max": v.get("max", 0),
             })
 
     # checksからエラー率を計算
@@ -70,7 +72,7 @@ def extract_metrics(summary: dict) -> dict[str, dict]:
 
 
 def fmt(v, decimals=1) -> str:
-    if v is None or v == 0:
+    if v is None:
         return "-"
     return f"{v:.{decimals}f}"
 
@@ -111,7 +113,7 @@ def generate_report(mkgo: dict, misskey: dict) -> str:
         tp95 = t.get("p95", 0)
         if mp95 and tp95 and mp95 > 0:
             ratio = tp95 / mp95
-            winner = "mk-go" if ratio > 1 else "Misskey"
+            winner = "mk-go" if ratio > 1 else "tie" if ratio == 1 else "Misskey"
             lines.append(f"| | **Ratio** | | | **{ratio:.2f}x** ({winner}) | | | |")
 
         lines.append("|  |  |  |  |  |  |  |  |")
