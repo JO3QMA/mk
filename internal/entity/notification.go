@@ -31,7 +31,9 @@ func PackNotification(n *notification.Notification, user *model.User, note *mode
 	}
 	if n.NoteID != "" {
 		// reply/mention/reaction/renote/quote/pollEnded等、noteを要する
-		// 通知タイプ向け。TSは"note"としてpacked Noteを返す。
+		// 通知タイプ向け。REST API互換のため noteId は常に含める。
+		// 加えて note object が fetch できていればpacked Noteも入れる。
+		out["noteId"] = n.NoteID
 		if note != nil && idGen != nil {
 			out["note"] = PackNote(note, idGen)
 		}

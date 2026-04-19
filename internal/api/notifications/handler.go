@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/notification"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -81,31 +82,22 @@ func (h *Handler) Show(c echo.Context) error {
 		if excludeSet[string(n.Type)] {
 			continue
 		}
-		entry := map[string]any{
-			"id":        n.ID,
-			"createdAt": n.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
-			"type":      string(n.Type),
-		}
-		if n.NotifierID != "" {
-			entry["userId"] = n.NotifierID
-			if h.userRepo != nil {
-				if u, err := h.userRepo.FindByID(n.NotifierID); err == nil {
-					entry["user"] = entity.PackUserLite(u)
-				}
+		// WebSocket 経由の packing と一貫性を保つため entity.PackNotification
+		// にdelegateする(Devin #315 指摘)。user/note 取得は handler 側で
+		// repo が wire されていれば best-effort。
+		var user *model.User
+		if h.userRepo != nil && n.NotifierID != "" {
+			if u, err := h.userRepo.FindByID(n.NotifierID); err == nil {
+				user = u
 			}
 		}
-		if n.NoteID != "" {
-			entry["noteId"] = n.NoteID
-			if h.noteRepo != nil {
-				if note, err := h.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
-					entry["note"] = entity.PackNote(note, h.idGen)
-				}
+		var note *model.Note
+		if h.noteRepo != nil && n.NoteID != "" {
+			if nn, err := h.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
+				note = nn
 			}
 		}
-		if n.Reaction != "" {
-			entry["reaction"] = n.Reaction
-		}
-		out = append(out, entry)
+		out = append(out, entity.PackNotification(n, user, note, h.idGen))
 	}
 	return c.JSON(http.StatusOK, out)
 }
