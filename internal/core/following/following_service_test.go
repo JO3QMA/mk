@@ -1,6 +1,7 @@
 package following_test
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -146,6 +147,57 @@ func TestFollow_LockedUser_CreatesRequest(t *testing.T) {
 	// counterは更新されない
 	assert.Equal(t, 0, userRepo.Users["alice"].FollowingCount)
 	assert.Equal(t, 0, userRepo.Users["bob"].FollowersCount)
+}
+
+// stubMainStreamPublisher captures PublishMainEvent calls for assertion.
+type stubMainStreamPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+func TestFollow_LockedUser_PublishesReceiveFollowRequest(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "bob", pub.calls[0].userID)
+	assert.Equal(t, "receiveFollowRequest", pub.calls[0].eventType)
+	// body は PackUserLite(follower=alice) で、最低限 id/username が詰まっている
+	// ことを JSON round-trip で確認する (UserLite は struct なので直接 map
+	// assertion はできない)。
+	raw, err := json.Marshal(pub.calls[0].body)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	assert.Equal(t, "alice", m["id"])
+	assert.Equal(t, "alice", m["username"])
+}
+
+func TestFollow_PublicUser_DoesNotPublishReceiveFollowRequest(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	assert.Empty(t, pub.calls)
 }
 
 func TestFollow_SelfFollow(t *testing.T) {

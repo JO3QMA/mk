@@ -795,6 +795,80 @@ func TestDispatcher_SubNote_InvalidBody(t *testing.T) {
 	d.HandleClientMessage("un", json.RawMessage(`{}`))
 }
 
+// TS互換性検証: forwardNoteEvent は noteStream:{id} に届いた
+// {type, body} envelope を、クライアントに `{type: "noteUpdated",
+// body: {id, type, body}}` という外殻で送信する必要がある (TS
+// NoteUpdatedEvent discriminated union)。各 subtype (reacted /
+// unreacted / deleted / pollVoted) で形状が維持されることを確認する。
+func TestDispatcher_ForwardNoteEvent_TSEnvelope(t *testing.T) {
+	cases := []struct {
+		name   string
+		inner  string
+		evType string
+	}{
+		{"reacted", `{"type":"reacted","body":{"reaction":":smile:","userId":"u1"}}`, "reacted"},
+		{"unreacted", `{"type":"unreacted","body":{"reaction":":smile:","userId":"u1"}}`, "unreacted"},
+		{"deleted", `{"type":"deleted","body":{"deletedAt":"2026-04-19T00:00:00.000Z"}}`, "deleted"},
+		{"pollVoted", `{"type":"pollVoted","body":{"choice":1,"userId":"u1"}}`, "pollVoted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeConn()
+			conn := NewConnection("test", &model.User{ID: "alice"}, fc)
+			go conn.Start()
+			defer conn.Close()
+			bus := newStubBus()
+			d := NewDispatcher(conn, nil, bus)
+			d.HandleClientMessage("s", json.RawMessage(`{"id":"n1"}`))
+
+			bus.deliver("noteStream:n1", []byte(tc.inner))
+
+			require.Eventually(t, func() bool { return fc.writeCount() >= 1 }, time.Second, 5*time.Millisecond)
+			fc.mu.Lock()
+			writes := append([][]byte(nil), fc.writes...)
+			fc.mu.Unlock()
+			require.Len(t, writes, 1)
+
+			var outer struct {
+				Type string `json:"type"`
+				Body struct {
+					ID   string          `json:"id"`
+					Type string          `json:"type"`
+					Body json.RawMessage `json:"body"`
+				} `json:"body"`
+			}
+			require.NoError(t, json.Unmarshal(writes[0], &outer))
+			assert.Equal(t, "noteUpdated", outer.Type)
+			assert.Equal(t, "n1", outer.Body.ID)
+			assert.Equal(t, tc.evType, outer.Body.Type)
+			// inner body は json.RawMessage として原形保存される (TS schema を
+			// そのまま frontend に渡す)。
+			assert.NotEmpty(t, outer.Body.Body)
+		})
+	}
+}
+
+func TestDispatcher_ForwardNoteEvent_InvalidPayload(t *testing.T) {
+	fc := newFakeConn()
+	conn := NewConnection("test", &model.User{ID: "alice"}, fc)
+	go conn.Start()
+	defer conn.Close()
+	bus := newStubBus()
+	d := NewDispatcher(conn, nil, bus)
+	d.HandleClientMessage("s", json.RawMessage(`{"id":"n1"}`))
+
+	// invalid JSON / 空 type のどちらも Send しない (早期 return)。
+	bus.deliver("noteStream:n1", []byte(`not-json`))
+	bus.deliver("noteStream:n1", []byte(`{"type":""}`))
+
+	// すぐには届かない可能性もあるため少し待ってから確認。
+	time.Sleep(50 * time.Millisecond)
+	fc.mu.Lock()
+	n := len(fc.writes)
+	fc.mu.Unlock()
+	assert.Zero(t, n)
+}
+
 func countOccurrences(slice []string, target string) int {
 	n := 0
 	for _, s := range slice {
