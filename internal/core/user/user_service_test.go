@@ -295,6 +295,55 @@ func TestService_UnpinNote_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, user.ErrPinNotFound))
 }
 
+func TestService_PinNote_PublishesMeUpdated(t *testing.T) {
+	svc, repo, noteRepo, _ := newFullSvc(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1"}
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	require.NoError(t, svc.PinNote("u1", "n1"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "meUpdated", pub.calls[0].eventType)
+	raw, err := json.Marshal(pub.calls[0].body)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	assert.Equal(t, "u1", m["id"])
+	// piningRepo から補完された pinnedNoteIds が含まれること
+	ids, ok := m["pinnedNoteIds"].([]any)
+	require.True(t, ok)
+	assert.Equal(t, []any{"n1"}, ids)
+}
+
+func TestService_PinNote_NoPublisher_NoDBRead(t *testing.T) {
+	// publisher 未注入時は ShowByID を呼ばないことを確認するため、
+	// pin 直後に user を repo から削除しても PinNote は error にならない
+	// (ShowByID されないため)。
+	svc, repo, noteRepo, _ := newFullSvc(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1"}
+	// publisher を意図的に設定しない
+	require.NoError(t, svc.PinNote("u1", "n1"))
+}
+
+func TestService_UnpinNote_PublishesMeUpdated(t *testing.T) {
+	svc, repo, noteRepo, _ := newFullSvc(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1"}
+	require.NoError(t, svc.PinNote("u1", "n1"))
+
+	// Pin で emit された分を除外するため publisher を差し替え。
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	require.NoError(t, svc.UnpinNote("u1", "n1"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "meUpdated", pub.calls[0].eventType)
+}
+
 func TestService_ListPinnedNotes_Success(t *testing.T) {
 	svc, repo, noteRepo, _ := newFullSvc(t)
 	repo.Users["u1"] = &model.User{ID: "u1"}

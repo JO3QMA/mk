@@ -4,6 +4,7 @@ package user
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -235,16 +236,51 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 	}
 	// TS本家 UserEntityService.updateMe() 完了後に `meUpdated` を自分の main
 	// に publish する (プロフィールページ / UI 側 state を即時再描画させる
-	// ため)。body は packed UserDetailed full object。profile update は
-	// 頻度が低いので hot path 最適化は不要で full pack する。
-	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(
-			userID,
-			"meUpdated",
-			entity.PackUserDetailed(bundle.User, bundle.Profile, s.idGen),
-		)
-	}
+	// ため)。body は packed UserDetailed full object。
+	s.publishMeUpdated(bundle)
 	return bundle, nil
+}
+
+// publishMeUpdated emits `meUpdated` to the user's main channel with the
+// packed UserDetailed object. No-op when no publisher is attached or the
+// bundle is missing its User. PinnedNoteIDs is populated from piningRepo
+// so pin/unpin changes are reflected in the event body.
+func (s *Service) publishMeUpdated(bundle *UserWithProfile) {
+	if s.mainStreamPublisher == nil || bundle == nil || bundle.User == nil {
+		return
+	}
+	// profile update / pin / unpin は頻度が低く hot path ではないため
+	// full pack する (UserLite ではなく UserDetailed)。
+	body := entity.PackUserDetailed(bundle.User, bundle.Profile, s.idGen)
+	// PackUserDetailed は pinnedNoteIDs を空で返すため、piningRepo が
+	// あれば pin ID だけ埋める (full note pack は不要で frontend 側で
+	// 必要に応じて fetch する)。piningRepo がない read-only 構成や
+	// 取得失敗時はそのまま空で emit する (best-effort)。
+	if s.piningRepo != nil {
+		if pinings, err := s.piningRepo.ListByUser(bundle.User.ID); err == nil {
+			ids := make([]string, 0, len(pinings))
+			for _, p := range pinings {
+				ids = append(ids, p.NoteID)
+			}
+			body.PinnedNoteIDs = ids
+		}
+	}
+	s.mainStreamPublisher.PublishMainEvent(bundle.User.ID, "meUpdated", body)
+}
+
+// emitMeUpdatedForUser re-fetches the user bundle and publishes `meUpdated`.
+// Returns early when no publisher is attached so the ShowByID DB read is
+// avoided. contextLabel is used only in the warning log.
+func (s *Service) emitMeUpdatedForUser(userID, contextLabel string) {
+	if s.mainStreamPublisher == nil {
+		return
+	}
+	bundle, err := s.ShowByID(userID)
+	if err != nil {
+		slog.Warn("user: ShowByID failed, skipping meUpdated emit", "context", contextLabel, "userID", userID, "err", err)
+		return
+	}
+	s.publishMeUpdated(bundle)
 }
 
 // PinNote pins the given note to the user's profile.
@@ -276,7 +312,15 @@ func (s *Service) PinNote(userID, noteID string) error {
 		UserID: userID,
 		NoteID: noteID,
 	}
-	return s.piningRepo.Create(p)
+	if err := s.piningRepo.Create(p); err != nil {
+		return err
+	}
+	// pinnedNoteIds が変わったので main に meUpdated を publish して
+	// UI を即時同期する (TS本家 UserEntityService.pinNote と同等)。
+	// best-effort emit: publisher 未注入なら何もせず、ShowByID 失敗時は
+	// ログのみ残して pin 自体の成功は返す。
+	s.emitMeUpdatedForUser(userID, "PinNote")
+	return nil
 }
 
 // UnpinNote removes a pinning entry. Returns ErrPinNotFound if the user has
@@ -286,7 +330,11 @@ func (s *Service) UnpinNote(userID, noteID string) error {
 	if err != nil {
 		return ErrPinNotFound
 	}
-	return s.piningRepo.Delete(p)
+	if err := s.piningRepo.Delete(p); err != nil {
+		return err
+	}
+	s.emitMeUpdatedForUser(userID, "UnpinNote")
+	return nil
 }
 
 // ListPinnedNotes returns the notes pinned by userID, in pinning order
