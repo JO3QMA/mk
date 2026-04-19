@@ -7,9 +7,9 @@ import (
 )
 
 // UserLite is the minimal user representation returned by most API endpoints.
-// Phase 7-5a (#247): requireSigninToViewContents / makeNotes*Before / instance
-// を optional フィールドとして TS 本家互換に追加。すべて omitempty で、値が
-// 無いときはレスポンスから省かれる (TS: `?? undefined` / `?: undefined`)。
+// Phase 7-5a (#247) added requireSigninToViewContents, makeNotes*Before and
+// instance as optional TS-compat fields. All use omitempty so absent values
+// are elided from the response (TS: `?? undefined` / `?: undefined`).
 type UserLite struct {
 	ID                string            `json:"id"`
 	Name              *string           `json:"name"`
@@ -75,7 +75,9 @@ type UserDetailed struct {
 	Memo                           *string `json:"memo,omitempty"`
 }
 
-// InstanceLite is the minimal instance info embedded in UserDetailed for remote users.
+// InstanceLite is the minimal instance info embedded in UserLite for remote
+// users. Populated by the caller from InstanceRepository when needed; packers
+// keep it nil to avoid DB access on hot paths.
 type InstanceLite struct {
 	Name            *string `json:"name"`
 	SoftwareName    *string `json:"softwareName"`
@@ -86,9 +88,10 @@ type InstanceLite struct {
 }
 
 // PackUserLite converts a model.User to a UserLite DTO.
-// Instance (nested remote instance info) は caller 側で InstanceRepository
-// 等を使って pre-fetch し、結果を UserLite.Instance に設定する。PackUserLite
-// 自体は DB アクセスを発生させない (hot path想定)。
+// Instance (nested remote instance info) must be pre-fetched by the caller
+// via InstanceRepository and assigned to the returned UserLite.Instance.
+// PackUserLite itself performs no DB access (designed for hot paths such as
+// timeline packing).
 func PackUserLite(u *model.User) UserLite {
 	avatarURL := u.AvatarURL
 	// avatarUrlがnullの場合、identiconを生成
