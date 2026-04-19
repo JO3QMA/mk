@@ -457,11 +457,12 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 	return c.JSON(http.StatusOK, out)
 }
 
-// packDriveFileAdmin は admin drive list/show 向けに owner user を embed
-// した DriveFileEntity を返す。folder はここでは含めない (admin handler
-// に folderRepo が wire されていない。必要になれば拡張)。user repo 未設定
-// 時は nil で fallback。
+// packDriveFileAdmin packs a drive file and embeds the owning user as
+// nested `user` when userRepo is wired. Folder is left nil because the
+// admin handler does not currently wire a DriveFolderRepository.
 func (h *Handler) packDriveFileAdmin(f *model.DriveFile) entity.DriveFileEntity {
+	// user repoが未設定なら user は nil fallback。folder は admin handler
+	// に folderRepoがないため常に nil (必要になれば拡張)。
 	var user *model.User
 	if h.userRepo != nil && f.UserID != nil {
 		if u, err := h.userRepo.FindByID(*f.UserID); err == nil {
