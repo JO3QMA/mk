@@ -42,8 +42,7 @@ func newTestHandler(t *testing.T) (*roles.Handler, *testutil.MockRoleRepository)
 	metaRepo.Meta = &model.Meta{ID: "x"}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corerole.NewService(roleRepo, assignRepo, metaRepo, idGen)
-	h := roles.NewHandler(svc)
-	h.SetIDGen(idGen)
+	h := roles.NewHandler(svc, idGen)
 	return h, roleRepo
 }
 
@@ -128,7 +127,7 @@ func TestList_Error(t *testing.T) {
 	metaRepo.Meta = &model.Meta{ID: "x"}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corerole.NewService(roleRepo, assignRepo, metaRepo, idGen)
-	h := roles.NewHandler(svc)
+	h := roles.NewHandler(svc, idGen)
 	rec := doPost(h.List, `{}`)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
