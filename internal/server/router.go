@@ -367,9 +367,12 @@ func (s *Server) setupRoutes() {
 	apRenderer.SetEmojiResolver(emojiRepo)
 	apRenderer.SetNoteResolver(noteRepo)
 	apRenderer.SetPollResolver(pollRepo)
-	// config.URL は "https://example.com" 形式。ホスト部分だけ抽出する。
+	// config.URL は "https://example.com" 形式。ホスト部分だけ抽出して
+	// apRenderer と webfinger 側で共有する (下の resolver 設定でも再利用)。
+	localHost := ""
 	if u, err := urlpkg.Parse(s.config.URL); err == nil {
-		apRenderer.SetHost(u.Host)
+		localHost = u.Host
+		apRenderer.SetHost(localHost)
 	}
 	apClient := activitypub.NewClient(nil, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
@@ -382,6 +385,18 @@ func (s *Server) setupRoutes() {
 	federationResolver.SetPublickeyRepo(publickeyRepo)
 	federationResolver.SetPollRepo(pollRepo)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
+
+	// users/show 経由で host が指定されたリモートユーザーをローカル DB に
+	// キャッシュが無くても解決できるようにする (#269)。webfinger で actor URI
+	// を引いてから federationResolver.ResolveActor で User row を upsert する。
+	// WebFinger は redirect を追う必要があるため、apClient と同じ http.DefaultClient
+	// を共有すると apClient.DisableRedirect() のグローバル汚染を拾ってしまう。
+	// 専用の *http.Client を明示的に渡して分離する。Timeout は user-facing API
+	// 経由で呼ばれるので応答性優先で 10s に設定する。
+	webfingerClient := activitypub.NewWebFingerClient(&http.Client{Timeout: 10 * time.Second}, s.config.UserAgent)
+	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
+		webfingerClient, federationResolver, userRepo, localHost,
+	))
 
 	// Instance management (Phase 3 Step H)
 	instanceService := coreinstance.NewService(instanceRepo, metaRepo, idGen)

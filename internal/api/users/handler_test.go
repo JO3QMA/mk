@@ -187,6 +187,80 @@ func TestShow_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// stubRemoteResolver is a test double for coreuser.RemoteUserResolver.
+type stubRemoteResolver struct {
+	user *model.User
+	err  error
+}
+
+func (s *stubRemoteResolver) ResolveByUsernameHost(_, _ string) (*model.User, error) {
+	return s.user, s.err
+}
+
+func newTestHandlerWithRemoteResolver(t *testing.T, resolver coreuser.RemoteUserResolver) (*Handler, *testutil.MockUserRepository) {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	svc.SetRemoteUserResolver(resolver)
+	fSvc := corefollowing.NewService(userRepo, fRepo, frRepo, idGen)
+	return NewHandler(svc, fSvc, noteRepo, idGen), userRepo
+}
+
+func TestShow_ByUsernameWithHost_RemoteResolveSucceeds(t *testing.T) {
+	// webfinger + ResolveActor が成功し、返された remote user がそのまま
+	// UserDetailed として返されることを確認する。
+	host := "remote.example"
+	remoteUser := &model.User{
+		ID:                "uR",
+		Username:          "remote",
+		UsernameLower:     "remote",
+		Host:              &host,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	h, _ := newTestHandlerWithRemoteResolver(t, &stubRemoteResolver{user: remoteUser})
+
+	body := `{"username":"remote","host":"remote.example"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "uR", resp["id"])
+}
+
+func TestShow_ByUsernameWithHost_RemoteResolveFails(t *testing.T) {
+	// resolver が error を返す場合、FAILED_TO_RESOLVE_REMOTE_USER がレスポンス
+	// として返ることを確認する。HTTP ステータス / JSON の code & id を検証。
+	h, _ := newTestHandlerWithRemoteResolver(t, &stubRemoteResolver{err: assert.AnError})
+
+	body := `{"username":"ghost","host":"remote.example"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Show(c))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj, ok := resp["error"].(map[string]any)
+	require.True(t, ok, "response must have error field")
+	assert.Equal(t, "FAILED_TO_RESOLVE_REMOTE_USER", errObj["code"])
+	// apierr.UUIDFailedToResolveRemoteUser と一致すること。
+	assert.Equal(t, "ef7b9be4-9cba-4e6f-ab41-90ed171c7d3c", errObj["id"])
+}
+
 func TestShow_MissingParams(t *testing.T) {
 	h, _ := newTestHandler(t)
 

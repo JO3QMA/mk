@@ -23,10 +23,8 @@ var (
 	// ErrUserNotFound is returned when the target user does not exist.
 	ErrUserNotFound = errors.New("user not found")
 	// ErrFailedToResolveRemoteUser is returned when ShowByUsername is called
-	// with a non-local host and remote resolution fails. The sentinel exists
-	// so handlers can map the dedicated FAILED_TO_RESOLVE_REMOTE_USER API
-	// error, but the service does not yet attempt remote resolution; the
-	// actual wiring (ActorResolver integration) is a follow-up task.
+	// with a non-local host and remote resolution fails. Handlers map this
+	// to the dedicated FAILED_TO_RESOLVE_REMOTE_USER API error.
 	ErrFailedToResolveRemoteUser = errors.New("failed to resolve remote user")
 	// ErrInvalidParam is returned when neither userId nor username is given.
 	ErrInvalidParam = errors.New("userId or username is required")
@@ -49,6 +47,14 @@ type MainStreamPublisher interface {
 	PublishMainEvent(userID, eventType string, body any)
 }
 
+// RemoteUserResolver resolves a (username, host) pair into a local User row,
+// fetching from the remote host via WebFinger + ActivityPub when the user is
+// not yet cached locally. 循環依存を避けるため interface で受け取る (実装は
+// core/federation)。
+type RemoteUserResolver interface {
+	ResolveByUsernameHost(username, host string) (*model.User, error)
+}
+
 // Service provides user-related business logic.
 type Service struct {
 	userRepo            repository.UserRepository
@@ -56,6 +62,7 @@ type Service struct {
 	piningRepo          repository.UserNotePiningRepository
 	idGen               id.Generator
 	mainStreamPublisher MainStreamPublisher
+	remoteResolver      RemoteUserResolver
 }
 
 // NewService creates a new user Service.
@@ -81,6 +88,14 @@ func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
 	s.mainStreamPublisher = p
 }
 
+// SetRemoteUserResolver attaches a resolver for remote (non-local) users.
+// When set, ShowByUsername falls back to remote fetch (WebFinger + AP) for
+// DB misses with non-nil host. Optional — nil disables remote fallback and
+// leaves ShowByUsername DB-only.
+func (s *Service) SetRemoteUserResolver(r RemoteUserResolver) {
+	s.remoteResolver = r
+}
+
 // UserWithProfile bundles a user and its profile for handlers.
 type UserWithProfile struct {
 	User    *model.User
@@ -99,13 +114,29 @@ func (s *Service) ShowByID(id string) (*UserWithProfile, error) {
 }
 
 // ShowByUsername returns the user (and profile) for the given username and host.
+//
+// host が nil もしくは空の場合はローカルユーザーとして DB を参照するのみ。
+// host が指定されていてローカル DB に該当が無い場合、RemoteUserResolver が
+// 設定されていれば WebFinger + ActivityPub 経由でリモート fetch を試みる。
+// resolver 未設定の場合は ErrUserNotFound を返し (後方互換)、設定済みで解決
+// に失敗した場合は ErrFailedToResolveRemoteUser を返す。
 func (s *Service) ShowByUsername(username string, host *string) (*UserWithProfile, error) {
 	u, err := s.userRepo.FindByUsernameLower(username, host)
-	if err != nil {
+	if err == nil {
+		profile, _ := s.userRepo.FindProfileByUserID(u.ID)
+		return &UserWithProfile{User: u, Profile: profile}, nil
+	}
+	// ローカル DB miss。host 指定なしや resolver 未注入の場合は従来どおり
+	// ErrUserNotFound を返し、handler 側で NO_SUCH_USER にマップさせる。
+	if host == nil || *host == "" || s.remoteResolver == nil {
 		return nil, ErrUserNotFound
 	}
-	profile, _ := s.userRepo.FindProfileByUserID(u.ID)
-	return &UserWithProfile{User: u, Profile: profile}, nil
+	resolved, resolveErr := s.remoteResolver.ResolveByUsernameHost(username, *host)
+	if resolveErr != nil || resolved == nil {
+		return nil, ErrFailedToResolveRemoteUser
+	}
+	profile, _ := s.userRepo.FindProfileByUserID(resolved.ID)
+	return &UserWithProfile{User: resolved, Profile: profile}, nil
 }
 
 // GetProfile returns the profile for the given user ID, or nil if not found.
