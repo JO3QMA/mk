@@ -1111,3 +1111,95 @@ func TestMe_UnreadFieldsDefaults(t *testing.T) {
 	assert.Equal(t, false, resp["hasUnreadChannel"])
 	assert.Equal(t, false, resp["hasUnreadSpecifiedNotes"])
 }
+
+// --- Phase 7-3 (#245): pinnedNotes / pinnedPage ---
+
+func TestMe_PinnedNoteIDs_Populated(t *testing.T) {
+	h, userRepo, noteRepo, _ := newTestHandler(t)
+
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	require.NoError(t, piningRepo.Create(&model.UserNotePining{ID: "p1", UserID: "u1", NoteID: "note_a"}))
+	require.NoError(t, piningRepo.Create(&model.UserNotePining{ID: "p2", UserID: "u1", NoteID: "note_b"}))
+	h.SetPiningRepo(piningRepo)
+
+	// noteRepo に 2 件の note を挿入 (FindManyByIDsWithUser の戻り対象)
+	txtA := "a"
+	noteRepo.Notes["note_a"] = &model.Note{ID: "note_a", UserID: "u1", Text: &txtA, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))}
+	txtB := "b"
+	noteRepo.Notes["note_b"] = &model.Note{ID: "note_b", UserID: "u1", Text: &txtB, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))}
+	h.SetNoteRepo(noteRepo)
+
+	resp := runMe(t, h, userRepo, "u1")
+
+	ids, ok := resp["pinnedNoteIds"].([]any)
+	require.True(t, ok)
+	assert.Len(t, ids, 2)
+
+	notes, ok := resp["pinnedNotes"].([]any)
+	require.True(t, ok)
+	assert.Len(t, notes, 2)
+}
+
+func TestMe_PinnedNoteIDs_EmptyDefault(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	// 依存 未wire → default empty
+	resp := runMe(t, h, userRepo, "u1")
+	ids, ok := resp["pinnedNoteIds"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, ids)
+	notes, _ := resp["pinnedNotes"].([]any)
+	assert.Empty(t, notes)
+}
+
+// stubPageRepo to avoid DB.
+type stubPageRepo struct {
+	page *model.Page
+	err  error
+}
+
+func (s *stubPageRepo) Create(*model.Page) error                                 { return nil }
+func (s *stubPageRepo) FindByID(id string) (*model.Page, error)                  { return s.page, s.err }
+func (s *stubPageRepo) FindByUserAndName(string, string) (*model.Page, error)    { return nil, nil }
+func (s *stubPageRepo) UpdateFields(string, map[string]any) error                { return nil }
+func (s *stubPageRepo) Delete(*model.Page) error                                 { return nil }
+func (s *stubPageRepo) ListByUser(string, int, int) ([]*model.Page, error)       { return nil, nil }
+func (s *stubPageRepo) ListPublicByUser(string, int, int) ([]*model.Page, error) { return nil, nil }
+func (s *stubPageRepo) ListFeatured(int, int) ([]*model.Page, error)             { return nil, nil }
+func (s *stubPageRepo) IncrementCount(string, string, int) error                 { return nil }
+
+func TestMe_PinnedPage_Populated(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+
+	pageID := "page_123"
+	userRepo.Profiles["u1"] = &model.UserProfile{
+		UserID:       "u1",
+		Fields:       datatypes.JSON([]byte("[]")),
+		PinnedPageID: &pageID,
+	}
+
+	h.SetPageRepo(&stubPageRepo{page: &model.Page{ID: pageID, Title: "pinned", UserID: "u1"}})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/i", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set(string(middleware.UserContextKey), &model.User{
+		ID: "u1", Username: "u", AvatarDecorations: datatypes.JSON([]byte("[]")),
+		ChatScope: "mutual",
+	})
+	require.NoError(t, h.Me(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, pageID, resp["pinnedPageId"])
+	pg, ok := resp["pinnedPage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "pinned", pg["title"])
+}
+
+func TestMe_PinnedPage_NoPinnedPageID(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	resp := runMe(t, h, userRepo, "u1")
+	assert.Nil(t, resp["pinnedPageId"])
+	assert.Nil(t, resp["pinnedPage"])
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -43,6 +44,13 @@ type Handler struct {
 	flashRepo            repository.FlashRepository
 	galleryRepo          repository.GalleryRepository
 	pageRepo             repository.PageRepository
+	piningRepo           repository.UserNotePiningRepository
+}
+
+// SetPiningRepo wires the user_note_pining repository used to fill
+// pinnedNoteIds / pinnedNotes on /api/users/show.
+func (h *Handler) SetPiningRepo(r repository.UserNotePiningRepository) {
+	h.piningRepo = r
 }
 
 // SetClipRepo attaches a ClipRepository for users/clips.
@@ -195,6 +203,9 @@ func (h *Handler) Show(c echo.Context) error {
 			}
 		}
 	}
+
+	// Phase 7-3 (#245): ピン止めnote / ピン止めpage を埋める。
+	h.fillPinned(bundle.User, bundle.Profile, &detailed)
 
 	// viewerがログインしている場合、viewer依存フィールドを追加
 	if viewer := middleware.GetUser(c); viewer != nil && viewer.ID != bundle.User.ID {
@@ -412,4 +423,37 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+// fillPinned populates PinnedNoteIDs / PinnedNotes / PinnedPageID / PinnedPage
+// on the passed UserDetailed from the user's user_note_pining rows and
+// user_profile.pinnedPageId. Missing repos fall back to default empty/nil.
+func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed *entity.UserDetailed) {
+	if h.piningRepo != nil {
+		if pinings, err := h.piningRepo.ListByUser(u.ID); err == nil && len(pinings) > 0 {
+			ids := make([]string, 0, len(pinings))
+			for _, p := range pinings {
+				ids = append(ids, p.NoteID)
+			}
+			detailed.PinnedNoteIDs = ids
+			if h.noteRepo != nil {
+				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
+					packed := make([]any, 0, len(notes))
+					for _, n := range notes {
+						packed = append(packed, entity.PackNote(n, h.idGen))
+					}
+					detailed.PinnedNotes = packed
+				}
+			}
+		}
+	}
+
+	if profile != nil && profile.PinnedPageID != nil && *profile.PinnedPageID != "" {
+		detailed.PinnedPageID = profile.PinnedPageID
+		if h.pageRepo != nil {
+			if p, err := h.pageRepo.FindByID(*profile.PinnedPageID); err == nil {
+				detailed.PinnedPage = entity.PackPage(p, h.idGen)
+			}
+		}
+	}
 }

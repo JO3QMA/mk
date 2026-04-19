@@ -678,3 +678,103 @@ func TestFollowing_InternalError(t *testing.T) {
 	rec := post(h.Following, `{"userId": "user1"}`)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
+
+// --- Phase 7-3 (#245): pinnedNotes / pinnedPage on users/show ---
+
+type stubPageRepoForPin struct {
+	page *model.Page
+}
+
+func (s *stubPageRepoForPin) Create(*model.Page) error                              { return nil }
+func (s *stubPageRepoForPin) FindByID(string) (*model.Page, error)                  { return s.page, nil }
+func (s *stubPageRepoForPin) FindByUserAndName(string, string) (*model.Page, error) { return nil, nil }
+func (s *stubPageRepoForPin) UpdateFields(string, map[string]any) error             { return nil }
+func (s *stubPageRepoForPin) Delete(*model.Page) error                              { return nil }
+func (s *stubPageRepoForPin) ListByUser(string, int, int) ([]*model.Page, error)    { return nil, nil }
+func (s *stubPageRepoForPin) ListPublicByUser(string, int, int) ([]*model.Page, error) {
+	return nil, nil
+}
+func (s *stubPageRepoForPin) ListFeatured(int, int) ([]*model.Page, error) { return nil, nil }
+func (s *stubPageRepoForPin) IncrementCount(string, string, int) error     { return nil }
+
+func TestShow_PinnedNotes_Populated(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+	addTestUser(userRepo)
+
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	require.NoError(t, piningRepo.Create(&model.UserNotePining{ID: "p1", UserID: "user1", NoteID: "note_a"}))
+	h.SetPiningRepo(piningRepo)
+
+	// note 本体は h.noteRepo (newTestHandler 内で MockNoteRepo) に入れる
+	nr, _ := h.noteRepo.(*testutil.MockNoteRepository)
+	require.NotNil(t, nr)
+	txt := "pinned!"
+	nr.Notes["note_a"] = &model.Note{ID: "note_a", UserID: "user1", Text: &txt, Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}"))}
+
+	body := `{"userId": "user1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Show(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	ids, ok := resp["pinnedNoteIds"].([]any)
+	require.True(t, ok)
+	assert.Len(t, ids, 1)
+	assert.Equal(t, "note_a", ids[0])
+	notes, ok := resp["pinnedNotes"].([]any)
+	require.True(t, ok)
+	assert.Len(t, notes, 1)
+}
+
+func TestShow_PinnedPage_Populated(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+	addTestUser(userRepo)
+
+	pageID := "pg_1"
+	userRepo.Profiles["user1"] = &model.UserProfile{
+		UserID:       "user1",
+		Fields:       datatypes.JSON([]byte("[]")),
+		PinnedPageID: &pageID,
+	}
+	h.SetPageRepo(&stubPageRepoForPin{page: &model.Page{ID: pageID, Title: "my page", UserID: "user1"}})
+
+	body := `{"userId": "user1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Show(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, pageID, resp["pinnedPageId"])
+	page, ok := resp["pinnedPage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "my page", page["title"])
+}
+
+func TestShow_PinnedFields_Defaults(t *testing.T) {
+	h, userRepo := newTestHandler(t)
+	addTestUser(userRepo)
+
+	body := `{"userId": "user1"}`
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/users/show", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Show(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	// pining未wireでもリストは存在 (空)
+	ids, _ := resp["pinnedNoteIds"].([]any)
+	assert.Empty(t, ids)
+	assert.Nil(t, resp["pinnedPageId"])
+	assert.Nil(t, resp["pinnedPage"])
+}

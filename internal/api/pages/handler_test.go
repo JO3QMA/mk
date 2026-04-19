@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	corepage "github.com/shiroha-a/mk/internal/core/page"
@@ -23,7 +24,11 @@ func newHandler(t *testing.T) (*Handler, *testutil.MockPageRepository, *testutil
 	likeRepo := testutil.NewMockPageLikeRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	svc := corepage.NewService(repo, likeRepo, idGen)
-	return NewHandler(svc), repo, likeRepo
+	h := NewHandler(svc)
+	// 実ハンドラと同様に idGen を wiring して entity.PackPage の createdAt パスが
+	// テストでも走るようにする。
+	h.SetIDGen(idGen)
+	return h, repo, likeRepo
 }
 
 func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {
@@ -106,10 +111,15 @@ func TestCreate_RepoError(t *testing.T) {
 
 func TestShow_ByID(t *testing.T) {
 	h, repo, _ := newHandler(t)
-	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "alice", Visibility: model.PageVisibilityPublic}
-	c, rec := newReq(t, `{"pageId":"p1"}`)
+	// 実ハンドラでは aidx 由来の createdAt が付与されるため、
+	// テストでも有効な aidx ID を使って PackPage の createdAt パスを検証する。
+	idGen, _ := id.NewGenerator("aidx")
+	pageID := idGen.Generate(time.Now())
+	repo.Pages[pageID] = &model.Page{ID: pageID, UserID: "alice", Visibility: model.PageVisibilityPublic}
+	c, rec := newReq(t, `{"pageId":"`+pageID+`"}`)
 	require.NoError(t, h.Show(c))
 	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"createdAt":`)
 }
 
 func TestShow_ByName(t *testing.T) {
@@ -491,11 +501,4 @@ func TestUnlike_RepoError(t *testing.T) {
 	setUser(c, "bob")
 	require.NoError(t, h.Unlike(c))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-}
-
-// --- helpers ---------------------------------------------------------------
-
-func TestRawJSON(t *testing.T) {
-	assert.Nil(t, rawJSON(nil))
-	assert.NotNil(t, rawJSON([]byte(`[1]`)))
 }

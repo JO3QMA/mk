@@ -9,18 +9,27 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	corepage "github.com/shiroha-a/mk/internal/core/page"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles page-related API endpoints.
 type Handler struct {
-	svc *corepage.Service
+	svc   *corepage.Service
+	idGen id.Generator
 }
 
 // NewHandler creates a new pages Handler.
 func NewHandler(svc *corepage.Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetIDGen attaches an ID generator so responses include createdAt derived
+// from the aidx-encoded page ID.
+func (h *Handler) SetIDGen(g id.Generator) {
+	h.idGen = g
 }
 
 // CreateRequest is the request body for pages/create. Content / Variables
@@ -66,7 +75,7 @@ func (h *Handler) Create(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, pageToMap(p))
+	return c.JSON(http.StatusOK, h.pageToMap(p))
 }
 
 // ShowRequest is the request body for pages/show. pageId か (userId, name) の
@@ -106,7 +115,7 @@ func (h *Handler) Show(c echo.Context) error {
 		}
 		return notFound(c)
 	}
-	return c.JSON(http.StatusOK, pageToMap(p))
+	return c.JSON(http.StatusOK, h.pageToMap(p))
 }
 
 // UpdateRequest is the request body for pages/update.
@@ -170,7 +179,7 @@ func (h *Handler) Update(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, pageToMap(p))
+	return c.JSON(http.StatusOK, h.pageToMap(p))
 }
 
 // DeleteRequest is the request body for pages/delete.
@@ -214,7 +223,7 @@ func (h *Handler) My(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, pagesToList(rows))
+	return c.JSON(http.StatusOK, h.pagesToList(rows))
 }
 
 // FeaturedRequest is the request body for pages/featured.
@@ -233,7 +242,7 @@ func (h *Handler) Featured(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, pagesToList(rows))
+	return c.JSON(http.StatusOK, h.pagesToList(rows))
 }
 
 // LikeRequest is the request body for pages/like and pages/unlike.
@@ -281,41 +290,21 @@ func (h *Handler) Unlike(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func pagesToList(rows []*model.Page) []map[string]any {
+// pagesToList packs a slice of pages using h.idGen so every element gets a
+// consistent createdAt alongside the other fields.
+func (h *Handler) pagesToList(rows []*model.Page) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, pageToMap(p))
+		out = append(out, h.pageToMap(p))
 	}
 	return out
 }
 
-func pageToMap(p *model.Page) map[string]any {
-	return map[string]any{
-		"id":                  p.ID,
-		"updatedAt":           p.UpdatedAt,
-		"title":               p.Title,
-		"name":                p.Name,
-		"summary":             p.Summary,
-		"alignCenter":         p.AlignCenter,
-		"hideTitleWhenPinned": p.HideTitleWhenPinned,
-		"font":                p.Font,
-		"userId":              p.UserID,
-		"eyeCatchingImageId":  p.EyeCatchingImageID,
-		"content":             rawJSON(p.Content),
-		"variables":           rawJSON(p.Variables),
-		"script":              p.Script,
-		"visibility":          string(p.Visibility),
-		"likedCount":          p.LikedCount,
-	}
-}
-
-// rawJSON returns the raw JSON bytes as json.RawMessage so Echo emits the
-// jsonb column verbatim.
-func rawJSON(b []byte) any {
-	if len(b) == 0 {
-		return nil
-	}
-	return json.RawMessage(b)
+// pageToMap delegates to entity.PackPage so the JSON shape (timestamp
+// format, field set) stays in sync between /api/pages/* and other places
+// that embed a page (e.g. pinnedPage on /api/i and /api/users/show).
+func (h *Handler) pageToMap(p *model.Page) map[string]any {
+	return entity.PackPage(p, h.idGen)
 }
 
 func notFound(c echo.Context) error {

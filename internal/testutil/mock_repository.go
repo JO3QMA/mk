@@ -1519,6 +1519,10 @@ func (m *MockUserNotePiningRepository) ListByUser(userID string) ([]*model.UserN
 			rows = append(rows, p)
 		}
 	}
+	// 実装 (repository/user_note_pining.go) は ORDER BY id DESC を使っている。
+	// map 反復は非決定的なので、同じ順序でソートして将来の順序依存テストに
+	// 備える。
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID > rows[j].ID })
 	return rows, nil
 }
 
