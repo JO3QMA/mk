@@ -181,3 +181,11 @@ func (p *DrivePublisher) PublishDriveEvent(userID, eventType string, file *model
 
 // 静的アサーション: DrivePublisher が core/drive.StreamingPublisher を満たす。
 var _ coredrive.StreamingPublisher = (*DrivePublisher)(nil)
+
+// 静的アサーション: NotificationPublisher が core/notification.StreamingPublisher
+// と core/notification.Packer の両方を満たす。interface signature が
+// drift した時点で compile errorで検知する。
+var (
+	_ corenotification.StreamingPublisher = (*NotificationPublisher)(nil)
+	_ corenotification.Packer             = (*NotificationPublisher)(nil)
+)
