@@ -186,6 +186,33 @@ func TestFilesShow_AccessDenied(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
+func TestFilesShow_EmbedsFolderAndUser(t *testing.T) {
+	h, fileRepo, folderRepo := newHandler(t)
+	// folder/user/noteRepoを配線 (本番router.go相当)
+	h.SetRepos(fileRepo, folderRepo, testutil.NewMockNoteRepository())
+	userRepo := testutil.NewMockUserRepository()
+	h.SetUserRepo(userRepo)
+
+	uid := "u1"
+	folderID := "fl1"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &uid, Name: "hi", FolderID: &folderID}
+	folderRepo.Folders[folderID] = &model.DriveFolder{ID: folderID, Name: "Pics", UserID: &uid}
+	userRepo.Users[uid] = &model.User{ID: uid, Username: "alice"}
+
+	c, rec := newJSONReq(t, `{"fileId":"f1"}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesShow(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	folder, ok := resp["folder"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Pics", folder["name"])
+	user, ok := resp["user"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "alice", user["username"])
+}
+
 // --- FilesUpdate ---
 
 func TestFilesUpdate_Success(t *testing.T) {

@@ -497,7 +497,10 @@ func (h *Handler) resolveFiles(notes []entity.NoteEntity) {
 	for _, f := range files {
 		fileMap[f.ID] = f
 	}
-	// 各ノートのFilesに設定
+	// 各ノートのFilesに設定。
+	// NOTE: TS本家は attachmentに folder / user を embed するが、notes
+	// handler には folderRepo / userRepo が未配線のため現状はIDのみ返す。
+	// 完全対応は follow-up issue #317 で検討。
 	for i := range notes {
 		packed := make([]any, 0, len(notes[i].FileIDs))
 		for _, fid := range notes[i].FileIDs {

@@ -100,12 +100,12 @@ func TestPackDriveFile_WithPropertiesAndWebpublic(t *testing.T) {
 
 	out := PackDriveFile(f, idGen)
 	assert.Equal(t, &wpURL, out.WebpublicURL)
-	assert.NotNil(t, out.Properties)
-
-	var p map[string]int
-	require.NoError(t, json.Unmarshal(out.Properties, &p))
-	assert.Equal(t, 800, p["width"])
-	assert.Equal(t, 600, p["height"])
+	// typed DriveFileProperties に変換されているため、width/height が
+	// ポインタ int で直接触れる。
+	require.NotNil(t, out.Properties.Width)
+	require.NotNil(t, out.Properties.Height)
+	assert.Equal(t, 800, *out.Properties.Width)
+	assert.Equal(t, 600, *out.Properties.Height)
 }
 
 func TestPackDriveFile_EmptyProperties(t *testing.T) {
@@ -118,6 +118,101 @@ func TestPackDriveFile_EmptyProperties(t *testing.T) {
 		URL:  "https://example.com/files/x",
 	}
 	out := PackDriveFile(f, idGen)
-	assert.Equal(t, json.RawMessage("{}"), out.Properties)
+	// properties 空 → zero-valued DriveFileProperties (全フィールド nil)
+	assert.Nil(t, out.Properties.Width)
+	assert.Nil(t, out.Properties.Height)
+	assert.Nil(t, out.Properties.Orientation)
+	assert.Nil(t, out.Properties.AvgColor)
 	assert.Nil(t, out.WebpublicURL)
+	// Folder / User は pack 側でセットしないので nil のまま
+	assert.Nil(t, out.Folder)
+	assert.Nil(t, out.User)
+}
+
+func TestPackDriveFile_AllPropertyFields(t *testing.T) {
+	idGen := newTestIDGen(t)
+	fileID := idGen.Generate(time.Now())
+	props, err := json.Marshal(map[string]any{
+		"width":       1280,
+		"height":      720,
+		"orientation": 8,
+		"avgColor":    "rgb(40,65,87)",
+	})
+	require.NoError(t, err)
+	f := &model.DriveFile{
+		ID:         fileID,
+		Name:       "photo.jpg",
+		URL:        "https://example.com/p.jpg",
+		Properties: datatypes.JSON(props),
+	}
+	out := PackDriveFile(f, idGen)
+	require.NotNil(t, out.Properties.Width)
+	assert.Equal(t, 1280, *out.Properties.Width)
+	require.NotNil(t, out.Properties.Height)
+	assert.Equal(t, 720, *out.Properties.Height)
+	require.NotNil(t, out.Properties.Orientation)
+	assert.Equal(t, 8, *out.Properties.Orientation)
+	require.NotNil(t, out.Properties.AvgColor)
+	assert.Equal(t, "rgb(40,65,87)", *out.Properties.AvgColor)
+}
+
+func TestPackDriveFile_InvalidPropertiesJSON_Defaults(t *testing.T) {
+	idGen := newTestIDGen(t)
+	f := &model.DriveFile{
+		ID:         idGen.Generate(time.Now()),
+		Name:       "bad.jpg",
+		URL:        "x",
+		Properties: datatypes.JSON([]byte("not-json")),
+	}
+	out := PackDriveFile(f, idGen)
+	// invalid JSON → 全フィールド nil にフォールバック
+	assert.Nil(t, out.Properties.Width)
+	assert.Nil(t, out.Properties.Height)
+}
+
+func TestPackDriveFile_WithFolderAndUser(t *testing.T) {
+	idGen := newTestIDGen(t)
+	fileID := idGen.Generate(time.Now())
+	folderID := idGen.Generate(time.Now())
+	userID := "u1"
+	f := &model.DriveFile{ID: fileID, Name: "a.jpg", URL: "x", FolderID: &folderID, UserID: &userID}
+	folder := &model.DriveFolder{ID: folderID, Name: "Pictures"}
+	user := &model.User{ID: userID, Username: "alice"}
+
+	out := PackDriveFile(f, idGen)
+	// caller が pack して後付けするパターン
+	packedFolder := PackDriveFolder(folder, idGen)
+	out.Folder = &packedFolder
+	lite := PackUserLite(user)
+	out.User = &lite
+
+	require.NotNil(t, out.Folder)
+	assert.Equal(t, "Pictures", out.Folder.Name)
+	require.NotNil(t, out.User)
+	assert.Equal(t, "alice", out.User.Username)
+}
+
+func TestPackDriveFileWithRelations_BothSet(t *testing.T) {
+	idGen := newTestIDGen(t)
+	fileID := idGen.Generate(time.Now())
+	folderID := idGen.Generate(time.Now())
+	userID := "u1"
+	f := &model.DriveFile{ID: fileID, Name: "a.jpg", URL: "x", FolderID: &folderID, UserID: &userID}
+	folder := &model.DriveFolder{ID: folderID, Name: "Pictures"}
+	user := &model.User{ID: userID, Username: "alice"}
+
+	out := PackDriveFileWithRelations(f, idGen, folder, user)
+	require.NotNil(t, out.Folder)
+	assert.Equal(t, "Pictures", out.Folder.Name)
+	require.NotNil(t, out.User)
+	assert.Equal(t, "alice", out.User.Username)
+}
+
+func TestPackDriveFileWithRelations_NilRelations(t *testing.T) {
+	idGen := newTestIDGen(t)
+	f := &model.DriveFile{ID: idGen.Generate(time.Now()), Name: "a", URL: "x"}
+	// folder/user が nil のときは omitempty で省略される
+	out := PackDriveFileWithRelations(f, idGen, nil, nil)
+	assert.Nil(t, out.Folder)
+	assert.Nil(t, out.User)
 }
