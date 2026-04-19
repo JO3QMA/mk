@@ -96,10 +96,7 @@ func (h *Handler) FeaturedNotes(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	result := make([]entity.NoteEntity, 0, len(notes))
-	for _, n := range notes {
-		result = append(result, entity.PackNote(n, h.idGen))
-	}
+	result := entity.PackNotes(notes, h.idGen, h.instanceLookup())
 	return c.JSON(http.StatusOK, result)
 }
 
@@ -120,9 +117,12 @@ func (h *Handler) SearchByUsernameAndHost(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), users...)
 	result := make([]entity.UserLite, 0, len(users))
 	for _, u := range users {
-		result = append(result, entity.PackUserLite(u))
+		lite := entity.PackUserLite(u)
+		resolver.FillUserLite(&lite)
+		result = append(result, lite)
 	}
 	return c.JSON(http.StatusOK, result)
 }

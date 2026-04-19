@@ -37,6 +37,7 @@ type Handler struct {
 	noteReactionRepo  repository.NoteReactionRepository
 	channelRepo       repository.ChannelRepository
 	channelMutingRepo repository.ChannelMutingRepository
+	instanceRepo      repository.InstanceRepository
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
@@ -72,6 +73,22 @@ func (h *Handler) SetNoteReactionRepo(r repository.NoteReactionRepository) {
 // SetChannelRepo attaches a ChannelRepository for channel resolution.
 func (h *Handler) SetChannelRepo(r repository.ChannelRepository) {
 	h.channelRepo = r
+}
+
+// SetInstanceRepo attaches an InstanceRepository so remote user embeds in
+// note responses get their `instance` field populated (#277).
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
+}
+
+// instanceLookup returns the repository as an entity.InstanceLookup, or nil
+// when no repo has been wired. Narrowing to the entity interface keeps the
+// packer independent from repository details.
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
 }
 
 // NewHandler creates a new notes Handler.
@@ -196,7 +213,7 @@ func (h *Handler) Create(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	packed := entity.PackNote(created, h.idGen)
+	packed := entity.PackNoteWithInstance(created, h.idGen, h.instanceLookup())
 	s := []entity.NoteEntity{packed}
 	h.resolveFiles(s)
 	h.resolveViewerFields(s, user)
@@ -223,7 +240,7 @@ func (h *Handler) Show(c echo.Context) error {
 		return apierr.JSONNoSuchNote(c)
 	}
 
-	packed := entity.PackNote(n, h.idGen)
+	packed := entity.PackNoteWithInstance(n, h.idGen, h.instanceLookup())
 	s := []entity.NoteEntity{packed}
 	h.resolveFiles(s)
 	h.resolveViewerFields(s, viewer)
@@ -465,10 +482,7 @@ func (h *Handler) BulkShow(c echo.Context) error {
 // driveFileRepoが設定されている場合、ファイル情報を解決してFilesに含める。
 // viewerがnon-nilの場合、myReactionなどのviewer依存フィールドも解決する。
 func (h *Handler) packMany(notes []*model.Note, viewer *model.User) []entity.NoteEntity {
-	out := make([]entity.NoteEntity, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, entity.PackNote(n, h.idGen))
-	}
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
 	h.resolveFiles(out)
 	h.resolveViewerFields(out, viewer)
 	return out

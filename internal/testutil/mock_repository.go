@@ -1641,6 +1641,19 @@ func (m *MockInstanceRepository) FindByHost(host string) (*model.Instance, error
 	return i, nil
 }
 
+func (m *MockInstanceRepository) FindManyByHosts(hosts []string) ([]*model.Instance, error) {
+	if len(hosts) == 0 {
+		return nil, nil
+	}
+	out := make([]*model.Instance, 0, len(hosts))
+	for _, h := range hosts {
+		if inst, ok := m.Instances[h]; ok {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
+}
+
 func (m *MockInstanceRepository) UpdateFields(host string, fields map[string]any) error {
 	if m.UpdateErr != nil {
 		return m.UpdateErr

@@ -101,6 +101,15 @@ func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 	h.instanceRepo = r
 }
 
+// instanceLookup adapts instanceRepo to entity.InstanceLookup. Returns nil
+// when no repo is wired (entity.PackNotes treats nil as "skip Instance").
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
+}
+
 // NewHandler creates a new users Handler.
 // followingService, noteRepo, idGen are optional for the bare /show endpoint.
 func NewHandler(
@@ -146,11 +155,24 @@ func (h *Handler) Show(c echo.Context) error {
 		if len(req.UserIDs) > 100 {
 			req.UserIDs = req.UserIDs[:100]
 		}
-		out := make([]entity.UserLite, 0, len(req.UserIDs))
+		// bulk fetch してから 1 回の batch で instance を resolve する (#277)。
+		// single-user path と同じ UserLite.instance 表示互換を維持する。
+		bundles := make([]*user.UserWithProfile, 0, len(req.UserIDs))
 		for _, uid := range req.UserIDs {
 			if bundle, err := h.userService.ShowByID(uid); err == nil {
-				out = append(out, entity.PackUserLite(bundle.User))
+				bundles = append(bundles, bundle)
 			}
+		}
+		users := make([]*model.User, 0, len(bundles))
+		for _, b := range bundles {
+			users = append(users, b.User)
+		}
+		resolver := entity.NewInstanceResolver(h.instanceLookup(), users...)
+		out := make([]entity.UserLite, 0, len(bundles))
+		for _, b := range bundles {
+			lite := entity.PackUserLite(b.User)
+			resolver.FillUserLite(&lite)
+			out = append(out, lite)
 		}
 		return c.JSON(http.StatusOK, out)
 	}
@@ -306,10 +328,13 @@ func (h *Handler) Search(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), users...)
 	out := make([]entity.UserDetailed, 0, len(users))
 	for _, u := range users {
 		profile := h.userService.GetProfile(u.ID)
-		out = append(out, entity.PackUserDetailed(u, profile))
+		d := entity.PackUserDetailed(u, profile, h.idGen)
+		resolver.FillUserLite(&d.UserLite)
+		out = append(out, d)
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -344,10 +369,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	out := make([]entity.NoteEntity, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, entity.PackNote(n, h.idGen))
-	}
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
 	return c.JSON(http.StatusOK, out)
 }
 
@@ -416,18 +438,35 @@ func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]relationItem, 0, len(rows))
+	// 一旦 bundle を全件集めてから resolver を 1 度構築する。ShowByID は
+	// N+1 のままだが、instance は batch 1 回に集約できる (#277)。
+	type resolved struct {
+		f      *model.Following
+		bundle *user.UserWithProfile
+	}
+	pending := make([]resolved, 0, len(rows))
+	remoteUsers := make([]*model.User, 0, len(rows))
 	for _, f := range rows {
-		// カーソルベースページネーション
 		if req.SinceID != "" && f.ID <= req.SinceID {
 			continue
 		}
 		if req.UntilID != "" && f.ID >= req.UntilID {
 			continue
 		}
-		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
+		r := resolved{f: f}
 		if b, err := h.userService.ShowByID(f.FollowerID); err == nil {
-			d := entity.PackUserDetailed(b.User, b.Profile)
+			r.bundle = b
+			remoteUsers = append(remoteUsers, b.User)
+		}
+		pending = append(pending, r)
+	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), remoteUsers...)
+	out := make([]relationItem, 0, len(pending))
+	for _, r := range pending {
+		item := relationItem{ID: r.f.ID, FollowerID: r.f.FollowerID, FolloweeID: r.f.FolloweeID}
+		if r.bundle != nil {
+			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
+			resolver.FillUserLite(&d.UserLite)
 			item.Follower = &d
 		}
 		out = append(out, item)
@@ -440,7 +479,12 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]relationItem, 0, len(rows))
+	type resolved struct {
+		f      *model.Following
+		bundle *user.UserWithProfile
+	}
+	pending := make([]resolved, 0, len(rows))
+	remoteUsers := make([]*model.User, 0, len(rows))
 	for _, f := range rows {
 		if req.SinceID != "" && f.ID <= req.SinceID {
 			continue
@@ -448,9 +492,20 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		if req.UntilID != "" && f.ID >= req.UntilID {
 			continue
 		}
-		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
+		r := resolved{f: f}
 		if b, err := h.userService.ShowByID(f.FolloweeID); err == nil {
-			d := entity.PackUserDetailed(b.User, b.Profile)
+			r.bundle = b
+			remoteUsers = append(remoteUsers, b.User)
+		}
+		pending = append(pending, r)
+	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), remoteUsers...)
+	out := make([]relationItem, 0, len(pending))
+	for _, r := range pending {
+		item := relationItem{ID: r.f.ID, FollowerID: r.f.FollowerID, FolloweeID: r.f.FolloweeID}
+		if r.bundle != nil {
+			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
+			resolver.FillUserLite(&d.UserLite)
 			item.Followee = &d
 		}
 		out = append(out, item)
@@ -471,9 +526,10 @@ func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed
 			detailed.PinnedNoteIDs = ids
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					packed := make([]any, 0, len(notes))
-					for _, n := range notes {
-						packed = append(packed, entity.PackNote(n, h.idGen))
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+					packed := make([]any, 0, len(entities))
+					for _, pn := range entities {
+						packed = append(packed, pn)
 					}
 					detailed.PinnedNotes = packed
 				}

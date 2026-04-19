@@ -17,15 +17,29 @@ import (
 
 // Handler handles antenna-related API endpoints.
 type Handler struct {
-	svc      *coreantenna.Service
-	noteRepo repository.NoteRepository
-	idGen    id.Generator
+	svc          *coreantenna.Service
+	noteRepo     repository.NoteRepository
+	idGen        id.Generator
+	instanceRepo repository.InstanceRepository
 }
 
 // NewHandler constructs an antennas Handler. noteRepo は antennas/notes で
 // note id → entity 変換に使う。
 func NewHandler(svc *coreantenna.Service, noteRepo repository.NoteRepository, idGen id.Generator) *Handler {
 	return &Handler{svc: svc, noteRepo: noteRepo, idGen: idGen}
+}
+
+// SetInstanceRepo attaches an InstanceRepository so antennas/notes populates
+// UserLite.Instance for remote users (#277).
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
+}
+
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
 }
 
 // CreateRequest is the request body for antennas/create.
@@ -216,9 +230,10 @@ func (h *Handler) Notes(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	out := make([]any, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, entity.PackNote(n, h.idGen))
+	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	out := make([]any, 0, len(entities))
+	for _, pn := range entities {
+		out = append(out, pn)
 	}
 	return c.JSON(http.StatusOK, out)
 }

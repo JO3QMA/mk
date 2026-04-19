@@ -9,6 +9,10 @@ import (
 type InstanceRepository interface {
 	Create(i *model.Instance) error
 	FindByHost(host string) (*model.Instance, error)
+	// FindManyByHosts returns instance rows matching any of the given hosts.
+	// Used by entity packers to batch-resolve UserLite.Instance info on
+	// timeline hot paths (#277). Empty input returns nil.
+	FindManyByHosts(hosts []string) ([]*model.Instance, error)
 	UpdateFields(host string, fields map[string]any) error
 	IncrementCount(host, column string, delta int) error
 	List(filter model.InstanceListFilter) ([]*model.Instance, error)
@@ -33,6 +37,17 @@ func (r *instanceRepository) FindByHost(host string) (*model.Instance, error) {
 		return nil, err
 	}
 	return &inst, nil
+}
+
+func (r *instanceRepository) FindManyByHosts(hosts []string) ([]*model.Instance, error) {
+	if len(hosts) == 0 {
+		return nil, nil
+	}
+	var rows []*model.Instance
+	if err := r.db.Where("host IN ?", hosts).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // UpdateFields applies a map of column → value updates to the instance row
