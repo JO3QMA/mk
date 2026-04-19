@@ -54,7 +54,7 @@ func newClient(opts config.RedisOptions) *redis.Client {
 // ときは Network を "unix" に切り替え、Addr にはパスをそのまま入れる。
 // そうでなければ従来どおり host:port 形式の TCP 接続にする。
 func buildRedisOptions(opts config.RedisOptions) *redis.Options {
-	// go-redisのデフォルトPoolSizeは runtime.GOMAXPROCS * 10。
+	// go-redisのデフォルトPoolSizeはruntime.GOMAXPROCS * 10。
 	// 明示的に指定された場合のみ上書きする（0はgo-redisデフォルトを意味する）。
 	poolSize := 0
 	if opts.PoolSize != nil {

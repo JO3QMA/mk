@@ -530,7 +530,9 @@ func (s *Server) setupRoutes() {
 	// ランタイムプロファイリング用。本番では絶対に有効化してはならない。
 	if s.config.EnablePprof {
 		pprofGroup := s.echo.Group("/debug/pprof")
-		pprofGroup.GET("", echo.WrapHandler(http.HandlerFunc(pprof.Index)))
+		pprofGroup.GET("", func(c echo.Context) error {
+			return c.Redirect(http.StatusMovedPermanently, "/debug/pprof/")
+		})
 		pprofGroup.GET("/", echo.WrapHandler(http.HandlerFunc(pprof.Index)))
 		pprofGroup.GET("/cmdline", echo.WrapHandler(http.HandlerFunc(pprof.Cmdline)))
 		pprofGroup.GET("/profile", echo.WrapHandler(http.HandlerFunc(pprof.Profile)))
