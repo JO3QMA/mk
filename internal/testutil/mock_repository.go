@@ -2773,6 +2773,103 @@ func (m *MockChannelFollowingRepository) ListFollowed(userID string, limit, offs
 	return rows[offset:end], nil
 }
 
+// ListFollowerIDs returns followerIds for a given channelID.
+func (m *MockChannelFollowingRepository) ListFollowerIDs(channelID string, limit int) ([]string, error) {
+	var ids []string
+	for _, f := range m.Followings {
+		if f.FolloweeID == channelID {
+			ids = append(ids, f.FollowerID)
+		}
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, nil
+}
+
+// MockAntennaNoteUnreadRepository is a test double for
+// repository.AntennaNoteUnreadRepository.
+type MockAntennaNoteUnreadRepository struct {
+	Rows []*model.AntennaNoteUnread
+}
+
+// NewMockAntennaNoteUnreadRepository returns an empty repository.
+func NewMockAntennaNoteUnreadRepository() *MockAntennaNoteUnreadRepository {
+	return &MockAntennaNoteUnreadRepository{}
+}
+
+// Create records the unread row.
+func (m *MockAntennaNoteUnreadRepository) Create(row *model.AntennaNoteUnread) error {
+	m.Rows = append(m.Rows, row)
+	return nil
+}
+
+// HasAnyByUser returns whether any row exists for the userID.
+func (m *MockAntennaNoteUnreadRepository) HasAnyByUser(userID string) (bool, error) {
+	for _, r := range m.Rows {
+		if r.UserID == userID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// DeleteByAntennaUser removes all rows for the (user, antenna) pair.
+func (m *MockAntennaNoteUnreadRepository) DeleteByAntennaUser(userID, antennaID string) error {
+	out := m.Rows[:0]
+	for _, r := range m.Rows {
+		if r.UserID == userID && r.AntennaID == antennaID {
+			continue
+		}
+		out = append(out, r)
+	}
+	m.Rows = out
+	return nil
+}
+
+// MockChannelNoteUnreadRepository is a test double for
+// repository.ChannelNoteUnreadRepository.
+type MockChannelNoteUnreadRepository struct {
+	Rows []*model.ChannelNoteUnread
+}
+
+// NewMockChannelNoteUnreadRepository returns an empty repository.
+func NewMockChannelNoteUnreadRepository() *MockChannelNoteUnreadRepository {
+	return &MockChannelNoteUnreadRepository{}
+}
+
+// Create records the unread row.
+func (m *MockChannelNoteUnreadRepository) Create(row *model.ChannelNoteUnread) error {
+	m.Rows = append(m.Rows, row)
+	return nil
+}
+
+// HasAnyByUser returns whether any row exists for the userID.
+func (m *MockChannelNoteUnreadRepository) HasAnyByUser(userID string) (bool, error) {
+	for _, r := range m.Rows {
+		if r.UserID == userID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// DeleteByChannelUser removes all rows for the (user, channel) pair.
+func (m *MockChannelNoteUnreadRepository) DeleteByChannelUser(userID, channelID string) error {
+	out := m.Rows[:0]
+	for _, r := range m.Rows {
+		if r.UserID == userID && r.ChannelID == channelID {
+			continue
+		}
+		out = append(out, r)
+	}
+	m.Rows = out
+	return nil
+}
+
 // MockUserKeypairRepository is a test double for repository.UserKeypairRepository.
 type MockUserKeypairRepository struct {
 	Keypairs map[string]*model.UserKeypair // keyed by userID

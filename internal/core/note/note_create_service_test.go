@@ -563,7 +563,7 @@ func (h *recordingChannelHook) EnsureChannelExists(channelID string) error {
 	return h.ensureErr
 }
 
-func (h *recordingChannelHook) OnNotePosted(channelID string) {
+func (h *recordingChannelHook) OnNotePosted(channelID, _, _ string) {
 	h.postedCalled.Store(true)
 	h.postedID = channelID
 	select {

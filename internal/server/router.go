@@ -198,12 +198,20 @@ func (s *Server) setupRoutes() {
 
 	// Channels (Phase 4.2)
 	channelService := corechannel.NewService(channelRepo, channelFollowingRepo, noteRepo, idGen)
+	// Phase 7-2 follow-up (#271): channel note 着信時に follower ごとの
+	// unread row を作成して /api/i の hasUnreadChannel に反映する。
+	channelNoteUnreadRepo := repository.NewChannelNoteUnreadRepository(s.db)
+	channelService.SetUnreadRepo(channelNoteUnreadRepo)
 	noteCreateService.SetChannelHook(corechannel.NewNoteCreateHook(channelService))
 
 	// Antennas (Phase 4.3)
 	antennaService := coreantenna.NewService(antennaRepo, userRepo, s.redis.Default, idGen)
 	antennaService.SetFollowingRepo(followingRepo)
 	antennaService.SetUserListRepo(userListRepo)
+	// Phase 7-2 follow-up (#271): antenna 着信時に所有者の unread row を
+	// 作成して /api/i の hasUnreadAntenna に反映する。
+	antennaNoteUnreadRepo := repository.NewAntennaNoteUnreadRepository(s.db)
+	antennaService.SetUnreadRepo(antennaNoteUnreadRepo)
 	noteCreateService.SetAntennaHook(coreantenna.NewNoteCreateHook(antennaService))
 
 	// Clips (Phase 4.4)
@@ -914,6 +922,9 @@ func (s *Server) setupRoutes() {
 	iHandler.SetNotificationService(notificationService)
 	iHandler.SetFollowRequestRepo(followRequestRepo)
 	iHandler.SetChatRepo(chatRepo)
+	// Phase 7-2 follow-up (#271)
+	iHandler.SetAntennaUnreadRepo(antennaNoteUnreadRepo)
+	iHandler.SetChannelUnreadRepo(channelNoteUnreadRepo)
 	// Phase 7-3 (#245): pinnedNoteIds / pinnedNotes / pinnedPageId / pinnedPage
 	iHandler.SetPiningRepo(piningRepo)
 	iHandler.SetNoteRepo(noteRepo)

@@ -47,14 +47,19 @@ func readKey(userID string) string {
 
 // Notification is the payload stored in Redis.
 type Notification struct {
-	ID         string         `json:"id"`
-	CreatedAt  time.Time      `json:"createdAt"`
-	Type       Type           `json:"type"`
-	NotifierID string         `json:"notifierId,omitempty"`
-	NoteID     string         `json:"noteId,omitempty"`
-	Reaction   string         `json:"reaction,omitempty"`
-	Choice     *int           `json:"choice,omitempty"`
-	Extra      map[string]any `json:"extra,omitempty"`
+	ID         string    `json:"id"`
+	CreatedAt  time.Time `json:"createdAt"`
+	Type       Type      `json:"type"`
+	NotifierID string    `json:"notifierId,omitempty"`
+	NoteID     string    `json:"noteId,omitempty"`
+	Reaction   string    `json:"reaction,omitempty"`
+	Choice     *int      `json:"choice,omitempty"`
+	// NoteVisibility captures the visibility of the referenced note at
+	// creation time so /api/i can populate hasUnreadSpecifiedNotes without
+	// re-joining to the note table. Empty string when the notification has
+	// no note (e.g. follow / followRequestAccepted).
+	NoteVisibility string         `json:"noteVisibility,omitempty"`
+	Extra          map[string]any `json:"extra,omitempty"`
 }
 
 // CreateInput is the parameter set for Service.Create.
@@ -63,9 +68,13 @@ type CreateInput struct {
 	NotifierID string
 	Type       Type
 	NoteID     string
-	Reaction   string
-	Choice     *int
-	Extra      map[string]any
+	// NoteVisibility is persisted on the Notification record so hot-path
+	// reads (e.g. /api/i's hasUnreadSpecifiedNotes) can filter without a
+	// note-table join. Pass the visibility of the referenced note.
+	NoteVisibility string
+	Reaction       string
+	Choice         *int
+	Extra          map[string]any
 }
 
 // StreamingPublisher receives a freshly created notification so that
@@ -143,14 +152,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 
 	now := time.Now()
 	n := &Notification{
-		ID:         s.idGen.Generate(now),
-		CreatedAt:  now,
-		Type:       in.Type,
-		NotifierID: in.NotifierID,
-		NoteID:     in.NoteID,
-		Reaction:   in.Reaction,
-		Choice:     in.Choice,
-		Extra:      in.Extra,
+		ID:             s.idGen.Generate(now),
+		CreatedAt:      now,
+		Type:           in.Type,
+		NotifierID:     in.NotifierID,
+		NoteID:         in.NoteID,
+		NoteVisibility: in.NoteVisibility,
+		Reaction:       in.Reaction,
+		Choice:         in.Choice,
+		Extra:          in.Extra,
 	}
 
 	payload, err := json.Marshal(n)
@@ -309,6 +319,35 @@ func (s *Service) HasUnreadOfTypes(ctx context.Context, userID string, types []T
 			continue
 		}
 		if _, ok := wanted[n.Type]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// HasUnreadSpecifiedNotes reports whether the user has any unread
+// notification that references a note with "specified" visibility. Used by
+// /api/i to populate hasUnreadSpecifiedNotes. Matches Misskey's check for
+// DM-style mentions awaiting acknowledgement.
+func (s *Service) HasUnreadSpecifiedNotes(ctx context.Context, userID string) (bool, error) {
+	readID, err := s.LatestReadID(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	if err != nil {
+		return false, err
+	}
+	for _, msg := range res {
+		raw, ok := msg.Values["data"].(string)
+		if !ok {
+			continue
+		}
+		var n Notification
+		if err := json.Unmarshal([]byte(raw), &n); err != nil {
+			continue
+		}
+		if n.NoteVisibility == "specified" {
 			return true, nil
 		}
 	}

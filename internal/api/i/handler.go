@@ -64,6 +64,8 @@ type Handler struct {
 	followRequestRepo   repository.FollowRequestRepository
 	announcementRepo    AnnouncementUnreadSource
 	chatRepo            ChatUnreadSource
+	antennaUnreadRepo   AntennaUnreadSource
+	channelUnreadRepo   ChannelUnreadSource
 	piningRepo          repository.UserNotePiningRepository
 	noteRepo            repository.NoteRepository
 	pageRepo            repository.PageRepository
@@ -86,12 +88,26 @@ func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
 }
 
 // UnreadNotificationSource is the subset of notification.Service used by /api/i
-// to compute hasUnreadNotification / unreadNotificationsCount / hasUnreadMentions.
-// Keeping this as a local interface avoids pulling core/notification into the
-// handler test harness and lets the tests inject a stub.
+// to compute hasUnreadNotification / unreadNotificationsCount /
+// hasUnreadMentions / hasUnreadSpecifiedNotes. Keeping this as a local
+// interface avoids pulling core/notification into the handler test harness
+// and lets the tests inject a stub.
 type UnreadNotificationSource interface {
 	UnreadCount(ctx context.Context, userID string) (int64, error)
 	HasUnreadOfTypes(ctx context.Context, userID string, types []notification.Type) (bool, error)
+	HasUnreadSpecifiedNotes(ctx context.Context, userID string) (bool, error)
+}
+
+// AntennaUnreadSource reports whether a user has any unread antenna notes.
+// Satisfied by repository.AntennaNoteUnreadRepository.
+type AntennaUnreadSource interface {
+	HasAnyByUser(userID string) (bool, error)
+}
+
+// ChannelUnreadSource reports whether a user has any unread channel notes.
+// Satisfied by repository.ChannelNoteUnreadRepository.
+type ChannelUnreadSource interface {
+	HasAnyByUser(userID string) (bool, error)
 }
 
 // AnnouncementUnreadSource lists active announcements the user has not read.
@@ -202,6 +218,20 @@ func (h *Handler) SetAnnouncementRepo(r AnnouncementUnreadSource) {
 // on /api/i.
 func (h *Handler) SetChatRepo(r ChatUnreadSource) {
 	h.chatRepo = r
+}
+
+// SetAntennaUnreadRepo wires the antenna_note_unread repository used to
+// populate hasUnreadAntenna on /api/i. Optional — nil leaves the field
+// false (current behaviour).
+func (h *Handler) SetAntennaUnreadRepo(r AntennaUnreadSource) {
+	h.antennaUnreadRepo = r
+}
+
+// SetChannelUnreadRepo wires the channel_note_unread repository used to
+// populate hasUnreadChannel on /api/i. Optional — nil leaves the field
+// false (current behaviour).
+func (h *Handler) SetChannelUnreadRepo(r ChannelUnreadSource) {
+	h.channelUnreadRepo = r
 }
 
 // SetPiningRepo wires the user_note_pining repository used to fill
@@ -716,8 +746,6 @@ func (h *Handler) Unpin(c echo.Context) error {
 
 // fillUnreadFields writes the unread-related flags/counts onto resp.
 // 依存が未wireのフィールドはdefault (false/0/[]) にフォールバックする。
-// antenna / channel / specifiedNotes 系は別issueで追跡 (#244 の scope 外)
-// のため引き続き false 固定。
 func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[string]any) {
 	// Defaults
 	resp["hasUnreadNotification"] = false
@@ -727,7 +755,6 @@ func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[
 	resp["hasUnreadAnnouncement"] = false
 	resp["unreadAnnouncements"] = []any{}
 	resp["hasUnreadChatMessages"] = false
-	// 別issueで追跡中 (Phase 7-2 follow-up)
 	resp["hasUnreadAntenna"] = false
 	resp["hasUnreadChannel"] = false
 	resp["hasUnreadSpecifiedNotes"] = false
@@ -743,6 +770,10 @@ func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[
 			notification.TypeMention, notification.TypeReply,
 		}); err == nil {
 			resp["hasUnreadMentions"] = ok
+		}
+		// hasUnreadSpecifiedNotes: NoteVisibility=="specified" のunread有無
+		if ok, err := h.notificationSvc.HasUnreadSpecifiedNotes(ctx, u.ID); err == nil {
+			resp["hasUnreadSpecifiedNotes"] = ok
 		}
 	}
 
@@ -774,6 +805,18 @@ func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[
 	if h.chatRepo != nil {
 		if n, err := h.chatRepo.CountUnread(u.ID); err == nil {
 			resp["hasUnreadChatMessages"] = n > 0
+		}
+	}
+
+	// Antenna / Channel (DB)
+	if h.antennaUnreadRepo != nil {
+		if ok, err := h.antennaUnreadRepo.HasAnyByUser(u.ID); err == nil {
+			resp["hasUnreadAntenna"] = ok
+		}
+	}
+	if h.channelUnreadRepo != nil {
+		if ok, err := h.channelUnreadRepo.HasAnyByUser(u.ID); err == nil {
+			resp["hasUnreadChannel"] = ok
 		}
 	}
 }

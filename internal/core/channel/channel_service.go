@@ -31,6 +31,7 @@ type Service struct {
 	repo          repository.ChannelRepository
 	followingRepo repository.ChannelFollowingRepository
 	noteRepo      repository.NoteRepository
+	unreadRepo    repository.ChannelNoteUnreadRepository
 	idGen         id.Generator
 	clock         func() time.Time
 }
@@ -57,6 +58,13 @@ func (s *Service) SetClock(now func() time.Time) {
 	if now != nil {
 		s.clock = now
 	}
+}
+
+// SetUnreadRepo attaches a ChannelNoteUnreadRepository so OnNotePosted can
+// fan out per-follower unread rows. Optional — nil disables unread
+// tracking (lastNotedAt / notesCount updates still run).
+func (s *Service) SetUnreadRepo(r repository.ChannelNoteUnreadRepository) {
+	s.unreadRepo = r
 }
 
 // CreateInput is the parameter set for Service.Create.
@@ -235,12 +243,35 @@ func (s *Service) Timeline(channelID, untilID, sinceID string, limit int) ([]*mo
 	return s.noteRepo.ListByChannelID(channelID, untilID, sinceID, limit)
 }
 
-// OnNotePosted updates lastNotedAt and increments notesCount when a note is
-// successfully posted to the channel. Best-effort: errors are ignored.
+// OnNotePosted updates lastNotedAt / notesCount and, when unreadRepo is
+// wired, fans out per-follower unread rows so /api/i can populate
+// hasUnreadChannel. Best-effort: errors are ignored.
 //
 // 呼び出し元: NoteCreateService 経由 (ChannelHook interface 経由で疎結合)。
-func (s *Service) OnNotePosted(channelID string) {
+// authorID は自身の投稿を自身の未読にしないための除外キー。
+func (s *Service) OnNotePosted(channelID, noteID, authorID string) {
 	now := s.clock()
 	_ = s.repo.UpdateFields(channelID, map[string]any{"lastNotedAt": &now})
 	_ = s.repo.IncrementCount(channelID, "notesCount", 1)
+	if s.unreadRepo == nil || noteID == "" {
+		return
+	}
+	// follower ID 一覧を取得して、author 以外にunreadをinsertする。
+	// Limit 1000は popular channel 対策 (TS は pipeline 化するが Go では
+	// sequentialで十分 / 大規模時は別 issue でbatch化検討)。
+	followerIDs, err := s.followingRepo.ListFollowerIDs(channelID, 1000)
+	if err != nil {
+		return
+	}
+	for _, fid := range followerIDs {
+		if fid == authorID {
+			continue
+		}
+		_ = s.unreadRepo.Create(&model.ChannelNoteUnread{
+			ID:        s.idGen.Generate(now),
+			ChannelID: channelID,
+			NoteID:    noteID,
+			UserID:    fid,
+		})
+	}
 }

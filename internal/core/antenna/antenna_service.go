@@ -46,6 +46,7 @@ type Service struct {
 	userRepo      repository.UserRepository
 	followingRepo repository.FollowingRepository
 	userListRepo  repository.UserListRepository
+	unreadRepo    repository.AntennaNoteUnreadRepository
 	client        *redis.Client
 	idGen         id.Generator
 	clock         func() time.Time
@@ -81,6 +82,14 @@ func (s *Service) SetFollowingRepo(r repository.FollowingRepository) {
 // 登録/マッチともに reject される。
 func (s *Service) SetUserListRepo(r repository.UserListRepository) {
 	s.userListRepo = r
+}
+
+// SetUnreadRepo attaches an AntennaNoteUnreadRepository. When set, each
+// note pushed to an antenna also creates an unread row for the antenna
+// owner so /api/i can populate hasUnreadAntenna. Optional — nil disables
+// unread tracking (Redis timeline is unaffected).
+func (s *Service) SetUnreadRepo(r repository.AntennaNoteUnreadRepository) {
+	s.unreadRepo = r
 }
 
 // SetClock overrides the time source. Intended for tests.
@@ -301,6 +310,16 @@ func (s *Service) OnNoteCreated(n *model.Note, author *model.User) {
 			continue
 		}
 		_ = s.pushNote(context.Background(), a.ID, n.ID, now)
+		// unread tracking: antenna の所有者に対して未読 row を挿入する。
+		// Self-authored note は未読扱いしない (TS本家の挙動に合わせる)。
+		if s.unreadRepo != nil && a.UserID != author.ID {
+			_ = s.unreadRepo.Create(&model.AntennaNoteUnread{
+				ID:        s.idGen.Generate(now),
+				AntennaID: a.ID,
+				NoteID:    n.ID,
+				UserID:    a.UserID,
+			})
+		}
 	}
 }
 

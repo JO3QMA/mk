@@ -20,6 +20,6 @@ func (h *NoteCreateHook) EnsureChannelExists(channelID string) error {
 }
 
 // OnNotePosted implements core/note.ChannelHook.
-func (h *NoteCreateHook) OnNotePosted(channelID string) {
-	h.svc.OnNotePosted(channelID)
+func (h *NoteCreateHook) OnNotePosted(channelID, noteID, authorID string) {
+	h.svc.OnNotePosted(channelID, noteID, authorID)
 }

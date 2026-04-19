@@ -590,7 +590,7 @@ func TestCreate_CannotReplyToInvisibleNote(t *testing.T) {
 type channelNotFoundHook struct{}
 
 func (channelNotFoundHook) EnsureChannelExists(_ string) error { return errNotFoundSentinel }
-func (channelNotFoundHook) OnNotePosted(_ string)              {}
+func (channelNotFoundHook) OnNotePosted(_, _, _ string)        {}
 
 var errNotFoundSentinel = errors.New("channel not found")
 
