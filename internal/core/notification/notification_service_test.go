@@ -130,6 +130,36 @@ func TestService_Create_PublishesUnreadNotification(t *testing.T) {
 	assert.Equal(t, TypeFollow, n.Type)
 }
 
+// stubPacker returns a predefined map as the packed form.
+type stubPacker struct {
+	calls int
+	out   map[string]any
+}
+
+func (s *stubPacker) Pack(_ *Notification) any {
+	s.calls++
+	return s.out
+}
+
+func TestService_Create_UsesPackerForUnreadNotification(t *testing.T) {
+	svc := newTestSvc(t)
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+	packer := &stubPacker{out: map[string]any{"userId": "bob", "type": "follow"}}
+	svc.SetPacker(packer)
+
+	_, err := svc.Create(context.Background(), CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: TypeFollow,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, packer.calls)
+	require.Len(t, pub.calls, 1)
+	// body はpackerの出力 map に置き換わる (TS互換shape)
+	body, ok := pub.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "bob", body["userId"])
+}
+
 func TestService_MarkAllAsRead_PublishesReadAll(t *testing.T) {
 	svc := newTestSvc(t)
 	ctx := context.Background()

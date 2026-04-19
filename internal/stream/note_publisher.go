@@ -48,11 +48,29 @@ func (p *NotePublisher) PublishNote(topic string, n *model.Note, author *model.U
 	}
 }
 
+// NotificationUserRepo abstracts the FindByID call needed to pack a
+// Notification's notifier. Narrow interface so we don't pull the whole
+// repository package.
+type NotificationUserRepo interface {
+	FindByID(id string) (*model.User, error)
+}
+
+// NotificationNoteRepo abstracts the FindByIDWithUser call needed to pack
+// the referenced note (for reply/mention/reaction/renote/quote/pollEnded).
+type NotificationNoteRepo interface {
+	FindByIDWithUser(id string) (*model.Note, error)
+}
+
 // NotificationPublisher serializes a notification.Notification and publishes
 // it to the per-user `notifications:<id>` topic. Implements
-// core/notification.StreamingPublisher.
+// core/notification.StreamingPublisher. When userRepo / noteRepo are set
+// the outbound JSON is packed via entity.PackNotification so the WebSocket
+// body matches Misskey's NotificationEntityService.pack shape.
 type NotificationPublisher struct {
-	pub PubSubPublisher
+	pub      PubSubPublisher
+	userRepo NotificationUserRepo
+	noteRepo NotificationNoteRepo
+	idGen    id.Generator
 }
 
 // NewNotificationPublisher constructs a NotificationPublisher.
@@ -60,13 +78,65 @@ func NewNotificationPublisher(pub PubSubPublisher) *NotificationPublisher {
 	return &NotificationPublisher{pub: pub}
 }
 
+// SetRepos wires the narrow repositories and id generator used by
+// PublishNotification to pack user/note references. When unset, publish
+// falls back to the raw Notification JSON.
+func (p *NotificationPublisher) SetRepos(userRepo NotificationUserRepo, noteRepo NotificationNoteRepo, idGen id.Generator) {
+	p.userRepo = userRepo
+	p.noteRepo = noteRepo
+	p.idGen = idGen
+}
+
+// Pack implements core/notification.Packer. Returns the packed map shape
+// when repos are wired, otherwise the raw Notification so callers can
+// fall back to prior behaviour.
+func (p *NotificationPublisher) Pack(n *corenotification.Notification) any {
+	if n == nil {
+		return nil
+	}
+	if p.userRepo == nil || p.idGen == nil {
+		return n
+	}
+	var user *model.User
+	if n.NotifierID != "" {
+		if u, err := p.userRepo.FindByID(n.NotifierID); err == nil {
+			user = u
+		}
+	}
+	var note *model.Note
+	if n.NoteID != "" && p.noteRepo != nil {
+		if n2, err := p.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
+			note = n2
+		}
+	}
+	return entity.PackNotification(n, user, note, p.idGen)
+}
+
 // PublishNotification serializes the notification and publishes to
 // notifications:<id>. Marshal 失敗 / publish 失敗は best-effort で握りつぶす。
+// Pack() 経由で TS 互換 shape (repo配線時) またはraw Notification(未配線時)
+// に変換して送る。
 func (p *NotificationPublisher) PublishNotification(notifieeID string, n *corenotification.Notification) {
 	if p.pub == nil || notifieeID == "" || n == nil {
 		return
 	}
-	body, err := json.Marshal(n)
+	p.publishPacked(notifieeID, p.Pack(n))
+}
+
+// PublishPackedNotification publishes an already-packed body to
+// notifications:<id>. Allows callers (e.g. core/notification.Service)
+// that invoke Pack once and reuse the result across both the
+// notifications stream and the main stream to avoid duplicate DB fetches.
+func (p *NotificationPublisher) PublishPackedNotification(notifieeID string, packed any) {
+	if p.pub == nil || notifieeID == "" || packed == nil {
+		return
+	}
+	p.publishPacked(notifieeID, packed)
+}
+
+// publishPacked marshals payload and publishes to notifications:<id>.
+func (p *NotificationPublisher) publishPacked(notifieeID string, payload any) {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		slog.Warn("notification publisher: marshal failed", "err", err)
 		return
@@ -111,3 +181,11 @@ func (p *DrivePublisher) PublishDriveEvent(userID, eventType string, file *model
 
 // 静的アサーション: DrivePublisher が core/drive.StreamingPublisher を満たす。
 var _ coredrive.StreamingPublisher = (*DrivePublisher)(nil)
+
+// 静的アサーション: NotificationPublisher が core/notification.StreamingPublisher
+// と core/notification.Packer の両方を満たす。interface signature が
+// drift した時点で compile errorで検知する。
+var (
+	_ corenotification.StreamingPublisher = (*NotificationPublisher)(nil)
+	_ corenotification.Packer             = (*NotificationPublisher)(nil)
+)
