@@ -14,6 +14,7 @@ import (
 	"log/slog"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
+	"github.com/shiroha-a/mk/internal/activitypub/mfm"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -434,8 +435,18 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 		URI:        &noteURI,
 		Visibility: deriveVisibility(apNote.To, apNote.CC),
 	}
-	if apNote.Content != "" {
-		text := apNote.Content
+	// TS本家ApNoteService.tsと同じ3段フォールバックでtext抽出:
+	// 1. source.content (MFM) → 2. _misskey_content → 3. content (HTML→MFM変換)
+	if apNote.Source != nil &&
+		apNote.Source.MediaType == "text/x.misskeymarkdown" &&
+		apNote.Source.Content != "" {
+		text := apNote.Source.Content
+		note.Text = &text
+	} else if apNote.MisskeyContent != "" {
+		text := apNote.MisskeyContent
+		note.Text = &text
+	} else if apNote.Content != "" {
+		text := mfm.FromHTML(apNote.Content)
 		note.Text = &text
 	}
 	if apNote.Summary != "" {
@@ -462,8 +473,10 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 			note.ReplyUserHost = reply.UserHost
 		}
 	}
-	if apNote.Content != "" {
-		note.Mentions = corenote.ExtractMentions(apNote.Content)
+	// メンション抽出は変換後のテキストから行う (HTML→MFM変換後は@mention形式に
+	// なっているため ExtractMentions がそのまま動作する)。
+	if note.Text != nil {
+		note.Mentions = corenote.ExtractMentions(*note.Text)
 	}
 	// Question（投票）の場合はhasPollフラグをCreate前に設定
 	if len(apNote.OneOf) > 0 || len(apNote.AnyOf) > 0 {
@@ -554,15 +567,22 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 		return existing, nil
 	}
 	fields := map[string]any{}
-	if apNote.Content != "" {
-		text := apNote.Content
-		fields["text"] = &text
-		existing.Text = &text
-		fields["mentions"] = corenote.ExtractMentions(apNote.Content)
-		existing.Mentions = corenote.ExtractMentions(apNote.Content)
-	} else {
-		// content が空文字に変わるケース (text 削除) はサポート対象外
-		// (空配信はメモリ攻撃の温床になりやすいので意図的に何もしない)。
+	// IngestNoteと同じ3段フォールバックでtext抽出
+	var newText string
+	if apNote.Source != nil &&
+		apNote.Source.MediaType == "text/x.misskeymarkdown" &&
+		apNote.Source.Content != "" {
+		newText = apNote.Source.Content
+	} else if apNote.MisskeyContent != "" {
+		newText = apNote.MisskeyContent
+	} else if apNote.Content != "" {
+		newText = mfm.FromHTML(apNote.Content)
+	}
+	if newText != "" {
+		fields["text"] = &newText
+		existing.Text = &newText
+		fields["mentions"] = corenote.ExtractMentions(newText)
+		existing.Mentions = corenote.ExtractMentions(newText)
 	}
 	if apNote.Summary != "" {
 		summary := apNote.Summary

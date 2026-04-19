@@ -480,6 +480,119 @@ func TestIngestNote_EmptyAudienceVisibility(t *testing.T) {
 	assert.Equal(t, model.NoteVisibilitySpecified, got.Visibility)
 }
 
+// --- IngestNote text fallback (source.content → _misskey_content → HTML→MFM) -
+
+func TestIngestNote_TextFallback_SourceContent(t *testing.T) {
+	// source.content (MFM mediaType) が最優先で使われる
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/source1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "<p>HTML content</p>",
+		"source": {"content": "MFM source text", "mediaType": "text/x.misskeymarkdown"},
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "MFM source text", *got.Text)
+}
+
+func TestIngestNote_TextFallback_MisskeyContent(t *testing.T) {
+	// source が無い場合は _misskey_content が使われる
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/mk1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "<p>HTML content</p>",
+		"_misskey_content": "MFM via _misskey_content",
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "MFM via _misskey_content", *got.Text)
+}
+
+func TestIngestNote_TextFallback_HTMLConversion(t *testing.T) {
+	// source も _misskey_content も無い場合は HTML→MFM 変換
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/html1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "<p>paragraph1</p><p>paragraph2</p>",
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "paragraph1\n\nparagraph2", *got.Text)
+}
+
+func TestIngestNote_TextFallback_Priority(t *testing.T) {
+	// 全部揃っている場合は source.content が優先される
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/prio1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "<p>HTML</p>",
+		"_misskey_content": "misskey content",
+		"source": {"content": "source wins", "mediaType": "text/x.misskeymarkdown"},
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "source wins", *got.Text)
+}
+
+func TestIngestNote_TextFallback_SourceWrongMediaType(t *testing.T) {
+	// source.mediaType が MFM でない場合は _misskey_content にフォールバック
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/wrongmt1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "<p>HTML</p>",
+		"_misskey_content": "misskey fallback",
+		"source": {"content": "plain text source", "mediaType": "text/plain"},
+		"to": ["https://www.w3.org/ns/activitystreams#Public"]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got.Text)
+	assert.Equal(t, "misskey fallback", *got.Text)
+}
+
 // --- UpdateRemoteNote (Step J) -----------------------------------------------
 
 const remoteNoteUpdateBody = `{
