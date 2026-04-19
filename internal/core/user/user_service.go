@@ -235,16 +235,23 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 	}
 	// TS本家 UserEntityService.updateMe() 完了後に `meUpdated` を自分の main
 	// に publish する (プロフィールページ / UI 側 state を即時再描画させる
-	// ため)。body は packed UserDetailed full object。profile update は
-	// 頻度が低いので hot path 最適化は不要で full pack する。
-	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(
-			userID,
-			"meUpdated",
-			entity.PackUserDetailed(bundle.User, bundle.Profile, s.idGen),
-		)
-	}
+	// ため)。body は packed UserDetailed full object。
+	s.publishMeUpdated(bundle)
 	return bundle, nil
+}
+
+// publishMeUpdated emits `meUpdated` to the user's main channel with the
+// packed UserDetailed object. No-op when no publisher is attached. profile
+// update / pin / unpin は頻度が低く hot path ではないため full pack する。
+func (s *Service) publishMeUpdated(bundle *UserWithProfile) {
+	if s.mainStreamPublisher == nil || bundle == nil || bundle.User == nil {
+		return
+	}
+	s.mainStreamPublisher.PublishMainEvent(
+		bundle.User.ID,
+		"meUpdated",
+		entity.PackUserDetailed(bundle.User, bundle.Profile, s.idGen),
+	)
 }
 
 // PinNote pins the given note to the user's profile.
@@ -276,7 +283,16 @@ func (s *Service) PinNote(userID, noteID string) error {
 		UserID: userID,
 		NoteID: noteID,
 	}
-	return s.piningRepo.Create(p)
+	if err := s.piningRepo.Create(p); err != nil {
+		return err
+	}
+	// pinnedNoteIds が変わったので main に meUpdated を publish して
+	// UI を即時同期する (TS本家 UserEntityService.pinNote と同等)。
+	// ShowByID 失敗は emit 省略、pin 自体の成功は返す。
+	if bundle, err := s.ShowByID(userID); err == nil {
+		s.publishMeUpdated(bundle)
+	}
+	return nil
 }
 
 // UnpinNote removes a pinning entry. Returns ErrPinNotFound if the user has
@@ -286,7 +302,13 @@ func (s *Service) UnpinNote(userID, noteID string) error {
 	if err != nil {
 		return ErrPinNotFound
 	}
-	return s.piningRepo.Delete(p)
+	if err := s.piningRepo.Delete(p); err != nil {
+		return err
+	}
+	if bundle, err := s.ShowByID(userID); err == nil {
+		s.publishMeUpdated(bundle)
+	}
+	return nil
 }
 
 // ListPinnedNotes returns the notes pinned by userID, in pinning order
