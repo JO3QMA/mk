@@ -84,7 +84,6 @@ func (s *Service) SetUserListRepo(r repository.UserListRepository) {
 	s.userListRepo = r
 }
 
-// SetClock overrides the time source. Intended for tests.
 // SetUnreadRepo attaches an AntennaNoteUnreadRepository. When set, each
 // note pushed to an antenna also creates an unread row for the antenna
 // owner so /api/i can populate hasUnreadAntenna. Optional — nil disables
@@ -93,6 +92,7 @@ func (s *Service) SetUnreadRepo(r repository.AntennaNoteUnreadRepository) {
 	s.unreadRepo = r
 }
 
+// SetClock overrides the time source. Intended for tests.
 func (s *Service) SetClock(now func() time.Time) {
 	if now != nil {
 		s.clock = now
