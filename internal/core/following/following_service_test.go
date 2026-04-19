@@ -409,6 +409,31 @@ func TestAcceptRequest_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, following.ErrRequestNotFound))
 }
 
+func TestAcceptRequest_PublishesFollowAndFollowed(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	// Follow() でキャプチャされた receiveFollowRequest を除外するため
+	// publisher を差し替える。
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	require.NoError(t, svc.AcceptRequest("bob", "alice"))
+
+	require.Len(t, pub.calls, 2)
+	// 1件目: follower (alice) の main に `follow` (body = followee=bob)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "follow", pub.calls[0].eventType)
+	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	// 2件目: followee (bob) の main に `followed` (body = follower=alice)
+	assert.Equal(t, "bob", pub.calls[1].userID)
+	assert.Equal(t, "followed", pub.calls[1].eventType)
+	assertPackedUserLiteID(t, pub.calls[1].body, "alice")
+}
+
 func TestRejectRequest_Success(t *testing.T) {
 	svc, userRepo, fRepo, frRepo := newSvc(t)
 	addUser(t, userRepo, "alice", false)

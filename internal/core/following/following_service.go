@@ -80,9 +80,10 @@ type WebhookHook interface {
 }
 
 // MainStreamPublisher emits real-time events to a single target user's `main`
-// WebSocket channel. Used here to deliver `receiveFollowRequest` to the
-// followee when a locked user receives a follow request. 循環依存を避けるため
-// interface で受け取る (実装は internal/stream)。
+// WebSocket channel. Used here to deliver `follow`, `followed`, `unfollow`,
+// and `receiveFollowRequest` events so the frontend can reflect follow state
+// changes immediately. 循環依存を避けるため interface で受け取る (実装は
+// internal/stream)。
 type MainStreamPublisher interface {
 	PublishMainEvent(userID, eventType string, body any)
 }
@@ -144,7 +145,8 @@ func (s *Service) SetWebhookHook(h WebhookHook) {
 }
 
 // SetMainStreamPublisher attaches a publisher used to emit `main` channel
-// events (currently `receiveFollowRequest`). Optional — nil disables emit.
+// events (`follow`, `followed`, `unfollow`, `receiveFollowRequest`). Optional —
+// nil disables emit.
 func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
 	s.mainStreamPublisher = p
 }
@@ -340,7 +342,7 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 	if s.notificationHook != nil {
 		s.notificationHook.OnFollowAccepted(req.FollowerID, req.FolloweeID)
 	}
-	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil {
+	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil || s.mainStreamPublisher != nil {
 		follower, ferr := s.userRepo.FindByID(req.FollowerID)
 		followee, eerr := s.userRepo.FindByID(req.FolloweeID)
 		if ferr == nil && eerr == nil {
@@ -353,6 +355,14 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 			if s.webhookHook != nil {
 				s.webhookHook.OnFollow(follower, followee)
 				s.webhookHook.OnFollowed(follower, followee)
+			}
+			// Accept によって Following が成立するので、Follow() と同じく
+			// follower の main に `follow`、followee の main に `followed`
+			// を publish する (TS本家 UserFollowingService.acceptFollow
+			// と同等)。
+			if s.mainStreamPublisher != nil {
+				s.mainStreamPublisher.PublishMainEvent(req.FollowerID, "follow", entity.PackUserLite(followee))
+				s.mainStreamPublisher.PublishMainEvent(req.FolloweeID, "followed", entity.PackUserLite(follower))
 			}
 		}
 	}
