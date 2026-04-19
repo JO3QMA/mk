@@ -447,7 +447,9 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 		note.Text = &text
 	} else if apNote.Content != "" {
 		text := mfm.FromHTML(apNote.Content)
-		note.Text = &text
+		if text != "" {
+			note.Text = &text
+		}
 	}
 	if apNote.Summary != "" {
 		summary := apNote.Summary

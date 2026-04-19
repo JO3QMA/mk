@@ -9,7 +9,7 @@ import (
 	"golang.org/x/net/html/atom"
 )
 
-// urlRegex は MFM でそのままリンク化される URL パターン。TS 本家と同じ。
+// urlRegex は MFM でそのままリンク化される URL パターン。TS本家と同じ。
 var urlRegex = regexp.MustCompile(`^https?://[\w/:%#@$&?()\[\]~.,=+\-]+$`)
 
 // FromHTML converts HTML (typically from an ActivityPub note `content` field)
