@@ -7,6 +7,9 @@ import (
 )
 
 // UserLite is the minimal user representation returned by most API endpoints.
+// Phase 7-5a (#247): requireSigninToViewContents / makeNotes*Before / instance
+// を optional フィールドとして TS 本家互換に追加。すべて omitempty で、値が
+// 無いときはレスポンスから省かれる (TS: `?? undefined` / `?: undefined`)。
 type UserLite struct {
 	ID                string            `json:"id"`
 	Name              *string           `json:"name"`
@@ -20,6 +23,14 @@ type UserLite struct {
 	Emojis            map[string]string `json:"emojis"`
 	OnlineStatus      string            `json:"onlineStatus"`
 	BadgeRoles        []any             `json:"badgeRoles"`
+	// Optional TS-compat fields (Phase 7-5a)。
+	// TS側は `requireSigninToViewContents: user.x === false ? undefined : true`
+	// なので、値が true のときのみ expose する (*bool を &true に設定、
+	// false は nil のまま)。
+	RequireSigninToViewContents  *bool         `json:"requireSigninToViewContents,omitempty"`
+	MakeNotesFollowersOnlyBefore *int          `json:"makeNotesFollowersOnlyBefore,omitempty"`
+	MakeNotesHiddenBefore        *int          `json:"makeNotesHiddenBefore,omitempty"`
+	Instance                     *InstanceLite `json:"instance,omitempty"`
 }
 
 // UserDetailed includes additional fields for detailed user views.
@@ -50,7 +61,6 @@ type UserDetailed struct {
 	PinnedNoteIDs       []string       `json:"pinnedNoteIds"`
 	PinnedNotes         []any          `json:"pinnedNotes"`
 	Roles               []any          `json:"roles"`
-	Instance            *InstanceLite  `json:"instance,omitempty"`
 	// viewer依存フィールド (ハンドラ側でセット)
 	IsFollowing                    *bool   `json:"isFollowing"`
 	IsFollowed                     *bool   `json:"isFollowed"`
@@ -76,6 +86,9 @@ type InstanceLite struct {
 }
 
 // PackUserLite converts a model.User to a UserLite DTO.
+// Instance (nested remote instance info) は caller 側で InstanceRepository
+// 等を使って pre-fetch し、結果を UserLite.Instance に設定する。PackUserLite
+// 自体は DB アクセスを発生させない (hot path想定)。
 func PackUserLite(u *model.User) UserLite {
 	avatarURL := u.AvatarURL
 	// avatarUrlがnullの場合、identiconを生成
@@ -87,7 +100,7 @@ func PackUserLite(u *model.User) UserLite {
 		identicon := "/identicon/" + u.Username + host
 		avatarURL = &identicon
 	}
-	return UserLite{
+	out := UserLite{
 		ID:                u.ID,
 		Name:              u.Name,
 		Username:          u.Username,
@@ -101,6 +114,19 @@ func PackUserLite(u *model.User) UserLite {
 		OnlineStatus:      "unknown",
 		BadgeRoles:        []any{},
 	}
+	// requireSigninToViewContents: true のときだけ出す (TS は false→undefined)
+	if u.RequireSigninToViewContents {
+		tr := true
+		out.RequireSigninToViewContents = &tr
+	}
+	// makeNotes*Before: 設定値があればそのまま出す (nil→omit)
+	if u.MakeNotesFollowersOnlyBefore != nil {
+		out.MakeNotesFollowersOnlyBefore = u.MakeNotesFollowersOnlyBefore
+	}
+	if u.MakeNotesHiddenBefore != nil {
+		out.MakeNotesHiddenBefore = u.MakeNotesHiddenBefore
+	}
+	return out
 }
 
 // PackUserDetailed converts a model.User and optional profile to UserDetailed.
