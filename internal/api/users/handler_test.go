@@ -694,9 +694,8 @@ func (s *stubPageRepoForPin) ListByUser(string, int, int) ([]*model.Page, error)
 func (s *stubPageRepoForPin) ListPublicByUser(string, int, int) ([]*model.Page, error) {
 	return nil, nil
 }
-func (s *stubPageRepoForPin) ListFeatured(int, int) ([]*model.Page, error)   { return nil, nil }
-func (s *stubPageRepoForPin) Search(string, int, int) ([]*model.Page, error) { return nil, nil }
-func (s *stubPageRepoForPin) IncrementCount(string, string, int) error       { return nil }
+func (s *stubPageRepoForPin) ListFeatured(int, int) ([]*model.Page, error) { return nil, nil }
+func (s *stubPageRepoForPin) IncrementCount(string, string, int) error     { return nil }
 
 func TestShow_PinnedNotes_Populated(t *testing.T) {
 	h, userRepo := newTestHandler(t)
