@@ -197,7 +197,62 @@ func TestFollow_PublicUser_DoesNotPublishReceiveFollowRequest(t *testing.T) {
 
 	_, err := svc.Follow("alice", "bob")
 	require.NoError(t, err)
-	assert.Empty(t, pub.calls)
+	// 注: #290 以降 public user への follow でも `follow` / `followed` を
+	// emit するようになったため、ここでは receiveFollowRequest が含まれて
+	// いないことだけを確認する。
+	for _, c := range pub.calls {
+		assert.NotEqual(t, "receiveFollowRequest", c.eventType)
+	}
+}
+
+func TestFollow_PublicUser_PublishesFollowAndFollowed(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	require.Len(t, pub.calls, 2)
+	// 1件目: follower (alice) の main に `follow` (body = followee=bob)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "follow", pub.calls[0].eventType)
+	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	// 2件目: followee (bob) の main に `followed` (body = follower=alice)
+	assert.Equal(t, "bob", pub.calls[1].userID)
+	assert.Equal(t, "followed", pub.calls[1].eventType)
+	assertPackedUserLiteID(t, pub.calls[1].body, "alice")
+}
+
+func TestUnfollow_PublishesUnfollow(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	// Follow 成功で入った publish を無視するため、ここから publisher を差し替え。
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	require.NoError(t, svc.Unfollow("alice", "bob"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "unfollow", pub.calls[0].eventType)
+	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+}
+
+// assertPackedUserLiteID は body が UserLite 相当の JSON 表現で、id
+// フィールドが期待値と一致することを検証する。
+func assertPackedUserLiteID(t *testing.T, body any, expectID string) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	assert.Equal(t, expectID, m["id"])
 }
 
 func TestFollow_SelfFollow(t *testing.T) {

@@ -256,6 +256,13 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		s.webhookHook.OnFollow(follower, followee)
 		s.webhookHook.OnFollowed(follower, followee)
 	}
+	// TS本家 UserFollowingService.follow() は follower の main に `follow`
+	// (相手側の User)、followee の main に `followed` (自分を follow した
+	// User) を publish する。本実装は hot path のため UserLite で送る。
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(followerID, "follow", entity.PackUserLite(followee))
+		s.mainStreamPublisher.PublishMainEvent(followeeID, "followed", entity.PackUserLite(follower))
+	}
 
 	return &FollowResult{Following: f}, nil
 }
@@ -281,7 +288,7 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 	}
 	// hook 呼び出しに必要なユーザー情報を一度だけロードして使い回す。
 	// 失敗してもベストエフォートで continue する。
-	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil {
+	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil || s.mainStreamPublisher != nil {
 		follower, ferr := s.userRepo.FindByID(followerID)
 		followee, eerr := s.userRepo.FindByID(followeeID)
 		if ferr == nil && eerr == nil {
@@ -293,6 +300,11 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 			}
 			if s.webhookHook != nil {
 				s.webhookHook.OnUnfollow(follower, followee)
+			}
+			// TS本家は自分が unfollow した相手を main に publish する
+			// (フォローボタン等の即時反映)。
+			if s.mainStreamPublisher != nil {
+				s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserLite(followee))
 			}
 		}
 	}
