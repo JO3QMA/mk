@@ -2807,18 +2807,17 @@ func (m *MockChannelFollowingRepository) ListFollowerIDsPage(channelID, afterRow
 			}
 		}
 	}
-	// Skip entries up to and including afterRowID.
+	// Keep entries strictly greater than afterRowID (matches production's
+	// `WHERE "id" > ?`; exact-match cursor would diverge if the cursor row
+	// has been deleted between pages).
 	if afterRowID != "" {
-		cut := -1
-		for i, r := range rows {
-			if r.id == afterRowID {
-				cut = i
-				break
+		kept := rows[:0]
+		for _, r := range rows {
+			if r.id > afterRowID {
+				kept = append(kept, r)
 			}
 		}
-		if cut >= 0 {
-			rows = rows[cut+1:]
-		}
+		rows = kept
 	}
 	if limit <= 0 {
 		limit = 500
