@@ -135,8 +135,8 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 // nil (convenient for handlers not yet wired or for contexts where instance
 // embed is unnecessary).
 //
-// reply / renote の User も instance resolver の対象に含めるため、ここで
-// collectUsers により集約してから resolver を作る。
+// CollectNoteAuthors で top-level note の User のみ集約してから resolver を
+// 作る (reply/renote の User は NoteEntity で別埋めする運用のため集約対象外)。
 func PackNotes(notes []*model.Note, idGen id.Generator, lookup InstanceLookup) []NoteEntity {
 	resolver := NewInstanceResolver(lookup, CollectNoteAuthors(notes)...)
 	out := make([]NoteEntity, 0, len(notes))

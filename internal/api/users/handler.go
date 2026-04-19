@@ -332,7 +332,7 @@ func (h *Handler) Search(c echo.Context) error {
 	out := make([]entity.UserDetailed, 0, len(users))
 	for _, u := range users {
 		profile := h.userService.GetProfile(u.ID)
-		d := entity.PackUserDetailed(u, profile)
+		d := entity.PackUserDetailed(u, profile, h.idGen)
 		resolver.FillUserLite(&d.UserLite)
 		out = append(out, d)
 	}
@@ -449,7 +449,7 @@ func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error)
 		}
 		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
 		if b, err := h.userService.ShowByID(f.FollowerID); err == nil {
-			d := entity.PackUserDetailed(b.User, b.Profile)
+			d := entity.PackUserDetailed(b.User, b.Profile, h.idGen)
 			item.Follower = &d
 		}
 		out = append(out, item)
@@ -472,7 +472,7 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		}
 		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
 		if b, err := h.userService.ShowByID(f.FolloweeID); err == nil {
-			d := entity.PackUserDetailed(b.User, b.Profile)
+			d := entity.PackUserDetailed(b.User, b.Profile, h.idGen)
 			item.Followee = &d
 		}
 		out = append(out, item)
