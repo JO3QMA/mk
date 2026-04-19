@@ -42,6 +42,11 @@ RUN chmod +x /entrypoint.sh
 # `mkgo_files:/app/drive-files` mount でこのオーナーが volume root に伝播する。
 RUN mkdir -p /app/drive-files && chown 65532:65532 /app/drive-files
 
+# mkgo_sock named volume の初回マウント時にオーナーが mkgo:mkgo になるよう、
+# image 側に空ディレクトリを用意しておく。non-root (uid 65532) で bind するには
+# ディレクトリ自体への書き込み権が必要。
+RUN mkdir -p /run/mkgo && chown 65532:65532 /run/mkgo
+
 USER 65532:65532
 
 ENTRYPOINT ["/entrypoint.sh"]
