@@ -1256,6 +1256,7 @@ func (s *Server) setupRoutes() {
 	chatPublisher := stream.NewChatPublisher(streamPubSub)
 	chatService := corechat.NewService(chatRepo, idGen)
 	chatService.SetStreamingPublisher(chatPublisher)
+	chatService.SetMainStreamPublisher(mainStreamPublisher)
 	// CherryPick互換AP連合: リモートユーザー宛DMをMisskey:ChatMessageで配送
 	chatService.SetAPDelivery(userRepo, apRenderer, apURLs, deliverService)
 	streamRegistry.Register("chatRoom", channels.NewChatRoomFactory(chatService).New)

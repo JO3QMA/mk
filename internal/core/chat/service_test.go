@@ -117,8 +117,16 @@ func (r *fakeChatRepo) FindMembership(userID, roomID string) (*model.ChatRoomMem
 }
 func (r *fakeChatRepo) UpdateMembership(_ *model.ChatRoomMembership) error { return nil }
 func (r *fakeChatRepo) DeleteMembership(_, _ string) error                 { return nil }
-func (r *fakeChatRepo) ListMembersByRoom(_ string) ([]*model.ChatRoomMembership, error) {
-	return nil, nil
+func (r *fakeChatRepo) ListMembersByRoom(roomID string) ([]*model.ChatRoomMembership, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*model.ChatRoomMembership, 0)
+	for _, m := range r.memberships {
+		if m.RoomID == roomID {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 func (r *fakeChatRepo) CreateInvitation(_ *model.ChatRoomInvitation) error { return nil }
 func (r *fakeChatRepo) DeleteInvitation(_ string) error                    { return nil }
@@ -180,6 +188,23 @@ func (p *capturePublisher) PublishRoomMessage(_ context.Context, roomID, t strin
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.roomCalls = append(p.roomCalls, roomCall{roomID, t, body})
+}
+
+// stubMainPublisher captures PublishMainEvent calls for newChatMessage tests.
+type stubMainPublisher struct {
+	mu    sync.Mutex
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID, eventType string
+	body              any
+}
+
+func (p *stubMainPublisher) PublishMainEvent(userID, eventType string, body any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls = append(p.calls, mainEventCall{userID, eventType, body})
 }
 
 // --- helper ---
@@ -274,6 +299,95 @@ func TestCreateMessageToRoom_NotMember(t *testing.T) {
 
 	_, err := svc.CreateMessageToRoom(context.Background(), "carol", "r1", "hi", "")
 	assert.ErrorIs(t, err, corechat.ErrForbidden)
+}
+
+// --- newChatMessage emit (Phase 7-4b-4 / #298) ---
+
+func TestCreateMessageToUser_PublishesNewChatMessage(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	main := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(main)
+
+	_, err := svc.CreateMessageToUser(context.Background(), "alice", "bob", "hi", "")
+	require.NoError(t, err)
+
+	main.mu.Lock()
+	defer main.mu.Unlock()
+	require.Len(t, main.calls, 1)
+	// sender (alice) には送らず recipient (bob) にだけ emit。
+	assert.Equal(t, "bob", main.calls[0].userID)
+	assert.Equal(t, "newChatMessage", main.calls[0].eventType)
+	body, ok := main.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "alice", body["fromUserId"])
+	assert.Equal(t, "bob", body["toUserId"])
+	assert.Equal(t, "hi", body["text"])
+}
+
+func TestCreateMessageToUser_NoMainPublisher_NoEmit(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	// SetMainStreamPublisher を呼ばない状態で正常終了することを確認。
+	_, err := svc.CreateMessageToUser(context.Background(), "alice", "bob", "hi", "")
+	require.NoError(t, err)
+}
+
+func TestCreateMessageViaAP_PublishesNewChatMessageToLocalRecipient(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	main := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(main)
+
+	// Remote → local DM: fromUser は remote (host set)、toUserID はローカル。
+	remoteHost := "remote.example"
+	fromUser := &model.User{ID: "remote_user", Host: &remoteHost}
+	_, err := svc.CreateMessageViaAP(context.Background(), "https://remote.example/n/1", fromUser, "bob", "hello from remote")
+	require.NoError(t, err)
+
+	main.mu.Lock()
+	defer main.mu.Unlock()
+	require.Len(t, main.calls, 1)
+	assert.Equal(t, "bob", main.calls[0].userID)
+	assert.Equal(t, "newChatMessage", main.calls[0].eventType)
+	body, ok := main.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "remote_user", body["fromUserId"])
+	assert.Equal(t, "bob", body["toUserId"])
+}
+
+func TestCreateMessageToRoom_PublishesNewChatMessageToMembersExceptSender(t *testing.T) {
+	svc, repo, _ := newSvc(t)
+	// owner=alice, members=bob,carol。sender=bob の場合 alice と carol に emit。
+	seedRoom(t, repo, "r1", "alice", "bob", "carol")
+	main := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(main)
+
+	_, err := svc.CreateMessageToRoom(context.Background(), "bob", "r1", "room hi", "")
+	require.NoError(t, err)
+
+	main.mu.Lock()
+	defer main.mu.Unlock()
+	// emit 対象 userID を set で検証 (順序は非決定的)。
+	gotUserIDs := make(map[string]bool, len(main.calls))
+	for _, c := range main.calls {
+		assert.Equal(t, "newChatMessage", c.eventType)
+		gotUserIDs[c.userID] = true
+	}
+	assert.Equal(t, map[string]bool{"alice": true, "carol": true}, gotUserIDs)
+}
+
+func TestCreateMessageToRoom_OwnerAsSender_EmitsToMembersOnly(t *testing.T) {
+	svc, repo, _ := newSvc(t)
+	seedRoom(t, repo, "r1", "alice", "bob")
+	main := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(main)
+
+	// owner=alice が送信 → bob にだけ emit (alice は sender 自身なので除外)。
+	_, err := svc.CreateMessageToRoom(context.Background(), "alice", "r1", "hi", "")
+	require.NoError(t, err)
+
+	main.mu.Lock()
+	defer main.mu.Unlock()
+	require.Len(t, main.calls, 1)
+	assert.Equal(t, "bob", main.calls[0].userID)
 }
 
 func TestCreateMessageToRoom_RoomNotFound(t *testing.T) {
