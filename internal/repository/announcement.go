@@ -9,12 +9,19 @@ import (
 type AnnouncementRepository interface {
 	Create(a *model.Announcement) error
 	FindByID(id string) (*model.Announcement, error)
+	// List returns ALL announcements regardless of targeting. Use this for
+	// admin-only surfaces; do not expose to unauthenticated users because
+	// it returns per-user announcements targeted at other users.
 	List(activeOnly bool, limit, offset int) ([]*model.Announcement, error)
 	// ListForUser returns announcements visible to userID: global ones
 	// (userId IS NULL) plus those targeted at this user. Used by
 	// /api/announcements so per-user announcements do not leak to unrelated
 	// users.
 	ListForUser(userID string, activeOnly bool, limit, offset int) ([]*model.Announcement, error)
+	// ListGlobal returns only global announcements (userId IS NULL). Used
+	// for unauthenticated /api/announcements requests so targeted
+	// announcements are never exposed.
+	ListGlobal(activeOnly bool, limit, offset int) ([]*model.Announcement, error)
 	UpdateFields(id string, fields map[string]any) error
 	Delete(id string) error
 	// Read management
@@ -45,6 +52,28 @@ func (r *announcementRepository) FindByID(id string) (*model.Announcement, error
 
 func (r *announcementRepository) List(activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
 	q := r.db.Order("id DESC")
+	if activeOnly {
+		q = q.Where("\"isActive\" = true")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit)
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	var announcements []*model.Announcement
+	if err := q.Find(&announcements).Error; err != nil {
+		return nil, err
+	}
+	return announcements, nil
+}
+
+func (r *announcementRepository) ListGlobal(activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
+	q := r.db.Where(`"userId" IS NULL`).Order("id DESC")
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}

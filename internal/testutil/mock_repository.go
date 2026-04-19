@@ -3210,7 +3210,27 @@ func (m *MockAnnouncementRepository) List(activeOnly bool, limit, offset int) ([
 	var result []*model.Announcement
 	for _, a := range m.Items {
 		if activeOnly && !a.IsActive {
-			result = append(result, a) // activeOnly=false の場合も含める
+			continue
+		}
+		result = append(result, a)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
+func (m *MockAnnouncementRepository) ListGlobal(activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
+	var result []*model.Announcement
+	for _, a := range m.Items {
+		if a.UserID != nil {
+			continue // per-user announcementは除外
+		}
+		if activeOnly && !a.IsActive {
 			continue
 		}
 		result = append(result, a)

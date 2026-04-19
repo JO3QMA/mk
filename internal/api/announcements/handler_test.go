@@ -217,6 +217,24 @@ func TestReadAnnouncement_IgnoresOtherUsersPerUserAnnouncements(t *testing.T) {
 	assert.Equal(t, "readAllAnnouncements", pub.calls[0].eventType)
 }
 
+func TestList_Unauthenticated_ExcludesAllPerUserAnnouncements(t *testing.T) {
+	h, repo := newTestHandler(t)
+	otherUID := "other"
+	idGen, _ := id.NewGenerator("aidx")
+	aid1 := idGen.Generate(java_time())
+	aid2 := idGen.Generate(java_time())
+	repo.Items[aid1] = &model.Announcement{ID: aid1, Title: "G", IsActive: true}
+	// per-user announcement は未認証ユーザーには一切見せない。
+	repo.Items[aid2] = &model.Announcement{ID: aid2, Title: "ForOther", IsActive: true, UserID: &otherUID}
+
+	rec := doPost(h.List, `{}`, nil) // 未認証
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "G", resp[0]["title"])
+}
+
 func TestList_AuthenticatedUser_ExcludesOtherUsersPerUserAnnouncements(t *testing.T) {
 	h, repo := newTestHandler(t)
 	otherUID := "other"
@@ -297,6 +315,14 @@ type failingListAnnouncementRepo struct {
 }
 
 func (f *failingListAnnouncementRepo) List(_ bool, _, _ int) ([]*model.Announcement, error) {
+	return nil, assert.AnError
+}
+
+func (f *failingListAnnouncementRepo) ListGlobal(_ bool, _, _ int) ([]*model.Announcement, error) {
+	return nil, assert.AnError
+}
+
+func (f *failingListAnnouncementRepo) ListForUser(_ string, _ bool, _, _ int) ([]*model.Announcement, error) {
 	return nil, assert.AnError
 }
 
