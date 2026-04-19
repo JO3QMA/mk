@@ -65,8 +65,8 @@ func (r *channelFollowingRepository) ListFollowerIDsPage(channelID, afterRowID s
 		limit = 500
 	}
 	type row struct {
-		ID         string
-		FollowerID string
+		ID         string `gorm:"column:id"`
+		FollowerID string `gorm:"column:followerId"`
 	}
 	var rows []row
 	q := r.db.Model(&model.ChannelFollowing{}).
