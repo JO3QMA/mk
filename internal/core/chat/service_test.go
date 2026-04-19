@@ -331,6 +331,28 @@ func TestCreateMessageToUser_NoMainPublisher_NoEmit(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCreateMessageViaAP_PublishesNewChatMessageToLocalRecipient(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	main := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(main)
+
+	// Remote → local DM: fromUser は remote (host set)、toUserID はローカル。
+	remoteHost := "remote.example"
+	fromUser := &model.User{ID: "remote_user", Host: &remoteHost}
+	_, err := svc.CreateMessageViaAP(context.Background(), "https://remote.example/n/1", fromUser, "bob", "hello from remote")
+	require.NoError(t, err)
+
+	main.mu.Lock()
+	defer main.mu.Unlock()
+	require.Len(t, main.calls, 1)
+	assert.Equal(t, "bob", main.calls[0].userID)
+	assert.Equal(t, "newChatMessage", main.calls[0].eventType)
+	body, ok := main.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "remote_user", body["fromUserId"])
+	assert.Equal(t, "bob", body["toUserId"])
+}
+
 func TestCreateMessageToRoom_PublishesNewChatMessageToMembersExceptSender(t *testing.T) {
 	svc, repo, _ := newSvc(t)
 	// owner=alice, members=bob,carol。sender=bob の場合 alice と carol に emit。

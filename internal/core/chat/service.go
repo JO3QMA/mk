@@ -214,6 +214,12 @@ func (s *Service) CreateMessageViaAP(ctx context.Context, uri string, fromUser *
 	if s.publisher != nil {
 		s.publisher.PublishUserMessage(ctx, fromUser.ID, toUserID, EventMessage, packMessage(msg))
 	}
+	// Remote → local DM を受信した場合も、CreateMessageToUser と同じく
+	// recipient の main チャネルに newChatMessage を emit してフロントの
+	// 未読インジケータを更新させる。sender は remote なので emit 対象外。
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(toUserID, "newChatMessage", packMessage(msg))
+	}
 	return msg, nil
 }
 
@@ -224,10 +230,12 @@ func (s *Service) CreateMessageToRoom(ctx context.Context, fromUserID, roomID, t
 		return nil, ErrInvalidTarget
 	}
 	// ルームが存在し、送信者がメンバーであることを確認する。
-	if _, err := s.repo.FindRoomByID(roomID); err != nil {
+	// 取得した room は後段の emitRoomNewChatMessage にも渡し、重複 fetch を避ける。
+	room, err := s.repo.FindRoomByID(roomID)
+	if err != nil {
 		return nil, ErrNotFound
 	}
-	isMember, err := s.IsRoomMember(fromUserID, roomID)
+	isMember, err := s.isRoomMemberWith(room, fromUserID, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -254,25 +262,32 @@ func (s *Service) CreateMessageToRoom(ctx context.Context, fromUserID, roomID, t
 	// Room 宛も同様に、sender 以外の全 member (owner 含む) の main に
 	// newChatMessage を emit する。Misskey 本家 ChatService
 	// .createMessageToRoom と同じ fan-out 方針。
-	s.emitRoomNewChatMessage(roomID, fromUserID, msg)
+	s.emitRoomNewChatMessage(room, fromUserID, msg)
 	return msg, nil
+}
+
+// isRoomMemberWith is IsRoomMember のうち room 取得済みケース向けバリアント。
+// owner は membership レコードが無くても implicit member 扱い。
+func (s *Service) isRoomMemberWith(room *model.ChatRoom, userID, roomID string) (bool, error) {
+	if room != nil && room.OwnerID == userID {
+		return true, nil
+	}
+	if _, err := s.repo.FindMembership(userID, roomID); err == nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 // emitRoomNewChatMessage fans out `newChatMessage` to every room member
 // except the sender. Room membership 列挙失敗時は警告ログを残して emit を
 // スキップする (message 自体の作成は成功として返される前に呼ばれる)。
-func (s *Service) emitRoomNewChatMessage(roomID, fromUserID string, msg *model.ChatMessage) {
-	if s.mainStreamPublisher == nil {
+func (s *Service) emitRoomNewChatMessage(room *model.ChatRoom, fromUserID string, msg *model.ChatMessage) {
+	if s.mainStreamPublisher == nil || room == nil {
 		return
 	}
-	room, err := s.repo.FindRoomByID(roomID)
+	members, err := s.repo.ListMembersByRoom(room.ID)
 	if err != nil {
-		slog.Warn("chat: FindRoomByID failed, skipping newChatMessage emit", "roomID", roomID, "err", err)
-		return
-	}
-	members, err := s.repo.ListMembersByRoom(roomID)
-	if err != nil {
-		slog.Warn("chat: ListMembersByRoom failed, skipping newChatMessage emit", "roomID", roomID, "err", err)
+		slog.Warn("chat: ListMembersByRoom failed, skipping newChatMessage emit", "roomID", room.ID, "err", err)
 		return
 	}
 	packed := packMessage(msg)
