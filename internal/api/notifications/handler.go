@@ -130,7 +130,7 @@ func (h *Handler) Create(c echo.Context) error {
 func (h *Handler) Flush(c echo.Context) error {
 	user := middleware.GetUser(c)
 	if h.svc != nil {
-		_ = h.svc.MarkAllAsRead(c.Request().Context(), user.ID)
+		_ = h.svc.Flush(c.Request().Context(), user.ID)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

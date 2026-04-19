@@ -151,11 +151,24 @@ func TestCreate_Success(t *testing.T) {
 }
 
 func TestFlush_Success(t *testing.T) {
-	h, _ := newTestHandler(t)
+	h, svc := newTestHandler(t)
+	ctx := context.Background()
+	// 1件作成してから flush するとストリームが消えることを確認。
+	_, err := svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeFollow,
+	})
+	require.NoError(t, err)
+
 	c, rec := newJSONRequest(t, "/api/notifications/flush", `{}`)
 	setAuth(c, &model.User{ID: "alice"})
 	require.NoError(t, h.Flush(c))
 	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	// handler が Flush() を呼んでいれば stream 長 0。
+	// 以前は MarkAllAsRead() を呼んでいたため元通知が残ってしまっていた。
+	out, err := svc.List(ctx, "alice", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out)
 }
 
 func TestFlush_NilService(t *testing.T) {
