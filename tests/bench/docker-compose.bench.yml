@@ -107,8 +107,10 @@ services:
       - ../federation/misskey/nginx-misskey-ssl.conf:/etc/nginx/nginx.conf:ro
       - certs:/certs:ro
     depends_on:
-      - misskey-app
-      - certs
+      misskey-app:
+        condition: service_started
+      certs:
+        condition: service_completed_successfully
     networks:
       bench:
         aliases: [misskey]
