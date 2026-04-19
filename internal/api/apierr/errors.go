@@ -48,6 +48,9 @@ const (
 	UUIDContainsProhibitedWords                                    = "aa6e01d3-a85c-669d-758a-76aab43af334"
 	UUIDContainsTooManyMentions                                    = "4de0363a-3046-481b-9b0f-feff3e211025"
 
+	// UUID for rate limiting (third_party/misskey/.../ApiCallService.ts).
+	UUIDRateLimitExceeded = "d5826d14-3982-4d2e-8011-b9e9f02499ef"
+
 	// UUID for users/show (third_party/misskey/.../endpoints/users/show.ts).
 	UUIDFailedToResolveRemoteUser = "ef7b9be4-9cba-4e6f-ab41-90ed171c7d3c"
 )
@@ -155,4 +158,9 @@ func ContainsTooManyMentions() map[string]any {
 // FailedToResolveRemoteUser returns a 404 FAILED_TO_RESOLVE_REMOTE_USER response.
 func FailedToResolveRemoteUser() map[string]any {
 	return Error("FAILED_TO_RESOLVE_REMOTE_USER", "Failed to resolve remote user.", UUIDFailedToResolveRemoteUser)
+}
+
+// RateLimitExceeded returns a 429 RATE_LIMIT_EXCEEDED error response.
+func RateLimitExceeded() map[string]any {
+	return Error("RATE_LIMIT_EXCEEDED", "Rate limit exceeded. Please try again later.", UUIDRateLimitExceeded)
 }

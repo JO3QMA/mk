@@ -1,0 +1,110 @@
+package middleware
+
+import "time"
+
+// DefaultEndpointLimits defines per-endpoint rate limits matching
+// Misskey TS upstream. Endpoints not listed here have no rate limit.
+//
+// Source: third_party/misskey/packages/backend/src/server/api/endpoints/
+//
+// TODO: Support rateLimitFactor from user role policies.
+var DefaultEndpointLimits = map[string]*EndpointLimit{
+	// ── AP ─────────────────────────────────────────────
+	"ap/get":  {Duration: time.Hour, Max: 30},
+	"ap/show": {Duration: time.Hour, Max: 30},
+
+	// ── Blocking ───────────────────────────────────────
+	"blocking/create": {Duration: time.Hour, Max: 20},
+	"blocking/delete": {Duration: time.Hour, Max: 100},
+
+	// ── Bubble Game ────────────────────────────────────
+	"bubble-game/register": {Duration: time.Hour, Max: 120, MinInterval: 30 * time.Second},
+
+	// ── Channels ───────────────────────────────────────
+	"channels/create": {Duration: time.Hour, Max: 10},
+
+	// ── Chat ───────────────────────────────────────────
+	"chat/messages/create-to-room":  {Duration: time.Hour, Max: 500},
+	"chat/messages/create-to-user":  {Duration: time.Hour, Max: 500},
+	"chat/rooms/create":             {Duration: 24 * time.Hour, Max: 10},
+	"chat/rooms/invitations/create": {Duration: 24 * time.Hour, Max: 50},
+
+	// ── Clips ──────────────────────────────────────────
+	"clips/add-note": {Duration: time.Hour, Max: 20},
+
+	// ── Drive ──────────────────────────────────────────
+	"drive/files/create":          {Duration: time.Hour, Max: 120},
+	"drive/files/upload-from-url": {Duration: time.Hour, Max: 60},
+	"drive/folders/create":        {Duration: time.Hour, Max: 10},
+
+	// ── Export / Import ────────────────────────────────
+	"export-custom-emojis": {Duration: time.Hour, Max: 1},
+	"i/export-antennas":    {Duration: time.Hour, Max: 1},
+	"i/export-blocking":    {Duration: time.Hour, Max: 1},
+	"i/export-clips":       {Duration: 24 * time.Hour, Max: 1},
+	"i/export-favorites":   {Duration: 24 * time.Hour, Max: 1},
+	"i/export-following":   {Duration: time.Hour, Max: 1},
+	"i/export-mute":        {Duration: time.Hour, Max: 1},
+	"i/export-notes":       {Duration: 24 * time.Hour, Max: 1},
+	"i/export-user-lists":  {Duration: time.Minute, Max: 1},
+	"i/import-antennas":    {Duration: time.Hour, Max: 1},
+	"i/import-blocking":    {Duration: time.Hour, Max: 1},
+	"i/import-following":   {Duration: time.Hour, Max: 1},
+	"i/import-muting":      {Duration: time.Hour, Max: 1},
+	"i/import-user-lists":  {Duration: time.Hour, Max: 1},
+
+	// ── Flash ──────────────────────────────────────────
+	"flash/create": {Duration: time.Hour, Max: 10},
+	"flash/update": {Duration: time.Hour, Max: 300},
+
+	// ── Following ──────────────────────────────────────
+	"following/create":     {Duration: time.Hour, Max: 100},
+	"following/delete":     {Duration: time.Hour, Max: 100},
+	"following/invalidate": {Duration: time.Hour, Max: 100},
+	"following/update":     {Duration: time.Hour, Max: 100},
+	"following/update-all": {Duration: time.Hour, Max: 10},
+
+	// ── Gallery ────────────────────────────────────────
+	"gallery/posts/create": {Duration: time.Hour, Max: 20},
+	"gallery/posts/update": {Duration: time.Hour, Max: 300},
+
+	// ── I (account) ────────────────────────────────────
+	"i/move":                  {Duration: 24 * time.Hour, Max: 5},
+	"i/notifications":         {Duration: 30 * time.Second, Max: 30},
+	"i/notifications-grouped": {Duration: 30 * time.Second, Max: 30},
+	"i/update":                {Duration: time.Hour, Max: 20},
+	"i/update-email":          {Duration: time.Hour, Max: 3},
+	"i/webhooks/test":         {Duration: 15 * time.Minute, Max: 60},
+
+	// ── Muting ─────────────────────────────────────────
+	"mute/create":        {Duration: time.Hour, Max: 20},
+	"renote-mute/create": {Duration: time.Hour, Max: 20},
+
+	// ── Notes ──────────────────────────────────────────
+	"notes/create":               {Duration: time.Hour, Max: 300},
+	"notes/delete":               {Duration: time.Hour, Max: 300, MinInterval: time.Second},
+	"notes/drafts/create":        {Duration: time.Hour, Max: 300},
+	"notes/drafts/update":        {Duration: time.Hour, Max: 300},
+	"notes/favorites/create":     {Duration: time.Hour, Max: 20},
+	"notes/reactions/delete":     {Duration: time.Hour, Max: 60, MinInterval: 3 * time.Second},
+	"notes/thread-muting/create": {Duration: time.Hour, Max: 10},
+	"notes/unrenote":             {Duration: time.Hour, Max: 300, MinInterval: time.Second},
+
+	// ── Notifications ──────────────────────────────────
+	"notifications/create":            {Duration: time.Minute, Max: 10},
+	"notifications/test-notification": {Duration: time.Minute, Max: 10},
+
+	// ── Pages ──────────────────────────────────────────
+	"pages/create": {Duration: time.Hour, Max: 10},
+	"pages/update": {Duration: time.Hour, Max: 300},
+
+	// ── Password Reset ─────────────────────────────────
+	"request-reset-password": {Duration: time.Hour, Max: 3},
+
+	// ── Admin ──────────────────────────────────────────
+	"admin/system-webhook/test": {Duration: 15 * time.Minute, Max: 60},
+
+	// ── Misc ───────────────────────────────────────────
+	"fetch-external-resources": {Duration: time.Hour, Max: 50},
+	"users/lists/push":         {Duration: time.Hour, Max: 30},
+}

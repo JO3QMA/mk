@@ -105,3 +105,8 @@ func JSONContainsTooManyMentions(c echo.Context) error {
 func JSONFailedToResolveRemoteUser(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, FailedToResolveRemoteUser())
 }
+
+// JSONRateLimitExceeded writes a 429 RATE_LIMIT_EXCEEDED response to the client.
+func JSONRateLimitExceeded(c echo.Context) error {
+	return c.JSON(http.StatusTooManyRequests, RateLimitExceeded())
+}
