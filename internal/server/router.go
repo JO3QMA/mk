@@ -793,6 +793,7 @@ func (s *Server) setupRoutes() {
 	// Users endpoints
 	usersHandler := users.NewHandler(userService, followingService, noteRepo, idGen)
 	usersHandler.SetChartHook(chartHooks)
+	usersHandler.SetPiningRepo(piningRepo)
 	usersHandler.SetFollowingRepo(followingRepo)
 	usersHandler.SetBlockingRepo(blockingRepo)
 	usersHandler.SetMutingRepo(mutingRepo)
@@ -883,6 +884,10 @@ func (s *Server) setupRoutes() {
 	iHandler.SetNotificationService(notificationService)
 	iHandler.SetFollowRequestRepo(followRequestRepo)
 	iHandler.SetChatRepo(chatRepo)
+	// Phase 7-3 (#245): pinnedNoteIds / pinnedNotes / pinnedPageId / pinnedPage
+	iHandler.SetPiningRepo(piningRepo)
+	iHandler.SetNoteRepo(noteRepo)
+	iHandler.SetPageRepo(pageRepo)
 	// announcementRepoは後続で構築されるため SetupAdditional() 相当の順序依存があるが、
 	// 現状 announcementRepo := ... の行がここより後にあるため下で wire する。
 

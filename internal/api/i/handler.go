@@ -64,6 +64,9 @@ type Handler struct {
 	followRequestRepo repository.FollowRequestRepository
 	announcementRepo  AnnouncementUnreadSource
 	chatRepo          ChatUnreadSource
+	piningRepo        repository.UserNotePiningRepository
+	noteRepo          repository.NoteRepository
+	pageRepo          repository.PageRepository
 }
 
 // UnreadNotificationSource is the subset of notification.Service used by /api/i
@@ -183,6 +186,22 @@ func (h *Handler) SetAnnouncementRepo(r AnnouncementUnreadSource) {
 // on /api/i.
 func (h *Handler) SetChatRepo(r ChatUnreadSource) {
 	h.chatRepo = r
+}
+
+// SetPiningRepo wires the user_note_pining repository used to fill
+// pinnedNoteIds / pinnedNotes on /api/i.
+func (h *Handler) SetPiningRepo(r repository.UserNotePiningRepository) {
+	h.piningRepo = r
+}
+
+// SetNoteRepo wires the note repository used to pack pinnedNotes entities.
+func (h *Handler) SetNoteRepo(r repository.NoteRepository) {
+	h.noteRepo = r
+}
+
+// SetPageRepo wires the page repository used to fill pinnedPage on /api/i.
+func (h *Handler) SetPageRepo(r repository.PageRepository) {
+	h.pageRepo = r
 }
 
 // NewHandler creates a new account Handler.
@@ -439,10 +458,7 @@ func (h *Handler) Me(c echo.Context) error {
 	// 未wireのものは false/0/[] にフォールバックする (テスト互換)。
 	// antenna / channel / specifiedNotes は別issueで追跡中のためここでは false 固定。
 	h.fillUnreadFields(c.Request().Context(), u, resp)
-	resp["pinnedNoteIds"] = []string{}
-	resp["pinnedNotes"] = []any{}
-	resp["pinnedPageId"] = nil
-	resp["pinnedPage"] = nil
+	h.fillPinnedFields(u, profile, resp)
 	resp["policies"] = userPolicies
 	resp["roles"] = userRoles
 	// securityKeysList: WebAuthnキーの一覧
@@ -732,6 +748,50 @@ func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[
 	if h.chatRepo != nil {
 		if n, err := h.chatRepo.CountUnread(u.ID); err == nil {
 			resp["hasUnreadChatMessages"] = n > 0
+		}
+	}
+}
+
+// fillPinnedFields populates pinnedNoteIds / pinnedNotes / pinnedPageId /
+// pinnedPage onto resp using the wired repos. Missing repos fall back to
+// default empty / nil (tests that skip wiring keep passing).
+func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, resp map[string]any) {
+	// Defaults
+	resp["pinnedNoteIds"] = []string{}
+	resp["pinnedNotes"] = []any{}
+	resp["pinnedPageId"] = nil
+	resp["pinnedPage"] = nil
+
+	// Pinned notes: user_note_pining の行から noteId 一覧を取り、note 本体を
+	// NoteRepository で fetch して pack する。
+	if h.piningRepo != nil {
+		pinings, err := h.piningRepo.ListByUser(u.ID)
+		if err == nil && len(pinings) > 0 {
+			ids := make([]string, 0, len(pinings))
+			for _, p := range pinings {
+				ids = append(ids, p.NoteID)
+			}
+			resp["pinnedNoteIds"] = ids
+
+			if h.noteRepo != nil {
+				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
+					packed := make([]any, 0, len(notes))
+					for _, n := range notes {
+						packed = append(packed, entity.PackNote(n, h.idGen))
+					}
+					resp["pinnedNotes"] = packed
+				}
+			}
+		}
+	}
+
+	// Pinned page: user_profile.pinnedPageId からの展開。
+	if profile != nil && profile.PinnedPageID != nil && *profile.PinnedPageID != "" {
+		resp["pinnedPageId"] = profile.PinnedPageID
+		if h.pageRepo != nil {
+			if p, err := h.pageRepo.FindByID(*profile.PinnedPageID); err == nil {
+				resp["pinnedPage"] = entity.PackPage(p)
+			}
 		}
 	}
 }

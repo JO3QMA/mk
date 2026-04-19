@@ -60,7 +60,13 @@ type UserDetailed struct {
 	URL                 *string        `json:"url"`
 	PinnedNoteIDs       []string       `json:"pinnedNoteIds"`
 	PinnedNotes         []any          `json:"pinnedNotes"`
-	Roles               []any          `json:"roles"`
+	// PinnedPageID is the user_profile.pinnedPageId. PinnedPage is the fully
+	// packed page object corresponding to that id (nil when the user has no
+	// pinned page or the page has been deleted). Both are populated by the
+	// caller (handler) since packing requires PageRepository lookup.
+	PinnedPageID *string `json:"pinnedPageId"`
+	PinnedPage   any     `json:"pinnedPage"`
+	Roles        []any   `json:"roles"`
 	// viewer依存フィールド (ハンドラ側でセット)
 	IsFollowing                    *bool   `json:"isFollowing"`
 	IsFollowed                     *bool   `json:"isFollowed"`
