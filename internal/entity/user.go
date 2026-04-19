@@ -149,6 +149,7 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 		FollowersCount:      u.FollowersCount,
 		FollowingCount:      u.FollowingCount,
 		NotesCount:          u.NotesCount,
+		Fields:              datatypes.JSON([]byte("[]")),
 		VerifiedLinks:       []string{},
 		FollowersVisibility: "public",
 		FollowingVisibility: "public",

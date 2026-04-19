@@ -310,3 +310,16 @@ func TestUserDetailed_EmbedsUserLiteOptionalFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "\"instance\"")
 }
+
+// profile が nil (リモートユーザーで user_profile レコードが未生成) の場合でも
+// fields は空配列 `[]` として marshal されるべき。null だとフロントが
+// user.fields.length で TypeError を起こし、ユーザーページの概要タブが
+// 真っ白になる。
+func TestPackUserDetailed_FieldsDefaultWhenProfileNil(t *testing.T) {
+	u := &model.User{ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	detailed := PackUserDetailed(u, nil)
+	b, err := json.Marshal(detailed)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"fields":[]`)
+	assert.NotContains(t, string(b), `"fields":null`)
+}
