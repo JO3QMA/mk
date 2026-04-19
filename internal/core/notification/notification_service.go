@@ -11,6 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/repository"
 )
 
 // Type enumerates the supported notification types.
@@ -107,6 +108,7 @@ type Service struct {
 	publisher           StreamingPublisher
 	mainStreamPublisher MainStreamPublisher
 	packer              Packer
+	noteUnreadRepo      repository.NoteUnreadRepository
 }
 
 // NewService constructs a new NotificationService.
@@ -125,6 +127,14 @@ func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 // `notificationFlushed`). Optional — nil disables emit.
 func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
 	s.mainStreamPublisher = p
+}
+
+// SetNoteUnreadRepo attaches a NoteUnreadRepository. When set, HasUnreadSpecifiedNotes
+// queries note_unread table (本家相当) instead of scanning the notification
+// stream (#319). Optional — nil keeps the legacy proxy implementation which
+// reads NoteVisibility off unread notifications.
+func (s *Service) SetNoteUnreadRepo(r repository.NoteUnreadRepository) {
+	s.noteUnreadRepo = r
 }
 
 // SetPacker attaches a Packer used to convert Notification records into
@@ -326,10 +336,16 @@ func (s *Service) HasUnreadOfTypes(ctx context.Context, userID string, types []T
 }
 
 // HasUnreadSpecifiedNotes reports whether the user has any unread
-// notification that references a note with "specified" visibility. Used by
-// /api/i to populate hasUnreadSpecifiedNotes. Matches Misskey's check for
-// DM-style mentions awaiting acknowledgement.
+// specified-visibility note targeted at them. Used by /api/i to populate
+// hasUnreadSpecifiedNotes.
+//
+// noteUnreadRepo が注入されていればそちら優先 (本家互換、visibleUserIds
+// 経由も捕捉できる)。nil の場合は notification stream を scan する legacy
+// 実装にフォールバックする。
 func (s *Service) HasUnreadSpecifiedNotes(ctx context.Context, userID string) (bool, error) {
+	if s.noteUnreadRepo != nil {
+		return s.noteUnreadRepo.HasAnySpecified(userID)
+	}
 	readID, err := s.LatestReadID(ctx, userID)
 	if err != nil {
 		return false, err

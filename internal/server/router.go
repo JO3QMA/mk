@@ -202,6 +202,7 @@ func (s *Server) setupRoutes() {
 	// unread row を作成して /api/i の hasUnreadChannel に反映する。
 	channelNoteUnreadRepo := repository.NewChannelNoteUnreadRepository(s.db)
 	channelService.SetUnreadRepo(channelNoteUnreadRepo)
+	noteUnreadRepo := repository.NewNoteUnreadRepository(s.db)
 	noteCreateService.SetChannelHook(corechannel.NewNoteCreateHook(channelService))
 
 	// Antennas (Phase 4.3)
@@ -236,7 +237,9 @@ func (s *Server) setupRoutes() {
 
 	// Notifications (Redis Streams)
 	notificationService := corenotification.NewService(s.redis.Default, idGen)
+	notificationService.SetNoteUnreadRepo(noteUnreadRepo)
 	notificationHook := corenotification.NewHook(notificationService, userRepo)
+	notificationHook.SetNoteUnreadRepo(noteUnreadRepo)
 	noteCreateService.SetNotificationHook(notificationHook)
 	noteCreateService.SetUserRepo(userRepo)
 	followingService.SetNotificationHook(notificationHook)

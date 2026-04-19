@@ -25,3 +25,19 @@ type ChannelNoteUnread struct {
 
 // TableName overrides GORM's default pluralisation.
 func (ChannelNoteUnread) TableName() string { return "channel_note_unread" }
+
+// NoteUnread represents the `note_unread` table tracking specified /
+// mentioned notes a user has not yet read. Matches the TS schema so /api/i
+// can surface hasUnreadSpecifiedNotes and hasUnreadMentions without scanning
+// the Redis notification stream.
+type NoteUnread struct {
+	ID          string `gorm:"column:id;type:varchar(32);primaryKey" json:"id"`
+	UserID      string `gorm:"column:userId;type:varchar(32);not null" json:"userId"`
+	NoteID      string `gorm:"column:noteId;type:varchar(32);not null" json:"noteId"`
+	NoteUserID  string `gorm:"column:noteUserId;type:varchar(32);not null" json:"noteUserId"`
+	IsSpecified bool   `gorm:"column:isSpecified;not null;default:false" json:"isSpecified"`
+	IsMentioned bool   `gorm:"column:isMentioned;not null;default:false" json:"isMentioned"`
+}
+
+// TableName overrides GORM's default pluralisation.
+func (NoteUnread) TableName() string { return "note_unread" }
