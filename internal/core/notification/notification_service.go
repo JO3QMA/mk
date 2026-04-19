@@ -75,11 +75,20 @@ type StreamingPublisher interface {
 	PublishNotification(notifieeID string, n *Notification)
 }
 
+// MainStreamPublisher emits real-time events to a single target user's `main`
+// WebSocket channel. Used here for `unreadNotification`,
+// `readAllNotifications`, and `notificationFlushed` events. 循環依存を
+// 避けるため interface で受け取る (実装は internal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
 // Service manages notifications.
 type Service struct {
-	client    *redis.Client
-	idGen     id.Generator
-	publisher StreamingPublisher
+	client              *redis.Client
+	idGen               id.Generator
+	publisher           StreamingPublisher
+	mainStreamPublisher MainStreamPublisher
 }
 
 // NewService constructs a new NotificationService.
@@ -91,6 +100,13 @@ func NewService(client *redis.Client, idGen id.Generator) *Service {
 // after Create persists a notification.
 func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 	s.publisher = p
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `main` channel
+// events (`unreadNotification`, `readAllNotifications`,
+// `notificationFlushed`). Optional — nil disables emit.
+func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
+	s.mainStreamPublisher = p
 }
 
 // Errors returned by Service.
@@ -139,6 +155,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 	if s.publisher != nil {
 		s.publisher.PublishNotification(in.NotifieeID, n)
 	}
+	// TS本家 NotificationService は 2 秒遅延で `unreadNotification` を
+	// main stream に publish して、その間に既読になれば送信しない。本実装
+	// では Redis publish が軽量なため即時 emit し、未読判定のみクライアント
+	// 側に任せる (UI の flicker は許容)。
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(in.NotifieeID, "unreadNotification", n)
+	}
 	return n, nil
 }
 
@@ -170,16 +193,28 @@ func (s *Service) List(ctx context.Context, userID string, limit int) ([]*Notifi
 }
 
 // MarkAllAsRead records the latest notification id as read for the user.
-// 既読位置を更新するだけで、ストリーム自体は変更しない。
+// 既読位置を更新するだけで、ストリーム自体は変更しない。成功時に
+// `readAllNotifications` を main stream に publish する。
 func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", "-", 1).Result()
 	if err != nil {
 		return err
 	}
 	if len(res) == 0 {
+		// 既読対象が無い場合でも (frontend の既読フラグ同期のため)
+		// readAllNotifications を emit する。TS本家と同じ挙動。
+		if s.mainStreamPublisher != nil {
+			s.mainStreamPublisher.PublishMainEvent(userID, "readAllNotifications", nil)
+		}
 		return nil
 	}
-	return s.client.Set(ctx, readKey(userID), res[0].ID, 0).Err()
+	if err := s.client.Set(ctx, readKey(userID), res[0].ID, 0).Err(); err != nil {
+		return err
+	}
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(userID, "readAllNotifications", nil)
+	}
+	return nil
 }
 
 // LatestReadID returns the most recently read notification id for the user.
@@ -261,12 +296,19 @@ func exclusive(readID string) string {
 }
 
 // Flush deletes all notifications and the read marker for a user (used in tests
-// and account deletion).
+// and account deletion). Emits `notificationFlushed` to the user's main stream
+// on success.
 func (s *Service) Flush(ctx context.Context, userID string) error {
 	if err := s.client.Del(ctx, streamKey(userID)).Err(); err != nil {
 		return err
 	}
-	return s.client.Del(ctx, readKey(userID)).Err()
+	if err := s.client.Del(ctx, readKey(userID)).Err(); err != nil {
+		return err
+	}
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(userID, "notificationFlushed", nil)
+	}
+	return nil
 }
 
 // toXAddID returns a Redis stream id derived from the notification id.

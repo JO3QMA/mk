@@ -1222,6 +1222,7 @@ func (s *Server) setupRoutes() {
 	//    setter で、未設定なら何もしない (テスト互換)。
 	timelineFanoutHook.SetStreamingPublisher(notePublisher)
 	notificationService.SetStreamingPublisher(notificationPublisher)
+	notificationService.SetMainStreamPublisher(mainStreamPublisher)
 	driveService.SetStreamingPublisher(drivePublisher)
 	followingService.SetMainStreamPublisher(mainStreamPublisher)
 

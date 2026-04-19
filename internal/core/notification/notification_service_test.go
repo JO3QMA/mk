@@ -98,6 +98,87 @@ func TestService_PublishesStreamingEvent(t *testing.T) {
 	assert.Equal(t, []string{"alice"}, pub.hits)
 }
 
+// stubMainPublisher records every PublishMainEvent call.
+type stubMainPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+func TestService_Create_PublishesUnreadNotification(t *testing.T) {
+	svc := newTestSvc(t)
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+	_, err := svc.Create(context.Background(), CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: TypeFollow,
+	})
+	require.NoError(t, err)
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "unreadNotification", pub.calls[0].eventType)
+	// body は *Notification で、少なくとも type が "follow" であることを確認。
+	n, ok := pub.calls[0].body.(*Notification)
+	require.True(t, ok)
+	assert.Equal(t, TypeFollow, n.Type)
+}
+
+func TestService_MarkAllAsRead_PublishesReadAll(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+	// 1件作成してから MarkAllAsRead する。
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: TypeFollow,
+	})
+	require.NoError(t, err)
+
+	// Create で入った unreadNotification をクリアするため publisher を差し替え。
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	require.NoError(t, svc.MarkAllAsRead(ctx, "alice"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "readAllNotifications", pub.calls[0].eventType)
+	assert.Nil(t, pub.calls[0].body)
+}
+
+func TestService_MarkAllAsRead_EmptyStream_StillPublishesReadAll(t *testing.T) {
+	svc := newTestSvc(t)
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	// notification が 1 件も無い状態でも、既読フラグ同期のため publish する。
+	require.NoError(t, svc.MarkAllAsRead(context.Background(), "alice"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "readAllNotifications", pub.calls[0].eventType)
+}
+
+func TestService_Flush_PublishesNotificationFlushed(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: TypeFollow,
+	})
+	require.NoError(t, err)
+
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	require.NoError(t, svc.Flush(ctx, "alice"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "notificationFlushed", pub.calls[0].eventType)
+	assert.Nil(t, pub.calls[0].body)
+}
+
 func TestService_ListLimitClampingDefaults(t *testing.T) {
 	svc := newTestSvc(t)
 	ctx := context.Background()
