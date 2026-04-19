@@ -3,6 +3,7 @@ package repository
 import (
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // AntennaNoteUnreadRepository tracks per-user-per-note antenna unreads.
@@ -49,6 +50,11 @@ func (r *antennaNoteUnreadRepository) DeleteByAntennaUser(userID, antennaID stri
 // ChannelNoteUnreadRepository tracks per-follower-per-note channel unreads.
 type ChannelNoteUnreadRepository interface {
 	Create(m *model.ChannelNoteUnread) error
+	// CreateMany inserts the given rows in bulk, silently skipping ones that
+	// violate the (userId, channelId, noteId) unique constraint. Used by
+	// channel-note fanout (#320) to avoid per-follower round trips on
+	// popular channels. 空 slice は no-op.
+	CreateMany(rows []*model.ChannelNoteUnread) error
 	// HasAnyByUser reports whether the user has any unread channel notes.
 	HasAnyByUser(userID string) (bool, error)
 	// DeleteByChannelUser removes all unread rows for a given (user, channel)
@@ -66,6 +72,16 @@ func NewChannelNoteUnreadRepository(db *gorm.DB) ChannelNoteUnreadRepository {
 func (r *channelNoteUnreadRepository) Create(m *model.ChannelNoteUnread) error {
 	return r.db.Where(`"userId" = ? AND "channelId" = ? AND "noteId" = ?`, m.UserID, m.ChannelID, m.NoteID).
 		FirstOrCreate(m).Error
+}
+
+func (r *channelNoteUnreadRepository) CreateMany(rows []*model.ChannelNoteUnread) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	// Bulk insert with ON CONFLICT DO NOTHING on the
+	// (userId, channelId, noteId) unique index. GORM's clause.OnConflict
+	// は composite unique index 全体を対象にする (DoNothing=true)。
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(rows).Error
 }
 
 func (r *channelNoteUnreadRepository) HasAnyByUser(userID string) (bool, error) {

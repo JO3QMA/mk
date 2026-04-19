@@ -52,6 +52,46 @@ func TestNoteUnreadRepository_UpsertAndQueries(t *testing.T) {
 	assert.False(t, hasM)
 }
 
+func TestChannelNoteUnreadRepository_CreateMany_DeduplicatesOnConflict(t *testing.T) {
+	// #320: CreateMany が (userId, channelId, noteId) unique 制約違反時に
+	// silently skip (ON CONFLICT DO NOTHING) することを実 DB で確認する。
+	repo := NewChannelNoteUnreadRepository(testDB)
+	userRepo := NewUserRepository(testDB)
+	author := insertTestUser(t, "cmu_a", "cmauthor")
+	defer cleanupUser(t, author.ID)
+	reader := insertTestUser(t, "cmu_r", "cmreader")
+	defer cleanupUser(t, reader.ID)
+	_ = userRepo
+
+	chRepo := NewChannelRepository(testDB)
+	ownerID := author.ID
+	ch := newTestChannel("ch_cmany", "cm target", &ownerID)
+	require.NoError(t, chRepo.Create(ch))
+	defer cleanupChannel(t, ch.ID)
+
+	note := &model.Note{ID: "n_cm_1", UserID: author.ID, Visibility: "public"}
+	require.NoError(t, testDB.Create(note).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, note.ID)
+	defer testDB.Exec(`DELETE FROM "channel_note_unread" WHERE "userId" = ?`, reader.ID)
+
+	rows := []*model.ChannelNoteUnread{
+		{ID: "cnu_1", UserID: reader.ID, ChannelID: ch.ID, NoteID: note.ID},
+		{ID: "cnu_2", UserID: reader.ID, ChannelID: ch.ID, NoteID: note.ID}, // duplicate
+	}
+	require.NoError(t, repo.CreateMany(rows))
+
+	has, err := repo.HasAnyByUser(reader.ID)
+	require.NoError(t, err)
+	assert.True(t, has)
+
+	// 2 回目の CreateMany (完全に同じ内容) でも error にならない。
+	require.NoError(t, repo.CreateMany(rows))
+
+	// 空 slice は no-op。
+	require.NoError(t, repo.CreateMany(nil))
+	require.NoError(t, repo.CreateMany([]*model.ChannelNoteUnread{}))
+}
+
 func TestNoteUnreadRepository_HasAny_Empty(t *testing.T) {
 	repo := NewNoteUnreadRepository(testDB)
 	has, err := repo.HasAnySpecified("no-such-user")
