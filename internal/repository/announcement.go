@@ -10,6 +10,11 @@ type AnnouncementRepository interface {
 	Create(a *model.Announcement) error
 	FindByID(id string) (*model.Announcement, error)
 	List(activeOnly bool, limit, offset int) ([]*model.Announcement, error)
+	// ListForUser returns announcements visible to userID: global ones
+	// (userId IS NULL) plus those targeted at this user. Used by
+	// /api/announcements so per-user announcements do not leak to unrelated
+	// users.
+	ListForUser(userID string, activeOnly bool, limit, offset int) ([]*model.Announcement, error)
 	UpdateFields(id string, fields map[string]any) error
 	Delete(id string) error
 	// Read management
@@ -60,6 +65,28 @@ func (r *announcementRepository) List(activeOnly bool, limit, offset int) ([]*mo
 	return announcements, nil
 }
 
+func (r *announcementRepository) ListForUser(userID string, activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
+	q := r.db.Where(`"userId" IS NULL OR "userId" = ?`, userID).Order("id DESC")
+	if activeOnly {
+		q = q.Where("\"isActive\" = true")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit)
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	var announcements []*model.Announcement
+	if err := q.Find(&announcements).Error; err != nil {
+		return nil, err
+	}
+	return announcements, nil
+}
+
 func (r *announcementRepository) UpdateFields(id string, fields map[string]any) error {
 	return r.db.Model(&model.Announcement{}).Where("id = ?", id).Updates(fields).Error
 }
@@ -82,7 +109,11 @@ func (r *announcementRepository) IsRead(userID, announcementID string) (bool, er
 
 func (r *announcementRepository) UnreadForUser(userID string) ([]*model.Announcement, error) {
 	var announcements []*model.Announcement
-	err := r.db.Where("\"isActive\" = true AND id NOT IN (?)",
+	// per-user announcement (userId!=null) はその対象ユーザーのみ含める。
+	// global announcement (userId IS NULL) は全ユーザーに見せる。
+	err := r.db.Where(
+		`"isActive" = true AND ("userId" IS NULL OR "userId" = ?) AND id NOT IN (?)`,
+		userID,
 		r.db.Model(&model.AnnouncementRead{}).Select("\"announcementId\"").Where("\"userId\" = ?", userID),
 	).Order("id DESC").Find(&announcements).Error
 	if err != nil {

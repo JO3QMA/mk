@@ -54,13 +54,21 @@ func (h *Handler) List(c echo.Context) error {
 	if req.IsActive != nil {
 		activeOnly = *req.IsActive
 	}
-	items, err := h.repo.List(activeOnly, req.Limit, req.Offset)
+	// 認証ユーザーがいれば per-user announcement の対象を自分に限定した
+	// ListForUser を使い、他ユーザー宛のannouncementを除外する。未認証は
+	// 従来通り global announcement のみの List を返す。
+	user := middleware.GetUser(c)
+	var items []*model.Announcement
+	var err error
+	if user != nil {
+		items, err = h.repo.ListForUser(user.ID, activeOnly, req.Limit, req.Offset)
+	} else {
+		items, err = h.repo.List(activeOnly, req.Limit, req.Offset)
+	}
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	// 認証ユーザーがいれば既読情報を付与
-	user := middleware.GetUser(c)
 	result := make([]map[string]any, 0, len(items))
 	for _, a := range items {
 		item := packAnnouncement(a, h.idGen)

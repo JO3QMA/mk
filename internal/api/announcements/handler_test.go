@@ -201,6 +201,49 @@ func TestReadAnnouncement_DoesNotPublishWhenUnreadRemains(t *testing.T) {
 	assert.Empty(t, pub.calls)
 }
 
+func TestReadAnnouncement_IgnoresOtherUsersPerUserAnnouncements(t *testing.T) {
+	// 他ユーザー宛のper-user announcementは自分のunread countに含まれない
+	// ので、それ以外を全て読んだら readAllAnnouncements が emit される。
+	h, repo := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	otherUID := "other"
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}                    // global
+	repo.Items["a2"] = &model.Announcement{ID: "a2", IsActive: true, UserID: &otherUID} // 他ユーザー宛
+
+	rec := doPost(h.ReadAnnouncement, `{"announcementId":"a1"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "readAllAnnouncements", pub.calls[0].eventType)
+}
+
+func TestList_AuthenticatedUser_ExcludesOtherUsersPerUserAnnouncements(t *testing.T) {
+	h, repo := newTestHandler(t)
+	otherUID := "other"
+	myUID := "u1"
+	// global / 自分宛 / 他人宛 の3種
+	idGen, _ := id.NewGenerator("aidx")
+	aid1 := idGen.Generate(java_time())
+	aid2 := idGen.Generate(java_time())
+	aid3 := idGen.Generate(java_time())
+	repo.Items[aid1] = &model.Announcement{ID: aid1, Title: "G", IsActive: true}
+	repo.Items[aid2] = &model.Announcement{ID: aid2, Title: "Mine", IsActive: true, UserID: &myUID}
+	repo.Items[aid3] = &model.Announcement{ID: aid3, Title: "Other", IsActive: true, UserID: &otherUID}
+
+	rec := doPost(h.List, `{}`, &model.User{ID: myUID})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	// aid3 は他ユーザー宛なので除外される (2件: global + 自分宛)。
+	titles := make(map[string]bool)
+	for _, item := range resp {
+		titles[item["title"].(string)] = true
+	}
+	assert.True(t, titles["G"])
+	assert.True(t, titles["Mine"])
+	assert.False(t, titles["Other"])
+}
+
 func TestAdminUpdate_Success(t *testing.T) {
 	h, repo := newTestHandler(t)
 	repo.Items["a1"] = &model.Announcement{ID: "a1", Title: "Old"}
