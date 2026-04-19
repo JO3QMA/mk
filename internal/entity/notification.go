@@ -1,5 +1,12 @@
 package entity
 
+// Note: this file intentionally imports `internal/core/notification` for
+// the Notification struct definition, which is the only exception to the
+// entity→{model,misc}-only convention in this package. Moving the struct
+// to `internal/model` would touch 20+ call sites; the direct import keeps
+// the packer API ergonomic and is limited to this one file. Callers that
+// want to avoid the transitive dependency should pass primitives instead.
+
 import (
 	"github.com/shiroha-a/mk/internal/core/notification"
 	"github.com/shiroha-a/mk/internal/misc/id"
