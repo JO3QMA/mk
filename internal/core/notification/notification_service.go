@@ -131,7 +131,7 @@ func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
 }
 
 // SetNoteUnreadRepo attaches a NoteUnreadRepository. When set, HasUnreadSpecifiedNotes
-// queries note_unread table (本家相当) instead of scanning the notification
+// queries the note_unread table (本家相当) instead of scanning the notification
 // stream (#319). Optional — nil keeps the legacy proxy implementation which
 // reads NoteVisibility off unread notifications.
 func (s *Service) SetNoteUnreadRepo(r repository.NoteUnreadRepository) {
@@ -246,19 +246,19 @@ func (s *Service) List(ctx context.Context, userID string, limit int) ([]*Notifi
 // MarkAllAsRead records the latest notification id as read for the user.
 // 既読位置を更新するだけで、ストリーム自体は変更しない。成功時に
 // `readAllNotifications` を main stream に publish する。
-// note_unread repository が注入されていれば同時にユーザー分の行を全削除する
-// (hasUnreadSpecifiedNotes / hasUnreadMentions を false に戻すため)。
+// note_unread repositoryが注入されていれば同時にユーザー分の行を全削除する
+// (hasUnreadSpecifiedNotes / hasUnreadMentionsをfalseに戻すため)。
+// Redis SET失敗時はnote_unreadを温存する (整合性維持)。
 func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", "-", 1).Result()
 	if err != nil {
 		return err
 	}
-	// 既読対象が無い場合でも note_unread は clean up する (frontend の UI
-	// 状態を完全に reset するため)。
-	s.clearNoteUnread(userID)
 	if len(res) == 0 {
-		// 既読対象が無い場合でも (frontend の既読フラグ同期のため)
-		// readAllNotifications を emit する。TS本家と同じ挙動。
+		// 既読対象が無い場合でも (frontendの既読フラグ同期のため)
+		// readAllNotificationsをemitする。TS本家と同じ挙動。
+		// note_unreadも合わせてcleanup (Redis書き込みは無いため失敗パスなし)。
+		s.clearNoteUnread(userID)
 		if s.mainStreamPublisher != nil {
 			s.mainStreamPublisher.PublishMainEvent(userID, "readAllNotifications", nil)
 		}
@@ -267,6 +267,9 @@ func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 	if err := s.client.Set(ctx, readKey(userID), res[0].ID, 0).Err(); err != nil {
 		return err
 	}
+	// Redis SET成功後にnote_unreadを消す (SET失敗時は温存して次回retryで
+	// 両方更新されることを期待する)。
+	s.clearNoteUnread(userID)
 	if s.mainStreamPublisher != nil {
 		s.mainStreamPublisher.PublishMainEvent(userID, "readAllNotifications", nil)
 	}
@@ -274,9 +277,9 @@ func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 }
 
 // clearNoteUnread is a best-effort helper that deletes the user's note_unread
-// rows when the repo is wired. Failures are logged but not surfaced because
-// the Redis read marker (primary source of unread state) has already been
-// updated by the caller.
+// rows when the repo is wired. Failures are logged but not surfaced; callers
+// should invoke this after their own Redis writes succeed so the two stores
+// stay in sync (or tolerate the caller's no-write early-return case).
 func (s *Service) clearNoteUnread(userID string) {
 	if s.noteUnreadRepo == nil {
 		return
@@ -358,9 +361,9 @@ func (s *Service) HasUnreadOfTypes(ctx context.Context, userID string, types []T
 // specified-visibility note targeted at them. Used by /api/i to populate
 // hasUnreadSpecifiedNotes.
 //
-// noteUnreadRepo が注入されていればそちら優先 (本家互換、visibleUserIds
-// 経由も捕捉できる)。nil の場合は notification stream を scan する legacy
-// 実装にフォールバックする。
+// noteUnreadRepoが注入されていればそちら優先 (本家互換、visibleUserIds
+// 経由も捕捉できる)。nilの場合はnotification streamをscanするlegacy実装に
+// フォールバックする。
 func (s *Service) HasUnreadSpecifiedNotes(ctx context.Context, userID string) (bool, error) {
 	if s.noteUnreadRepo != nil {
 		return s.noteUnreadRepo.HasAnySpecified(userID)
@@ -401,7 +404,7 @@ func exclusive(readID string) string {
 
 // Flush deletes all notifications and the read marker for a user (used in tests
 // and account deletion). Emits `notificationFlushed` to the user's main stream
-// on success. note_unread repo が注入されていれば同時に clear する。
+// on success. note_unread repoが注入されていれば同時にclearする。
 func (s *Service) Flush(ctx context.Context, userID string) error {
 	if err := s.client.Del(ctx, streamKey(userID)).Err(); err != nil {
 		return err

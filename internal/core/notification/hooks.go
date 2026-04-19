@@ -89,13 +89,13 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 	}
 	ctx := context.Background()
 
-	// note.Mentions は ID/username が混在するため、1 回 DB で解決してから
-	// 両 path (通知 / note_unread) で共有する。userRepo 未配線なら空スライス。
+	// note.MentionsはID/usernameが混在するため、1回DBで解決してから
+	// 両path (通知 / note_unread) で共有する。userRepo未配線なら空スライス。
 	mentionedIDs := h.resolveMentionIDs(n, author.ID)
 
-	// specified note の visibleUserIds / mentions 経由で note_unread を
-	// 差し込む。通知の有無に関係なく DB に永続化するため、通知抑制 (mute 等)
-	// や通知未生成のケース (visibleUserIds に含まれるが mention されていない
+	// specified noteのvisibleUserIds / mentions経由でnote_unreadを
+	// 差し込む。通知の有無に関係なくDBに永続化するため、通知抑制 (mute等)
+	// や通知未生成のケース (visibleUserIdsに含まれるがmentionされていない
 	// ユーザー) もここで捕捉できる。
 	h.recordNoteUnreads(n, author, mentionedIDs)
 
@@ -125,9 +125,9 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 		})
 	}
 
-	// mention 通知: resolveMentionIDs で解決済みの ID を使う
+	// mention通知: resolveMentionIDsで解決済みのIDを使う
 	for _, mentionedID := range mentionedIDs {
-		// reply先と同じユーザーには replyとmentionの両方を出さない
+		// reply先と同じユーザーにはreplyとmentionの両方を出さない
 		if replyTarget != nil && replyTarget.UserID == mentionedID {
 			continue
 		}
@@ -143,8 +143,8 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 
 // resolveMentionIDs turns n.Mentions (a mix of user IDs and usernames) into a
 // unique slice of resolved user IDs, skipping blanks, self-mentions, and
-// unresolvable entries. 空 slice を返すケース: userRepo 未配線 / n.Mentions
-// が空 / 全 entry が失敗。
+// unresolvable entries. 空sliceを返すケース: userRepo未配線 / n.Mentionsが空
+// / 全entryが失敗。
 func (h *Hook) resolveMentionIDs(n *model.Note, authorID string) []string {
 	if h.userRepo == nil || len(n.Mentions) == 0 {
 		return nil
@@ -226,10 +226,10 @@ func (h *Hook) OnPollVote(notifieeID, notifierID, noteID string, choice int) {
 }
 
 // recordNoteUnreads inserts note_unread rows for local recipients of a
-// specified-visibility note or a note that mentions them. 本家 TS の
-// noteUnreadInsert 相当で、isSpecified / isMentioned flag は OR で集約する
-// (upsert)。repo 未配線 / noteUnreadRepo == nil のときは no-op。
-// mentionedIDs は resolveMentionIDs で解決済みの user ID リスト。
+// specified-visibility note or a note that mentions them. 本家TSの
+// noteUnreadInsert相当で、isSpecified / isMentioned flagはORで集約する
+// (upsert)。repo未配線 / noteUnreadRepo == nilのときはno-op。
+// mentionedIDsはresolveMentionIDsで解決済みのuser IDリスト。
 func (h *Hook) recordNoteUnreads(n *model.Note, author *model.User, mentionedIDs []string) {
 	if h.noteUnreadRepo == nil {
 		return
@@ -266,8 +266,8 @@ func (h *Hook) recordNoteUnreads(n *model.Note, author *model.User, mentionedIDs
 		return
 	}
 
-	// notifiee がローカルユーザーでない場合は note_unread を作らない
-	// (リモートユーザーには自インスタンスの DB 未読表示が発生しないため)。
+	// notifieeがローカルユーザーでない場合はnote_unreadを作らない
+	// (リモートユーザーには自インスタンスのDB未読表示が発生しないため)。
 	now := time.Now()
 	for uid, f := range targets {
 		if h.userRepo != nil {
