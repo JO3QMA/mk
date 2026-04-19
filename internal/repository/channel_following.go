@@ -13,10 +13,11 @@ type ChannelFollowingRepository interface {
 	FindByPair(followerID, channelID string) (*model.ChannelFollowing, error)
 	Exists(followerID, channelID string) (bool, error)
 	ListFollowed(userID string, limit, offset int) ([]*model.ChannelFollowing, error)
-	// ListFollowerIDs returns the followerId list for a given channel (used
-	// by channel-note fanout to insert unread rows per follower). Limit is
-	// applied server-side to cap memory on popular channels.
-	ListFollowerIDs(channelID string, limit int) ([]string, error)
+	// ListFollowerIDsPage returns a batch of follower userIds for a channel,
+	// ordered by row id ASC. afterRowID は前ページの nextCursor を渡す
+	// (空なら先頭から)。返り値の nextCursor は次回 call にそのまま渡せる
+	// (空なら全件走査済み)。#320 の channel unread fanout で使用。
+	ListFollowerIDsPage(channelID, afterRowID string, limit int) (ids []string, nextCursor string, err error)
 }
 
 type channelFollowingRepository struct {
@@ -54,20 +55,39 @@ func (r *channelFollowingRepository) Exists(followerID, channelID string) (bool,
 	return count > 0, nil
 }
 
-// ListFollowerIDs returns follower userIds for a given channel. Limit caps
-// the result (0 or negative → default 1000). Used by channel-note fanout.
-func (r *channelFollowingRepository) ListFollowerIDs(channelID string, limit int) ([]string, error) {
+// ListFollowerIDsPage returns a batch of follower userIds for a channel,
+// ordered by row id ASC. Used by channel-note fanout (#320) to walk all
+// followers without the previous 1000-row cap. Returns (ids, nextCursor,
+// err). nextCursor is the last row's id; pass it back to continue.
+// 空 slice + 空 cursor で全件走査完了。
+func (r *channelFollowingRepository) ListFollowerIDsPage(channelID, afterRowID string, limit int) ([]string, string, error) {
 	if limit <= 0 {
-		limit = 1000
+		limit = 500
 	}
-	var ids []string
-	if err := r.db.Model(&model.ChannelFollowing{}).
+	type row struct {
+		ID         string
+		FollowerID string
+	}
+	var rows []row
+	q := r.db.Model(&model.ChannelFollowing{}).
+		Select(`"id", "followerId"`).
 		Where(`"followeeId" = ?`, channelID).
-		Limit(limit).
-		Pluck(`"followerId"`, &ids).Error; err != nil {
-		return nil, err
+		Order(`"id" ASC`).
+		Limit(limit)
+	if afterRowID != "" {
+		q = q.Where(`"id" > ?`, afterRowID)
 	}
-	return ids, nil
+	if err := q.Scan(&rows).Error; err != nil {
+		return nil, "", err
+	}
+	if len(rows) == 0 {
+		return nil, "", nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.FollowerID)
+	}
+	return ids, rows[len(rows)-1].ID, nil
 }
 
 // ListFollowed returns the channel followings for a given user, ordered by id

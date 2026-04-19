@@ -2786,21 +2786,54 @@ func (m *MockChannelFollowingRepository) ListFollowed(userID string, limit, offs
 	return rows[offset:end], nil
 }
 
-// ListFollowerIDs returns followerIds for a given channelID.
-func (m *MockChannelFollowingRepository) ListFollowerIDs(channelID string, limit int) ([]string, error) {
-	var ids []string
+// ListFollowerIDsPage returns a page of followerIds for a given channel,
+// ordered by row id ASC. Follows the production repository's cursor-based
+// pagination contract (#320).
+func (m *MockChannelFollowingRepository) ListFollowerIDsPage(channelID, afterRowID string, limit int) ([]string, string, error) {
+	// Collect matching rows in insertion order (map iteration is random;
+	// sort by ID for deterministic paging).
+	type pair struct{ id, follower string }
+	var rows []pair
 	for _, f := range m.Followings {
 		if f.FolloweeID == channelID {
-			ids = append(ids, f.FollowerID)
+			rows = append(rows, pair{id: f.ID, follower: f.FollowerID})
+		}
+	}
+	// stable sort by id ASC
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[j].id < rows[i].id {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+	// Skip entries up to and including afterRowID.
+	if afterRowID != "" {
+		cut := -1
+		for i, r := range rows {
+			if r.id == afterRowID {
+				cut = i
+				break
+			}
+		}
+		if cut >= 0 {
+			rows = rows[cut+1:]
 		}
 	}
 	if limit <= 0 {
-		limit = 1000
+		limit = 500
 	}
-	if len(ids) > limit {
-		ids = ids[:limit]
+	if len(rows) > limit {
+		rows = rows[:limit]
 	}
-	return ids, nil
+	if len(rows) == 0 {
+		return nil, "", nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.follower)
+	}
+	return ids, rows[len(rows)-1].id, nil
 }
 
 // MockAntennaNoteUnreadRepository is a test double for
@@ -2857,6 +2890,25 @@ func NewMockChannelNoteUnreadRepository() *MockChannelNoteUnreadRepository {
 // Create records the unread row.
 func (m *MockChannelNoteUnreadRepository) Create(row *model.ChannelNoteUnread) error {
 	m.Rows = append(m.Rows, row)
+	return nil
+}
+
+// CreateMany appends all rows, silently skipping entries whose
+// (UserID, ChannelID, NoteID) triple already exists (mirrors the real
+// repository's ON CONFLICT DO NOTHING semantics).
+func (m *MockChannelNoteUnreadRepository) CreateMany(rows []*model.ChannelNoteUnread) error {
+	for _, r := range rows {
+		dup := false
+		for _, existing := range m.Rows {
+			if existing.UserID == r.UserID && existing.ChannelID == r.ChannelID && existing.NoteID == r.NoteID {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			m.Rows = append(m.Rows, r)
+		}
+	}
 	return nil
 }
 
