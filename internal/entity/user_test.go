@@ -231,18 +231,21 @@ func TestPackUserLite_RequireSigninToViewContents_FalseOmitted(t *testing.T) {
 }
 
 func TestPackUserLite_MakeNotesBefore(t *testing.T) {
-	followersMs := 1234567890000
-	hiddenMs := 999999999
+	// makeNotes*Before は integer カラム (TS MiUser.ts:208) で「秒単位、
+	// マイナスで相対時間」と定義されている。int32 (~2.1B) 範囲内の値を使う
+	// こと (ms timestamp 等の大きい値は DB round-trip で overflow する)。
+	followersSec := 1700000000 // 2023-11-14T22:13:20Z 相当の UNIX 秒
+	hiddenRelSec := -86400     // 過去 1 日 (相対時間の例)
 	u := &model.User{
 		ID: "u1", Username: "x", AvatarDecorations: datatypes.JSON([]byte("[]")),
-		MakeNotesFollowersOnlyBefore: &followersMs,
-		MakeNotesHiddenBefore:        &hiddenMs,
+		MakeNotesFollowersOnlyBefore: &followersSec,
+		MakeNotesHiddenBefore:        &hiddenRelSec,
 	}
 	lite := PackUserLite(u)
 	require.NotNil(t, lite.MakeNotesFollowersOnlyBefore)
-	assert.Equal(t, 1234567890000, *lite.MakeNotesFollowersOnlyBefore)
+	assert.Equal(t, 1700000000, *lite.MakeNotesFollowersOnlyBefore)
 	require.NotNil(t, lite.MakeNotesHiddenBefore)
-	assert.Equal(t, 999999999, *lite.MakeNotesHiddenBefore)
+	assert.Equal(t, -86400, *lite.MakeNotesHiddenBefore)
 }
 
 func TestPackUserLite_MakeNotesBefore_NilOmitted(t *testing.T) {
