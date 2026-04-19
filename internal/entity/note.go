@@ -138,7 +138,7 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 // reply / renote の User も instance resolver の対象に含めるため、ここで
 // collectUsers により集約してから resolver を作る。
 func PackNotes(notes []*model.Note, idGen id.Generator, lookup InstanceLookup) []NoteEntity {
-	resolver := NewInstanceResolver(lookup, collectNoteUsers(notes)...)
+	resolver := NewInstanceResolver(lookup, CollectNoteAuthors(notes)...)
 	out := make([]NoteEntity, 0, len(notes))
 	for _, n := range notes {
 		packed := PackNote(n, idGen)
@@ -151,17 +151,24 @@ func PackNotes(notes []*model.Note, idGen id.Generator, lookup InstanceLookup) [
 }
 
 // PackNoteWithInstance is a single-note convenience wrapper: pack + populate.
+//
+// **Single-note only.** Each call spins up a fresh InstanceResolver (1 DB
+// query via lookup.FindManyByHosts). For a slice of notes, call `PackNotes`
+// instead — calling this in a loop produces N+1 queries.
 func PackNoteWithInstance(n *model.Note, idGen id.Generator, lookup InstanceLookup) NoteEntity {
 	packed := PackNote(n, idGen)
-	resolver := NewInstanceResolver(lookup, collectNoteUsers([]*model.Note{n})...)
+	resolver := NewInstanceResolver(lookup, CollectNoteAuthors([]*model.Note{n})...)
 	resolver.FillUserLite(&packed.User)
 	return packed
 }
 
-// collectNoteUsers extracts User pointers from a slice of notes for instance
-// resolution. 現状は note.User のみ (reply/renote は NoteEntity で別埋めする
-// 運用)。
-func collectNoteUsers(notes []*model.Note) []*model.User {
+// CollectNoteAuthors returns the author `User` pointer of each note that has
+// one preloaded. Used by packers and handlers when building an
+// InstanceResolver over a pre-fetched slice of notes.
+//
+// 現状は note.User のみ (reply/renote の User は NoteEntity で別埋めする運用
+// のため集約対象外)。
+func CollectNoteAuthors(notes []*model.Note) []*model.User {
 	users := make([]*model.User, 0, len(notes))
 	for _, n := range notes {
 		if n == nil || n.User == nil {

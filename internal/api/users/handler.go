@@ -155,11 +155,24 @@ func (h *Handler) Show(c echo.Context) error {
 		if len(req.UserIDs) > 100 {
 			req.UserIDs = req.UserIDs[:100]
 		}
-		out := make([]entity.UserLite, 0, len(req.UserIDs))
+		// bulk fetch してから 1 回の batch で instance を resolve する (#277)。
+		// single-user path と同じ UserLite.instance 表示互換を維持する。
+		bundles := make([]*user.UserWithProfile, 0, len(req.UserIDs))
 		for _, uid := range req.UserIDs {
 			if bundle, err := h.userService.ShowByID(uid); err == nil {
-				out = append(out, entity.PackUserLite(bundle.User))
+				bundles = append(bundles, bundle)
 			}
+		}
+		users := make([]*model.User, 0, len(bundles))
+		for _, b := range bundles {
+			users = append(users, b.User)
+		}
+		resolver := entity.NewInstanceResolver(h.instanceLookup(), users...)
+		out := make([]entity.UserLite, 0, len(bundles))
+		for _, b := range bundles {
+			lite := entity.PackUserLite(b.User)
+			resolver.FillUserLite(&lite)
+			out = append(out, lite)
 		}
 		return c.JSON(http.StatusOK, out)
 	}

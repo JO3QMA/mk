@@ -97,7 +97,7 @@ func (h *Handler) Favorites(c echo.Context) error {
 			notes = append(notes, f.Note)
 		}
 	}
-	resolver := entity.NewInstanceResolver(h.instanceLookup(), collectNoteAuthors(notes)...)
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), entity.CollectNoteAuthors(notes)...)
 
 	result := make([]map[string]any, 0, len(favs))
 	for _, f := range favs {
@@ -113,19 +113,6 @@ func (h *Handler) Favorites(c echo.Context) error {
 		result = append(result, item)
 	}
 	return c.JSON(http.StatusOK, result)
-}
-
-// collectNoteAuthors returns the author User pointer of each note that has
-// one preloaded. Used to build an entity.InstanceResolver over a set of
-// notes without pulling in the full model package in entity.
-func collectNoteAuthors(notes []*model.Note) []*model.User {
-	out := make([]*model.User, 0, len(notes))
-	for _, n := range notes {
-		if n != nil && n.User != nil {
-			out = append(out, n.User)
-		}
-	}
-	return out
 }
 
 // NotificationsGrouped handles POST /api/i/notifications-grouped.
