@@ -23,6 +23,11 @@ type InstanceResolver struct {
 //
 // lookup が nil なら cache は空 (Resolve は常に nil を返す) のリゾルバを返す。
 // users は可変長で reply/renote のユーザーもまとめて渡せる。
+//
+// lookup.FindManyByHosts が error を返した場合も best-effort として空 cache の
+// resolver を返す (entity 層に slog 依存を入れないため)。DB 失敗時の観測性が
+// 重要な場面では caller 側で lookup を直接呼んでログを取ってから、この
+// resolver に別途 seed する実装を検討すること。
 func NewInstanceResolver(lookup InstanceLookup, users ...*model.User) *InstanceResolver {
 	r := &InstanceResolver{cache: map[string]*InstanceLite{}}
 	if lookup == nil {

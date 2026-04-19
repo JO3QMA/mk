@@ -328,10 +328,13 @@ func (h *Handler) Search(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), users...)
 	out := make([]entity.UserDetailed, 0, len(users))
 	for _, u := range users {
 		profile := h.userService.GetProfile(u.ID)
-		out = append(out, entity.PackUserDetailed(u, profile))
+		d := entity.PackUserDetailed(u, profile)
+		resolver.FillUserLite(&d.UserLite)
+		out = append(out, d)
 	}
 	return c.JSON(http.StatusOK, out)
 }

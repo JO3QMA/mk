@@ -117,9 +117,12 @@ func (h *Handler) SearchByUsernameAndHost(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	resolver := entity.NewInstanceResolver(h.instanceLookup(), users...)
 	result := make([]entity.UserLite, 0, len(users))
 	for _, u := range users {
-		result = append(result, entity.PackUserLite(u))
+		lite := entity.PackUserLite(u)
+		resolver.FillUserLite(&lite)
+		result = append(result, lite)
 	}
 	return c.JSON(http.StatusOK, result)
 }
