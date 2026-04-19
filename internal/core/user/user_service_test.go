@@ -1,6 +1,7 @@
 package user_test
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -169,6 +170,61 @@ func TestService_UpdateProfile_UserNotFound(t *testing.T) {
 	svc, _, _, _ := newFullSvc(t)
 	_, err := svc.UpdateProfile("missing", user.UpdateInput{})
 	assert.True(t, errors.Is(err, user.ErrUserNotFound))
+}
+
+// stubMainStreamPublisher captures PublishMainEvent calls for assertion.
+type stubMainStreamPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+func TestService_UpdateProfile_PublishesMeUpdated(t *testing.T) {
+	svc, repo, _, _ := newFullSvc(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	_, err := svc.UpdateProfile("u1", user.UpdateInput{
+		Name:        ptr(ptr("New Name")),
+		Description: ptr(ptr("hello")),
+	})
+	require.NoError(t, err)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "meUpdated", pub.calls[0].eventType)
+	// body は entity.UserDetailed 相当。JSON round-trip で id/name/description
+	// が更新後の値になっていることを確認する。
+	raw, err := json.Marshal(pub.calls[0].body)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	assert.Equal(t, "u1", m["id"])
+	assert.Equal(t, "New Name", m["name"])
+	assert.Equal(t, "hello", m["description"])
+}
+
+func TestService_UpdateProfile_UserUpdateError_DoesNotPublish(t *testing.T) {
+	mockUR := testutil.NewMockUserRepository()
+	mockUR.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	uRepo := &failingUserRepo{MockUserRepository: mockUR, failUpdateUser: true}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := user.NewService(uRepo, nil, nil, idGen)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	_, err := svc.UpdateProfile("u1", user.UpdateInput{IsLocked: ptr(true)})
+	require.Error(t, err)
+	assert.Empty(t, pub.calls)
 }
 
 // --- PinNote / UnpinNote / ListPinnedNotes ---
