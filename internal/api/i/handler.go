@@ -284,6 +284,16 @@ func (h *Handler) RegistrySet(c echo.Context) error {
 	if err := h.registryRepo.Set(item); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	// TS本家 RegistryApiService.set (lines 59-66): domain == null のとき
+	// のみmainにpublishする。domain指定はサードパーティアプリ固有の領域
+	// なので他クライアントには broadcast しない仕様。
+	if h.mainStreamPublisher != nil && req.Domain == nil {
+		h.mainStreamPublisher.PublishMainEvent(u.ID, "registryUpdated", map[string]any{
+			"scope": req.Scope,
+			"key":   req.Key,
+			"value": json.RawMessage(req.Value),
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
