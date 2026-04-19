@@ -3210,7 +3210,49 @@ func (m *MockAnnouncementRepository) List(activeOnly bool, limit, offset int) ([
 	var result []*model.Announcement
 	for _, a := range m.Items {
 		if activeOnly && !a.IsActive {
-			result = append(result, a) // activeOnly=false の場合も含める
+			continue
+		}
+		result = append(result, a)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
+func (m *MockAnnouncementRepository) ListGlobal(activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
+	var result []*model.Announcement
+	for _, a := range m.Items {
+		if a.UserID != nil {
+			continue // per-user announcementは除外
+		}
+		if activeOnly && !a.IsActive {
+			continue
+		}
+		result = append(result, a)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if offset >= len(result) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(result))
+	return result[offset:end], nil
+}
+
+func (m *MockAnnouncementRepository) ListForUser(userID string, activeOnly bool, limit, offset int) ([]*model.Announcement, error) {
+	var result []*model.Announcement
+	for _, a := range m.Items {
+		// per-user announcementのうち他ユーザー宛ては除外
+		if a.UserID != nil && *a.UserID != userID {
+			continue
+		}
+		if activeOnly && !a.IsActive {
 			continue
 		}
 		result = append(result, a)
@@ -3256,6 +3298,10 @@ func (m *MockAnnouncementRepository) IsRead(userID, announcementID string) (bool
 func (m *MockAnnouncementRepository) UnreadForUser(userID string) ([]*model.Announcement, error) {
 	var result []*model.Announcement
 	for _, a := range m.Items {
+		// per-user announcementのうち他ユーザー宛ては除外 (読めないので未読扱いしない)
+		if a.UserID != nil && *a.UserID != userID {
+			continue
+		}
 		if a.IsActive && !m.Reads[userID+":"+a.ID] {
 			result = append(result, a)
 		}

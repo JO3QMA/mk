@@ -124,6 +124,144 @@ func TestAdminCreate_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// stubMainStreamPublisher captures PublishMainEvent calls.
+type stubMainStreamPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+func TestAdminCreate_PerUserPublishesAnnouncementCreated(t *testing.T) {
+	h, _ := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	rec := doPost(h.AdminCreate, `{"title":"You","text":"Hi","userId":"u1"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "announcementCreated", pub.calls[0].eventType)
+	body, ok := pub.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	// TSと同じく {announcement: <packed>} でラップ。
+	packed, ok := body["announcement"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "You", packed["title"])
+	assert.Equal(t, true, packed["forYou"])
+	assert.Equal(t, false, packed["isRead"])
+}
+
+func TestAdminCreate_GlobalDoesNotPublish(t *testing.T) {
+	h, _ := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	// userId 未指定 → global announcement。main にはemitしない (TSの
+	// publishBroadcastStream相当は別レイヤ)。
+	rec := doPost(h.AdminCreate, `{"title":"All","text":"Everyone"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, pub.calls)
+}
+
+func TestReadAnnouncement_PublishesReadAllWhenUnreadEmpty(t *testing.T) {
+	h, repo := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}
+
+	// 唯一のannouncementを読むとunread=0になるのでreadAllAnnouncementsがemit。
+	rec := doPost(h.ReadAnnouncement, `{"announcementId":"a1"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "readAllAnnouncements", pub.calls[0].eventType)
+	assert.Nil(t, pub.calls[0].body)
+}
+
+func TestReadAnnouncement_DoesNotPublishWhenUnreadRemains(t *testing.T) {
+	h, repo := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}
+	repo.Items["a2"] = &model.Announcement{ID: "a2", IsActive: true}
+
+	// a1 を読んでも a2 が未読のためemit無し。
+	rec := doPost(h.ReadAnnouncement, `{"announcementId":"a1"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, pub.calls)
+}
+
+func TestReadAnnouncement_IgnoresOtherUsersPerUserAnnouncements(t *testing.T) {
+	// 他ユーザー宛のper-user announcementは自分のunread countに含まれない
+	// ので、それ以外を全て読んだら readAllAnnouncements が emit される。
+	h, repo := newTestHandler(t)
+	pub := &stubMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	otherUID := "other"
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}                    // global
+	repo.Items["a2"] = &model.Announcement{ID: "a2", IsActive: true, UserID: &otherUID} // 他ユーザー宛
+
+	rec := doPost(h.ReadAnnouncement, `{"announcementId":"a1"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "readAllAnnouncements", pub.calls[0].eventType)
+}
+
+func TestList_Unauthenticated_ExcludesAllPerUserAnnouncements(t *testing.T) {
+	h, repo := newTestHandler(t)
+	otherUID := "other"
+	idGen, _ := id.NewGenerator("aidx")
+	aid1 := idGen.Generate(java_time())
+	aid2 := idGen.Generate(java_time())
+	repo.Items[aid1] = &model.Announcement{ID: aid1, Title: "G", IsActive: true}
+	// per-user announcement は未認証ユーザーには一切見せない。
+	repo.Items[aid2] = &model.Announcement{ID: aid2, Title: "ForOther", IsActive: true, UserID: &otherUID}
+
+	rec := doPost(h.List, `{}`, nil) // 未認証
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "G", resp[0]["title"])
+}
+
+func TestList_AuthenticatedUser_ExcludesOtherUsersPerUserAnnouncements(t *testing.T) {
+	h, repo := newTestHandler(t)
+	otherUID := "other"
+	myUID := "u1"
+	// global / 自分宛 / 他人宛 の3種
+	idGen, _ := id.NewGenerator("aidx")
+	aid1 := idGen.Generate(java_time())
+	aid2 := idGen.Generate(java_time())
+	aid3 := idGen.Generate(java_time())
+	repo.Items[aid1] = &model.Announcement{ID: aid1, Title: "G", IsActive: true}
+	repo.Items[aid2] = &model.Announcement{ID: aid2, Title: "Mine", IsActive: true, UserID: &myUID}
+	repo.Items[aid3] = &model.Announcement{ID: aid3, Title: "Other", IsActive: true, UserID: &otherUID}
+
+	rec := doPost(h.List, `{}`, &model.User{ID: myUID})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	// aid3 は他ユーザー宛なので除外される (2件: global + 自分宛)。
+	titles := make(map[string]bool)
+	for _, item := range resp {
+		titles[item["title"].(string)] = true
+	}
+	assert.True(t, titles["G"])
+	assert.True(t, titles["Mine"])
+	assert.False(t, titles["Other"])
+}
+
 func TestAdminUpdate_Success(t *testing.T) {
 	h, repo := newTestHandler(t)
 	repo.Items["a1"] = &model.Announcement{ID: "a1", Title: "Old"}
@@ -177,6 +315,14 @@ type failingListAnnouncementRepo struct {
 }
 
 func (f *failingListAnnouncementRepo) List(_ bool, _, _ int) ([]*model.Announcement, error) {
+	return nil, assert.AnError
+}
+
+func (f *failingListAnnouncementRepo) ListGlobal(_ bool, _, _ int) ([]*model.Announcement, error) {
+	return nil, assert.AnError
+}
+
+func (f *failingListAnnouncementRepo) ListForUser(_ string, _ bool, _, _ int) ([]*model.Announcement, error) {
 	return nil, assert.AnError
 }
 
