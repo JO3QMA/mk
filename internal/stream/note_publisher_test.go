@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -109,6 +110,88 @@ func TestNotificationPublisher_PublishesPayload(t *testing.T) {
 	np.PublishNotification("alice", n)
 	require.Len(t, pub.topics, 1)
 	assert.Equal(t, "notifications:alice", pub.topics[0])
+}
+
+// stub repos for NotificationPublisher.SetRepos
+type stubNotifUserRepo struct {
+	user *model.User
+	err  error
+}
+
+func (s *stubNotifUserRepo) FindByID(_ string) (*model.User, error) {
+	return s.user, s.err
+}
+
+type stubNotifNoteRepo struct {
+	note *model.Note
+	err  error
+}
+
+func (s *stubNotifNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
+	return s.note, s.err
+}
+
+func TestNotificationPublisher_WithRepos_PacksUserAndNote(t *testing.T) {
+	pub := &stubPublisher{}
+	np := NewNotificationPublisher(pub)
+	idGen, _ := id.NewGenerator("aidx")
+	np.SetRepos(
+		&stubNotifUserRepo{user: &model.User{ID: "u2", Username: "bob"}},
+		&stubNotifNoteRepo{note: &model.Note{ID: "note1", UserID: "u2"}},
+		idGen,
+	)
+	n := &corenotification.Notification{
+		ID:         idGen.Generate(time.Now()),
+		Type:       corenotification.TypeReply,
+		NotifierID: "u2",
+		NoteID:     "note1",
+	}
+	np.PublishNotification("alice", n)
+	require.Len(t, pub.payloads, 1)
+	// 型がjson.RawMessageでTS互換のkey(userId / user / note)を含むことを確認。
+	raw, ok := pub.payloads[0].(json.RawMessage)
+	require.True(t, ok)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+	assert.Equal(t, "u2", body["userId"])
+	_, hasUser := body["user"]
+	assert.True(t, hasUser)
+	_, hasNote := body["note"]
+	assert.True(t, hasNote)
+}
+
+func TestNotificationPublisher_Pack_NilNotification(t *testing.T) {
+	np := NewNotificationPublisher(nil)
+	assert.Nil(t, np.Pack(nil))
+}
+
+func TestNotificationPublisher_Pack_WithoutRepos_ReturnsRawNotification(t *testing.T) {
+	np := NewNotificationPublisher(nil)
+	n := &corenotification.Notification{ID: "x"}
+	// SetReposを呼ばなければ raw *Notificationがそのまま返る。
+	assert.Equal(t, n, np.Pack(n))
+}
+
+func TestNotificationPublisher_Pack_WithRepos_ReturnsPackedMap(t *testing.T) {
+	np := NewNotificationPublisher(nil)
+	idGen, _ := id.NewGenerator("aidx")
+	np.SetRepos(
+		&stubNotifUserRepo{user: &model.User{ID: "u_b", Username: "b"}},
+		&stubNotifNoteRepo{err: errors.New("missing")},
+		idGen,
+	)
+	n := &corenotification.Notification{
+		ID:         "x",
+		Type:       corenotification.TypeFollow,
+		NotifierID: "u_b",
+	}
+	out := np.Pack(n)
+	body, ok := out.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "u_b", body["userId"])
+	// noteRepoがerror返すのでnoteは含まれない
+	_, hasNote := body["note"]
+	assert.False(t, hasNote)
 }
 
 func TestNotificationPublisher_NilPubIsNoOp(t *testing.T) {

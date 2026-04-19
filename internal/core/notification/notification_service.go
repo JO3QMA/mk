@@ -83,12 +83,21 @@ type MainStreamPublisher interface {
 	PublishMainEvent(userID, eventType string, body any)
 }
 
+// Packer converts a Notification into the TS-compatible packed body shape
+// (map with userId / user / note / reaction / etc.). Injected as an
+// interface so core/notification stays independent of entity / repository
+// layers. 実装は internal/stream で提供される。
+type Packer interface {
+	Pack(n *Notification) any
+}
+
 // Service manages notifications.
 type Service struct {
 	client              *redis.Client
 	idGen               id.Generator
 	publisher           StreamingPublisher
 	mainStreamPublisher MainStreamPublisher
+	packer              Packer
 }
 
 // NewService constructs a new NotificationService.
@@ -107,6 +116,13 @@ func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 // `notificationFlushed`). Optional — nil disables emit.
 func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
 	s.mainStreamPublisher = p
+}
+
+// SetPacker attaches a Packer used to convert Notification records into
+// the TS-compatible shape for main-stream emits. Optional — when unset
+// the raw Notification struct is emitted (backwards compatible).
+func (s *Service) SetPacker(p Packer) {
+	s.packer = p
 }
 
 // Errors returned by Service.
@@ -160,7 +176,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 	// では Redis publish が軽量なため即時 emit し、未読判定のみクライアント
 	// 側に任せる (UI の flicker は許容)。
 	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(in.NotifieeID, "unreadNotification", n)
+		var body any = n
+		if s.packer != nil {
+			body = s.packer.Pack(n)
+		}
+		s.mainStreamPublisher.PublishMainEvent(in.NotifieeID, "unreadNotification", body)
 	}
 	return n, nil
 }

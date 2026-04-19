@@ -48,16 +48,68 @@ func (p *NotePublisher) PublishNote(topic string, n *model.Note, author *model.U
 	}
 }
 
+// NotificationUserRepo abstracts the FindByID call needed to pack a
+// Notification's notifier. Narrow interface so we don't pull the whole
+// repository package.
+type NotificationUserRepo interface {
+	FindByID(id string) (*model.User, error)
+}
+
+// NotificationNoteRepo abstracts the FindByIDWithUser call needed to pack
+// the referenced note (for reply/mention/reaction/renote/quote/pollEnded).
+type NotificationNoteRepo interface {
+	FindByIDWithUser(id string) (*model.Note, error)
+}
+
 // NotificationPublisher serializes a notification.Notification and publishes
 // it to the per-user `notifications:<id>` topic. Implements
-// core/notification.StreamingPublisher.
+// core/notification.StreamingPublisher. When userRepo / noteRepo are set
+// the outbound JSON is packed via entity.PackNotification so the WebSocket
+// body matches Misskey's NotificationEntityService.pack shape.
 type NotificationPublisher struct {
-	pub PubSubPublisher
+	pub      PubSubPublisher
+	userRepo NotificationUserRepo
+	noteRepo NotificationNoteRepo
+	idGen    id.Generator
 }
 
 // NewNotificationPublisher constructs a NotificationPublisher.
 func NewNotificationPublisher(pub PubSubPublisher) *NotificationPublisher {
 	return &NotificationPublisher{pub: pub}
+}
+
+// SetRepos wires the narrow repositories and id generator used by
+// PublishNotification to pack user/note references. When unset, publish
+// falls back to the raw Notification JSON.
+func (p *NotificationPublisher) SetRepos(userRepo NotificationUserRepo, noteRepo NotificationNoteRepo, idGen id.Generator) {
+	p.userRepo = userRepo
+	p.noteRepo = noteRepo
+	p.idGen = idGen
+}
+
+// Pack implements core/notification.Packer. Returns the packed map shape
+// when repos are wired, otherwise the raw Notification so callers can
+// fall back to prior behaviour.
+func (p *NotificationPublisher) Pack(n *corenotification.Notification) any {
+	if n == nil {
+		return nil
+	}
+	if p.userRepo == nil || p.idGen == nil {
+		return n
+	}
+	var user *model.User
+	if n.NotifierID != "" {
+		if u, err := p.userRepo.FindByID(n.NotifierID); err == nil {
+			user = u
+		}
+	}
+	var note *model.Note
+	if n.NoteID != "" && p.noteRepo != nil {
+		if n2, err := p.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
+			note = n2
+		}
+	}
+	return entity.PackNotification(n, user, note, p.idGen)
 }
 
 // PublishNotification serializes the notification and publishes to
@@ -66,7 +118,24 @@ func (p *NotificationPublisher) PublishNotification(notifieeID string, n *coreno
 	if p.pub == nil || notifieeID == "" || n == nil {
 		return
 	}
-	body, err := json.Marshal(n)
+	var payload any = n
+	// repo配線済みならTS互換のpacked shapeに変換してから送る。
+	if p.userRepo != nil && p.idGen != nil {
+		var user *model.User
+		if n.NotifierID != "" {
+			if u, err := p.userRepo.FindByID(n.NotifierID); err == nil {
+				user = u
+			}
+		}
+		var note *model.Note
+		if n.NoteID != "" && p.noteRepo != nil {
+			if note2, err := p.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
+				note = note2
+			}
+		}
+		payload = entity.PackNotification(n, user, note, p.idGen)
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		slog.Warn("notification publisher: marshal failed", "err", err)
 		return
