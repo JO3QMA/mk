@@ -38,6 +38,8 @@ services:
     environment:
       SSL_CERT_FILE: /certs/bundle.pem
       TZ: Asia/Tokyo
+      # レートリミット実装時(#273)にベンチが壊れないよう無効化しておく
+      MK_ENABLEIPRATELIMIT: "false"
     depends_on:
       postgres-mkgo: { condition: service_healthy }
       redis-mkgo: { condition: service_healthy }
