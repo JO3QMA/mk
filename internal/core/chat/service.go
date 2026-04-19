@@ -51,6 +51,14 @@ type APDeliverer interface {
 	DeliverToUser(signerUserID string, recipient *model.User, body []byte) error
 }
 
+// MainStreamPublisher emits real-time events to a single target user's `main`
+// WebSocket channel. Used here to deliver `newChatMessage` events to message
+// recipients so the frontend can surface unread-chat indicators immediately.
+// 循環依存を避けるため interface で受け取る (実装は internal/stream)。
+type MainStreamPublisher interface {
+	PublishMainEvent(userID, eventType string, body any)
+}
+
 // Event types mirrored by the WebSocket channel. 本家と同名。
 const (
 	EventMessage = "message"
@@ -61,13 +69,14 @@ const (
 
 // Service implements chat message CRUD + streaming fan-out.
 type Service struct {
-	repo      repository.ChatRepository
-	idGen     id.Generator
-	publisher StreamingPublisher
-	userRepo  repository.UserRepository
-	renderer  *activitypub.Renderer
-	urls      *activitypub.URLBuilder
-	deliverer APDeliverer
+	repo                repository.ChatRepository
+	idGen               id.Generator
+	publisher           StreamingPublisher
+	userRepo            repository.UserRepository
+	renderer            *activitypub.Renderer
+	urls                *activitypub.URLBuilder
+	deliverer           APDeliverer
+	mainStreamPublisher MainStreamPublisher
 }
 
 // NewService constructs a chat Service.
@@ -80,6 +89,13 @@ func NewService(repo repository.ChatRepository, idGen id.Generator) *Service {
 // DB 処理は変わらない)。
 func (s *Service) SetStreamingPublisher(p StreamingPublisher) {
 	s.publisher = p
+}
+
+// SetMainStreamPublisher attaches a publisher used to emit `newChatMessage`
+// on the recipient(s)' main channel. Optional — nil disables main-stream emit
+// but chat-stream `message` events remain unaffected.
+func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
+	s.mainStreamPublisher = p
 }
 
 // SetAPDelivery wires the AP federation layer for chat message delivery to
@@ -116,6 +132,13 @@ func (s *Service) CreateMessageToUser(ctx context.Context, fromUserID, toUserID,
 	}
 	if s.publisher != nil {
 		s.publisher.PublishUserMessage(ctx, fromUserID, toUserID, EventMessage, packMessage(msg))
+	}
+	// Misskey 本家の ChatService.createMessageToUser は、3 秒後に未読判定して
+	// newChatMessage を publishMainStream する。本実装では未読判定を省略し、
+	// 作成と同時に recipient (toUserID) の main に emit する (sender には
+	// 送らない: TS と同じ fan-out 方針)。
+	if s.mainStreamPublisher != nil {
+		s.mainStreamPublisher.PublishMainEvent(toUserID, "newChatMessage", packMessage(msg))
 	}
 	// リモートユーザー宛ならAP配送 (best-effort)
 	s.tryDeliverToRemoteUser(msg, fromUserID, toUserID)
@@ -228,7 +251,45 @@ func (s *Service) CreateMessageToRoom(ctx context.Context, fromUserID, roomID, t
 	if s.publisher != nil {
 		s.publisher.PublishRoomMessage(ctx, roomID, EventMessage, packMessage(msg))
 	}
+	// Room 宛も同様に、sender 以外の全 member (owner 含む) の main に
+	// newChatMessage を emit する。Misskey 本家 ChatService
+	// .createMessageToRoom と同じ fan-out 方針。
+	s.emitRoomNewChatMessage(roomID, fromUserID, msg)
 	return msg, nil
+}
+
+// emitRoomNewChatMessage fans out `newChatMessage` to every room member
+// except the sender. Room membership 列挙失敗時は警告ログを残して emit を
+// スキップする (message 自体の作成は成功として返される前に呼ばれる)。
+func (s *Service) emitRoomNewChatMessage(roomID, fromUserID string, msg *model.ChatMessage) {
+	if s.mainStreamPublisher == nil {
+		return
+	}
+	room, err := s.repo.FindRoomByID(roomID)
+	if err != nil {
+		slog.Warn("chat: FindRoomByID failed, skipping newChatMessage emit", "roomID", roomID, "err", err)
+		return
+	}
+	members, err := s.repo.ListMembersByRoom(roomID)
+	if err != nil {
+		slog.Warn("chat: ListMembersByRoom failed, skipping newChatMessage emit", "roomID", roomID, "err", err)
+		return
+	}
+	packed := packMessage(msg)
+	// 重複 emit を防ぐため set 相当で ID を管理する (membership + owner)。
+	emitted := make(map[string]bool, len(members)+1)
+	if room.OwnerID != fromUserID {
+		emitted[room.OwnerID] = true
+	}
+	for _, m := range members {
+		if m.UserID == fromUserID || emitted[m.UserID] {
+			continue
+		}
+		emitted[m.UserID] = true
+	}
+	for uid := range emitted {
+		s.mainStreamPublisher.PublishMainEvent(uid, "newChatMessage", packed)
+	}
 }
 
 // DeleteMessage removes a message and fans out a `deleted` event on the
