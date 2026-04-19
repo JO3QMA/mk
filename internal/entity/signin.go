@@ -23,8 +23,8 @@ func PackSignin(s *model.Signin, idGens ...id.Generator) map[string]any {
 		"ip":      s.IP,
 		"success": s.Success,
 	}
-	// headers は jsonb として保存されているのでそのまま RawMessage にして
-	// frontend に渡す (文字列化を避ける)。
+	// headersはjsonbとして保存されているのでそのままRawMessageにして
+	// frontendに渡す(文字列化を避ける)。
 	if len(s.Headers) > 0 {
 		out["headers"] = json.RawMessage(s.Headers)
 	} else {

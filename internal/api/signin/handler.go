@@ -325,7 +325,7 @@ func (h *Handler) recordSignin(userID, ip string, headers http.Header) {
 		slog.Warn("failed to record signin", "userId", userID, "err", err)
 		return
 	}
-	// TS本家 SigninService.ts:49 と同じく、signin成功後にmainへ publish する。
+	// TS本家 SigninService.ts:49 と同じく、signin成功後にmainへpublishする。
 	// multi-device間で新規ログインを即時同期する用途。
 	if h.mainStreamPublisher != nil {
 		h.mainStreamPublisher.PublishMainEvent(userID, "signin", entity.PackSignin(s, h.idGen))
