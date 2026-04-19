@@ -101,6 +101,10 @@ func NewSSRFSafeTransport(allowedCIDRs []string) *http.Transport {
 		MaxIdleConns:        100,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
+		// http.DefaultTransport と同様に HTTP/2 negotiation を有効にする。
+		// 既定の *http.Transport{} ではデフォルト false のため、AP fetch が
+		// HTTP/1.1 のみに退化するのを避ける (#323 Devin review)。
+		ForceAttemptHTTP2: true,
 	}
 }
 

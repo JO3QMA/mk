@@ -399,10 +399,9 @@ func (s *Server) setupRoutes() {
 	// users/show 経由で host が指定されたリモートユーザーをローカル DB に
 	// キャッシュが無くても解決できるようにする (#269)。webfinger で actor URI
 	// を引いてから federationResolver.ResolveActor で User row を upsert する。
-	// WebFinger は redirect を追う必要があるため、apClient と同じ http.DefaultClient
-	// を共有すると apClient.DisableRedirect() のグローバル汚染を拾ってしまう。
-	// 専用の *http.Client を明示的に渡して分離する。Timeout は user-facing API
-	// 経由で呼ばれるので応答性優先で 10s に設定する。
+	// redirect 追跡必須のため apClient とは *http.Client を分離し、
+	// apClient.DisableRedirect() の影響を受けないようにする。Timeout は
+	// user-facing API 経由で呼ばれるので応答性優先で 10s に設定する。
 	webfingerClient := activitypub.NewWebFingerClient(&http.Client{
 		Timeout:   10 * time.Second,
 		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
