@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -28,9 +29,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	dbURL := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		cfg.DB.User, cfg.DB.Pass, cfg.DB.Host, cfg.DB.Port, cfg.DB.DB,
-	)
+	var dbURL string
+	if config.IsUnixSocketPath(cfg.DB.Host) {
+		// UDS の場合はホスト部を空にして host クエリにソケットディレクトリを渡す。
+		// postgres://...@/var/run/postgresql:5432/... の形式は libpq が UDS として
+		// 解釈できず TCP localhost にフォールバックするため。
+		dbURL = fmt.Sprintf("postgres:///%s?host=%s&port=%d&user=%s&password=%s&sslmode=disable",
+			cfg.DB.DB,
+			url.QueryEscape(cfg.DB.Host),
+			cfg.DB.Port,
+			url.QueryEscape(cfg.DB.User),
+			url.QueryEscape(cfg.DB.Pass),
+		)
+	} else {
+		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+			cfg.DB.User, cfg.DB.Pass, cfg.DB.Host, cfg.DB.Port, cfg.DB.DB,
+		)
+	}
 
 	m, err := migrate.New("file://migration", dbURL)
 	if err != nil {
