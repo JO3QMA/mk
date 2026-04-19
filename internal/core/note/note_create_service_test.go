@@ -882,3 +882,152 @@ func TestCreateService_NoSuchFile_WrongOwner(t *testing.T) {
 	})
 	assert.ErrorIs(t, err, note.ErrNoSuchFile)
 }
+
+// --- MainStreamPublisher emit (Phase 7-4b-5 / #301) ---
+
+// stubMainStreamPublisher captures PublishMainEvent calls for test assertions.
+type stubMainStreamPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+// eventsByType returns userIDs that received the given event type.
+func (s *stubMainStreamPublisher) userIDsOf(eventType string) []string {
+	var out []string
+	for _, c := range s.calls {
+		if c.eventType == eventType {
+			out = append(out, c.userID)
+		}
+	}
+	return out
+}
+
+func TestCreateService_PublishesReplyToLocalTarget(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+	// 相手のノート (local)
+	noteRepo.Notes["r1"] = &model.Note{
+		ID: "r1", UserID: "bob", Visibility: model.NoteVisibilityPublic,
+	}
+	replyID := "r1"
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "alice"}, Text: &text, ReplyID: &replyID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bob"}, pub.userIDsOf("reply"))
+}
+
+func TestCreateService_SkipsReplyToSelf(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+	noteRepo.Notes["r1"] = &model.Note{
+		ID: "r1", UserID: "alice", Visibility: model.NoteVisibilityPublic,
+	}
+	replyID := "r1"
+	text := "self reply"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "alice"}, Text: &text, ReplyID: &replyID,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, pub.userIDsOf("reply"))
+}
+
+func TestCreateService_SkipsReplyToRemoteTarget(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+	remoteHost := "remote.example"
+	noteRepo.Notes["r1"] = &model.Note{
+		ID: "r1", UserID: "remoteuser", UserHost: &remoteHost,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	replyID := "r1"
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "alice"}, Text: &text, ReplyID: &replyID,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, pub.userIDsOf("reply"))
+}
+
+func TestCreateService_PublishesRenoteToLocalTarget(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+	noteRepo.Notes["r1"] = &model.Note{
+		ID: "r1", UserID: "bob", Visibility: model.NoteVisibilityPublic,
+	}
+	renoteID := "r1"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "alice"}, RenoteID: &renoteID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bob"}, pub.userIDsOf("renote"))
+}
+
+func TestCreateService_PublishesMentionToLocalUser(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	_ = noteRepo
+	userRepo := testutil.NewMockUserRepository()
+	userRepo.Users["uA"] = &model.User{ID: "uA", Username: "alice", UsernameLower: "alice"}
+	remoteHost := "remote.example"
+	userRepo.Users["uB"] = &model.User{
+		ID: "uB", Username: "bob", UsernameLower: "bob", Host: &remoteHost,
+	}
+	svc.SetUserRepo(userRepo)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	text := "hi @alice and @bob@remote.example"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "author1"}, Text: &text,
+	})
+	require.NoError(t, err)
+	// local user (alice) にだけ mention emit、remote bob は skip。
+	assert.Equal(t, []string{"uA"}, pub.userIDsOf("mention"))
+}
+
+func TestCreateService_SkipsMentionToSelf(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	userRepo := testutil.NewMockUserRepository()
+	userRepo.Users["author1"] = &model.User{
+		ID: "author1", Username: "author1", UsernameLower: "author1",
+	}
+	svc.SetUserRepo(userRepo)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	text := "hi @author1"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "author1"}, Text: &text,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, pub.userIDsOf("mention"))
+}
+
+func TestCreateService_NoMainStreamPublisher_NoEmit(t *testing.T) {
+	svc, noteRepo, _ := newCreateService(t)
+	noteRepo.Notes["r1"] = &model.Note{
+		ID: "r1", UserID: "bob", Visibility: model.NoteVisibilityPublic,
+	}
+	// SetMainStreamPublisher を呼ばず、reply を作成しても panic / error
+	// しないことだけ確認。
+	replyID := "r1"
+	text := "hi"
+	_, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "alice"}, Text: &text, ReplyID: &replyID,
+	})
+	require.NoError(t, err)
+}

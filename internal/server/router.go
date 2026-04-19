@@ -1246,6 +1246,7 @@ func (s *Server) setupRoutes() {
 	driveService.SetStreamingPublisher(drivePublisher)
 	followingService.SetMainStreamPublisher(mainStreamPublisher)
 	userService.SetMainStreamPublisher(mainStreamPublisher)
+	noteCreateService.SetMainStreamPublisher(mainStreamPublisher)
 
 	// 5. Reversi WebSocket channel (Phase 9.6) を登録する
 	reversiService := corereversi.NewService(reversiRepo, reversiPublisher, s.redis.Default)
