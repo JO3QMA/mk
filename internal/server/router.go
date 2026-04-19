@@ -1244,6 +1244,7 @@ func (s *Server) setupRoutes() {
 	notificationService.SetStreamingPublisher(notificationPublisher)
 	notificationService.SetMainStreamPublisher(mainStreamPublisher)
 	driveService.SetStreamingPublisher(drivePublisher)
+	driveService.SetMainStreamPublisher(mainStreamPublisher)
 	followingService.SetMainStreamPublisher(mainStreamPublisher)
 	userService.SetMainStreamPublisher(mainStreamPublisher)
 	noteCreateService.SetMainStreamPublisher(mainStreamPublisher)

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/core/drive"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -58,6 +59,47 @@ func TestUpload_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hello.txt", f.Name)
 	assert.Len(t, fileRepo.Files, 1)
+}
+
+// stubMainStreamPublisher captures PublishMainEvent calls.
+type stubMainStreamPublisher struct {
+	calls []mainEventCall
+}
+
+type mainEventCall struct {
+	userID    string
+	eventType string
+	body      any
+}
+
+func (s *stubMainStreamPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+func TestUpload_PublishesDriveFileCreatedOnMain(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	user := &model.User{ID: "u1"}
+	f, err := svc.Upload(drive.UploadInput{User: user, Body: []byte("hello"), Name: "hello.txt"})
+	require.NoError(t, err)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "driveFileCreated", pub.calls[0].eventType)
+	// bodyはentity.PackDriveFileでpackされたfileのはず。file IDが一致。
+	body, ok := pub.calls[0].body.(entity.DriveFileEntity)
+	require.True(t, ok)
+	assert.Equal(t, f.ID, body.ID)
+	assert.Equal(t, "hello.txt", body.Name)
+}
+
+func TestUpload_NoMainPublisher_NoEmit(t *testing.T) {
+	svc, _, _ := newSvc(t)
+	// SetMainStreamPublisherを呼ばない状態でもUpload自体は成功する。
+	_, err := svc.Upload(drive.UploadInput{User: &model.User{ID: "u1"}, Body: []byte("hi"), Name: "hi.txt"})
+	require.NoError(t, err)
 }
 
 func TestUpload_DedupByMD5(t *testing.T) {
