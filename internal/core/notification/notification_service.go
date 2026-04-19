@@ -168,19 +168,29 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 	}).Err(); err != nil {
 		return nil, fmt.Errorf("notification xadd: %w", err)
 	}
+	// Packer配線済みなら user/note を fetch する Pack() は1回だけ実行し、
+	// publisher / main の両方で packed body を共有する(Devin #314 #1)。
+	var packed any = n
+	if s.packer != nil {
+		packed = s.packer.Pack(n)
+	}
 	if s.publisher != nil {
-		s.publisher.PublishNotification(in.NotifieeID, n)
+		// Publisher が packed bodyを受け取れる場合は渡して double-pack
+		// を避ける。未対応実装なら raw Notification で fallback。
+		if pub, ok := s.publisher.(interface {
+			PublishPackedNotification(notifieeID string, packed any)
+		}); ok {
+			pub.PublishPackedNotification(in.NotifieeID, packed)
+		} else {
+			s.publisher.PublishNotification(in.NotifieeID, n)
+		}
 	}
 	// TS本家 NotificationService は 2 秒遅延で `unreadNotification` を
 	// main stream に publish して、その間に既読になれば送信しない。本実装
 	// では Redis publish が軽量なため即時 emit し、未読判定のみクライアント
 	// 側に任せる (UI の flicker は許容)。
 	if s.mainStreamPublisher != nil {
-		var body any = n
-		if s.packer != nil {
-			body = s.packer.Pack(n)
-		}
-		s.mainStreamPublisher.PublishMainEvent(in.NotifieeID, "unreadNotification", body)
+		s.mainStreamPublisher.PublishMainEvent(in.NotifieeID, "unreadNotification", packed)
 	}
 	return n, nil
 }

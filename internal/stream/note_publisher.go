@@ -114,27 +114,28 @@ func (p *NotificationPublisher) Pack(n *corenotification.Notification) any {
 
 // PublishNotification serializes the notification and publishes to
 // notifications:<id>. Marshal 失敗 / publish 失敗は best-effort で握りつぶす。
+// Pack() 経由で TS 互換 shape (repo配線時) またはraw Notification(未配線時)
+// に変換して送る。
 func (p *NotificationPublisher) PublishNotification(notifieeID string, n *corenotification.Notification) {
 	if p.pub == nil || notifieeID == "" || n == nil {
 		return
 	}
-	var payload any = n
-	// repo配線済みならTS互換のpacked shapeに変換してから送る。
-	if p.userRepo != nil && p.idGen != nil {
-		var user *model.User
-		if n.NotifierID != "" {
-			if u, err := p.userRepo.FindByID(n.NotifierID); err == nil {
-				user = u
-			}
-		}
-		var note *model.Note
-		if n.NoteID != "" && p.noteRepo != nil {
-			if note2, err := p.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
-				note = note2
-			}
-		}
-		payload = entity.PackNotification(n, user, note, p.idGen)
+	p.publishPacked(notifieeID, p.Pack(n))
+}
+
+// PublishPackedNotification publishes an already-packed body to
+// notifications:<id>. Allows callers (e.g. core/notification.Service)
+// that invoke Pack once and reuse the result across both the
+// notifications stream and the main stream to avoid duplicate DB fetches.
+func (p *NotificationPublisher) PublishPackedNotification(notifieeID string, packed any) {
+	if p.pub == nil || notifieeID == "" || packed == nil {
+		return
 	}
+	p.publishPacked(notifieeID, packed)
+}
+
+// publishPacked marshals payload and publishes to notifications:<id>.
+func (p *NotificationPublisher) publishPacked(notifieeID string, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		slog.Warn("notification publisher: marshal failed", "err", err)

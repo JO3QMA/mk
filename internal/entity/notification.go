@@ -44,7 +44,11 @@ func PackNotification(n *notification.Notification, user *model.User, note *mode
 	}
 	// extraはTS本家では role/invitation/achievement 等の個別フィールド
 	// として展開されるが、Go側はmap[string]anyで透過的にmergeする。
+	// core keyと衝突する場合は extra 側をskip (packerの契約を壊さない)。
 	for k, v := range n.Extra {
+		if _, collides := out[k]; collides {
+			continue
+		}
 		out[k] = v
 	}
 	return out
