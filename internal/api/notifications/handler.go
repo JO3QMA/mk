@@ -84,11 +84,12 @@ func (h *Handler) Show(c echo.Context) error {
 		}
 		// WebSocket 経由の packing と一貫性を保つため entity.PackNotification
 		// にdelegateする(Devin #315 指摘)。user/note 取得は handler 側で
-		// repo が wire されていれば best-effort。
-		var user *model.User
+		// repo が wire されていれば best-effort。外側の認証ユーザー(`user`
+		// at line 48)をshadowしないよう明示的に notifier 名で受ける。
+		var notifier *model.User
 		if h.userRepo != nil && n.NotifierID != "" {
 			if u, err := h.userRepo.FindByID(n.NotifierID); err == nil {
-				user = u
+				notifier = u
 			}
 		}
 		var note *model.Note
@@ -97,7 +98,7 @@ func (h *Handler) Show(c echo.Context) error {
 				note = nn
 			}
 		}
-		out = append(out, entity.PackNotification(n, user, note, h.idGen))
+		out = append(out, entity.PackNotification(n, notifier, note, h.idGen))
 	}
 	return c.JSON(http.StatusOK, out)
 }
