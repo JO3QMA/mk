@@ -102,8 +102,9 @@ func (h *FanoutHook) OnNoteCreated(n *model.Note, author *model.User) {
 		h.fanoutStreamingToFollowers(author.ID, n, author)
 	}
 
-	// 3. ローカルタイムライン: ローカル投稿でvisibility=public/homeのみ
-	if author.Host == nil && (n.Visibility == model.NoteVisibilityPublic || n.Visibility == model.NoteVisibilityHome) {
+	// 3. ローカルタイムライン: ローカル投稿でvisibility=publicのみ。
+	// home visibilityはフォロワー向けなのでLTLには出さない (本家と同じ挙動)。
+	if author.Host == nil && n.Visibility == model.NoteVisibilityPublic {
 		h.pushWithLimit(ctx, LocalTimeline, n.ID, MaxTimelineLength)
 		h.publishNote("localTimeline", n, author)
 	}

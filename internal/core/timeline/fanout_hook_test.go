@@ -225,6 +225,32 @@ func TestFanoutHook_StreamingHomeOnlyForFollowersVisibility(t *testing.T) {
 	assert.Contains(t, pub.topics, "homeTimeline:author")
 }
 
+func TestFanoutHook_HomeVisibilityNotInLocalTimeline(t *testing.T) {
+	// home visibility はフォロワー向けなので、LTL / GTL の fanout キャッシュにも
+	// streaming トピックにも流してはいけない (本家 Misskey 仕様)。
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityHome}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// LTL / GTL の fanout キャッシュには入らない
+	for _, name := range []Name{LocalTimeline, GlobalTimeline} {
+		out, err := fanout.Get(ctx, name, "", "", 10)
+		require.NoError(t, err)
+		assert.Empty(t, out, "home visibility note must not enter %q cache", name)
+	}
+
+	// streaming トピックにも配信されない
+	assert.NotContains(t, pub.topics, "localTimeline")
+	assert.NotContains(t, pub.topics, "globalTimeline")
+	// homeTimeline には入る (本人 + フォロワー)
+	assert.Contains(t, pub.topics, "homeTimeline:author")
+}
+
 func TestFanoutHook_StreamingPublisherUnsetIsNoOp(t *testing.T) {
 	h, _, _ := newTestHook(t)
 	noteID := idGen.Generate(time.Now())
