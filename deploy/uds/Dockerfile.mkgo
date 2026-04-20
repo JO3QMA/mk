@@ -22,8 +22,8 @@ COPY . .
 # `git submodule update --init --recursive` 手順を忘れたときに早期にfail
 # する。CI (docker.yml) 側ではactions/checkoutにsubmodules: recursiveを
 # 指定して取得する。
-RUN test -d third_party/misskey/packages/backend/assets || \
-    (echo "ERROR: third_party/misskey submodule not initialized." && \
+RUN test -f third_party/misskey/packages/backend/assets/favicon.ico || \
+    (echo "ERROR: third_party/misskey submodule not initialized (or partial clone)." && \
      echo "Run: git submodule update --init --recursive" && exit 1)
 
 RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey \
