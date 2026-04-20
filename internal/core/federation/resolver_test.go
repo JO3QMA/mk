@@ -1534,6 +1534,95 @@ func TestUpsertEmojis(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, e.URI)
 	})
+
+	t.Run("duplicate names deduplicated", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		r.SetEmojiRepo(emojiRepo)
+
+		// 同名タグが複数 (リモート側で重複している場合)
+		tags := []activitypub.EmojiTag{
+			{Name: ":dup:", Icon: activitypub.Image{URL: "https://remote.example/a.png"}},
+			{Name: ":dup:", Icon: activitypub.Image{URL: "https://remote.example/b.png"}},
+		}
+		names := r.UpsertEmojis(tags, "remote.example")
+		assert.Equal(t, []string{"dup"}, []string(names), "重複nameは1件に集約される")
+	})
+
+	t.Run("create error excludes name from result", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		emojiRepo.CreateErr = errors.New("simulated db error")
+		r.SetEmojiRepo(emojiRepo)
+
+		tags := []activitypub.EmojiTag{
+			{Name: ":fail:", Icon: activitypub.Image{URL: "https://remote.example/fail.png"}},
+		}
+		names := r.UpsertEmojis(tags, "remote.example")
+		assert.Empty(t, names, "create失敗時はnameを返さない")
+	})
+
+	t.Run("update error keeps name in result", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+
+		host := "remote.example"
+		emojiRepo.Emojis["existing@remote.example"] = &model.Emoji{
+			ID:          "existing-id",
+			Name:        "existing",
+			Host:        &host,
+			OriginalURL: "https://remote.example/old.png",
+			PublicURL:   "https://remote.example/old.png",
+		}
+		emojiRepo.UpdateErr = errors.New("simulated update error")
+		r.SetEmojiRepo(emojiRepo)
+
+		tags := []activitypub.EmojiTag{
+			{Name: ":existing:", Icon: activitypub.Image{URL: "https://remote.example/new.png"}},
+		}
+		names := r.UpsertEmojis(tags, "remote.example")
+		assert.Equal(t, []string{"existing"}, []string(names),
+			"update失敗でも行は存在するためnameは返す")
+	})
+
+	t.Run("batch lookup handles multiple existing and new in one call", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		emojiRepo := testutil.NewMockEmojiRepository()
+		r.SetEmojiRepo(emojiRepo)
+
+		host := "remote.example"
+		emojiRepo.Emojis["existing@remote.example"] = &model.Emoji{
+			ID: "ex-id", Name: "existing", Host: &host,
+			OriginalURL: "https://remote.example/existing.png",
+			PublicURL:   "https://remote.example/existing.png",
+		}
+
+		tags := []activitypub.EmojiTag{
+			{Name: ":existing:", Icon: activitypub.Image{URL: "https://remote.example/existing.png"}},
+			{Name: ":newone:", Icon: activitypub.Image{URL: "https://remote.example/newone.png"}},
+			{Name: ":another:", Icon: activitypub.Image{URL: "https://remote.example/another.png"}},
+		}
+		names := r.UpsertEmojis(tags, "remote.example")
+		assert.ElementsMatch(t, []string{"existing", "newone", "another"}, []string(names))
+		assert.Equal(t, []string{"existing", "newone", "another"}, []string(names),
+			"順序は元のタグ順を維持")
+	})
 }
 
 // sampleActorWithEmoji is a Person JSON with emoji tags in the tag array.

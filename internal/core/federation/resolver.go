@@ -733,21 +733,46 @@ func extractEmojiTags(tags []any) []activitypub.EmojiTag {
 }
 
 // upsertEmojis persists remote emoji from AP tags and returns the list of
-// short names (without colons). 各タグに対してfind-or-createを行い、URL
-// が変わっていればupdate。emojiRepoが未設定なら空配列を返す。
+// short names (without colons). 同一hostに対して FindManyByNamesAndHost で
+// バッチ取得し、その結果を元にcreate/updateを判定することでN+1を回避する。
+// Create/UpdateFieldsが失敗した場合はその名前を結果から除外し、後段で
+// 「名前は載っているが行が存在しない」状態を防ぐ。emojiRepoが未設定なら
+// 空配列を返す。
 func (r *Resolver) upsertEmojis(tags []activitypub.EmojiTag, host string) pq.StringArray {
 	if r.emojiRepo == nil || len(tags) == 0 {
 		return pq.StringArray{}
 	}
-	names := make(pq.StringArray, 0, len(tags))
+	// 同名タグが重複して来るケースに備えて重複排除しつつ name → tag を保持
+	tagByName := make(map[string]activitypub.EmojiTag, len(tags))
+	order := make([]string, 0, len(tags))
 	for _, tag := range tags {
-		// ":name:" → "name"
 		name := strings.Trim(tag.Name, ":")
 		if name == "" {
 			continue
 		}
-		existing, err := r.emojiRepo.FindByNameAndHost(name, &host)
-		if err == nil {
+		if _, ok := tagByName[name]; ok {
+			continue
+		}
+		tagByName[name] = tag
+		order = append(order, name)
+	}
+	if len(order) == 0 {
+		return pq.StringArray{}
+	}
+
+	existingRows, err := r.emojiRepo.FindManyByNamesAndHost(order, &host)
+	if err != nil {
+		return pq.StringArray{}
+	}
+	existingByName := make(map[string]*model.Emoji, len(existingRows))
+	for _, e := range existingRows {
+		existingByName[e.Name] = e
+	}
+
+	names := make(pq.StringArray, 0, len(order))
+	for _, name := range order {
+		tag := tagByName[name]
+		if existing, ok := existingByName[name]; ok {
 			// 既存絵文字: URL/URIが変わっていればまとめてupdate
 			updates := map[string]any{}
 			if existing.OriginalURL != tag.Icon.URL {
@@ -758,23 +783,35 @@ func (r *Resolver) upsertEmojis(tags []activitypub.EmojiTag, host string) pq.Str
 				updates["uri"] = &tag.ID
 			}
 			if len(updates) > 0 {
-				_ = r.emojiRepo.UpdateFields(existing.ID, updates)
+				if err := r.emojiRepo.UpdateFields(existing.ID, updates); err != nil {
+					// updateに失敗してもrow自体は存在するので名前は返してよい
+					slog.Warn("upsertEmojis: update failed",
+						"name", name, "host", host, "err", err)
+				}
 			}
-		} else {
-			// 新規絵文字: create
-			now := r.clock()
-			uri := tag.ID
-			emoji := &model.Emoji{
-				ID:          r.idGen.Generate(now),
-				Name:        name,
-				Host:        &host,
-				OriginalURL: tag.Icon.URL,
-				PublicURL:   tag.Icon.URL,
-			}
-			if uri != "" {
-				emoji.URI = &uri
-			}
-			_ = r.emojiRepo.Create(emoji)
+			names = append(names, name)
+			continue
+		}
+		// 新規絵文字: create
+		now := r.clock()
+		uri := tag.ID
+		emoji := &model.Emoji{
+			ID:          r.idGen.Generate(now),
+			Name:        name,
+			Host:        &host,
+			OriginalURL: tag.Icon.URL,
+			PublicURL:   tag.Icon.URL,
+		}
+		if uri != "" {
+			emoji.URI = &uri
+		}
+		if err := r.emojiRepo.Create(emoji); err != nil {
+			// createに失敗した場合、行が存在しないままになる可能性があるため
+			// 結果から除外する。EmojiResolverは欠損nameを単に解決しないだけで
+			// クライアント側のフォールバック表示が利く。
+			slog.Warn("upsertEmojis: create failed",
+				"name", name, "host", host, "err", err)
+			continue
 		}
 		names = append(names, name)
 	}

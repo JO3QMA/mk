@@ -990,6 +990,10 @@ func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID strin
 type MockEmojiRepository struct {
 	// keyed by "name@host" (host="" for local)
 	Emojis map[string]*model.Emoji
+	// CreateErr/UpdateErr forces Create/UpdateFields to return the given error
+	// without persisting. Used to exercise upsertEmojis error handling paths.
+	CreateErr error
+	UpdateErr error
 }
 
 func NewMockEmojiRepository() *MockEmojiRepository {
@@ -997,6 +1001,9 @@ func NewMockEmojiRepository() *MockEmojiRepository {
 }
 
 func (m *MockEmojiRepository) Create(e *model.Emoji) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
 	key := e.Name + "@"
 	if e.Host != nil {
 		key += *e.Host
@@ -1015,6 +1022,9 @@ func (m *MockEmojiRepository) FindByID(id string) (*model.Emoji, error) {
 }
 
 func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
 	for _, e := range m.Emojis {
 		if e.ID == id {
 			for k, v := range fields {
