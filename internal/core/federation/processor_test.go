@@ -94,6 +94,40 @@ func TestProcess_FollowInvokesAcceptorWithOriginalRaw(t *testing.T) {
 	assert.Contains(t, acceptor.calls[0].followRaw, "https://remote.example/follows/abc123")
 }
 
+func TestProcess_FollowAlreadyFollowingStillSendsAccept(t *testing.T) {
+	// 既に Following が成立している状態で再度 Follow が来た場合 (相手が
+	// Accept を見逃したなど) も Accept を再送する。remote 側の pending
+	// 状態を idempotent に解消するため。
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+	// 事前に Following を作っておく (remote alice → local bob)
+	// alice の ID は aliceActor の ResolveActor 結果に依存するので一旦
+	// Process を走らせて row を作らせる。
+	body := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/first",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	require.Len(t, followingRepo.Followings, 1)
+
+	// 同じ Follow を再送 → ErrAlreadyFollowing で service.Follow は弾くが
+	// acceptor は呼ばれるべき。
+	acceptor := &stubInboundFollowAcceptor{}
+	p.SetInboundFollowAcceptor(acceptor)
+	retryBody := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/retry",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(retryBody))
+	require.Len(t, acceptor.calls, 1)
+	assert.Contains(t, acceptor.calls[0].followRaw, "https://remote.example/follows/retry")
+}
+
 func TestProcess_FollowLocalUserByIDResolution(t *testing.T) {
 	// 実本番のローカルユーザー row は user.uri が NULL のまま保存されるため、
 	// FindByURI では解決できない。localBaseURL が設定されていれば

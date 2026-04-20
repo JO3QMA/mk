@@ -308,18 +308,20 @@ func (p *Processor) handleFollow(act genericActivity) error {
 		return errors.New("unknown followee")
 	}
 	result, err := p.followingService.Follow(follower.ID, followee.ID)
-	if err != nil {
-		// 既にフォロー済みは許容
-		if errors.Is(err, corefollowing.ErrAlreadyFollowing) {
-			return nil
-		}
+	alreadyFollowing := errors.Is(err, corefollowing.ErrAlreadyFollowing)
+	if err != nil && !alreadyFollowing {
 		return err
 	}
-	// Following が確定したら (locked ユーザーのFollowRequest止まりではなく
-	// 本成立の場合)、相手に Accept を返送する。original Follow の raw を
-	// そのまま object に包むことでリモート側が自分の送った Follow と matching
-	// できる。
-	if result != nil && result.Following != nil && p.inboundFollowAcceptor != nil {
+	// Accept を返送するのは Following が成立した (新規 or 既存) 場合のみ。
+	// 既にフォローされている (ErrAlreadyFollowing) 場合も Accept を再送する:
+	// 相手サーバーが Accept を見逃していた or retry で新規 Follow を
+	// 送り直した状況で、我々が何も返さないと相手は永遠に pending のままに
+	// なる (idempotent な Accept 再送で解消する)。original Follow の raw を
+	// そのまま object に包むことでリモート側が送った Follow と matching
+	// できる。FollowRequest 止まり (locked followee) の場合は acceptor を
+	// 呼ばない (Accept は明示承認後)。
+	shouldAccept := alreadyFollowing || (result != nil && result.Following != nil)
+	if shouldAccept && p.inboundFollowAcceptor != nil {
 		if err := p.inboundFollowAcceptor.SendAcceptForInboundFollow(follower, followee, act.raw); err != nil {
 			slog.Warn("inbound follow accept delivery failed",
 				"follower", follower.ID, "followee", followee.ID, "err", err)
