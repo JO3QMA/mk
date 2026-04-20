@@ -21,6 +21,16 @@ git submodule update --init --recursive third_party/misskey
 
 ## 初回セットアップ
 
+### 0. 設定ファイルのコピー
+
+`compose.uds.yaml` と `deploy/uds/config/default.yml` はデプロイ先ごとに URL や公開ポートを書き換える想定で gitignore しています。リポジトリには `.example` 版のみ含まれているので、初回のみ以下でコピーしてください。以降は自分の環境に合わせて自由に編集して構いません。
+
+```sh
+make uds-init
+```
+
+`uds-init` は order-only prerequisite で実装されているので、ファイルが既にある場合は何もしません (`.example` を更新してもローカル編集は上書きされない)。各 `make uds-*` ターゲットも同じ prerequisite を持つため、コピー忘れでエラーになることはありません。
+
 ### 1. 本家フロントエンドのビルド
 
 初回のみ、本家 Misskey の vite ビルドを行います (3〜10 分)。`make uds-frontend-build` は既存の `e2e-frontend-build` と同一のターゲットで、`node:20-bookworm` コンテナの中で `pnpm install --frozen-lockfile && pnpm build` を走らせます。
