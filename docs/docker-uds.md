@@ -164,11 +164,13 @@ mk-go 側の実装変更で `/healthz` のパスが変わっている可能性�
 
 ## 構成ファイル一覧
 
+`compose.uds.yaml` と `deploy/uds/config/default.yml` はリポジトリには `.example` 版のみ存在し、`make uds-init` (または初回の `make uds-*`) で `.example` からコピーされる。以下の表はセットアップ後のローカルファイル名で記載している。
+
 | ファイル | 役割 |
 |---------|------|
-| `compose.uds.yaml` | 全サービスを繋ぐ compose エントリポイント |
+| `compose.uds.yaml` (`.example` から生成) | 全サービスを繋ぐ compose エントリポイント |
 | `deploy/uds/Dockerfile.mkgo` | mk-go runtime image (migrate 同梱 + curl) |
 | `deploy/uds/mkgo-entrypoint.sh` | migrate → exec misskey |
 | `deploy/uds/nginx/mkgo.conf` | UDS upstream + WebSocket upgrade 付き nginx 設定 |
 | `deploy/uds/valkey/valkey.conf` | `port 0` + UNIX socket listen の valkey 設定 |
-| `deploy/uds/config/default.yml` | UDS 前提の mk-go 設定 |
+| `deploy/uds/config/default.yml` (`.example` から生成) | UDS 前提の mk-go 設定 |

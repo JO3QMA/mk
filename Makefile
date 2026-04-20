@@ -2,7 +2,7 @@
 	federation-misskey-build federation-misskey-up federation-misskey-test \
 	federation-misskey-down federation-misskey-logs \
 	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
-	uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
+	uds-init uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
 	bench-up bench-run bench-down bench-logs
 
 # Binary output
