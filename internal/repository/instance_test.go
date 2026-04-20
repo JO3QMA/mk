@@ -126,7 +126,14 @@ func TestInstanceRepository_List_Filters(t *testing.T) {
 	c := newTestInstance("i_ir_4c", "list-c.example")
 	c.SuspensionState = model.SuspensionStateManuallySuspended
 
-	for _, inst := range []*model.Instance{a, b, c} {
+	// "list-" に含まれない host で followersCount>0 の instance を混ぜておく。
+	// federating=true の OR 条件が括弧で包まれていないと
+	// (host ILIKE ... AND followingCount>0) OR followersCount>0
+	// になり、Host filter を無視して d を拾ってしまうため、その回帰テスト。
+	d := newTestInstance("i_ir_4d", "other-d.example")
+	d.FollowersCount = 2
+
+	for _, inst := range []*model.Instance{a, b, c, d} {
 		require.NoError(t, repo.Create(inst))
 		defer cleanupInstance(t, inst.ID)
 	}
