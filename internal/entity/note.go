@@ -39,7 +39,7 @@ type NoteEntity struct {
 	Files              []any             `json:"files"`
 	Tags               []string          `json:"tags,omitempty"`
 	Poll               *PollEntity       `json:"poll,omitempty"`
-	Emojis             map[string]string `json:"emojis,omitempty"`
+	Emojis             map[string]string `json:"emojis"`
 	ChannelID          *string           `json:"channelId,omitempty"`
 	Channel            *ChannelLite      `json:"channel,omitempty"`
 	VisibleUserIDs     []string          `json:"visibleUserIds"`

@@ -639,10 +639,13 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 		existing.CW = &empty
 	}
 	// AP Note Tag配列からカスタム絵文字を抽出してDBにupsert
+	// 既存値と比較して変化があった場合のみfieldsに含める
 	if existing.UserHost != nil {
 		emojis := r.upsertEmojis(extractEmojiTags(apNote.Tag), *existing.UserHost)
-		fields["emojis"] = emojis
-		existing.Emojis = emojis
+		if !slices.Equal([]string(existing.Emojis), []string(emojis)) {
+			fields["emojis"] = emojis
+			existing.Emojis = emojis
+		}
 	}
 	if len(fields) == 0 {
 		return existing, nil

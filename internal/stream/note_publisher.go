@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
@@ -21,10 +22,17 @@ type PubSubPublisher interface {
 // NotePublisher serializes a model.Note via entity.PackNote, embeds the author
 // in NoteEntity.User and publishes the JSON to a Redis pubsub topic. これは
 // core/timeline.StreamingPublisher を実装する。
+//
+// フォロワーfanout時に同じノートが複数topicにpublishされるため、直前の
+// ノートIDに対する serialized JSON をキャッシュして DB クエリを 1 回に抑える。
 type NotePublisher struct {
 	pub         PubSubPublisher
 	idGen       id.Generator
 	emojiLookup entity.EmojiLookup
+
+	mu         sync.Mutex
+	cachedID   string
+	cachedBody []byte
 }
 
 // NewNotePublisher constructs a NotePublisher.
@@ -43,9 +51,30 @@ func (p *NotePublisher) PublishNote(topic string, n *model.Note, author *model.U
 	if p.pub == nil || n == nil || author == nil {
 		return
 	}
+
+	body := p.packNote(n, author)
+	if body == nil {
+		return
+	}
+
+	if err := p.pub.Publish(context.Background(), topic, json.RawMessage(body)); err != nil {
+		slog.Warn("note publisher: publish failed", "topic", topic, "err", err)
+	}
+}
+
+// packNote returns the serialized JSON for the note. フォロワーfanout時に
+// 同じノートが繰返しpublishされるため、直前のノートIDが一致する場合は
+// キャッシュを再利用して絵文字解決のDBクエリを1回に抑える。
+func (p *NotePublisher) packNote(n *model.Note, author *model.User) []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if n.ID == p.cachedID && p.cachedBody != nil {
+		return p.cachedBody
+	}
+
 	pn := entity.PackNote(n, p.idGen)
 	pn.User = entity.PackUserLite(author)
-	// 絵文字解決: authorをnoteに一時的にセットしてEmojiResolverに渡す
 	notes := []*model.Note{{Emojis: n.Emojis, UserHost: n.UserHost, User: author}}
 	emojiResolver := entity.NewEmojiResolver(p.emojiLookup, notes)
 	emojiResolver.PopulateNoteEmojis(n, &pn)
@@ -53,11 +82,11 @@ func (p *NotePublisher) PublishNote(topic string, n *model.Note, author *model.U
 	body, err := json.Marshal(pn)
 	if err != nil {
 		slog.Warn("note publisher: marshal failed", "err", err)
-		return
+		return nil
 	}
-	if err := p.pub.Publish(context.Background(), topic, json.RawMessage(body)); err != nil {
-		slog.Warn("note publisher: publish failed", "topic", topic, "err", err)
-	}
+	p.cachedID = n.ID
+	p.cachedBody = body
+	return body
 }
 
 // NotificationUserRepo abstracts the FindByID call needed to pack a

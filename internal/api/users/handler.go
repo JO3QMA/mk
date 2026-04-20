@@ -375,6 +375,7 @@ func (h *Handler) Search(c echo.Context) error {
 		profile := h.userService.GetProfile(u.ID)
 		d := entity.PackUserDetailed(u, profile, h.idGen)
 		resolver.FillUserLite(&d.UserLite)
+		h.populateUserEmojis(u, &d.UserLite)
 		out = append(out, d)
 	}
 	return c.JSON(http.StatusOK, out)
@@ -508,6 +509,7 @@ func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error)
 		if r.bundle != nil {
 			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
 			resolver.FillUserLite(&d.UserLite)
+			h.populateUserEmojis(r.bundle.User, &d.UserLite)
 			item.Follower = &d
 		}
 		out = append(out, item)
@@ -547,6 +549,7 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		if r.bundle != nil {
 			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
 			resolver.FillUserLite(&d.UserLite)
+			h.populateUserEmojis(r.bundle.User, &d.UserLite)
 			item.Followee = &d
 		}
 		out = append(out, item)
