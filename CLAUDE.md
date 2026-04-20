@@ -121,6 +121,12 @@ make migrate-create         # 新規マイグレーションファイル作成�
 make docker-build
 make docker-up              # docker compose up -d
 make docker-down
+
+# Drop-in e2e (#364 / #365) — Misskey TS 2 インスタンスを立ち上げて
+# TS ↔ mk 切替互換性を検証する基盤。詳細は docs/dropin-e2e.md。
+make dropin-up              # TS-A / TS-B stack 起動
+make dropin-test            # pytest smoke test 実行
+make dropin-down            # stack + volume 全削除
 ```
 
 エントリポイント：
@@ -407,6 +413,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
+- **2026-04-21**: drop-in e2e テスト基盤 Phase 13-1 (#365) を追加。`docker-compose.dropin.yml` と `tests/dropin/` で Misskey TS 2 インスタンスを立ち上げ、pytest で federation smoke test を実行する。Phase 13-2 で mk 差し替え overlay を追加予定。
 - **2026-04-20**: CIの`test`ジョブを4-way matrix shardで並列化。総実行時間を約4.7分→約1.5-2分に短縮。各shardは独立サービスコンテナで動作し、ImportPath順modulo分配で決定的にパッケージを割り当てる。
 - **2026-04-18**: `internal/repository`パッケージのテストを拡充しカバレッジを76.4%→99.9%に引き上げ、CI閾値を90%に戻す。`internal/api/admin`の閾値を60%→80%に引き上げ(現状83.8%)。CI step "Run all tests with coverage"に`set -o pipefail`を追加してテスト失敗の握り潰し解消 (#260)。
 - **2026-04-18**: `internal/repository`パッケージのCIカバレッジ閾値を暫定的に76%に緩和（#260で90%復帰予定）。

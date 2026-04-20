@@ -1,6 +1,7 @@
 .PHONY: build run dev clean tidy test fmt lint migrate-up migrate-down migrate-create \
 	federation-misskey-build federation-misskey-up federation-misskey-test \
 	federation-misskey-down federation-misskey-logs \
+	dropin-up dropin-down dropin-test dropin-logs \
 	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
 	uds-init uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
 	bench-up bench-run bench-down bench-logs
@@ -84,6 +85,23 @@ federation-misskey-down:
 
 federation-misskey-logs:
 	docker compose -f $(FEDERATION_MISSKEY_COMPOSE) logs -f
+
+# Drop-in e2e (#365) ― Misskey TS 2 インスタンス (A, B) を立ち上げて
+# 連合基盤を検証する。Phase 13-1 では TS ↔ TS の smoke test のみ。
+# Phase 13-2 以降で mk 差し替え overlay を追加する予定。
+DROPIN_COMPOSE=docker-compose.dropin.yml
+
+dropin-up:
+	docker compose -f $(DROPIN_COMPOSE) up -d --build
+
+dropin-test:
+	docker compose -f $(DROPIN_COMPOSE) --profile test run --rm test-runner
+
+dropin-down:
+	docker compose -f $(DROPIN_COMPOSE) down -v
+
+dropin-logs:
+	docker compose -f $(DROPIN_COMPOSE) logs -f
 
 # Cypress e2e ― Misskey 本家の cypress spec を mk-go に向けて実行する。
 #
