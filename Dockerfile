@@ -25,6 +25,13 @@ COPY --from=builder /app/built/misskey /app/misskey
 COPY --from=builder /app/built/migrate /app/migrate
 COPY --from=builder /app/migration /app/migration
 
+# 本家のpackages/backend/assets (favicon / icons等) をimageに焼き込む。
+# bind-mountなしでも /favicon.ico / /static-assets/* 等が serve できる
+# (issue #346)。third_party/misskey はsubmoduleなのでビルド前に
+# `git submodule update --init --recursive` が必要。
+COPY --from=builder /app/third_party/misskey/packages/backend/assets /app/static-assets
+ENV MISSKEY_STATIC_DIR=/app/static-assets
+
 # デフォルト設定ファイルをコピー (docker-compose でマウント上書き可能)
 COPY .config/docker.yml /app/.config/default.yml
 

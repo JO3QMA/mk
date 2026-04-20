@@ -34,6 +34,16 @@ WORKDIR /app
 COPY --from=builder --chown=65532:65532 /app/built/misskey /app/misskey
 COPY --from=builder --chown=65532:65532 /app/built/migrate /app/migrate
 COPY --from=builder --chown=65532:65532 /app/migration /app/migration
+
+# 本家のpackages/backend/assets (favicon / icons / apple-touch-icon / robots.txtなど)
+# をimageに焼き込んでおく。これがないと /favicon.ico / /static-assets/* /
+# /apple-touch-icon.png などがSPA catchallに吸われてHTMLを返してしまい、
+# frontendが "instance.iconUrl || '/favicon.ico'" というfallbackを使っても
+# 画像が表示されない (issue #346)。bind-mountを使わなくてもserve できる
+# ように runtime image側に持たせる。
+COPY --from=builder --chown=65532:65532 /app/third_party/misskey/packages/backend/assets /app/static-assets
+ENV MISSKEY_STATIC_DIR=/app/static-assets
+
 COPY --chown=65532:65532 deploy/uds/mkgo-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
