@@ -75,6 +75,26 @@ type Processor struct {
 	// ID で lookup するために使用する (ローカルユーザーの user.uri は NULL
 	// なので FindByURI では解決できない)。
 	localBaseURL string
+
+	// inboundFollowAcceptor は inbound Follow に対して Accept activity を
+	// 送り返す。original Follow のID (リモート側のURL) を参照しないと相手が
+	// Acceptをマッチングできないため、processorが受け取った raw activity を
+	// そのまま Accept の object に包んで送る。nil なら何もしない (locked
+	// follow 経路ではここを通らないのでOK)。
+	inboundFollowAcceptor InboundFollowAcceptor
+}
+
+// InboundFollowAcceptor delivers an Accept activity in response to an inbound
+// Follow. The raw Follow (as received on our inbox) is wrapped as the inner
+// object so the remote server can match the Accept to the original Follow id.
+type InboundFollowAcceptor interface {
+	SendAcceptForInboundFollow(follower, followee *model.User, originalFollow json.RawMessage) error
+}
+
+// SetInboundFollowAcceptor wires the sender that delivers Accept activities
+// for inbound Follow activities targeting local users.
+func (p *Processor) SetInboundFollowAcceptor(a InboundFollowAcceptor) {
+	p.inboundFollowAcceptor = a
 }
 
 // SetLocalBaseURL configures the local instance's base URL. This is used to
@@ -287,12 +307,23 @@ func (p *Processor) handleFollow(act genericActivity) error {
 	if err != nil {
 		return errors.New("unknown followee")
 	}
-	if _, err := p.followingService.Follow(follower.ID, followee.ID); err != nil {
+	result, err := p.followingService.Follow(follower.ID, followee.ID)
+	if err != nil {
 		// 既にフォロー済みは許容
 		if errors.Is(err, corefollowing.ErrAlreadyFollowing) {
 			return nil
 		}
 		return err
+	}
+	// Following が確定したら (locked ユーザーのFollowRequest止まりではなく
+	// 本成立の場合)、相手に Accept を返送する。original Follow の raw を
+	// そのまま object に包むことでリモート側が自分の送った Follow と matching
+	// できる。
+	if result != nil && result.Following != nil && p.inboundFollowAcceptor != nil {
+		if err := p.inboundFollowAcceptor.SendAcceptForInboundFollow(follower, followee, act.raw); err != nil {
+			slog.Warn("inbound follow accept delivery failed",
+				"follower", follower.ID, "followee", followee.ID, "err", err)
+		}
 	}
 	return nil
 }

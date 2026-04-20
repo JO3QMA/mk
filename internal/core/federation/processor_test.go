@@ -2,6 +2,7 @@ package federation_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -51,6 +52,46 @@ func TestProcess_FollowHappyPath(t *testing.T) {
 	}`)
 	require.NoError(t, p.Process(body))
 	assert.Len(t, followingRepo.Followings, 1)
+}
+
+// stubInboundFollowAcceptor records SendAcceptForInboundFollow calls for
+// assertion.
+type stubInboundFollowAcceptor struct {
+	calls []struct {
+		followerID, followeeID string
+		followRaw              string
+	}
+}
+
+func (s *stubInboundFollowAcceptor) SendAcceptForInboundFollow(follower, followee *model.User, raw json.RawMessage) error {
+	s.calls = append(s.calls, struct {
+		followerID, followeeID string
+		followRaw              string
+	}{follower.ID, followee.ID, string(raw)})
+	return nil
+}
+
+func TestProcess_FollowInvokesAcceptorWithOriginalRaw(t *testing.T) {
+	// inbound Follow が成立 (Following 作成) したら、original Follow の raw を
+	// そのまま InboundFollowAcceptor に渡す。相手は自分の送った Follow.id と
+	// 照合できるようになる。
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+	acceptor := &stubInboundFollowAcceptor{}
+	p.SetInboundFollowAcceptor(acceptor)
+
+	body := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/abc123",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	require.Len(t, acceptor.calls, 1)
+	assert.Equal(t, "bob", acceptor.calls[0].followeeID)
+	// original の id を含んだ raw JSON が渡っていること。
+	assert.Contains(t, acceptor.calls[0].followRaw, "https://remote.example/follows/abc123")
 }
 
 func TestProcess_FollowLocalUserByIDResolution(t *testing.T) {

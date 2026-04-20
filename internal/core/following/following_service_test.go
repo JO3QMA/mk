@@ -221,11 +221,11 @@ func TestFollow_LockedUser_InvokesFederationHook(t *testing.T) {
 	assert.Equal(t, []string{"alice->bob"}, fed.followed)
 }
 
-func TestFollow_PublicUser_InvokesBothHookDirections(t *testing.T) {
+func TestFollow_PublicUser_InvokesOutboundFollowOnly(t *testing.T) {
 	// non-locked follow では OnLocalFollowed (ローカル→リモートの outbound
-	// Follow 用) と OnLocalFollowAccepted (リモート→ローカルの inbound
-	// followに対するAccept送信用) の両方を呼ぶ。実装側でIsLocal/remote方向を
-	// 判定してno-opになるので両方呼ぶのが正しい。
+	// Follow 用) のみ呼ぶ。インバウンド (remote→local) の Accept 返送は
+	// processor 層で original Follow ID を保持した状態で直接行うため、
+	// service 層の federationHook では Accept を発行しない。
 	svc, userRepo, _, _ := newSvc(t)
 	addUser(t, userRepo, "alice", false)
 	addUser(t, userRepo, "bob", false)
@@ -236,7 +236,7 @@ func TestFollow_PublicUser_InvokesBothHookDirections(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"alice->bob"}, fed.followed)
-	assert.Equal(t, []string{"alice->bob"}, fed.accepted)
+	assert.Empty(t, fed.accepted)
 }
 
 func TestFollow_PublicUser_DoesNotPublishReceiveFollowRequest(t *testing.T) {

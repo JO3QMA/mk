@@ -64,6 +64,30 @@ func (h *FollowingDeliveryHook) OnLocalUnfollowed(follower, followee *model.User
 	}
 }
 
+// SendAcceptForInboundFollow implements InboundFollowAcceptor. 処理中の
+// inbound Follow activity の raw JSON をそのまま Accept の object に包んで
+// follower (remote) の inbox に送る。original Follow の `id` / `actor` /
+// `object` が保持されるので、相手サーバーが自分の送った Follow と matching
+// できる。
+func (h *FollowingDeliveryHook) SendAcceptForInboundFollow(follower, followee *model.User, originalFollow json.RawMessage) error {
+	if follower == nil || followee == nil {
+		return nil
+	}
+	if follower.IsLocal() || !followee.IsLocal() {
+		// local→remoteやlocal→local方向ならAP配信不要。
+		return nil
+	}
+	// raw をそのまま innerObject として渡す。json.RawMessage は Marshal 時に
+	// そのまま出力されるので、Accept.object フィールドに原 Follow が JSON
+	// 構造としてネストされる。
+	accept := h.renderer.RenderAccept(followee.ID, originalFollow)
+	body, err := json.Marshal(accept)
+	if err != nil {
+		return err
+	}
+	return h.deliver.DeliverToUser(followee.ID, follower, body)
+}
+
 // OnLocalFollowAccepted sends an Accept activity to a remote follower.
 // 引数: follower がリモート、followee がローカル (Accept の actor)。
 func (h *FollowingDeliveryHook) OnLocalFollowAccepted(follower, followee *model.User) {
