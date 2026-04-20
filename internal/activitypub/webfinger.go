@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 // WebFingerLink models a single link entry in an RFC 7033 response.
@@ -87,7 +88,7 @@ func (c *WebFingerClient) LookupActorURI(username, host string) (string, error) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("webfinger: unexpected status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
 	if err != nil {
 		return "", fmt.Errorf("webfinger: read body: %w", err)
 	}

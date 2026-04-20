@@ -3,9 +3,14 @@ package activitypub
 import (
 	"bytes"
 	"errors"
-	"io"
 	"net/http"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
+
+// MaxBodyBytes caps the response body size for FetchJSON / FetchUnsigned to
+// prevent memory exhaustion via attacker-controlled remote AP servers (#323).
+const MaxBodyBytes = safehttp.DefaultAPBodyLimit
 
 // Client is a thin wrapper around http.Client that signs outgoing AP requests.
 type Client struct {
@@ -80,7 +85,7 @@ func (c *Client) FetchJSON(url string, key *PrivateKey) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, errors.New("unexpected status: " + resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
 }
 
 // FetchUnsigned performs a plain GET without HTTP signing. 多くのAPサーバーは
@@ -102,5 +107,5 @@ func (c *Client) FetchUnsigned(url string) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, errors.New("unexpected status: " + resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
 }

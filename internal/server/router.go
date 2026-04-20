@@ -105,6 +105,7 @@ import (
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/safehttp"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/shiroha-a/mk/internal/stream/channels"
@@ -377,7 +378,13 @@ func (s *Server) setupRoutes() {
 		localHost = u.Host
 		apRenderer.SetHost(localHost)
 	}
-	apClient := activitypub.NewClient(nil, s.config.UserAgent)
+	// AP outbound client: SSRF-safe transport を適用 (#323)。
+	// config.AllowedPrivateNetworks で開発時の self-loop を許可できる。
+	apHTTPClient := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+	}
+	apClient := activitypub.NewClient(apHTTPClient, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
 	if m, err := metaRepo.Fetch(); err == nil && !m.AllowExternalApRedirect {
 		apClient.DisableRedirect()
@@ -392,11 +399,13 @@ func (s *Server) setupRoutes() {
 	// users/show 経由で host が指定されたリモートユーザーをローカル DB に
 	// キャッシュが無くても解決できるようにする (#269)。webfinger で actor URI
 	// を引いてから federationResolver.ResolveActor で User row を upsert する。
-	// WebFinger は redirect を追う必要があるため、apClient と同じ http.DefaultClient
-	// を共有すると apClient.DisableRedirect() のグローバル汚染を拾ってしまう。
-	// 専用の *http.Client を明示的に渡して分離する。Timeout は user-facing API
-	// 経由で呼ばれるので応答性優先で 10s に設定する。
-	webfingerClient := activitypub.NewWebFingerClient(&http.Client{Timeout: 10 * time.Second}, s.config.UserAgent)
+	// redirect 追跡必須のため apClient とは *http.Client を分離し、
+	// apClient.DisableRedirect() の影響を受けないようにする。Timeout は
+	// user-facing API 経由で呼ばれるので応答性優先で 10s に設定する。
+	webfingerClient := activitypub.NewWebFingerClient(&http.Client{
+		Timeout:   10 * time.Second,
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+	}, s.config.UserAgent)
 	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
 		webfingerClient, federationResolver, userRepo, localHost,
 	))
