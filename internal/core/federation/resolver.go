@@ -226,6 +226,16 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		aka := strings.Join(actor.AlsoKnownAs, ",")
 		user.AlsoKnownAs = &aka
 	}
+	// actor.icon / actor.image はそれぞれアバター / バナー画像。空 URL や
+	// icon自体が欠落している actor (Service 系など) もあるので nil チェック。
+	if actor.Icon != nil && actor.Icon.URL != "" {
+		avatarURL := actor.Icon.URL
+		user.AvatarURL = &avatarURL
+	}
+	if actor.Image != nil && actor.Image.URL != "" {
+		bannerURL := actor.Image.URL
+		user.BannerURL = &bannerURL
+	}
 	if err := r.userRepo.Create(user); err != nil {
 		return nil, err
 	}
@@ -313,6 +323,18 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 		akaStr := strings.Join(actor.AlsoKnownAs, ",")
 		fields["alsoKnownAs"] = &akaStr
 		existing.AlsoKnownAs = &akaStr
+	}
+	// アバター / バナー画像のURLリモート側で変更された場合に追従する。
+	// 他フィールドと同様、空値や欠落時は既存値を温存する (削除は追わない)。
+	if actor.Icon != nil && actor.Icon.URL != "" {
+		avatarURL := actor.Icon.URL
+		fields["avatarUrl"] = &avatarURL
+		existing.AvatarURL = &avatarURL
+	}
+	if actor.Image != nil && actor.Image.URL != "" {
+		bannerURL := actor.Image.URL
+		fields["bannerUrl"] = &bannerURL
+		existing.BannerURL = &bannerURL
 	}
 	existing.LastFetchedAt = &now
 	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)
