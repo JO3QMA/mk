@@ -19,6 +19,7 @@ go.work.sum
 
 # Dependency directories
 vendor/
+.pnpm-store/
 
 # IDE
 .idea/
@@ -41,6 +42,8 @@ Thumbs.db
 # Config (user-specific)
 .config/
 drive-files/
+/deploy/uds/config/default.yml
+/compose.uds.yaml
 
 # Benchmark results
 tests/bench/results/*.json
