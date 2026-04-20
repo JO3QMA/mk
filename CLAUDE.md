@@ -300,16 +300,23 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 - `go build ./...`で全パッケージのビルド確認。
 
-### `test`ジョブ
+### `test-shards`ジョブ + `test` aggregator
 
-- サービスコンテナとしてPostgreSQL 16 Alpine / Redis 7 Alpineを起動。
-- テスト対象は`go list`で絞り込み（テストファイルがあるパッケージのみ）。
-- 実行条件: `-race -count=1 -timeout 10m -coverprofile=coverage.out -covermode=atomic`
-- **カバレッジ閾値チェック**：
+- **4-way matrix shard** で並列実行する `test-shards` (`shard: [1,2,3,4]`)。各shardは
+  独立したPostgreSQL 16 Alpine / Redis 7 Alpine サービスコンテナを持つ。
+- テスト対象は`go list`で絞り込み（テストファイルがあるパッケージのみ）した上で
+  `awk 'NF'`で空行除外→ImportPath順にソート→`NR % 4`で各shardに均等割り当て。
+  新規パッケージ追加でshard内の構成が変わっても、決定的な分配により再現性は保たれる。
+- 実行条件: `-race -count=1 -timeout 10m -coverprofile=coverage-shard-N.out -covermode=atomic`
+- **カバレッジ閾値チェック** (各shard内で実行)：
   - `internal/api/admin`配下: 80%以上（SMTP/queue/DB集計等の外部依存で90%未到達のため暫定緩和）
+  - `e2e`配下: 0%
   - それ以外のパッケージ: 90%以上
-  - 未達の場合はジョブが失敗する。
-- カバレッジレポートは`coverage-report`アーティファクトとしてアップロード。
+  - shard内のいずれかのパッケージが閾値未達なら、そのshardが失敗する。
+- カバレッジレポートは`coverage-shard-N`アーティファクトとして各shardからアップロード。
+- `test` job は `needs: test-shards / if: always()` で全shardを束ね、ブランチ保護が
+  要求する `test` という名前の単一checkを公開する。いずれかのshardが失敗したら
+  `needs.test-shards.result != 'success'` で `exit 1`。
 
 ### `lint`ジョブ
 
@@ -400,6 +407,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
+- **2026-04-20**: CIの`test`ジョブを4-way matrix shardで並列化。総実行時間を約4.7分→約1.5-2分に短縮。各shardは独立サービスコンテナで動作し、ImportPath順modulo分配で決定的にパッケージを割り当てる。
 - **2026-04-18**: `internal/repository`パッケージのテストを拡充しカバレッジを76.4%→99.9%に引き上げ、CI閾値を90%に戻す。`internal/api/admin`の閾値を60%→80%に引き上げ(現状83.8%)。CI step "Run all tests with coverage"に`set -o pipefail`を追加してテスト失敗の握り潰し解消 (#260)。
 - **2026-04-18**: `internal/repository`パッケージのCIカバレッジ閾値を暫定的に76%に緩和（#260で90%復帰予定）。
 - **2026-04-12**: テストカバレッジ目標を追記（最低90% / 推奨95% / 目標100%）。

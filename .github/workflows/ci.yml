@@ -19,8 +19,16 @@ jobs:
       - name: Build
         run: go build ./...
 
-  test:
+  # 各shardは並列に走るが、checkは `test-shards (N)` という名前で個別に登録される。
+  # ブランチ保護が `test` という名前のcheckを要求するため、後段の `test` job が
+  # 全shardを束ねて単一の `test` checkを公開する (needs: test-shards)。
+  test-shards:
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -56,6 +64,8 @@ jobs:
       TEST_DB_SSLMODE: disable
       TEST_REDIS_HOST: localhost
       TEST_REDIS_PORT: 6379
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_TOTAL: 4
 
     steps:
       - uses: actions/checkout@v4
@@ -64,19 +74,30 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # テスト対象はgo listでテストファイルのあるパッケージのみに絞る。
+      # 全テストパッケージをImportPathでソートしmodulo分割する。
+      # go listの出力順は決定的なので各shardは毎runで同じパッケージ集合を担当する。
+      # `awk 'NF'`でtest無しパッケージのempty行を防御的に除外する。現状Go 1.25/1.26
+      # は空テンプレート結果を出力しないが、将来のtoolchain変更でNRがずれて
+      # shard分配が不均衡になるリスクを潰す。
+      - name: Determine shard packages
+        id: shard
+        run: |
+          ALL=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | awk 'NF' | sort)
+          PKGS=$(echo "$ALL" | awk -v s=$SHARD_INDEX -v n=$SHARD_TOTAL 'NR % n == (s % n)' | tr '\n' ' ')
+          echo "Shard $SHARD_INDEX/$SHARD_TOTAL packages:"
+          echo "$PKGS" | tr ' ' '\n' | sed '/^$/d'
+          echo "pkgs=$PKGS" >> "$GITHUB_OUTPUT"
+
       # pipefailを明示的に立てないと`go test ... | tee`が失敗を握りつぶす
       # (teeのexit 0がパイプライン全体の結果になる) ため設定する。
-      - name: Run all tests with coverage
+      - name: Run tests with coverage
         run: |
           set -o pipefail
-          PKGS=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | tr '\n' ' ')
-          echo "Testing packages: $PKGS"
-          go test $PKGS \
+          go test ${{ steps.shard.outputs.pkgs }} \
             -race \
             -count=1 \
             -timeout 10m \
-            -coverprofile=coverage.out \
+            -coverprofile=coverage-shard-${SHARD_INDEX}.out \
             -covermode=atomic 2>&1 | tee test_output.txt
 
       - name: Enforce per-package coverage
@@ -95,15 +116,32 @@ jobs:
               fail = 1
             }
           } END { if (fail) exit 1 }'
-          echo "All packages meet coverage thresholds"
+          echo "Shard $SHARD_INDEX: all packages meet coverage thresholds"
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: coverage.out
+          name: coverage-shard-${{ matrix.shard }}
+          path: coverage-shard-${{ matrix.shard }}.out
           if-no-files-found: ignore
+
+  # ブランチ保護が要求する `test` check を満たすためのaggregator。全shardの結果を
+  # `needs.test-shards.result` で集約し、いずれかが失敗したらこのjob自体を失敗
+  # させる。`if: always()` を付けないとshard失敗時にskipされ "test" check が
+  # 完了状態にならない。
+  test:
+    runs-on: ubuntu-latest
+    needs: test-shards
+    if: always()
+    steps:
+      - name: Verify all shards passed
+        run: |
+          if [ "${{ needs.test-shards.result }}" != "success" ]; then
+            echo "test-shards result: ${{ needs.test-shards.result }}"
+            exit 1
+          fi
+          echo "All test shards passed"
 
   lint:
     runs-on: ubuntu-latest
