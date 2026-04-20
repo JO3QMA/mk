@@ -37,7 +37,7 @@ func TestMain(m *testing.M) {
 func newTestSvc(t *testing.T) *Service {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
-	return NewService(testRedis.Client, idGen)
+	return NewService(testRedis.Client, idGen, "")
 }
 
 func closedClient(t *testing.T) *redis.Client {
@@ -51,6 +51,40 @@ func TestService_Create_RequiresNotifiee(t *testing.T) {
 	svc := newTestSvc(t)
 	_, err := svc.Create(context.Background(), CreateInput{Type: TypeFollow})
 	assert.Error(t, err)
+}
+
+// TestService_KeyPrefix は #362 drop-in 互換の回帰テスト。
+// TS 本家と同じ `<host>:notificationTimeline:*` / `<host>:latestReadNotification:*`
+// 名前空間にキーが置かれることを確認する。
+func TestService_KeyPrefix(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	const host = "example.test"
+	svc := NewService(testRedis.Client, idGen, host+":")
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID: "u1", NotifierID: "u2", Type: TypeMention, NoteID: "n1",
+	})
+	require.NoError(t, err)
+
+	// prefix 付きストリームに entry がある
+	prefixed := host + ":notificationTimeline:u1"
+	n, err := testRedis.Client.XLen(ctx, prefixed).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "prefixed stream receives the notification")
+
+	// 旧 prefix 無しキーには無い
+	bare := "notificationTimeline:u1"
+	n, err = testRedis.Client.XLen(ctx, bare).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "bare stream remains empty")
+
+	// readKey も prefix 下に置かれる
+	require.NoError(t, svc.MarkAllAsRead(ctx, "u1"))
+	readKey := host + ":latestReadNotification:u1"
+	got, err := testRedis.Client.Exists(ctx, readKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), got, "prefixed read key should exist after MarkAllAsRead")
 }
 
 func TestService_Create_SelfNotificationRejected(t *testing.T) {
@@ -268,7 +302,7 @@ func TestService_Flush(t *testing.T) {
 }
 
 func TestService_RedisErrors(t *testing.T) {
-	svc := NewService(closedClient(t), idGen)
+	svc := NewService(closedClient(t), idGen, "")
 	ctx := context.Background()
 
 	_, err := svc.Create(ctx, CreateInput{NotifieeID: "u", NotifierID: "v", Type: TypeFollow})

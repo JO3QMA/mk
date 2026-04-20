@@ -14,7 +14,7 @@ import (
 func newTestHook(t *testing.T) (*FanoutHook, *FanoutTimelineService, *testutil.MockFollowingRepository) {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := testutil.NewMockFollowingRepository()
 	return NewFanoutHook(fanout, following), fanout, following
@@ -134,7 +134,7 @@ func (assertError) Error() string { return "boom" }
 
 func TestFanoutHook_ListFollowersError(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := &failingFollowingRepo{MockFollowingRepository: testutil.NewMockFollowingRepository()}
 	h := NewFanoutHook(fanout, following)
@@ -147,7 +147,7 @@ func TestFanoutHook_ListFollowersError(t *testing.T) {
 
 func TestFanoutHook_FanoutsAcrossPages(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := testutil.NewMockFollowingRepository()
 	// 201人のフォロワーを用意してページ境界を踏ませる
@@ -170,7 +170,7 @@ func TestFanoutHook_FanoutsAcrossPages(t *testing.T) {
 func TestFanoutHook_PushErrorIsLogged(t *testing.T) {
 	// closed clientへのpushでエラーを発生させる. ログ出力されるだけで例外なし.
 	following := testutil.NewMockFollowingRepository()
-	fanout := NewFanoutTimelineService(closedClient(t), idGen)
+	fanout := NewFanoutTimelineService(closedClient(t), idGen, "")
 	h := NewFanoutHook(fanout, following)
 	noteID := idGen.Generate(time.Now())
 	h.OnNoteCreated(&model.Note{ID: noteID, UserID: "u", Visibility: model.NoteVisibilityPublic}, &model.User{ID: "u"})
@@ -178,7 +178,7 @@ func TestFanoutHook_PushErrorIsLogged(t *testing.T) {
 
 func TestFanoutHook_NilFollowingRepo(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	h := NewFanoutHook(fanout, nil)
 	noteID := idGen.Generate(time.Now())
@@ -262,7 +262,7 @@ func TestFanoutHook_StreamingFanoutErrorPath(t *testing.T) {
 	// failingFollowingRepo は ListFollowers でエラーを返す → fanoutStreamingToFollowers
 	// は早期 return する
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := &failingFollowingRepo{MockFollowingRepository: testutil.NewMockFollowingRepository()}
 	h := NewFanoutHook(fanout, following)
@@ -278,7 +278,7 @@ func TestFanoutHook_StreamingFanoutErrorPath(t *testing.T) {
 
 func TestFanoutHook_StreamingFanoutAcrossPages(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := testutil.NewMockFollowingRepository()
 	for i := range 201 {
@@ -302,7 +302,7 @@ func TestFanoutHook_StreamingFanoutAcrossPages(t *testing.T) {
 
 func TestFanoutHook_StreamingPublisherNilFollowingRepo(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	h := NewFanoutHook(fanout, nil)
 	pub := &stubStreamingPublisher{}

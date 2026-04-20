@@ -55,7 +55,7 @@ func newRealTimelineService(t *testing.T, noteRepo *testutil.MockNoteRepository)
 	requireRedis(t)
 	testRedis.FlushAll(context.Background())
 	idGen, _ := id.NewGenerator("aidx")
-	fanout := coretimeline.NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := coretimeline.NewFanoutTimelineService(testRedis.Client, idGen, "")
 	svc := coretimeline.NewService(fanout, noteRepo, testutil.NewMockFollowingRepository())
 	return svc, fanout
 }
@@ -72,7 +72,7 @@ func closedRedisClient(t *testing.T) *redis.Client {
 func newFailingTimelineService(t *testing.T) *coretimeline.Service {
 	t.Helper()
 	idGen, _ := id.NewGenerator("aidx")
-	fanout := coretimeline.NewFanoutTimelineService(closedRedisClient(t), idGen)
+	fanout := coretimeline.NewFanoutTimelineService(closedRedisClient(t), idGen, "")
 	return coretimeline.NewService(fanout, testutil.NewMockNoteRepository(), nil)
 }
 

@@ -43,6 +43,7 @@ type Config struct {
 type Fetcher struct {
 	cfg         Config
 	redis       *redis.Client
+	keyPrefix   string // TS drop-in互換用 `<host>:` prefix
 	client      *http.Client
 	proxyClient *http.Client
 }
@@ -54,7 +55,11 @@ func (f *Fetcher) SetHTTPClient(c *http.Client) {
 }
 
 // NewFetcher creates a URL preview Fetcher.
-func NewFetcher(cfg Config, rdb *redis.Client) *Fetcher {
+//
+// keyPrefix (通常は `cfg.Redis.KeyPrefix()` = `<host>:`) は TS 本家と同じ
+// キー名前空間の下にキャッシュキーを置くために前置される。空文字列なら
+// prefix 無し。
+func NewFetcher(cfg Config, rdb *redis.Client, keyPrefix string) *Fetcher {
 	timeout := time.Duration(cfg.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 10 * time.Second
@@ -81,9 +86,10 @@ func NewFetcher(cfg Config, rdb *redis.Client) *Fetcher {
 	}
 
 	return &Fetcher{
-		cfg:    cfg,
-		redis:  rdb,
-		client: client,
+		cfg:       cfg,
+		redis:     rdb,
+		keyPrefix: keyPrefix,
+		client:    client,
 		// proxyClientはSSRF保護なしの専用クライアント。管理者が設定した
 		// 信頼済みプロキシURLはlocalhostやプライベートネットワーク上に
 		// 配置されることが多いため、プライベートIPブロックを適用しない。
@@ -103,7 +109,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	}
 
 	// Redisキャッシュ確認
-	cacheKey := cachePrefix + hashURL(rawURL)
+	cacheKey := f.keyPrefix + cachePrefix + hashURL(rawURL)
 	if f.redis != nil {
 		if cached, err := f.redis.Get(ctx, cacheKey).Bytes(); err == nil {
 			var result Result

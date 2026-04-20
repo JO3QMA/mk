@@ -517,6 +517,20 @@ func resolveRedis(opts RedisOptions, host string) RedisOptions {
 	return opts
 }
 
+// KeyPrefix returns the Redis key prefix to prepend to bare keys so that
+// mk-go shares the same namespace as Misskey TS (TS uses ioredis `keyPrefix:
+// <host>:` which gets applied to every key transparently). Empty Prefix
+// returns "" for backwards compat with keys that were never prefixed.
+//
+// Consumers should prepend this to every Redis key they construct, e.g.
+// `cfg.Redis.KeyPrefix() + "list:homeTimeline:" + userID`.
+func (r RedisOptions) KeyPrefix() string {
+	if r.Prefix == "" {
+		return ""
+	}
+	return r.Prefix + ":"
+}
+
 // DefaultTrustProxy is the default set of CIDR ranges for trusted proxies,
 // matching the TypeScript Misskey defaults (private IP ranges).
 var DefaultTrustProxy = []string{

@@ -53,8 +53,9 @@ func UserListTimelineName(listID string) Name {
 
 // FanoutTimelineService manages Redis-backed timeline lists.
 type FanoutTimelineService struct {
-	client *redis.Client
-	idGen  id.Generator
+	client    *redis.Client
+	idGen     id.Generator
+	keyPrefix string // TS drop-in互換用 `<host>:` prefix。空なら従来通り。
 	// nowFn / randFn allow tests to inject deterministic values.
 	nowFn  func() time.Time
 	randFn func() float64
@@ -63,18 +64,23 @@ type FanoutTimelineService struct {
 // NewFanoutTimelineService creates a new FanoutTimelineService bound to the
 // timelines Redis database. idGen is used to extract a note's creation time
 // from its ID for the late-insert ordering check.
-func NewFanoutTimelineService(client *redis.Client, idGen id.Generator) *FanoutTimelineService {
+//
+// keyPrefix (通常は `cfg.Redis.KeyPrefix()` = `<host>:`) は TS 本家と同じキー
+// 名前空間 (`<host>:list:homeTimeline:<userId>` 等) を使うために全キーの前に
+// 付与される。空文字列を渡すとprefix無しになり、従来の mk-only 挙動に戻る。
+func NewFanoutTimelineService(client *redis.Client, idGen id.Generator, keyPrefix string) *FanoutTimelineService {
 	return &FanoutTimelineService{
-		client: client,
-		idGen:  idGen,
-		nowFn:  time.Now,
-		randFn: rand.Float64,
+		client:    client,
+		idGen:     idGen,
+		keyPrefix: keyPrefix,
+		nowFn:     time.Now,
+		randFn:    rand.Float64,
 	}
 }
 
-// key returns the Redis key for a timeline name.
+// key returns the Redis key for a timeline name, with TS-compatible prefix.
 func (s *FanoutTimelineService) key(name Name) string {
-	return fmt.Sprintf(timelineKeyFmt, name)
+	return s.keyPrefix + fmt.Sprintf(timelineKeyFmt, name)
 }
 
 // Push appends id to the named timeline. maxLen caps the list size; values
