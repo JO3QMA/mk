@@ -207,6 +207,11 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		URI:           &actor.ID,
 		Inbox:         &actor.Inbox,
 		IsBot:         activitypub.IsBotActorType(actor.Type),
+		// AP actorの manuallyApprovesFollowers を IsLocked (承認制) として
+		// 取り込む。これが false だとリモートの承認制ユーザに対するフォロー
+		// が非 locked として処理されて即 Following が成立し、ボタン挙動と
+		// AP仕様が崩れる。
+		IsLocked:      actor.ManuallyApproves,
 		LastFetchedAt: &now,
 	}
 	if name := actor.Name; name != "" {
@@ -292,6 +297,10 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 	isBot := activitypub.IsBotActorType(actor.Type)
 	fields["isBot"] = isBot
 	existing.IsBot = isBot
+	// manuallyApprovesFollowers の切り替えも追従する (リモート側でlock/unlock
+	// された場合にローカルの判定もずれないように)。
+	fields["isLocked"] = actor.ManuallyApproves
+	existing.IsLocked = actor.ManuallyApproves
 	if actor.Name != "" {
 		name := actor.Name
 		fields["name"] = &name
