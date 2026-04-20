@@ -395,6 +395,7 @@ func (s *Server) setupRoutes() {
 	federationResolver.SetPublickeyRepo(publickeyRepo)
 	federationResolver.SetPollRepo(pollRepo)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
+	federationProcessor.SetLocalBaseURL(s.config.URL)
 
 	// users/show 経由で host が指定されたリモートユーザーをローカル DB に
 	// キャッシュが無くても解決できるようにする (#269)。webfinger で actor URI

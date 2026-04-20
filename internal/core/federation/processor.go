@@ -68,6 +68,40 @@ type Processor struct {
 
 	// Chat federation (CherryPick互換)
 	chatService ChatMessageReceiver
+
+	// localBaseURL はローカルユーザーのcanonical URI prefix
+	// (例: "https://go.k7a.org") を保持する。inboxで受信したactivityの
+	// object が "{localBaseURL}/users/{id}" 形式のとき、ローカルユーザーを
+	// ID で lookup するために使用する (ローカルユーザーの user.uri は NULL
+	// なので FindByURI では解決できない)。
+	localBaseURL string
+}
+
+// SetLocalBaseURL configures the local instance's base URL. This is used to
+// detect whether an inbound activity's object refers to a local user.
+func (p *Processor) SetLocalBaseURL(baseURL string) {
+	p.localBaseURL = baseURL
+}
+
+// resolveTargetUser looks up a user referenced by URI in an inbound activity.
+// ローカルユーザの user.uri は DB 上 NULL なので FindByURI では解決できない。
+// 対策として localBaseURL 配下の URI ("{baseURL}/users/{id}") を検出し、
+// ID パートを抜き出して FindByID で lookup する。リモートユーザーは従来通り
+// FindByURI で解決する。
+func (p *Processor) resolveTargetUser(uri string) (*model.User, error) {
+	if p.localBaseURL != "" {
+		prefix := p.localBaseURL + "/users/"
+		if id, ok := strings.CutPrefix(uri, prefix); ok {
+			// id の中に "/" が残る (例: "/outbox") ケースがあるので切り落とす。
+			if slash := strings.IndexByte(id, '/'); slash >= 0 {
+				id = id[:slash]
+			}
+			if id != "" {
+				return p.userRepo.FindByID(id)
+			}
+		}
+	}
+	return p.userRepo.FindByURI(uri)
 }
 
 // ChatMessageReceiver handles inbound Misskey:ChatMessage activities.
@@ -249,7 +283,7 @@ func (p *Processor) handleFollow(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	followee, err := p.userRepo.FindByURI(followeeURI)
+	followee, err := p.resolveTargetUser(followeeURI)
 	if err != nil {
 		return errors.New("unknown followee")
 	}
@@ -294,7 +328,7 @@ func (p *Processor) handleUndoFollow(act genericActivity, inner genericActivity)
 	if err != nil {
 		return err
 	}
-	followee, err := p.userRepo.FindByURI(followeeURI)
+	followee, err := p.resolveTargetUser(followeeURI)
 	if err != nil {
 		return errors.New("unknown followee")
 	}

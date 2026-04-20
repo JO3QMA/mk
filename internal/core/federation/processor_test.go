@@ -53,6 +53,28 @@ func TestProcess_FollowHappyPath(t *testing.T) {
 	assert.Len(t, followingRepo.Followings, 1)
 }
 
+func TestProcess_FollowLocalUserByIDResolution(t *testing.T) {
+	// 実本番のローカルユーザー row は user.uri が NULL のまま保存されるため、
+	// FindByURI では解決できない。localBaseURL が設定されていれば
+	// "{baseURL}/users/{id}" 形式の URI から ID を抜き出して FindByID で
+	// lookup する経路が通るはず。
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	// URI を持たないローカルユーザー
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+
+	body := []byte(`{
+		"type": "Follow",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	require.Len(t, followingRepo.Followings, 1)
+	for _, f := range followingRepo.Followings {
+		assert.Equal(t, "bob", f.FolloweeID)
+	}
+}
+
 func TestProcess_FollowAlreadyFollowing(t *testing.T) {
 	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
 	bobURI := "https://example.com/users/bob"
