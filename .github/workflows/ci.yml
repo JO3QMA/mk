@@ -73,10 +73,13 @@ jobs:
 
       # 全テストパッケージをImportPathでソートしmodulo分割する。
       # go listの出力順は決定的なので各shardは毎runで同じパッケージ集合を担当する。
+      # `awk 'NF'`でtest無しパッケージのempty行を防御的に除外する。現状Go 1.25/1.26
+      # は空テンプレート結果を出力しないが、将来のtoolchain変更でNRがずれて
+      # shard分配が不均衡になるリスクを潰す。
       - name: Determine shard packages
         id: shard
         run: |
-          ALL=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | sort)
+          ALL=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | awk 'NF' | sort)
           PKGS=$(echo "$ALL" | awk -v s=$SHARD_INDEX -v n=$SHARD_TOTAL 'NR % n == (s % n)' | tr '\n' ' ')
           echo "Shard $SHARD_INDEX/$SHARD_TOTAL packages:"
           echo "$PKGS" | tr ' ' '\n' | sed '/^$/d'
