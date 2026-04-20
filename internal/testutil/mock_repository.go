@@ -329,6 +329,14 @@ func applyUserFields(u *model.User, fields map[string]any) {
 			if s, ok := v.(string); ok {
 				u.AlsoKnownAs = &s
 			}
+		case "avatarUrl":
+			if s, ok := v.(*string); ok {
+				u.AvatarURL = s
+			}
+		case "bannerUrl":
+			if s, ok := v.(*string); ok {
+				u.BannerURL = s
+			}
 		}
 	}
 }

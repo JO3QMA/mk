@@ -61,6 +61,35 @@ func TestResolveActor_NewUser(t *testing.T) {
 	assert.Contains(t, pem, "FAKE")
 }
 
+func TestResolveActor_NewUserIngestsIconBanner(t *testing.T) {
+	// actor.icon / actor.image があれば avatarUrl / bannerUrl に取り込む。
+	body := `{
+		"id": "https://remote.example/users/alice",
+		"type": "Person",
+		"preferredUsername": "alice",
+		"inbox": "https://remote.example/users/alice/inbox",
+		"icon": {"type": "Image", "url": "https://remote.example/avatar.png"},
+		"image": {"type": "Image", "url": "https://remote.example/banner.png"},
+		"publicKey": {"publicKeyPem": "FAKE"}
+	}`
+	r, _ := newResolver(t, body, nil)
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+	require.NotNil(t, user.AvatarURL)
+	assert.Equal(t, "https://remote.example/avatar.png", *user.AvatarURL)
+	require.NotNil(t, user.BannerURL)
+	assert.Equal(t, "https://remote.example/banner.png", *user.BannerURL)
+}
+
+func TestResolveActor_NewUserWithoutIconBanner(t *testing.T) {
+	// icon / image を持たない actor は avatarUrl / bannerUrl を nil のまま。
+	r, _ := newResolver(t, sampleActor, nil)
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+	assert.Nil(t, user.AvatarURL)
+	assert.Nil(t, user.BannerURL)
+}
+
 func TestResolveActor_ExistingUser(t *testing.T) {
 	r, repo := newResolver(t, sampleActor, nil)
 	uri := "https://remote.example/users/alice"
@@ -800,6 +829,73 @@ func TestResolveActor_TTLRefresh(t *testing.T) {
 	pem, err := r.PublicKeyForActor("existing")
 	require.NoError(t, err)
 	assert.Contains(t, pem, "REFRESHED")
+}
+
+func TestResolveActor_TTLRefreshUpdatesIconBanner(t *testing.T) {
+	// refresh 時にリモートの icon / image が更新されていれば反映する。
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	old := time.Now().Add(-48 * time.Hour)
+	oldAvatar := "https://remote.example/old-avatar.png"
+	oldBanner := "https://remote.example/old-banner.png"
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		AvatarURL:     &oldAvatar,
+		BannerURL:     &oldBanner,
+		LastFetchedAt: &old,
+	}
+	updated := `{
+		"id": "https://remote.example/users/alice",
+		"type": "Person",
+		"preferredUsername": "alice",
+		"inbox": "https://remote.example/users/alice/inbox",
+		"icon": {"type": "Image", "url": "https://remote.example/new-avatar.png"},
+		"image": {"type": "Image", "url": "https://remote.example/new-banner.png"},
+		"publicKey": {"publicKeyPem": "REFRESHED"}
+	}`
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(updated)}, idGen)
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	require.NotNil(t, user.AvatarURL)
+	assert.Equal(t, "https://remote.example/new-avatar.png", *user.AvatarURL)
+	require.NotNil(t, user.BannerURL)
+	assert.Equal(t, "https://remote.example/new-banner.png", *user.BannerURL)
+}
+
+func TestResolveActor_TTLRefreshPreservesIconWhenOmitted(t *testing.T) {
+	// refresh 先の actor から icon が欠落していたら既存値を保持する (削除は追わない)。
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	old := time.Now().Add(-48 * time.Hour)
+	oldAvatar := "https://remote.example/keep-avatar.png"
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		AvatarURL:     &oldAvatar,
+		LastFetchedAt: &old,
+	}
+	// icon / image を含まない更新 actor
+	updated := `{
+		"id": "https://remote.example/users/alice",
+		"type": "Person",
+		"preferredUsername": "alice",
+		"inbox": "https://remote.example/users/alice/inbox",
+		"publicKey": {"publicKeyPem": "REFRESHED"}
+	}`
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(updated)}, idGen)
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	require.NotNil(t, user.AvatarURL)
+	assert.Equal(t, "https://remote.example/keep-avatar.png", *user.AvatarURL)
 }
 
 func TestResolveActor_NoRefreshWhenFresh(t *testing.T) {
