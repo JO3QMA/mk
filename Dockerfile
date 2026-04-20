@@ -11,6 +11,14 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
+# third_party/misskey (submodule) がruntime stageのCOPY対象になるので、
+# ビルド前に初期化されているか確認する。CIは docker.yml 側で submodules:
+# recursive を指定して取得する。ローカル build 時はユーザに指示を出す。
+RUN test -d third_party/misskey/packages/backend/assets || \
+    (echo "ERROR: third_party/misskey submodule not initialized." && \
+     echo "Run: git submodule update --init --recursive" && exit 1)
+
 RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
     go build -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
