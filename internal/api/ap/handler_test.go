@@ -64,6 +64,9 @@ func newReq(t *testing.T, paramName, paramValue string) (echo.Context, *httptest
 	t.Helper()
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// User/Note ハンドラは Accept ベースでAPか否かを切り替えるので、既存の
+	// AP レスポンスを検証するテストでは AP Accept を明示する。
+	req.Header.Set(echo.HeaderAccept, "application/activity+json")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 	c.SetParamNames(paramName)
@@ -457,8 +460,57 @@ func TestUserByAcct_HTMLFallsThrough(t *testing.T) {
 	h, _, _, _ := newHandler(t)
 	c, _ := newAcctReq(t, "text/html", "alice")
 	err := h.UserByAcct(c)
-	// Non-AP accept → return echo.ErrNotFound to let catch-all serve HTML.
+	// フォールバック未設定なら serveNonAP は ErrNotFound を返すので、
+	// ハンドラ単体のテストで確実に 404 相当を観測できる。
 	assert.Equal(t, echo.ErrNotFound, err)
+}
+
+func TestUserByAcct_HTMLUsesFallback(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+	called := false
+	h.SetNonAPFallback(func(c echo.Context) error {
+		called = true
+		return c.String(http.StatusOK, "FRONTEND")
+	})
+	c, rec := newAcctReq(t, "text/html", "alice")
+	require.NoError(t, h.UserByAcct(c))
+	assert.True(t, called, "fallback should be invoked for non-AP Accept")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "FRONTEND", rec.Body.String())
+}
+
+func TestUser_HTMLUsesFallback(t *testing.T) {
+	h, userRepo, _, _ := newHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	h.SetNonAPFallback(func(c echo.Context) error {
+		return c.String(http.StatusOK, "FRONTEND")
+	})
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(echo.HeaderAccept, "text/html")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues("u1")
+	require.NoError(t, h.User(c))
+	assert.Equal(t, "FRONTEND", rec.Body.String())
+}
+
+func TestNote_HTMLUsesFallback(t *testing.T) {
+	h, _, noteRepo, _ := newHandler(t)
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1", Visibility: model.NoteVisibilityPublic}
+	h.SetNonAPFallback(func(c echo.Context) error {
+		return c.String(http.StatusOK, "FRONTEND")
+	})
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(echo.HeaderAccept, "text/html")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues("n1")
+	require.NoError(t, h.Note(c))
+	assert.Equal(t, "FRONTEND", rec.Body.String())
 }
 
 func TestUserByAcct_LDJSON(t *testing.T) {

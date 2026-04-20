@@ -600,6 +600,11 @@ func (s *Server) setupRoutes() {
 	api.POST("/meta", metaHandler.Meta)
 	api.POST("/ping", metaHandler.Ping)
 
+	// Frontend SPA shell — AP resource handlers fall back to this when the
+	// request prefers HTML over application/activity+json, and the final
+	// catch-all route at the bottom of RegisterRoutes uses the same handler.
+	frontend := frontendHTML(s.config, metaRepo, proxyAccountResolver)
+
 	// URL preview endpoint
 	if previewMeta, err := metaRepo.Fetch(); err == nil {
 		previewCfg := coreurlpreview.Config{
@@ -1147,11 +1152,12 @@ func (s *Server) setupRoutes() {
 	// ActivityPub resource endpoints
 	apHandler := ap.NewHandler(apRenderer, userService, noteQueryService, keypairRepo, idGen)
 	apHandler.SetRemote(apFetcher, federationResolver)
+	// AP リソース系エンドポイントは Accept ヘッダで content negotiation する。
+	// ブラウザからのリロード (Accept: text/html など) では SPA 用の HTML を
+	// 返したいので、フォールバックとして frontendHTML を注入しておく。
+	apHandler.SetNonAPFallback(frontend)
 	s.echo.GET("/users/:id", apHandler.User)
 	s.echo.GET("/notes/:id", apHandler.Note)
-	// Content-negotiated actor endpoint: /@username (and /@username@host).
-	// When the caller asks for application/activity+json we return the
-	// Person document; otherwise the catch-all serves the HTML frontend.
 	s.echo.GET("/@:acct", apHandler.UserByAcct)
 
 	// Discovery endpoints
@@ -1985,7 +1991,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
-	s.echo.GET("/*", frontendHTML(s.config, metaRepo, proxyAccountResolver))
+	s.echo.GET("/*", frontend)
 }
 
 // generateInviteCode creates a random invite code string.
