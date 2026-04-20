@@ -62,8 +62,12 @@ services:
       - ./tests/dropin/nginx_a.conf:/etc/nginx/nginx.conf:ro
       - certs:/certs:ro
     depends_on:
-      - app-a
-      - certs
+      app-a:
+        condition: service_started
+      # certs は one-shot コンテナなので start ではなく完了を待たないと
+      # /certs/a.crt が無いまま nginx が起動してクラッシュする (Devin #366 #1)。
+      certs:
+        condition: service_completed_successfully
     networks:
       dropin:
         aliases:
@@ -114,8 +118,10 @@ services:
       - ./tests/dropin/nginx_b.conf:/etc/nginx/nginx.conf:ro
       - certs:/certs:ro
     depends_on:
-      - app-b
-      - certs
+      app-b:
+        condition: service_started
+      certs:
+        condition: service_completed_successfully
     networks:
       dropin:
         aliases:

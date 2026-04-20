@@ -98,9 +98,11 @@ class TestFederationNoteDelivery:
         remote_bob = instance_a.users_show("bob", host=B_DOMAIN)
         try:
             instance_a.follow(remote_bob["id"])
-        except RuntimeError:
-            # Already following is fine.
-            pass
+        except RuntimeError as e:
+            # ALREADY_FOLLOWING のみ許容。それ以外 (network error, rate limit
+            # 等) はそのまま raise して原因を露呈させる (Devin #366 #2)。
+            if "ALREADY_FOLLOWING" not in str(e):
+                raise
 
         marker = "dropin-smoke-" + bob["id"][-6:]
         bob_note = instance_b.create_note(marker)
