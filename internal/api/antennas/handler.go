@@ -21,6 +21,7 @@ type Handler struct {
 	noteRepo     repository.NoteRepository
 	idGen        id.Generator
 	instanceRepo repository.InstanceRepository
+	emojiRepo    repository.EmojiRepository
 }
 
 // NewHandler constructs an antennas Handler. noteRepo は antennas/notes で
@@ -40,6 +41,19 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// SetEmojiRepo attaches an EmojiRepository so custom emoji shortcodes in
+// note text and user displayNames get resolved to URLs.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // CreateRequest is the request body for antennas/create.
@@ -230,7 +244,7 @@ func (h *Handler) Notes(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
 		out = append(out, pn)

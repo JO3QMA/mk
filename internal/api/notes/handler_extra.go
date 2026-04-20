@@ -143,6 +143,7 @@ func (h *Handler) Mentions(c echo.Context) error {
 
 // UserListTimeline handles POST /api/notes/user-list-timeline.
 func (h *Handler) UserListTimeline(c echo.Context) error {
+	me := middleware.GetUser(c)
 	var req struct {
 		ListID  string `json:"listId"`
 		Limit   int    `json:"limit"`
@@ -155,8 +156,24 @@ func (h *Handler) UserListTimeline(c echo.Context) error {
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
-	// ユーザーリストのメンバーのノートを返す (簡易版: 空配列)
-	return c.JSON(http.StatusOK, []entity.NoteEntity{})
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	// リスト所有権チェック (TS互換: 自分のリストのみ閲覧可)
+	if h.userListRepo != nil {
+		list, err := h.userListRepo.FindByID(req.ListID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7bc05c21-1d7a-41ae-88f1-d8571571e198"))
+		}
+		if list.UserID != me.ID {
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7bc05c21-1d7a-41ae-88f1-d8571571e198"))
+		}
+	}
+	notes, err := h.noteRepo.ListByUserList(req.ListID, req.Limit, req.SinceID, req.UntilID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	return c.JSON(http.StatusOK, h.packMany(notes, me))
 }
 
 // SearchByTag handles POST /api/notes/search-by-tag.

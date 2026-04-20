@@ -824,6 +824,10 @@ func (m *MockNoteRepository) DeleteByUserBatch(userID string, batchSize int) (in
 	return n, nil
 }
 
+func (m *MockNoteRepository) ListByUserList(_ string, _ int, _, _ string) ([]*model.Note, error) {
+	return nil, nil
+}
+
 func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
 	if limit <= 0 {
 		limit = 10
@@ -986,6 +990,10 @@ func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID strin
 type MockEmojiRepository struct {
 	// keyed by "name@host" (host="" for local)
 	Emojis map[string]*model.Emoji
+	// CreateErr/UpdateErr forces Create/UpdateFields to return the given error
+	// without persisting. Used to exercise upsertEmojis error handling paths.
+	CreateErr error
+	UpdateErr error
 }
 
 func NewMockEmojiRepository() *MockEmojiRepository {
@@ -993,6 +1001,9 @@ func NewMockEmojiRepository() *MockEmojiRepository {
 }
 
 func (m *MockEmojiRepository) Create(e *model.Emoji) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
 	key := e.Name + "@"
 	if e.Host != nil {
 		key += *e.Host
@@ -1011,6 +1022,9 @@ func (m *MockEmojiRepository) FindByID(id string) (*model.Emoji, error) {
 }
 
 func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) error {
+	if m.UpdateErr != nil {
+		return m.UpdateErr
+	}
 	for _, e := range m.Emojis {
 		if e.ID == id {
 			for k, v := range fields {
@@ -1039,12 +1053,49 @@ func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) err
 					if ts, ok := v.(time.Time); ok {
 						e.UpdatedAt = &ts
 					}
+				case "originalUrl":
+					if s, ok := v.(string); ok {
+						e.OriginalURL = s
+					}
+				case "publicUrl":
+					if s, ok := v.(string); ok {
+						e.PublicURL = s
+					}
+				case "uri":
+					if sp, ok := v.(*string); ok {
+						e.URI = sp
+					}
 				}
 			}
 			return nil
 		}
 	}
 	return ErrNotFound
+}
+
+// FindManyByNamesAndHost returns emojis matching any of the given names for a specific host.
+func (m *MockEmojiRepository) FindManyByNamesAndHost(names []string, host *string) ([]*model.Emoji, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	nameSet := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		nameSet[n] = struct{}{}
+	}
+	var out []*model.Emoji
+	for _, e := range m.Emojis {
+		if _, ok := nameSet[e.Name]; !ok {
+			continue
+		}
+		if host == nil && e.Host != nil {
+			continue
+		}
+		if host != nil && (e.Host == nil || *e.Host != *host) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 func (m *MockEmojiRepository) Delete(id string) error {
@@ -3395,6 +3446,16 @@ func (m *MockUserListRepository) UpdateMembership(listID, userID string, withRep
 		}
 	}
 	return gorm.ErrRecordNotFound
+}
+
+func (m *MockUserListRepository) ListIDsByMember(userID string) ([]string, error) {
+	var ids []string
+	for _, mem := range m.Members {
+		if mem.UserID == userID {
+			ids = append(ids, mem.UserListID)
+		}
+	}
+	return ids, nil
 }
 
 func (m *MockUserListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {

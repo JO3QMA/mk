@@ -71,6 +71,7 @@ type Handler struct {
 	noteRepo            repository.NoteRepository
 	pageRepo            repository.PageRepository
 	instanceRepo        repository.InstanceRepository
+	emojiRepo           repository.EmojiRepository
 	mainStreamPublisher MainStreamPublisher
 }
 
@@ -100,6 +101,19 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// SetEmojiRepo attaches an EmojiRepository so custom emoji shortcodes in
+// note text and user displayNames get resolved to URLs.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // UnreadNotificationSource is the subset of notification.Service used by /api/i
@@ -859,7 +873,7 @@ func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, re
 
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 					packed := make([]any, 0, len(entities))
 					for _, pn := range entities {
 						packed = append(packed, pn)

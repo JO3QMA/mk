@@ -68,11 +68,23 @@ type Processor struct {
 
 	// Chat federation (CherryPick互換)
 	chatService ChatMessageReceiver
+
+	// Timeline fanout hook for remote notes (#330). ローカルノートは
+	// noteCreateService経由でfanoutされるが、リモートノートはIngestNote/
+	// handleAnnounce経由でDB直挿入されるためここで明示的にfanoutする。
+	fanoutHook TimelineFanoutHook
 }
 
 // ChatMessageReceiver handles inbound Misskey:ChatMessage activities.
 type ChatMessageReceiver interface {
 	CreateMessageViaAP(ctx context.Context, uri string, fromUser *model.User, toUserID, text string) (*model.ChatMessage, error)
+}
+
+// TimelineFanoutHook is invoked after a remote note has been persisted so
+// that timeline/streaming subscribers receive the note. パッケージ間の循環
+// 依存を避けるためinterfaceで受け取る (実装は core/timeline.FanoutHook)。
+type TimelineFanoutHook interface {
+	OnNoteCreated(note *model.Note, author *model.User)
 }
 
 // NewProcessor constructs a Processor. reactionService / noteDeleteSvc は省略
@@ -207,6 +219,13 @@ func (p *Processor) SetRelayMarker(m RelayStatusMarker) {
 // activities (CherryPick v12 federation).
 func (p *Processor) SetChatService(svc ChatMessageReceiver) {
 	p.chatService = svc
+}
+
+// SetFanoutHook wires a TimelineFanoutHook so that remote notes ingested via
+// handleCreate / handleAnnounce get pushed to timeline caches and streaming
+// subscribers (#330).
+func (p *Processor) SetFanoutHook(h TimelineFanoutHook) {
+	p.fanoutHook = h
 }
 
 // followRelayIDPattern extracts the relay id embedded in
@@ -421,12 +440,22 @@ func (p *Processor) handleAccept(act genericActivity) error {
 
 // handleCreate persists an inbound Note or Question carried by a Create activity.
 // Question (投票) はNote同様にIngestNoteで処理され、Pollレコードが自動作成される。
+// ノート取込み成功後、fanoutHookが配線されていればタイムライン/ストリーミングに
+// 配信する (#330)。
 func (p *Processor) handleCreate(act genericActivity) error {
-	if _, err := p.resolver.ResolveActor(act.Actor); err != nil {
+	actor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
 		return err
 	}
-	if _, err := p.resolver.IngestNote(act.Object); err != nil {
+	note, err := p.resolver.IngestNote(act.Object)
+	if err != nil {
 		return err
+	}
+	if p.fanoutHook != nil && note != nil {
+		// IngestNoteが既存ノートを返した場合 (重複) でもfanout自体は
+		// べき等なので呼んで問題ない。authorはnoteに紐付くUserを使うが、
+		// IngestNoteはUser fieldを設定しないためactorを使う。
+		p.fanoutHook.OnNoteCreated(note, actor)
 	}
 	return nil
 }
@@ -508,6 +537,9 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 		return err
 	}
 	_ = p.noteRepo.IncrementCount(target.ID, "renoteCount", 1)
+	if p.fanoutHook != nil {
+		p.fanoutHook.OnNoteCreated(renote, announcer)
+	}
 	return nil
 }
 

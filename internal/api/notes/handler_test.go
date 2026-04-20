@@ -872,6 +872,9 @@ func (f *failingNoteRepo) DeleteByUserBatch(_ string, _ int) (int64, error) { re
 func (f *failingNoteRepo) CountReplyTargets(_ string, _ int) ([]model.ReplyTargetCount, error) {
 	return nil, nil
 }
+func (f *failingNoteRepo) ListByUserList(_ string, _ int, _, _ string) ([]*model.Note, error) {
+	return nil, nil
+}
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/bbrks/go-blurhash"
 	"github.com/chai2010/webp"
-	"github.com/disintegration/imaging"
+	"github.com/kovidgoyal/imaging"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"

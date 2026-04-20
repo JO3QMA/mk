@@ -25,6 +25,9 @@ type EmojiRepository interface {
 	DeleteMany(ids []string) error
 	// ListWithFilter returns emojis matching search/category/host filters.
 	ListWithFilter(query, category string, local bool, limit, offset int) ([]*model.Emoji, error)
+	// FindManyByNamesAndHost returns emojis matching any of the given names for
+	// a specific host. host=nil searches local emojis (host IS NULL).
+	FindManyByNamesAndHost(names []string, host *string) ([]*model.Emoji, error)
 	// ListRemoteWithFilter mirrors ListWithFilter for remote emojis. host empty
 	// matches any remote host.
 	ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error)
@@ -94,6 +97,23 @@ func (r *emojiRepository) DeleteMany(ids []string) error {
 		return nil
 	}
 	return r.db.Where("id IN ?", ids).Delete(&model.Emoji{}).Error
+}
+
+func (r *emojiRepository) FindManyByNamesAndHost(names []string, host *string) ([]*model.Emoji, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	q := r.db.Where("name IN ?", names)
+	if host == nil {
+		q = q.Where("host IS NULL")
+	} else {
+		q = q.Where("host = ?", *host)
+	}
+	var emojis []*model.Emoji
+	if err := q.Find(&emojis).Error; err != nil {
+		return nil, err
+	}
+	return emojis, nil
 }
 
 func (r *emojiRepository) ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error) {

@@ -38,8 +38,10 @@ type Handler struct {
 	channelRepo       repository.ChannelRepository
 	channelMutingRepo repository.ChannelMutingRepository
 	instanceRepo      repository.InstanceRepository
+	emojiRepo         repository.EmojiRepository
 	driveFolderRepo   repository.DriveFolderRepository
 	userRepo          repository.UserRepository
+	userListRepo      repository.UserListRepository
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
@@ -83,6 +85,12 @@ func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 	h.instanceRepo = r
 }
 
+// SetEmojiRepo attaches an EmojiRepository so custom emoji shortcodes in
+// note text and user displayNames get resolved to URLs (#330).
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
 // SetDriveFolderRepo attaches a DriveFolderRepository so attached DriveFiles
 // in note responses can embed the owning folder (#317).
 func (h *Handler) SetDriveFolderRepo(r repository.DriveFolderRepository) {
@@ -95,6 +103,11 @@ func (h *Handler) SetUserRepo(r repository.UserRepository) {
 	h.userRepo = r
 }
 
+// SetUserListRepo attaches a UserListRepository for user-list-timeline.
+func (h *Handler) SetUserListRepo(r repository.UserListRepository) {
+	h.userListRepo = r
+}
+
 // instanceLookup returns the repository as an entity.InstanceLookup, or nil
 // when no repo has been wired. Narrowing to the entity interface keeps the
 // packer independent from repository details.
@@ -103,6 +116,15 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// emojiLookup returns the repository as an entity.EmojiLookup, or nil when
+// no repo has been wired.
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // NewHandler creates a new notes Handler.
@@ -227,7 +249,7 @@ func (h *Handler) Create(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	packed := entity.PackNoteWithInstance(created, h.idGen, h.instanceLookup())
+	packed := entity.PackNoteWithInstance(created, h.idGen, h.instanceLookup(), h.emojiLookup())
 	s := []entity.NoteEntity{packed}
 	h.resolveFiles(s)
 	h.resolveViewerFields(s, user)
@@ -254,7 +276,7 @@ func (h *Handler) Show(c echo.Context) error {
 		return apierr.JSONNoSuchNote(c)
 	}
 
-	packed := entity.PackNoteWithInstance(n, h.idGen, h.instanceLookup())
+	packed := entity.PackNoteWithInstance(n, h.idGen, h.instanceLookup(), h.emojiLookup())
 	s := []entity.NoteEntity{packed}
 	h.resolveFiles(s)
 	h.resolveViewerFields(s, viewer)
@@ -496,7 +518,7 @@ func (h *Handler) BulkShow(c echo.Context) error {
 // driveFileRepoが設定されている場合、ファイル情報を解決してFilesに含める。
 // viewerがnon-nilの場合、myReactionなどのviewer依存フィールドも解決する。
 func (h *Handler) packMany(notes []*model.Note, viewer *model.User) []entity.NoteEntity {
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	h.resolveFiles(out)
 	h.resolveViewerFields(out, viewer)
 	return out

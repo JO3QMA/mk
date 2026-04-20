@@ -39,6 +39,7 @@ type Handler struct {
 	renoteMutingRepo     repository.RenoteMutingRepository
 	followRequestRepo    repository.FollowRequestRepository
 	instanceRepo         repository.InstanceRepository
+	emojiRepo            repository.EmojiRepository
 	userListFavoriteRepo UserListFavoriteRepository
 	userListRepo         repository.UserListRepository
 	clipRepo             repository.ClipRepository
@@ -101,6 +102,11 @@ func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 	h.instanceRepo = r
 }
 
+// SetEmojiRepo attaches an EmojiRepository for custom emoji resolution.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
 // instanceLookup adapts instanceRepo to entity.InstanceLookup. Returns nil
 // when no repo is wired (entity.PackNotes treats nil as "skip Instance").
 func (h *Handler) instanceLookup() entity.InstanceLookup {
@@ -108,6 +114,37 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// emojiLookup adapts emojiRepo to entity.EmojiLookup. Returns nil
+// when no repo is wired (entity.PackNotes treats nil as "skip Emoji").
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
+}
+
+// populateUserEmojis resolves custom emoji names in user.Emojis to URLs and
+// sets lite.Emojis. PackNotes経由でなくUserLite/UserDetailedを直接返す
+// パス (users/show等) で使用する。
+func (h *Handler) populateUserEmojis(u *model.User, lite *entity.UserLite) {
+	if h.emojiRepo == nil || u == nil || lite == nil || len(u.Emojis) == 0 {
+		return
+	}
+	emojis, err := h.emojiRepo.FindManyByNamesAndHost(u.Emojis, u.Host)
+	if err != nil || len(emojis) == 0 {
+		return
+	}
+	m := make(map[string]string, len(emojis))
+	for _, e := range emojis {
+		url := e.PublicURL
+		if url == "" {
+			url = e.OriginalURL
+		}
+		m[e.Name] = url
+	}
+	lite.Emojis = m
 }
 
 // NewHandler creates a new users Handler.
@@ -172,6 +209,7 @@ func (h *Handler) Show(c echo.Context) error {
 		for _, b := range bundles {
 			lite := entity.PackUserLite(b.User)
 			resolver.FillUserLite(&lite)
+			h.populateUserEmojis(b.User, &lite)
 			out = append(out, lite)
 		}
 		return c.JSON(http.StatusOK, out)
@@ -226,6 +264,9 @@ func (h *Handler) Show(c echo.Context) error {
 			}
 		}
 	}
+
+	// ユーザーdisplayNameのカスタム絵文字を解決 (#330)
+	h.populateUserEmojis(bundle.User, &detailed.UserLite)
 
 	// Phase 7-3 (#245): ピン止めnote / ピン止めpage を埋める。
 	h.fillPinned(bundle.User, bundle.Profile, &detailed)
@@ -334,6 +375,7 @@ func (h *Handler) Search(c echo.Context) error {
 		profile := h.userService.GetProfile(u.ID)
 		d := entity.PackUserDetailed(u, profile, h.idGen)
 		resolver.FillUserLite(&d.UserLite)
+		h.populateUserEmojis(u, &d.UserLite)
 		out = append(out, d)
 	}
 	return c.JSON(http.StatusOK, out)
@@ -369,7 +411,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	return c.JSON(http.StatusOK, out)
 }
 
@@ -467,6 +509,7 @@ func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error)
 		if r.bundle != nil {
 			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
 			resolver.FillUserLite(&d.UserLite)
+			h.populateUserEmojis(r.bundle.User, &d.UserLite)
 			item.Follower = &d
 		}
 		out = append(out, item)
@@ -506,6 +549,7 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		if r.bundle != nil {
 			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
 			resolver.FillUserLite(&d.UserLite)
+			h.populateUserEmojis(r.bundle.User, &d.UserLite)
 			item.Followee = &d
 		}
 		out = append(out, item)
@@ -526,7 +570,7 @@ func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed
 			detailed.PinnedNoteIDs = ids
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 					packed := make([]any, 0, len(entities))
 					for _, pn := range entities {
 						packed = append(packed, pn)

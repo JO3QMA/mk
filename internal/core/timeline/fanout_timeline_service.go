@@ -46,6 +46,11 @@ func UserTimelineName(userID string) Name {
 	return Name("userTimeline:" + userID)
 }
 
+// UserListTimelineName returns the user-list timeline list key.
+func UserListTimelineName(listID string) Name {
+	return Name("userListTimeline:" + listID)
+}
+
 // FanoutTimelineService manages Redis-backed timeline lists.
 type FanoutTimelineService struct {
 	client *redis.Client

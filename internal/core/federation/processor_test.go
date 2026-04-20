@@ -1077,3 +1077,115 @@ func TestProcess_ChatMessage_MissingTo(t *testing.T) {
 	err := p.Process(body)
 	assert.Error(t, err)
 }
+
+// --- FanoutHook ---
+
+// fakeFanoutHook records OnNoteCreated calls for assertion.
+type fakeFanoutHook struct {
+	calls []fakeFanoutCall
+}
+
+type fakeFanoutCall struct {
+	noteID   string
+	authorID string
+}
+
+func (f *fakeFanoutHook) OnNoteCreated(note *model.Note, author *model.User) {
+	f.calls = append(f.calls, fakeFanoutCall{noteID: note.ID, authorID: author.ID})
+}
+
+func TestProcess_CreateCallsFanoutHook(t *testing.T) {
+	p, _, _, noteRepo := newProcessor(t, aliceActor)
+	hook := &fakeFanoutHook{}
+	p.SetFanoutHook(hook)
+
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Note",
+			"id": "https://remote.example/notes/n1",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "Hello from remote",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"]
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+	// ノートが取り込まれたこと
+	assert.True(t, len(noteRepo.Notes) > 0)
+	// fanoutHookが呼ばれたこと
+	require.Len(t, hook.calls, 1)
+	assert.NotEmpty(t, hook.calls[0].noteID)
+	assert.NotEmpty(t, hook.calls[0].authorID)
+}
+
+func TestProcess_AnnounceCallsFanoutHook(t *testing.T) {
+	p, repo, _, noteRepo := newProcessor(t, aliceActor)
+	hook := &fakeFanoutHook{}
+	p.SetFanoutHook(hook)
+
+	// Announceのターゲットとなるローカルノートを用意
+	noteURI := "https://example.com/notes/local1"
+	noteRepo.Notes["local1"] = &model.Note{
+		ID:         "local1",
+		UserID:     "bob",
+		URI:        &noteURI,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/activities/announce1",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/local1"
+	}`)
+	require.NoError(t, p.Process(body))
+	// fanoutHookが呼ばれたこと
+	require.Len(t, hook.calls, 1)
+	// Announce で作成された renote の ID が渡される
+	assert.NotEqual(t, "local1", hook.calls[0].noteID)
+}
+
+func TestProcess_CreateWithoutFanoutHook(t *testing.T) {
+	// fanoutHookがnilでもCreate処理はpanicしない
+	p, _, _, noteRepo := newProcessor(t, aliceActor)
+
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Note",
+			"id": "https://remote.example/notes/n2",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "No hook",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"]
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.True(t, len(noteRepo.Notes) > 0)
+}
+
+func TestProcess_AnnounceWithoutFanoutHook(t *testing.T) {
+	// fanoutHookがnilでもAnnounce処理はpanicしない
+	p, repo, _, noteRepo := newProcessor(t, aliceActor)
+
+	noteURI := "https://example.com/notes/local2"
+	noteRepo.Notes["local2"] = &model.Note{
+		ID:         "local2",
+		UserID:     "bob",
+		URI:        &noteURI,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/activities/announce2",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/local2"
+	}`)
+	require.NoError(t, p.Process(body))
+}

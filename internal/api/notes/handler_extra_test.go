@@ -162,15 +162,69 @@ func TestMentions_InvalidJSON(t *testing.T) {
 // --- UserListTimeline ---
 
 func TestUserListTimeline_Success(t *testing.T) {
-	h, _, _ := newExtraHandler(t)
+	h, noteRepo, _ := newExtraHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "my list"}
+	h.SetUserListRepo(listRepo)
+	// リストメンバーのノートを用意
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "member1", Visibility: "public", User: &model.User{ID: "member1"}}
 	rec := postExtra(h.UserListTimeline, `{"listId":"l1"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+}
+
+func TestUserListTimeline_NotOwner(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	// リストは別ユーザー "other" が所有
+	listRepo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "other", Name: "their list"}
+	h.SetUserListRepo(listRepo)
+	rec := postExtra(h.UserListTimeline, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_LIST", errObj["code"])
+}
+
+func TestUserListTimeline_ListNotFound(t *testing.T) {
+	h, _, _ := newExtraHandler(t)
+	listRepo := testutil.NewMockUserListRepository()
+	h.SetUserListRepo(listRepo)
+	// リストが存在しない場合
+	rec := postExtra(h.UserListTimeline, `{"listId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_LIST", errObj["code"])
 }
 
 func TestUserListTimeline_InvalidParam(t *testing.T) {
 	h, _, _ := newExtraHandler(t)
 	rec := postExtra(h.UserListTimeline, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUserListTimeline_WithoutUserListRepo(t *testing.T) {
+	// userListRepoがnilの場合は所有権チェックをスキップしてDBクエリに進む
+	h, _, _ := newExtraHandler(t)
+	rec := postExtra(h.UserListTimeline, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+type failingListByUserListRepo struct{ *testutil.MockNoteRepository }
+
+func (f *failingListByUserListRepo) ListByUserList(_ string, _ int, _, _ string) ([]*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
+
+func TestUserListTimeline_RepoError(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	h := NewHandler(&failingListByUserListRepo{testutil.NewMockNoteRepository()}, nil, nil, nil, nil, nil, nil, nil, idGen)
+	rec := postExtra(h.UserListTimeline, `{"listId":"l1"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 // --- SearchByTag ---

@@ -42,6 +42,13 @@ type StreamingPublisher interface {
 	PublishNote(topic string, n *model.Note, author *model.User)
 }
 
+// UserListMemberLookup abstracts the query "which user lists contain this
+// user?" for user list timeline fanout. 循環依存を避けるため interface で
+// 受け取る (実装は repository.UserListRepository)。
+type UserListMemberLookup interface {
+	ListIDsByMember(userID string) ([]string, error)
+}
+
 // FanoutHook implements note.TimelineFanoutHook by pushing newly-created notes
 // onto the appropriate Redis timelines (home/local/global/user).
 type FanoutHook struct {
@@ -49,6 +56,7 @@ type FanoutHook struct {
 	followingRepo repository.FollowingRepository
 	publisher     StreamingPublisher
 	limits        MetaCacheLimitsProvider
+	userListRepo  UserListMemberLookup
 }
 
 // NewFanoutHook constructs a FanoutHook.
@@ -68,6 +76,12 @@ func (h *FanoutHook) SetStreamingPublisher(p StreamingPublisher) {
 // constant for every timeline (legacy behaviour).
 func (h *FanoutHook) SetCacheLimitsProvider(p MetaCacheLimitsProvider) {
 	h.limits = p
+}
+
+// SetUserListRepo attaches a UserListMemberLookup so that note creation
+// triggers push to userListTimeline:<listId> topics (#330).
+func (h *FanoutHook) SetUserListRepo(r UserListMemberLookup) {
+	h.userListRepo = r
 }
 
 // OnNoteCreated delivers the given note to user/home/local/global timelines.
@@ -113,6 +127,12 @@ func (h *FanoutHook) OnNoteCreated(n *model.Note, author *model.User) {
 	if n.Visibility == model.NoteVisibilityPublic {
 		h.pushWithLimit(ctx, GlobalTimeline, n.ID, MaxTimelineLength)
 		h.publishNote("globalTimeline", n, author)
+	}
+
+	// 5. ユーザーリストタイムライン: 投稿者が属するリストへ配信
+	if h.userListRepo != nil && shouldFanoutToFollowers(n) {
+		listCap := resolveCap(limits, UserListTimelineKind)
+		h.fanoutToUserLists(ctx, n, author, listCap)
 	}
 }
 
@@ -238,6 +258,19 @@ func (h *FanoutHook) fanoutStreamingToFollowers(authorID string, n *model.Note, 
 			return
 		}
 		offset += pageSize
+	}
+}
+
+// fanoutToUserLists pushes the note to all user lists that contain the author.
+func (h *FanoutHook) fanoutToUserLists(ctx context.Context, n *model.Note, author *model.User, listCap int) {
+	listIDs, err := h.userListRepo.ListIDsByMember(author.ID)
+	if err != nil {
+		slog.Warn("fanoutToUserLists: list lookup failed", "err", err, "author", author.ID)
+		return
+	}
+	for _, listID := range listIDs {
+		h.pushWithLimit(ctx, UserListTimelineName(listID), n.ID, listCap)
+		h.publishNote("userListTimeline:"+listID, n, author)
 	}
 }
 
