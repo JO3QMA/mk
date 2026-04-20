@@ -188,6 +188,39 @@ func TestFollow_LockedUser_PublishesReceiveFollowRequest(t *testing.T) {
 	assert.Equal(t, "alice", m["username"])
 }
 
+// stubFederationHook は federationHook の呼び出しを検証用に記録する。
+type stubFederationHook struct {
+	followed   []string
+	unfollowed []string
+	accepted   []string
+}
+
+func (h *stubFederationHook) OnLocalFollowed(follower, followee *model.User) {
+	h.followed = append(h.followed, follower.ID+"->"+followee.ID)
+}
+func (h *stubFederationHook) OnLocalUnfollowed(follower, followee *model.User) {
+	h.unfollowed = append(h.unfollowed, follower.ID+"->"+followee.ID)
+}
+func (h *stubFederationHook) OnLocalFollowAccepted(follower, followee *model.User) {
+	h.accepted = append(h.accepted, follower.ID+"->"+followee.ID)
+}
+
+func TestFollow_LockedUser_InvokesFederationHook(t *testing.T) {
+	// 承認制の相手に対する follow でも AP Follow activity が飛ぶ必要がある
+	// (相手側の承認を待つフロー)。federationHook.OnLocalFollowed が呼ばれ、
+	// 実装側の shouldDeliverFollow でリモートかどうか判定される。
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	fed := &stubFederationHook{}
+	svc.SetFederationHook(fed)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"alice->bob"}, fed.followed)
+}
+
 func TestFollow_PublicUser_DoesNotPublishReceiveFollowRequest(t *testing.T) {
 	svc, userRepo, _, _ := newSvc(t)
 	addUser(t, userRepo, "alice", false)

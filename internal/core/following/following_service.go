@@ -214,6 +214,13 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		if s.notificationHook != nil {
 			s.notificationHook.OnFollowRequested(followerID, followeeID)
 		}
+		// リモートの承認制followeeにはAP Follow activityを送る必要がある
+		// (相手側の inbox で FollowRequest が作られ、承認時に Accept が
+		// 返ってくる)。federationHook.OnLocalFollowed は shouldDeliverFollow
+		// でローカル→リモート条件を確認してから配信する。
+		if s.federationHook != nil {
+			s.federationHook.OnLocalFollowed(follower, followee)
+		}
 		// TS本家: UserFollowingService は `receiveFollowRequest` を
 		// followee の main stream に publish する。body は follower User。
 		// UserLite で送るのは他のWSイベント (notification内のuser等) と
