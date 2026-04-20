@@ -111,8 +111,8 @@ func (h *Handler) ShowInstance(c echo.Context) error {
 // by misskey-js. 不明値や nil ポインタはそのまま JSON null になるよう map に
 // 載せる。
 //
-// federating / subscribing / publishing は本家 Misskey と同様に
-// followingCount / followersCount から動的に計算する (DB には列を持たない)。
+// federating / subscribing / publishingは本家Misskeyと同様に
+// followingCount / followersCountから動的に計算する (DBには列を持たない)。
 func instanceToMap(inst *model.Instance) map[string]any {
 	return map[string]any{
 		"id":                      inst.ID,

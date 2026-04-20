@@ -83,14 +83,14 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 	if filter.NotResponding != nil {
 		q = q.Where("\"isNotResponding\" = ?", *filter.NotResponding)
 	}
-	// federating / subscribing / publishing は handler 側の instanceToMap と
-	// 同じ式で判定する。false 指定のときも反対条件でフィルタリングしないと、
-	// レスポンス上の federating と filter の意味論が食い違う (本家 TS と同じ挙動)。
+	// federating / subscribing / publishingはhandler側のinstanceToMapと
+	// 同じ式で判定する。false指定のときも反対条件でフィルタリングしないと、
+	// レスポンス上のfederatingとfilterの意味論が食い違う (本家TSと同じ挙動)。
 	if filter.Federating != nil {
 		if *filter.Federating {
 			// GORMはraw string中のOR条件を自動では括弧で囲まないため、
 			// 他の.Where()とANDで連結したときに演算子優先順位で崩れる。
-			// 同じ注意点は note.go:407 / announcement.go:114 と同様。
+			// 同じ注意点はnote.go:407 / announcement.go:114と同様。
 			q = q.Where("(\"followingCount\" > 0 OR \"followersCount\" > 0)")
 		} else {
 			q = q.Where("\"followingCount\" = 0 AND \"followersCount\" = 0")
