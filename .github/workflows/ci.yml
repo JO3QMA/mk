@@ -22,6 +22,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
     services:
       postgres:
         image: postgres:16-alpine
@@ -56,6 +61,8 @@ jobs:
       TEST_DB_SSLMODE: disable
       TEST_REDIS_HOST: localhost
       TEST_REDIS_PORT: 6379
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_TOTAL: 4
 
     steps:
       - uses: actions/checkout@v4
@@ -64,19 +71,27 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # テスト対象はgo listでテストファイルのあるパッケージのみに絞る。
+      # 全テストパッケージをImportPathでソートしmodulo分割する。
+      # go listの出力順は決定的なので各shardは毎runで同じパッケージ集合を担当する。
+      - name: Determine shard packages
+        id: shard
+        run: |
+          ALL=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | sort)
+          PKGS=$(echo "$ALL" | awk -v s=$SHARD_INDEX -v n=$SHARD_TOTAL 'NR % n == (s % n)' | tr '\n' ' ')
+          echo "Shard $SHARD_INDEX/$SHARD_TOTAL packages:"
+          echo "$PKGS" | tr ' ' '\n' | sed '/^$/d'
+          echo "pkgs=$PKGS" >> "$GITHUB_OUTPUT"
+
       # pipefailを明示的に立てないと`go test ... | tee`が失敗を握りつぶす
       # (teeのexit 0がパイプライン全体の結果になる) ため設定する。
-      - name: Run all tests with coverage
+      - name: Run tests with coverage
         run: |
           set -o pipefail
-          PKGS=$(go list -f '{{if (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... | tr '\n' ' ')
-          echo "Testing packages: $PKGS"
-          go test $PKGS \
+          go test ${{ steps.shard.outputs.pkgs }} \
             -race \
             -count=1 \
             -timeout 10m \
-            -coverprofile=coverage.out \
+            -coverprofile=coverage-shard-${SHARD_INDEX}.out \
             -covermode=atomic 2>&1 | tee test_output.txt
 
       - name: Enforce per-package coverage
@@ -95,14 +110,14 @@ jobs:
               fail = 1
             }
           } END { if (fail) exit 1 }'
-          echo "All packages meet coverage thresholds"
+          echo "Shard $SHARD_INDEX: all packages meet coverage thresholds"
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: coverage.out
+          name: coverage-shard-${{ matrix.shard }}
+          path: coverage-shard-${{ matrix.shard }}.out
           if-no-files-found: ignore
 
   lint:
