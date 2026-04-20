@@ -255,7 +255,12 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		s.notificationHook.OnFollowed(followerID, followeeID)
 	}
 	if s.federationHook != nil {
+		// アウトバウンド: local→remote follow の場合は Follow activity を送る。
 		s.federationHook.OnLocalFollowed(follower, followee)
+		// インバウンド: remote→local follow (受信側) の場合は Accept activity
+		// を送り返す。hook 内部で shouldDeliverFollow / IsLocal 判定があるので
+		// 方向違いなら自然に no-op になる。
+		s.federationHook.OnLocalFollowAccepted(follower, followee)
 	}
 	if s.chartHook != nil {
 		s.chartHook.OnFollow(follower, followee)
