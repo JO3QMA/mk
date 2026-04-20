@@ -21,6 +21,16 @@ git submodule update --init --recursive third_party/misskey
 
 ## 初回セットアップ
 
+### 0. 設定ファイルのコピー
+
+`compose.uds.yaml` と `deploy/uds/config/default.yml` はデプロイ先ごとに URL や公開ポートを書き換える想定で gitignore しています。リポジトリには `.example` 版のみ含まれているので、初回のみ以下でコピーしてください。以降は自分の環境に合わせて自由に編集して構いません。
+
+```sh
+make uds-init
+```
+
+`uds-init` は order-only prerequisite で実装されているので、ファイルが既にある場合は何もしません (`.example` を更新してもローカル編集は上書きされない)。`uds-build` / `uds-up` / `uds-down` / `uds-down-v` / `uds-logs` / `uds-ps` も同じ prerequisite を持つため、コピー忘れでエラーになることはありません (`uds-frontend-build` は compose / config を参照しないので対象外)。
+
 ### 1. 本家フロントエンドのビルド
 
 初回のみ、本家 Misskey の vite ビルドを行います (3〜10 分)。`make uds-frontend-build` は既存の `e2e-frontend-build` と同一のターゲットで、`node:20-bookworm` コンテナの中で `pnpm install --frozen-lockfile && pnpm build` を走らせます。
@@ -154,11 +164,13 @@ mk-go 側の実装変更で `/healthz` のパスが変わっている可能性�
 
 ## 構成ファイル一覧
 
+`compose.uds.yaml` と `deploy/uds/config/default.yml` はリポジトリには `.example` 版のみ存在し、`make uds-init` (または初回の `make uds-*`) で `.example` からコピーされる。以下の表はセットアップ後のローカルファイル名で記載している。
+
 | ファイル | 役割 |
 |---------|------|
-| `compose.uds.yaml` | 全サービスを繋ぐ compose エントリポイント |
+| `compose.uds.yaml` (`.example` から生成) | 全サービスを繋ぐ compose エントリポイント |
 | `deploy/uds/Dockerfile.mkgo` | mk-go runtime image (migrate 同梱 + curl) |
 | `deploy/uds/mkgo-entrypoint.sh` | migrate → exec misskey |
 | `deploy/uds/nginx/mkgo.conf` | UDS upstream + WebSocket upgrade 付き nginx 設定 |
 | `deploy/uds/valkey/valkey.conf` | `port 0` + UNIX socket listen の valkey 設定 |
-| `deploy/uds/config/default.yml` | UDS 前提の mk-go 設定 |
+| `deploy/uds/config/default.yml` (`.example` から生成) | UDS 前提の mk-go 設定 |

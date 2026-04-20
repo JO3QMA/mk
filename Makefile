@@ -2,7 +2,7 @@
 	federation-misskey-build federation-misskey-up federation-misskey-test \
 	federation-misskey-down federation-misskey-logs \
 	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
-	uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
+	uds-init uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
 	bench-up bench-run bench-down bench-logs
 
 # Binary output
@@ -134,28 +134,40 @@ e2e-open:
 # 対応を使って nginx → mk-go → postgres / valkey をすべて UDS で繋ぐ。
 # 詳細は docs/docker-uds.md を参照。
 UDS_COMPOSE=compose.uds.yaml
+UDS_CONFIG=deploy/uds/config/default.yml
+
+# compose / config の実ファイルはデプロイ先ごとに書き換えるため gitignore 済み。
+# 初回起動時のみ .example からコピーする (order-only prerequisite なので、
+# 一度作成したあとは .example を更新してもユーザのローカル編集を上書きしない)。
+$(UDS_COMPOSE):
+	cp $(UDS_COMPOSE).example $(UDS_COMPOSE)
+
+$(UDS_CONFIG):
+	cp $(UDS_CONFIG).example $(UDS_CONFIG)
+
+uds-init: | $(UDS_COMPOSE) $(UDS_CONFIG)
 
 # 本家 vite フロントエンドを docker 内でビルドする。初回は 3〜10 分程度かかる。
 # 既存 e2e-frontend-build のエイリアス (成果物先が同じなので共有して OK)。
 uds-frontend-build: e2e-frontend-build
 
-uds-build:
+uds-build: | $(UDS_COMPOSE) $(UDS_CONFIG)
 	docker compose -f $(UDS_COMPOSE) build
 
-uds-up:
+uds-up: | $(UDS_COMPOSE) $(UDS_CONFIG)
 	docker compose -f $(UDS_COMPOSE) up -d --build
 
-uds-down:
+uds-down: | $(UDS_COMPOSE)
 	docker compose -f $(UDS_COMPOSE) down
 
 # named volume も含めて完全削除する (DB データも全部消える)。
-uds-down-v:
+uds-down-v: | $(UDS_COMPOSE)
 	docker compose -f $(UDS_COMPOSE) down -v
 
-uds-logs:
+uds-logs: | $(UDS_COMPOSE)
 	docker compose -f $(UDS_COMPOSE) logs -f
 
-uds-ps:
+uds-ps: | $(UDS_COMPOSE)
 	docker compose -f $(UDS_COMPOSE) ps
 
 # Benchmark ― mk-go vs 本家 Misskey のストレステスト比較。
