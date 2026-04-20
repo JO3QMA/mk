@@ -53,6 +53,14 @@ services:
         condition: service_healthy
     volumes:
       - ./tests/dropin/instance_a.yml:/misskey/.config/default.yml:ro
+    # POST /api/ping が pong を返すまでを healthy と判定する。Misskey TS は
+    # 起動に 20-60s かかるので start_period に余裕を持たせる。
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -X POST -H 'Content-Type: application/json' -d '{}' http://localhost:3000/api/ping | grep -q pong"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     networks:
       - dropin
 
@@ -62,8 +70,10 @@ services:
       - ./tests/dropin/nginx_a.conf:/etc/nginx/nginx.conf:ro
       - certs:/certs:ro
     depends_on:
+      # service_healthy にすることで Misskey 初期化中に nginx が 502 を
+      # 返す窓を消す (Devin #366 round-2)。
       app-a:
-        condition: service_started
+        condition: service_healthy
       # certs は one-shot コンテナなので start ではなく完了を待たないと
       # /certs/a.crt が無いまま nginx が起動してクラッシュする (Devin #366 #1)。
       certs:
@@ -109,6 +119,12 @@ services:
         condition: service_healthy
     volumes:
       - ./tests/dropin/instance_b.yml:/misskey/.config/default.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -X POST -H 'Content-Type: application/json' -d '{}' http://localhost:3000/api/ping | grep -q pong"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     networks:
       - dropin
 
@@ -119,7 +135,7 @@ services:
       - certs:/certs:ro
     depends_on:
       app-b:
-        condition: service_started
+        condition: service_healthy
       certs:
         condition: service_completed_successfully
     networks:
