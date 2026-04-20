@@ -300,13 +300,13 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 - `go build ./...`で全パッケージのビルド確認。
 
-### `test`ジョブ
+### `test-shards`ジョブ + `test` aggregator
 
-- **4-way matrix shard** で並列実行する (`shard: [1,2,3,4]`)。各shardは独立した
-  PostgreSQL 16 Alpine / Redis 7 Alpine サービスコンテナを持つ。
+- **4-way matrix shard** で並列実行する `test-shards` (`shard: [1,2,3,4]`)。各shardは
+  独立したPostgreSQL 16 Alpine / Redis 7 Alpine サービスコンテナを持つ。
 - テスト対象は`go list`で絞り込み（テストファイルがあるパッケージのみ）した上で
-  ImportPath順にソート→`NR % 4`で各shardに均等割り当て。新規パッケージ追加で
-  shard内の構成が変わっても、決定的な分配により再現性は保たれる。
+  `awk 'NF'`で空行除外→ImportPath順にソート→`NR % 4`で各shardに均等割り当て。
+  新規パッケージ追加でshard内の構成が変わっても、決定的な分配により再現性は保たれる。
 - 実行条件: `-race -count=1 -timeout 10m -coverprofile=coverage-shard-N.out -covermode=atomic`
 - **カバレッジ閾値チェック** (各shard内で実行)：
   - `internal/api/admin`配下: 80%以上（SMTP/queue/DB集計等の外部依存で90%未到達のため暫定緩和）
@@ -314,6 +314,9 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
   - それ以外のパッケージ: 90%以上
   - shard内のいずれかのパッケージが閾値未達なら、そのshardが失敗する。
 - カバレッジレポートは`coverage-shard-N`アーティファクトとして各shardからアップロード。
+- `test` job は `needs: test-shards / if: always()` で全shardを束ね、ブランチ保護が
+  要求する `test` という名前の単一checkを公開する。いずれかのshardが失敗したら
+  `needs.test-shards.result != 'success'` で `exit 1`。
 
 ### `lint`ジョブ
 

@@ -19,7 +19,10 @@ jobs:
       - name: Build
         run: go build ./...
 
-  test:
+  # 各shardは並列に走るが、checkは `test-shards (N)` という名前で個別に登録される。
+  # ブランチ保護が `test` という名前のcheckを要求するため、後段の `test` job が
+  # 全shardを束ねて単一の `test` checkを公開する (needs: test-shards)。
+  test-shards:
     runs-on: ubuntu-latest
 
     strategy:
@@ -122,6 +125,23 @@ jobs:
           name: coverage-shard-${{ matrix.shard }}
           path: coverage-shard-${{ matrix.shard }}.out
           if-no-files-found: ignore
+
+  # ブランチ保護が要求する `test` check を満たすためのaggregator。全shardの結果を
+  # `needs.test-shards.result` で集約し、いずれかが失敗したらこのjob自体を失敗
+  # させる。`if: always()` を付けないとshard失敗時にskipされ "test" check が
+  # 完了状態にならない。
+  test:
+    runs-on: ubuntu-latest
+    needs: test-shards
+    if: always()
+    steps:
+      - name: Verify all shards passed
+        run: |
+          if [ "${{ needs.test-shards.result }}" != "success" ]; then
+            echo "test-shards result: ${{ needs.test-shards.result }}"
+            exit 1
+          fi
+          echo "All test shards passed"
 
   lint:
     runs-on: ubuntu-latest
