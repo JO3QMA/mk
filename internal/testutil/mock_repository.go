@@ -1704,15 +1704,23 @@ func (m *MockInstanceRepository) List(filter model.InstanceListFilter) ([]*model
 		if filter.NotResponding != nil && inst.IsNotResponding != *filter.NotResponding {
 			continue
 		}
-		if filter.Federating != nil && *filter.Federating &&
-			inst.FollowingCount == 0 && inst.FollowersCount == 0 {
-			continue
+		if filter.Federating != nil {
+			federating := inst.FollowingCount > 0 || inst.FollowersCount > 0
+			if federating != *filter.Federating {
+				continue
+			}
 		}
-		if filter.Subscribing != nil && *filter.Subscribing && inst.FollowersCount == 0 {
-			continue
+		if filter.Subscribing != nil {
+			subscribing := inst.FollowersCount > 0
+			if subscribing != *filter.Subscribing {
+				continue
+			}
 		}
-		if filter.Publishing != nil && *filter.Publishing && inst.FollowingCount == 0 {
-			continue
+		if filter.Publishing != nil {
+			publishing := inst.FollowingCount > 0
+			if publishing != *filter.Publishing {
+				continue
+			}
 		}
 		rows = append(rows, inst)
 	}

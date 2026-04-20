@@ -83,14 +83,29 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 	if filter.NotResponding != nil {
 		q = q.Where("\"isNotResponding\" = ?", *filter.NotResponding)
 	}
-	if filter.Federating != nil && *filter.Federating {
-		q = q.Where("\"followingCount\" > 0 OR \"followersCount\" > 0")
+	// federating / subscribing / publishing は handler 側の instanceToMap と
+	// 同じ式で判定する。false 指定のときも反対条件でフィルタリングしないと、
+	// レスポンス上の federating と filter の意味論が食い違う (本家 TS と同じ挙動)。
+	if filter.Federating != nil {
+		if *filter.Federating {
+			q = q.Where("\"followingCount\" > 0 OR \"followersCount\" > 0")
+		} else {
+			q = q.Where("\"followingCount\" = 0 AND \"followersCount\" = 0")
+		}
 	}
-	if filter.Subscribing != nil && *filter.Subscribing {
-		q = q.Where("\"followersCount\" > 0")
+	if filter.Subscribing != nil {
+		if *filter.Subscribing {
+			q = q.Where("\"followersCount\" > 0")
+		} else {
+			q = q.Where("\"followersCount\" = 0")
+		}
 	}
-	if filter.Publishing != nil && *filter.Publishing {
-		q = q.Where("\"followingCount\" > 0")
+	if filter.Publishing != nil {
+		if *filter.Publishing {
+			q = q.Where("\"followingCount\" > 0")
+		} else {
+			q = q.Where("\"followingCount\" = 0")
+		}
 	}
 	switch filter.SortBy {
 	case "+host":
