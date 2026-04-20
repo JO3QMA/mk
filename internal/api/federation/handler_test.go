@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -123,4 +124,40 @@ func TestShowInstance_NotFound(t *testing.T) {
 	c, rec := newReq(t, `{"host":"missing.example"}`)
 	require.NoError(t, h.ShowInstance(c))
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestShowInstance_FederatingFlags verifies that the response includes the
+// computed federating / subscribing / publishing fields expected by misskey-js.
+func TestShowInstance_FederatingFlags(t *testing.T) {
+	cases := []struct {
+		name        string
+		following   int
+		followers   int
+		federating  bool
+		subscribing bool
+		publishing  bool
+	}{
+		{name: "no federation", following: 0, followers: 0, federating: false, subscribing: false, publishing: false},
+		{name: "only outgoing", following: 3, followers: 0, federating: true, subscribing: false, publishing: true},
+		{name: "only incoming", following: 0, followers: 5, federating: true, subscribing: true, publishing: false},
+		{name: "bidirectional", following: 4, followers: 2, federating: true, subscribing: true, publishing: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, repo := newHandler(t)
+			inst := seedInstance(t, repo, "flags.example")
+			inst.FollowingCount = tc.following
+			inst.FollowersCount = tc.followers
+
+			c, rec := newReq(t, `{"host":"flags.example"}`)
+			require.NoError(t, h.ShowInstance(c))
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+			assert.Equal(t, tc.federating, got["federating"])
+			assert.Equal(t, tc.subscribing, got["subscribing"])
+			assert.Equal(t, tc.publishing, got["publishing"])
+		})
+	}
 }
