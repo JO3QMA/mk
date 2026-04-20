@@ -185,3 +185,17 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 
 	return d
 }
+
+// PackUserForFollowStreamEvent returns a UserDetailed envelope suitable for
+// main channelの"follow"/"unfollow"/"followed"イベントのbody。本家Misskey
+// TSはUserDetailedNotMe schemaでpackし、frontendのMkFollowButton.onFollowChange
+// がuser.isFollowing / user.hasPendingFollowRequestFromYouを読んでボタン状態を
+// 更新するので、この2フィールドをviewer視点の値で明示的に埋める必要がある。
+// 他のviewer依存フィールド (isBlocking/isMuted等) はzero値のままにする
+// (frontendのfollowボタン更新には不要)。
+func PackUserForFollowStreamEvent(u *model.User, isFollowing, hasPendingFollowRequestFromYou bool) UserDetailed {
+	d := PackUserDetailed(u, nil)
+	d.IsFollowing = &isFollowing
+	d.HasPendingFollowRequestFromYou = &hasPendingFollowRequestFromYou
+	return d
+}

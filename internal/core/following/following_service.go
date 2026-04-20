@@ -260,9 +260,11 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 	}
 	// TS本家 UserFollowingService.follow() は follower の main に `follow`
 	// (相手側の User)、followee の main に `followed` (自分を follow した
-	// User) を publish する。本実装は hot path のため UserLite で送る。
+	// User) を publish する。frontend MkFollowButton.onFollowChangeが
+	// body.isFollowing / body.hasPendingFollowRequestFromYouを読むため、
+	// UserDetailed shapeでpackしてviewer依存フィールドも埋めておく。
 	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(followerID, "follow", entity.PackUserLite(followee))
+		s.mainStreamPublisher.PublishMainEvent(followerID, "follow", entity.PackUserForFollowStreamEvent(followee, true, false))
 		s.mainStreamPublisher.PublishMainEvent(followeeID, "followed", entity.PackUserLite(follower))
 	}
 
@@ -304,9 +306,11 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 				s.webhookHook.OnUnfollow(follower, followee)
 			}
 			// TS本家は自分が unfollow した相手を main に publish する
-			// (フォローボタン等の即時反映)。
+			// (フォローボタン等の即時反映)。follow event と同様、UserDetailed
+			// shapeでisFollowing=false / hasPendingFollowRequestFromYou=falseを
+			// 明示的に埋める (frontendはこれらを直接代入するのでundefined不可)。
 			if s.mainStreamPublisher != nil {
-				s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserLite(followee))
+				s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserForFollowStreamEvent(followee, false, false))
 			}
 		}
 	}
@@ -359,9 +363,9 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 			// Accept によって Following が成立するので、Follow() と同じく
 			// follower の main に `follow`、followee の main に `followed`
 			// を publish する (TS本家 UserFollowingService.acceptFollow
-			// と同等)。
+			// と同等)。follow event body は UserDetailed + isFollowing=true。
 			if s.mainStreamPublisher != nil {
-				s.mainStreamPublisher.PublishMainEvent(req.FollowerID, "follow", entity.PackUserLite(followee))
+				s.mainStreamPublisher.PublishMainEvent(req.FollowerID, "follow", entity.PackUserForFollowStreamEvent(followee, true, false))
 				s.mainStreamPublisher.PublishMainEvent(req.FolloweeID, "followed", entity.PackUserLite(follower))
 			}
 		}

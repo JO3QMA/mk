@@ -219,7 +219,7 @@ func TestFollow_PublicUser_PublishesFollowAndFollowed(t *testing.T) {
 	// 1件目: follower (alice) の main に `follow` (body = followee=bob)
 	assert.Equal(t, "alice", pub.calls[0].userID)
 	assert.Equal(t, "follow", pub.calls[0].eventType)
-	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", true, false)
 	// 2件目: followee (bob) の main に `followed` (body = follower=alice)
 	assert.Equal(t, "bob", pub.calls[1].userID)
 	assert.Equal(t, "followed", pub.calls[1].eventType)
@@ -241,7 +241,7 @@ func TestUnfollow_PublishesUnfollow(t *testing.T) {
 	require.Len(t, pub.calls, 1)
 	assert.Equal(t, "alice", pub.calls[0].userID)
 	assert.Equal(t, "unfollow", pub.calls[0].eventType)
-	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", false, false)
 }
 
 // assertPackedUserLiteID は body が UserLite 相当の JSON 表現で、id
@@ -253,6 +253,21 @@ func assertPackedUserLiteID(t *testing.T, body any, expectID string) {
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(raw, &m))
 	assert.Equal(t, expectID, m["id"])
+}
+
+// assertFollowStreamBody は follow/unfollow の body が UserDetailed shape で
+// id / isFollowing / hasPendingFollowRequestFromYou を期待値どおりに持つこと
+// を検証する。frontend MkFollowButton.onFollowChangeがこれらfieldを直接読む
+// ので streaming event body の shape はここに明示的にロックする。
+func assertFollowStreamBody(t *testing.T, body any, expectID string, isFollowing, hasPending bool) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	assert.Equal(t, expectID, m["id"])
+	assert.Equal(t, isFollowing, m["isFollowing"], "isFollowing mismatch")
+	assert.Equal(t, hasPending, m["hasPendingFollowRequestFromYou"], "hasPendingFollowRequestFromYou mismatch")
 }
 
 func TestFollow_SelfFollow(t *testing.T) {
@@ -427,7 +442,7 @@ func TestAcceptRequest_PublishesFollowAndFollowed(t *testing.T) {
 	// 1件目: follower (alice) の main に `follow` (body = followee=bob)
 	assert.Equal(t, "alice", pub.calls[0].userID)
 	assert.Equal(t, "follow", pub.calls[0].eventType)
-	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", true, false)
 	// 2件目: followee (bob) の main に `followed` (body = follower=alice)
 	assert.Equal(t, "bob", pub.calls[1].userID)
 	assert.Equal(t, "followed", pub.calls[1].eventType)
