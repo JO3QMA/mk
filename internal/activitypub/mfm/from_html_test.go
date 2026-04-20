@@ -180,6 +180,27 @@ func TestFromHTML(t *testing.T) {
 			html: `<p>Check <a href="https://example.com">example.com</a></p><p>Done.</p>`,
 			want: "Check [example.com](https://example.com)\n\nDone.",
 		},
+		// --- #362 回帰テスト: drop-in 互換報告で DB に残っていた実データ ---
+		{
+			name: "#362 p class=quote-inline with RE: prefix + mastodon ellipsis link",
+			html: `<p class="quote-inline">RE: <a href="https://example.com/notes/x" target="_blank" rel="nofollow noopener" translate="no"><span class="invisible">https://</span><span class="ellipsis">example.com/notes</span><span class="invisible">/x</span></a></p><p>replied body</p>`,
+			want: "RE: https://example.com/notes/x\n\nreplied body",
+		},
+		{
+			name: "#362 h-card mention followed by body text",
+			html: `<p><span class="h-card"><a class="u-url mention" href="https://remote.example/@alice">@<span>alice</span></a></span> hello body</p>`,
+			want: "@alice@remote.example hello body",
+		},
+		{
+			name: "#362 consecutive <br /> in paragraph",
+			html: `<p>line1<br />line2<br />line3</p>`,
+			want: "line1\nline2\nline3",
+		},
+		{
+			name: "#362 <span> only wrapper inside <p>",
+			html: `<p><span>just text in span</span></p>`,
+			want: "just text in span",
+		},
 	}
 
 	for _, tt := range tests {

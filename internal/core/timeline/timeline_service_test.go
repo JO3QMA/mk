@@ -17,7 +17,7 @@ func newTestServiceWithRepo(t *testing.T) (*Service, *FanoutTimelineService, *te
 	t.Helper()
 	testRedis.FlushAll(context.Background())
 	noteRepo := testutil.NewMockNoteRepository()
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	svc := NewService(fanout, noteRepo, testutil.NewMockFollowingRepository())
 	return svc, fanout, noteRepo
@@ -46,7 +46,7 @@ func TestService_HomeTimeline(t *testing.T) {
 
 func TestService_HomeTimelineFanoutError(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
-	fanout := NewFanoutTimelineService(closedClient(t), idGen)
+	fanout := NewFanoutTimelineService(closedClient(t), idGen, "")
 	svc := NewService(fanout, noteRepo, nil)
 	_, err := svc.HomeTimeline(context.Background(), &model.User{ID: "u"}, "", "", 10, TimelineFilter{})
 	assert.Error(t, err)
@@ -67,7 +67,7 @@ func TestService_LocalTimeline(t *testing.T) {
 
 func TestService_LocalTimelineFanoutError(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
-	svc := NewService(NewFanoutTimelineService(closedClient(t), idGen), noteRepo, nil)
+	svc := NewService(NewFanoutTimelineService(closedClient(t), idGen, ""), noteRepo, nil)
 	_, err := svc.LocalTimeline(context.Background(), nil, "", "", 10, TimelineFilter{})
 	assert.Error(t, err)
 }
@@ -87,7 +87,7 @@ func TestService_GlobalTimeline(t *testing.T) {
 
 func TestService_GlobalTimelineFanoutError(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
-	svc := NewService(NewFanoutTimelineService(closedClient(t), idGen), noteRepo, nil)
+	svc := NewService(NewFanoutTimelineService(closedClient(t), idGen, ""), noteRepo, nil)
 	_, err := svc.GlobalTimeline(context.Background(), nil, "", "", 10, TimelineFilter{})
 	assert.Error(t, err)
 }
@@ -118,7 +118,7 @@ func TestService_HybridTimeline(t *testing.T) {
 
 func TestService_HybridTimelineFanoutError(t *testing.T) {
 	noteRepo := testutil.NewMockNoteRepository()
-	svc := NewService(NewFanoutTimelineService(closedClient(t), idGen), noteRepo, nil)
+	svc := NewService(NewFanoutTimelineService(closedClient(t), idGen, ""), noteRepo, nil)
 	_, err := svc.HybridTimeline(context.Background(), &model.User{ID: "u"}, "", "", 10, TimelineFilter{})
 	assert.Error(t, err)
 }
@@ -213,7 +213,7 @@ func TestService_ResolveError(t *testing.T) {
 	// RedisにIDはあるがrepoのFindManyByIDsWithUserがエラー
 	testRedis.FlushAll(context.Background())
 	failRepo := &failingFindManyRepo{testutil.NewMockNoteRepository()}
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	svc := NewService(fanout, failRepo, testutil.NewMockFollowingRepository())
 	ctx := context.Background()
 

@@ -189,7 +189,9 @@ func (s *Server) setupRoutes() {
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
 
 	// Timeline services (Redis-backed fanout)
-	fanoutTimelineService := coretimeline.NewFanoutTimelineService(s.redis.Timelines, idGen)
+	// keyPrefix で TS 本家と同じ `<host>:list:*` 名前空間に揃える (#362)。
+	fanoutTimelineService := coretimeline.NewFanoutTimelineService(
+		s.redis.Timelines, idGen, s.config.RedisForTimelines.KeyPrefix())
 	timelineService := coretimeline.NewService(fanoutTimelineService, noteRepo, followingRepo)
 	timelineFanoutHook := coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo)
 	// Phase DB-compat (#51): meta から timeline cache cap を動的に読む。
@@ -238,7 +240,8 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Notifications (Redis Streams)
-	notificationService := corenotification.NewService(s.redis.Default, idGen)
+	// keyPrefix で TS 本家と同じ `<host>:notificationTimeline:*` 等に揃える (#362)。
+	notificationService := corenotification.NewService(s.redis.Default, idGen, s.config.Redis.KeyPrefix())
 	notificationService.SetNoteUnreadRepo(noteUnreadRepo)
 	notificationHook := corenotification.NewHook(notificationService, userRepo)
 	notificationHook.SetNoteUnreadRepo(noteUnreadRepo)
@@ -622,7 +625,7 @@ func (s *Server) setupRoutes() {
 		if previewMeta.URLPreviewSummaryProxyURL != nil {
 			previewCfg.SummaryProxyURL = *previewMeta.URLPreviewSummaryProxyURL
 		}
-		urlPreviewFetcher := coreurlpreview.NewFetcher(previewCfg, s.redis.Default)
+		urlPreviewFetcher := coreurlpreview.NewFetcher(previewCfg, s.redis.Default, s.config.Redis.KeyPrefix())
 		urlHandler := apiurl.NewHandler(urlPreviewFetcher)
 		s.echo.GET("/url", urlHandler.Preview)
 	}
