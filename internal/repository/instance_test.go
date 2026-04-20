@@ -126,7 +126,14 @@ func TestInstanceRepository_List_Filters(t *testing.T) {
 	c := newTestInstance("i_ir_4c", "list-c.example")
 	c.SuspensionState = model.SuspensionStateManuallySuspended
 
-	for _, inst := range []*model.Instance{a, b, c} {
+	// "list-"に含まれないhostでfollowersCount>0のinstanceを混ぜておく。
+	// federating=trueのOR条件が括弧で包まれていないと
+	// (host ILIKE ... AND followingCount>0) OR followersCount>0
+	// になり、Host filterを無視してdを拾ってしまうため、その回帰テスト。
+	d := newTestInstance("i_ir_4d", "other-d.example")
+	d.FollowersCount = 2
+
+	for _, inst := range []*model.Instance{a, b, c, d} {
 		require.NoError(t, repo.Create(inst))
 		defer cleanupInstance(t, inst.ID)
 	}
@@ -157,17 +164,33 @@ func TestInstanceRepository_List_Filters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, rows, 2) // a と b
 
+	notFederating := false
+	rows, err = repo.List(model.InstanceListFilter{Host: "list-", Federating: &notFederating})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1) // c (followingCount=0 AND followersCount=0)
+	assert.Equal(t, "list-c.example", rows[0].Host)
+
 	subscribing := true
 	rows, err = repo.List(model.InstanceListFilter{Host: "list-", Subscribing: &subscribing})
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "list-b.example", rows[0].Host)
 
+	notSubscribing := false
+	rows, err = repo.List(model.InstanceListFilter{Host: "list-", Subscribing: &notSubscribing})
+	require.NoError(t, err)
+	assert.Len(t, rows, 2) // a と c
+
 	publishing := true
 	rows, err = repo.List(model.InstanceListFilter{Host: "list-", Publishing: &publishing})
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "list-a.example", rows[0].Host)
+
+	notPublishing := false
+	rows, err = repo.List(model.InstanceListFilter{Host: "list-", Publishing: &notPublishing})
+	require.NoError(t, err)
+	assert.Len(t, rows, 2) // b と c
 }
 
 func TestInstanceRepository_List_Sort(t *testing.T) {

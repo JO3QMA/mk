@@ -110,6 +110,9 @@ func (h *Handler) ShowInstance(c echo.Context) error {
 // instanceToMap shapes an Instance row into the JSON response object expected
 // by misskey-js. 不明値や nil ポインタはそのまま JSON null になるよう map に
 // 載せる。
+//
+// federating / subscribing / publishingは本家Misskeyと同様に
+// followingCount / followersCountから動的に計算する (DBには列を持たない)。
 func instanceToMap(inst *model.Instance) map[string]any {
 	return map[string]any{
 		"id":                      inst.ID,
@@ -119,6 +122,9 @@ func instanceToMap(inst *model.Instance) map[string]any {
 		"notesCount":              inst.NotesCount,
 		"followingCount":          inst.FollowingCount,
 		"followersCount":          inst.FollowersCount,
+		"federating":              inst.FollowingCount > 0 || inst.FollowersCount > 0,
+		"subscribing":             inst.FollowersCount > 0,
+		"publishing":              inst.FollowingCount > 0,
 		"latestRequestReceivedAt": inst.LatestRequestReceivedAt,
 		"isNotResponding":         inst.IsNotResponding,
 		"notRespondingSince":      inst.NotRespondingSince,
