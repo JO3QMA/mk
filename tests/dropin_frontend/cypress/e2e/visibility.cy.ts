@@ -67,10 +67,12 @@ describe('dropin-frontend visibility (Phase 14-2)', () => {
       });
     });
 
-    // specified は home に現れない。mentions 経由で確認する。Misskey TS は
+    // specified DM を mentions 経由で確認する。Misskey TS は
     // `notes/mentions` default で DM も含む (mk-go は visibility=specified
-    // 指定が必要な別仕様) ので baseline (all TS) では default query で届く。
+    // 指定が必要な別仕様)。baseline (all TS) では default query で届く。
     // Phase 14-3 で mk 差し替え時にここの挙動差が見えてくるはず。
+    // なお下記 home timeline assertion で判明した通り TS 2025.2.1 は
+    // specified が自分宛の場合 home にも表示するのが default 挙動。
     cy.then(() => {
       const poll = (left: number): Cypress.Chainable => {
         return api(INSTANCES.a, 'notes/mentions', {
