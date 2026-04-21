@@ -14,6 +14,7 @@ services:
       # MISSKEY_FRONTEND_DIST_DIR: /app/frontend_dist
       # MISSKEY_TWEMOJI_DIR: /app/twemoji
       # MISSKEY_STATIC_DIR: /app/static
+      # MISSKEY_REPO_ASSETS_DIR: /app/repo-assets
       TZ: Asia/Tokyo
     volumes:
       - ./files:/app/drive-files
