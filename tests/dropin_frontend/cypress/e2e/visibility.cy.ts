@@ -47,15 +47,17 @@ describe('dropin-frontend visibility (Phase 14-2)', () => {
     waitForNoteInTimeline(trio.alice, marker);
   });
 
-  it('specified DM from bob does not appear in alice home but does in mentions', () => {
+  it('specified DM from bob arrives in alice mentions (and home, per TS baseline)', () => {
     const marker = `phase14-vis-specified-${Date.now()}`;
 
-    // bob から見た alice@a の remote id を resolve
-    cy.request({
-      method: 'POST',
-      url: `${INSTANCES.b.url}/api/users/show`,
-      body: { i: trio.bob.token, username: 'alice', host: INSTANCES.a.domain },
+    // bob から見た alice@a の remote id を resolve。api() helper で統一
+    // (Devin #390-2 #6)。
+    api(INSTANCES.b, 'users/show', {
+      i: trio.bob.token,
+      username: 'alice',
+      host: INSTANCES.a.domain,
     }).then((resp) => {
+      expect(resp.status, 'bob can resolve alice').to.eq(200);
       const remoteAliceId = resp.body.id;
       return api(INSTANCES.b, 'notes/create', {
         i: trio.bob.token,
@@ -89,6 +91,27 @@ describe('dropin-frontend visibility (Phase 14-2)', () => {
         });
       };
       poll(30);
+    });
+
+    // home timeline での挙動も確認する。Misskey TS 2025.2.1 の実挙動は
+    // specified で自分が recipient の場合 home にも表示されるので、
+    // baseline としてはそれを golden にする。Phase 14-3 で mk-A に差し替えた
+    // ときにこの挙動が一致するかが互換性チェックとなる (もし TS の挙動が
+    // 変わっていたら mk もそれに追従する必要がある)。
+    cy.then(() => {
+      api(INSTANCES.a, 'notes/timeline', {
+        i: trio.alice.token,
+        limit: 40,
+      }).then((resp) => {
+        expect(resp.status, 'home timeline fetch').to.eq(200);
+        const presentInHome = (resp.body as Record<string, unknown>[]).some(
+          (n) => n.text === marker,
+        );
+        expect(
+          presentInHome,
+          'specified DM appears in home timeline on TS baseline (per 2025.2.1 実挙動)',
+        ).to.eq(true);
+      });
     });
   });
 });

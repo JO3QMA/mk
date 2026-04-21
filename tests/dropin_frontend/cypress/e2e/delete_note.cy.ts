@@ -46,7 +46,9 @@ describe('dropin-frontend delete propagation (Phase 14-2)', () => {
       }),
     );
 
-    // A 側から消えるまで poll
+    // A 側から消えるまで poll。non-200 / 非配列 response は "削除成功"
+    // とせず retry を続ける (Devin #390-2 #1): 過渡的な 500 などを false
+    // positive にしないため。
     const pollGone = (viewer: typeof trio.alice, inst: typeof INSTANCES.a) =>
       cy.then(() => {
         const attempt = (left: number): Cypress.Chainable => {
@@ -54,12 +56,20 @@ describe('dropin-frontend delete propagation (Phase 14-2)', () => {
             i: viewer.token,
             limit: 40,
           }).then((resp) => {
-            const stillThere =
-              resp.status === 200 &&
-              Array.isArray(resp.body) &&
-              resp.body.some((n: Record<string, unknown>) => n.text === marker);
-            if (!stillThere) return resp;
+            const okBody = resp.status === 200 && Array.isArray(resp.body);
+            if (okBody) {
+              const stillThere = (resp.body as Record<string, unknown>[]).some(
+                (n) => n.text === marker,
+              );
+              if (!stillThere) return resp;
+            }
+            // response が壊れているか、まだ note が見える場合は retry
             if (left <= 0) {
+              if (!okBody) {
+                throw new Error(
+                  `timeline fetch never returned 200 array on ${inst.domain} (last status ${resp.status})`,
+                );
+              }
               throw new Error(
                 `note "${marker}" still visible on ${inst.domain} after delete`,
               );
