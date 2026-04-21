@@ -62,3 +62,6 @@ __pycache__/
 **/cypress/.cache/
 # cypress 15 は project dir 配下に `cypress/` を tmp として作ることがある
 tests/dropin_frontend/cypress/cypress/
+
+# drop-in test orchestrator が失敗時に吐くログ (local fallback)
+.dropin-logs/

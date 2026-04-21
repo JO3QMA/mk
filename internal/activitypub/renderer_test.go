@@ -222,7 +222,32 @@ func TestRenderer_RenderNote_Reply(t *testing.T) {
 		Visibility: model.NoteVisibilityPublic,
 	}
 	out := r.RenderNote(n, idGen)
+	// noteResolver が未設定なので local URI にフォールバックする。
 	assert.Equal(t, "https://example.com/notes/parent", out.InReplyTo)
+}
+
+// リモート note への reply は note.URI を使い、ローカル URL にしない。
+// drop-in #369 で TS-B が `https://a/notes/<a-copy-id>` を fetch して 404 に
+// なる問題を防ぐための回帰テスト。
+func TestRenderer_RenderNote_Reply_RemoteTarget(t *testing.T) {
+	parentID := "parent-remote"
+	remoteURI := "https://remote.example/notes/original-id"
+	remoteNote := &model.Note{
+		ID:  parentID,
+		URI: &remoteURI,
+	}
+	r := NewRenderer(NewURLBuilder("https://example.com"))
+	r.SetNoteResolver(&stubNoteResolver{note: remoteNote})
+
+	idGen := newIDGen(t)
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "author",
+		ReplyID:    &parentID,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	out := r.RenderNote(n, idGen)
+	assert.Equal(t, remoteURI, out.InReplyTo)
 }
 
 func TestRenderer_RenderNote_InvalidIDFallback(t *testing.T) {

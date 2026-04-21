@@ -3,6 +3,7 @@ package activitypub
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"testing"
@@ -35,6 +36,41 @@ func TestParseRSAPrivateKey_BadContents(t *testing.T) {
 	pem := "-----BEGIN RSA PRIVATE KEY-----\nbm90YWtleQ==\n-----END RSA PRIVATE KEY-----\n"
 	_, err := ParseRSAPrivateKey(pem)
 	assert.Error(t, err)
+}
+
+// TestParseRSAPrivateKey_PKCS8 は Misskey TS が格納する PKCS8 形式の RSA
+// 秘密鍵を mk-go が読めることを確認する回帰テスト (#369 drop-in)。
+func TestParseRSAPrivateKey_PKCS8(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	// openssl 3.x デフォルトと同じ PKCS8 形式で encode する。
+	pkcs8Bytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	pemStr := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: pkcs8Bytes,
+	}))
+
+	parsed, err := ParseRSAPrivateKey(pemStr)
+	require.NoError(t, err, "PKCS8 形式の RSA 鍵が parse できる")
+	assert.Equal(t, priv.N, parsed.N)
+}
+
+// TestParseRSAPrivateKey_PKCS8NotRSA は PKCS8 に RSA 以外の鍵 (ed25519)
+// が入っていた場合は明示的に reject することを確認する。
+func TestParseRSAPrivateKey_PKCS8NotRSA(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pkcs8Bytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	pemStr := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: pkcs8Bytes,
+	}))
+
+	_, err = ParseRSAPrivateKey(pemStr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not RSA")
 }
 
 func TestParseRSAPublicKey_Invalid(t *testing.T) {

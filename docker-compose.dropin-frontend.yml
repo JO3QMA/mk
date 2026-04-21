@@ -186,6 +186,8 @@ services:
       CYPRESS_A_DOMAIN: a
       CYPRESS_B_DOMAIN: b
       CYPRESS_C_DOMAIN: c
+      # Phase 14-3: baseline / swap を spec に伝える。default baseline。
+      CYPRESS_MODE: ${CYPRESS_MODE:-baseline}
       # cy.request 経由の自己署名証明書許容 (node side の TLS 検証を無効化)。
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
       # root が owned の tmp を cypress が書こうとするため。

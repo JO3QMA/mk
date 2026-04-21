@@ -68,7 +68,7 @@ make dropin-frontend-logs
 
 - [x] Phase 14-1 (#381): 3 TS 基盤 + cypress smoke spec
 - [x] Phase 14-2 (#387): spec マトリクス拡充 (visibility / userList / cross-instance / delete)
-- [ ] Phase 14-3: mk-go 差し替え overlay + baseline / swap 両モード orchestrator + CI nightly
+- [x] Phase 14-3 (#394): mk-go 差し替え overlay + swap orchestrator + nightly CI
 
 ## Phase 14-2 カバー spec
 
@@ -83,6 +83,42 @@ make dropin-frontend-logs
 
 attachment / emoji / reaction は Phase 14-2.5 以降 (admin emoji 投入フロー / 
 remote image ingest (#378) / reaction deliver (#369) の条件整備が必要)。
+
+## Phase 14-3: mk-go 差し替え overlay + swap orchestrator
+
+`docker-compose.dropin-frontend.mk.yml` overlay + `tests/dropin_frontend/run-frontend-swap-test.sh` orchestrator で、**TS-A backend を mk-go に差し替えた後も cypress spec が pass する** ことを検証する。
+
+### 実行
+
+```bash
+# 完全自動の swap シナリオ test (推奨)
+make dropin-frontend-swap-test
+
+# orchestrator の流れ:
+#   1. TS-A / TS-B / TS-C stack 起動 (baseline)
+#   2. CYPRESS_MODE=baseline で cypress run (12 passing)
+#   3. docker compose stop app-a (TS-A backend 停止、DB / Redis は維持)
+#   4. overlay で app-a を mk-go に差し替えて起動
+#   5. CYPRESS_MODE=swap で cypress run (8 passing + 5 skipped)
+#   6. teardown
+```
+
+### swap モードで skip される spec (既知のバグ)
+
+| spec / test | skip 理由 |
+|------------|-----------|
+| `delete_note.cy.ts` | mk-A が inbound Delete activity を fanout cache から purge しない (#379) |
+| `reply_chain.cy.ts` | federation queue back-pressure で flaky (Phase 14-2 から継続 skip, #389) |
+| `user_list.cy.ts` 2 本 | `users/lists/push` が既 member 時に 500 を返す (#396) |
+| `visibility.cy.ts` specified DM | inbound specified Note が mk-A の mentions に現れない (#397) |
+
+baseline (all TS) ではこれらも全 pass するため、skip は `CYPRESS_MODE=swap` 時のみ発動する。対応 issue 修正後に `skipInSwap` を外す。
+
+### CI nightly
+
+`.github/workflows/dropin-frontend-e2e.yml` で毎日 19:00 UTC (JST 04:00) に develop ブランチに対して `make dropin-frontend-swap-test` を実行する。失敗時は docker compose logs + cypress 成果物 (screenshots / videos) を `dropin-frontend-logs` artifact として 14 日保持する。
+
+`workflow_dispatch` で mode 入力 (baseline / swap) を選択可能。
 
 ## トラブルシューティング
 

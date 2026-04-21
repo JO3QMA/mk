@@ -4,6 +4,7 @@
 	dropin-up dropin-down dropin-test dropin-logs \
 	dropin-mk-up dropin-mk-test dropin-mk-down dropin-mk-logs dropin-swap-test \
 	dropin-frontend-up dropin-frontend-down dropin-frontend-baseline dropin-frontend-logs \
+	dropin-frontend-mk-up dropin-frontend-mk-down dropin-frontend-swap-test \
 	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
 	uds-init uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
 	bench-up bench-run bench-down bench-logs
@@ -150,6 +151,22 @@ dropin-frontend-logs:
 # (Phase 14-1 #381)。
 dropin-frontend-baseline:
 	./tests/dropin_frontend/run-frontend-baseline.sh
+
+# Phase 14-3 (#394): TS-A → mk-A 切替後も cypress spec が引き続き pass する
+# ことを確認する swap test orchestrator。baseline 実行 → TS-A 停止 → mk-A
+# 起動 → swap モードで cypress 再実行、を bash で順次制御する。
+DROPIN_FRONTEND_MK_OVERLAY=docker-compose.dropin-frontend.mk.yml
+
+# mk-go overlay を直接立ち上げる (手動デバッグ用)。DB は clean からだが、
+# Phase 14-3 の本 test は `dropin-frontend-swap-test` を使う。
+dropin-frontend-mk-up:
+	docker compose -f $(DROPIN_FRONTEND_COMPOSE) -f $(DROPIN_FRONTEND_MK_OVERLAY) up -d --build
+
+dropin-frontend-mk-down:
+	docker compose -f $(DROPIN_FRONTEND_COMPOSE) -f $(DROPIN_FRONTEND_MK_OVERLAY) down -v
+
+dropin-frontend-swap-test:
+	./tests/dropin_frontend/run-frontend-swap-test.sh
 
 # Cypress e2e ― Misskey 本家の cypress spec を mk-go に向けて実行する。
 #

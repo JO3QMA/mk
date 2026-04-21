@@ -100,9 +100,15 @@ func (h *NoteDeliveryHook) OnNoteCreated(note *model.Note, author *model.User) {
 		h.deliverToSpecified(author, note, body)
 	}
 
-	// メンションされたリモートユーザーにも直接配信する。フォロワー配信だけでは
-	// 相手にノートが届かないため、メンション通知が発生しない。
-	h.deliverToMentionedRemotes(author, note, body)
+	// 以下の remote user にも直接配信する。フォロワー配信だけでは相手に
+	// 届かず、リプライ / 引用リノート / メンション通知が発生しない。
+	//   - ノート本文に含まれるメンションのリモートユーザー
+	//   - リプライ対象 (ReplyID) の作者がリモートの場合
+	//   - 引用リノート (Renote + text/cw/files/poll) の renote 元作者がリモートの場合
+	// フォロワー配信先と重複したユーザーは DeliverService 側でも deduplicate
+	// されているが、ここでも user ID ベースで seen map を共有して無駄な
+	// enqueue を避ける。#369。
+	h.deliverToDirectRecipients(author, note, body)
 
 	// public な note のみ relay に fanout する。relay は AS Public addressed
 	// activity しか受け付けないため、home/followers/specified はスキップ。
@@ -114,39 +120,85 @@ func (h *NoteDeliveryHook) OnNoteCreated(note *model.Note, author *model.User) {
 	}
 }
 
-// deliverToMentionedRemotes finds remote users mentioned in the note text and
-// ships the Create activity directly to each one's inbox.
-// ローカル DB にキャッシュ済みのリモートユーザーのみ対象 (それ以外は解決しない)。
-func (h *NoteDeliveryHook) deliverToMentionedRemotes(author *model.User, note *model.Note, body []byte) {
-	if note == nil || note.Text == nil || *note.Text == "" {
+// deliverToDirectRecipients は mention / reply target / quote renote target の
+// 3 経路から remote user を集めて dedup した上で Create activity を直接
+// 各 inbox へ送る。
+//
+// ローカル DB にキャッシュ済みの user だけを対象にする (未解決のリモート
+// user は webfinger を叩かない)。local user は連合配信の対象外。
+func (h *NoteDeliveryHook) deliverToDirectRecipients(author *model.User, note *model.Note, body []byte) {
+	if note == nil {
 		return
 	}
-	mentions := corenote.ExtractMentionStructs(*note.Text)
-	if len(mentions) == 0 {
-		return
+	seen := make(map[string]struct{})
+	recipients := make([]*model.User, 0, 3)
+
+	add := func(u *model.User) {
+		if u == nil || u.ID == author.ID || u.IsLocal() {
+			return
+		}
+		if _, dup := seen[u.ID]; dup {
+			return
+		}
+		seen[u.ID] = struct{}{}
+		recipients = append(recipients, u)
 	}
-	seen := make(map[string]struct{}, len(mentions))
-	for _, m := range mentions {
-		if m.Host == "" {
-			// ローカルメンション: 連合配信不要
-			continue
-		}
-		host := m.Host
-		user, err := h.userRepo.FindByUsernameLower(m.Username, &host)
-		if err != nil {
-			// 未知のリモートユーザー: webfinger 経由で事前に解決されていない
-			// ため配信先を得られない。スキップ。
-			continue
-		}
-		if _, dup := seen[user.ID]; dup {
-			continue
-		}
-		seen[user.ID] = struct{}{}
-		if err := h.deliver.DeliverToUser(author.ID, user, body); err != nil {
-			slog.Warn("mention delivery: deliver to user failed",
-				"noteId", note.ID, "userId", user.ID, "err", err)
+
+	// 1. text 中の mention
+	if note.Text != nil && *note.Text != "" {
+		for _, m := range corenote.ExtractMentionStructs(*note.Text) {
+			if m.Host == "" {
+				continue
+			}
+			host := m.Host
+			user, err := h.userRepo.FindByUsernameLower(m.Username, &host)
+			if err != nil {
+				// 未解決リモート: 配信先を得られないのでスキップ
+				continue
+			}
+			add(user)
 		}
 	}
+
+	// 2. reply target の作者
+	if note.ReplyID != nil && *note.ReplyID != "" {
+		if u := h.findNoteAuthor(*note.ReplyID, note, "reply"); u != nil {
+			add(u)
+		}
+	}
+
+	// 3. quote renote target の作者 (pure renote は Announce で follower 配信
+	//    済なので対象外、quote renote だけ対象)。
+	if note.RenoteID != nil && *note.RenoteID != "" && !corenote.IsPureRenote(note) {
+		if u := h.findNoteAuthor(*note.RenoteID, note, "renote"); u != nil {
+			add(u)
+		}
+	}
+
+	for _, u := range recipients {
+		if err := h.deliver.DeliverToUser(author.ID, u, body); err != nil {
+			slog.Warn("direct delivery: deliver to user failed",
+				"noteId", note.ID, "userId", u.ID, "err", err)
+		}
+	}
+}
+
+// findNoteAuthor は noteID の note を引いて作者 user を返す。失敗は warn log
+// して nil を返す。kind はログ用のラベル ("reply" / "renote" 等)。
+func (h *NoteDeliveryHook) findNoteAuthor(noteID string, origin *model.Note, kind string) *model.User {
+	target, err := h.noteRepo.FindByID(noteID)
+	if err != nil {
+		slog.Warn("direct delivery: "+kind+" target note not found",
+			"noteId", origin.ID, "targetId", noteID, "err", err)
+		return nil
+	}
+	user, err := h.userRepo.FindByID(target.UserID)
+	if err != nil {
+		slog.Warn("direct delivery: "+kind+" target author not found",
+			"noteId", origin.ID, "targetId", noteID, "authorId", target.UserID, "err", err)
+		return nil
+	}
+	return user
 }
 
 // deliverAnnounce renders an Announce activity for a pure renote and ships it
