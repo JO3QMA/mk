@@ -1,0 +1,94 @@
+// Phase 14-2 (#387) visibility 種別の federation 挙動検証。
+//
+// bob (on B) が alice (on A, フォロワー) 向けに public / home / followers /
+// specified の 4 種 visibility ノートを投稿する。alice 側の home timeline と
+// mentions に届くべきものだけが届くことを確認する。
+
+import { api, INSTANCES } from '../support/api';
+import { establishFederation, setupTrio, waitForNoteInTimeline, Trio } from '../support/setup';
+
+describe('dropin-frontend visibility (Phase 14-2)', () => {
+  let trio: Trio;
+
+  before(() => {
+    setupTrio().then((t) => {
+      trio = t;
+    });
+    cy.then(() => establishFederation(trio));
+  });
+
+  it('public note from bob reaches alice home timeline', () => {
+    const marker = `phase14-vis-public-${Date.now()}`;
+    api(INSTANCES.b, 'notes/create', {
+      i: trio.bob.token,
+      text: marker,
+      visibility: 'public',
+    });
+    waitForNoteInTimeline(trio.alice, marker);
+  });
+
+  it('home visibility note from bob reaches alice home timeline', () => {
+    const marker = `phase14-vis-home-${Date.now()}`;
+    api(INSTANCES.b, 'notes/create', {
+      i: trio.bob.token,
+      text: marker,
+      visibility: 'home',
+    });
+    waitForNoteInTimeline(trio.alice, marker);
+  });
+
+  it('followers visibility note from bob reaches alice home timeline', () => {
+    const marker = `phase14-vis-followers-${Date.now()}`;
+    api(INSTANCES.b, 'notes/create', {
+      i: trio.bob.token,
+      text: marker,
+      visibility: 'followers',
+    });
+    waitForNoteInTimeline(trio.alice, marker);
+  });
+
+  it('specified DM from bob does not appear in alice home but does in mentions', () => {
+    const marker = `phase14-vis-specified-${Date.now()}`;
+
+    // bob から見た alice@a の remote id を resolve
+    cy.request({
+      method: 'POST',
+      url: `${INSTANCES.b.url}/api/users/show`,
+      body: { i: trio.bob.token, username: 'alice', host: INSTANCES.a.domain },
+    }).then((resp) => {
+      const remoteAliceId = resp.body.id;
+      return api(INSTANCES.b, 'notes/create', {
+        i: trio.bob.token,
+        text: marker,
+        visibility: 'specified',
+        visibleUserIds: [remoteAliceId],
+      });
+    });
+
+    // specified は home に現れない。mentions 経由で確認する。Misskey TS は
+    // `notes/mentions` default で DM も含む (mk-go は visibility=specified
+    // 指定が必要な別仕様) ので baseline (all TS) では default query で届く。
+    // Phase 14-3 で mk 差し替え時にここの挙動差が見えてくるはず。
+    cy.then(() => {
+      const poll = (left: number): Cypress.Chainable => {
+        return api(INSTANCES.a, 'notes/mentions', {
+          i: trio.alice.token,
+          limit: 40,
+        }).then((resp) => {
+          if (
+            resp.status === 200 &&
+            Array.isArray(resp.body) &&
+            resp.body.some((n: Record<string, unknown>) => n.text === marker)
+          ) {
+            return resp;
+          }
+          if (left <= 0) {
+            throw new Error(`alice never saw specified DM "${marker}" in mentions`);
+          }
+          return cy.wait(3_000, { log: false }).then(() => poll(left - 1));
+        });
+      };
+      poll(30);
+    });
+  });
+});
