@@ -12,6 +12,12 @@ import (
 // prevent memory exhaustion via attacker-controlled remote AP servers (#323).
 const MaxBodyBytes = safehttp.DefaultAPBodyLimit
 
+// MaxHTMLBodyBytes caps the response body size for FetchHTML. Landing pages
+// of real Misskey / Mastodon 等は inline JS/CSS が多く1MiB (AP payload想定)
+// だと超えることが多い (#351のDevin指摘)。SPAバンドル込みでも 5MiB あれば
+// 実用上 icon 抽出成功率が上がる。AP JSON 側の safety cap はそのまま。
+const MaxHTMLBodyBytes = 5 * 1024 * 1024
+
 // Client is a thin wrapper around http.Client that signs outgoing AP requests.
 type Client struct {
 	httpClient *http.Client
@@ -131,5 +137,5 @@ func (c *Client) FetchHTML(url string) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, errors.New("unexpected status: " + resp.Status)
 	}
-	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
+	return safehttp.ReadAllLimit(resp.Body, MaxHTMLBodyBytes)
 }

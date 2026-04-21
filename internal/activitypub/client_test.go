@@ -208,7 +208,7 @@ func TestClient_FetchHTML_BadURL(t *testing.T) {
 }
 
 func TestClient_FetchHTML_ResponseTooLarge(t *testing.T) {
-	oversized := make([]byte, int(MaxBodyBytes)+10)
+	oversized := make([]byte, int(MaxHTMLBodyBytes)+10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(oversized)
 	}))
