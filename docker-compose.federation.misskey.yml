@@ -118,8 +118,13 @@ services:
       - ./tests/federation/misskey/nginx-misskey-ssl.conf:/etc/nginx/nginx.conf:ro
       - certs:/certs:ro
     depends_on:
-      - misskey-app
-      - certs
+      misskey-app:
+        condition: service_started
+      # certs は one-shot コンテナなので start ではなく完了を待たないと
+      # /certs/misskey.crt が無いまま nginx が起動してクラッシュする
+      # (Devin #366 で同種 race を発見し dropin と同時に修正)。
+      certs:
+        condition: service_completed_successfully
     networks:
       federation:
         aliases:

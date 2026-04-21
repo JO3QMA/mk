@@ -52,3 +52,4 @@ tests/bench/results/*.md
 
 # Claude Code local state
 .claude/
+__pycache__/
