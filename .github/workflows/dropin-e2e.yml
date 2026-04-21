@@ -31,20 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # mk-go image build を高速化するための GitHub Actions cache。
-      # buildx の `cache-from` / `cache-to` で layer を再利用する。
-      - name: Cache mk-go Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: dropin-buildx-${{ hashFiles('go.sum', 'tests/federation/common/Dockerfile.mkgo') }}
-          restore-keys: |
-            dropin-buildx-
+          # schedule 起動時 inputs は空なので github.sha (= 既定ブランチ HEAD)
+          # に落ちる。本 workflow は drop-in 互換 regression を nightly で
+          # 監視するもので、`develop` への変更が対象なので明示的に develop を
+          # 指定する (Devin #375 #1)。
+          ref: ${{ inputs.ref || 'develop' }}
 
       - name: Pre-pull Misskey TS image (parallel with build)
         run: docker pull misskey/misskey:2025.2.1 &
