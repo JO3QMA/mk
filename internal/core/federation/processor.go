@@ -328,7 +328,11 @@ func (p *Processor) handleFollow(act genericActivity) error {
 	}
 	result, err := p.followingService.Follow(follower.ID, followee.ID)
 	alreadyFollowing := errors.Is(err, corefollowing.ErrAlreadyFollowing)
-	if err != nil && !alreadyFollowing {
+	// ErrAlreadyRequested はlocked followeeへの再送。既に FollowRequest が
+	// 存在するので何もしなくて良い (Accept は承認時に送られる)。エラーとして
+	// 上に返すと inbox が 4xx を返して相手が retry を続けるので swallow する。
+	alreadyRequested := errors.Is(err, corefollowing.ErrAlreadyRequested)
+	if err != nil && !alreadyFollowing && !alreadyRequested {
 		return err
 	}
 	// Accept を返送するのは Following が成立した (新規 or 既存) 場合のみ。
@@ -740,7 +744,11 @@ func (p *Processor) handleReject(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	follower, err := p.userRepo.FindByURI(followerURI)
+	// ローカルユーザーは user.uri が NULL なので resolveTargetUser で ID
+	// 解決する。これをやらないと FindByURI が fail して reject が silent drop
+	// されてしまい、ローカル側の FollowRequest が消えずに永遠に pending の
+	// ままになる。
+	follower, err := p.resolveTargetUser(followerURI)
 	if err != nil {
 		return nil
 	}
@@ -770,7 +778,9 @@ func (p *Processor) handleBlock(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	// ローカルユーザーは user.uri が NULL なので FindByURI では解決できない。
+	// resolveTargetUser が localBaseURL prefix パターンから ID を抽出する。
+	blockee, err := p.resolveTargetUser(blockeeURI)
 	if err != nil {
 		return errors.New("unknown blockee")
 	}
@@ -800,7 +810,8 @@ func (p *Processor) handleUndoBlock(act genericActivity, inner genericActivity) 
 	if err != nil {
 		return err
 	}
-	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	// Block と同様、ローカルユーザー解決は resolveTargetUser で行う。
+	blockee, err := p.resolveTargetUser(blockeeURI)
 	if err != nil {
 		return errors.New("unknown blockee")
 	}

@@ -537,6 +537,26 @@ func TestCancelRequest_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, following.ErrRequestNotFound))
 }
 
+func TestCancelRequest_InvokesUnfollowHook(t *testing.T) {
+	// pending request を cancel したら、リモート locked followee に
+	// Undo Follow を送るために OnLocalUnfollowed を呼ぶ必要がある。
+	// hook 内の shouldDeliverFollow で local followee は自動的に no-op に
+	// なるのでここでは呼び出し有無だけ検証する。
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	fed := &stubFederationHook{}
+	svc.SetFederationHook(fed)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	// Follow() の中で OnLocalFollowed が呼ばれているはずなのでリセットして
+	// cancel 分だけを観察する。
+	fed.unfollowed = nil
+
+	require.NoError(t, svc.CancelRequest("alice", "bob"))
+	assert.Equal(t, []string{"alice->bob"}, fed.unfollowed)
+}
+
 func TestListReceivedRequests(t *testing.T) {
 	svc, userRepo, _, _ := newSvc(t)
 	addUser(t, userRepo, "alice", false)

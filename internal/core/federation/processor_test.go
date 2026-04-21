@@ -128,6 +128,31 @@ func TestProcess_FollowAlreadyFollowingStillSendsAccept(t *testing.T) {
 	assert.Contains(t, acceptor.calls[0].followRaw, "https://remote.example/follows/retry")
 }
 
+func TestProcess_FollowAlreadyRequestedStillSucceeds(t *testing.T) {
+	// locked local user に対する再送 Follow。1回目で FollowRequest が作られ、
+	// 2回目は ErrAlreadyRequested で弾かれるが handleFollow 側では吸収して
+	// エラーを返さない (相手が retry を続けるのを防ぐ)。Accept は送らない
+	// (まだ承認されていないので)。
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	// locked local user
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", IsLocked: true}
+	acceptor := &stubInboundFollowAcceptor{}
+	p.SetInboundFollowAcceptor(acceptor)
+
+	body := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/first",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	// 2回目もエラーを返さない
+	require.NoError(t, p.Process(body))
+	// locked 相手の Follow は Accept を送らない (承認時に送る)
+	assert.Empty(t, acceptor.calls)
+}
+
 func TestProcess_FollowLocalUserByIDResolution(t *testing.T) {
 	// 実本番のローカルユーザー row は user.uri が NULL のまま保存されるため、
 	// FindByURI では解決できない。localBaseURL が設定されていれば
@@ -477,8 +502,10 @@ func newProcessorWithBlocking(t *testing.T) (*federation.Processor, *testutil.Mo
 
 func TestProcess_BlockHappyPath(t *testing.T) {
 	p, repo, blockingRepo := newProcessorWithBlocking(t)
-	bobURI := "https://example.com/users/bob"
-	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+	// 実本番のローカルユーザー row は user.uri が NULL なので、この条件で
+	// test する (handleBlock が resolveTargetUser で ID 解決することを検証)。
+	p.SetLocalBaseURL("https://example.com")
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
 
 	body := []byte(`{
 		"type": "Block",

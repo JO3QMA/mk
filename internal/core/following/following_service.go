@@ -394,12 +394,29 @@ func (s *Service) RejectRequest(followeeID, followerID string) error {
 }
 
 // CancelRequest cancels an outgoing follow request created by the follower.
+// フォロー申請の送信元 (local follower) がキャンセル操作をしたときに呼ばれる。
+// リモート locked followee に対する申請の場合は Undo Follow activity を相手に
+// 送って pending FollowRequest を取り消してもらう必要がある。送らないと相手
+// 側に stale なリクエストが残り、後で承認されても local には Following が
+// 存在しない矛盾状態になる。
 func (s *Service) CancelRequest(followerID, followeeID string) error {
 	req, err := s.followRequestRepo.FindByPair(followerID, followeeID)
 	if err != nil {
 		return ErrRequestNotFound
 	}
-	return s.followRequestRepo.Delete(req)
+	if err := s.followRequestRepo.Delete(req); err != nil {
+		return err
+	}
+	// federationHook.OnLocalUnfollowed は shouldDeliverFollow でローカル→
+	// リモート条件を判定するので、ローカル followee の場合は自動的に no-op。
+	if s.federationHook != nil {
+		follower, ferr := s.userRepo.FindByID(followerID)
+		followee, eerr := s.userRepo.FindByID(followeeID)
+		if ferr == nil && eerr == nil {
+			s.federationHook.OnLocalUnfollowed(follower, followee)
+		}
+	}
+	return nil
 }
 
 // ListReceivedRequests returns follow requests received by userID.
