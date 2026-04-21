@@ -1686,12 +1686,16 @@ func (s *Server) setupRoutes() {
 	})
 
 	// server-info (公開版) — サーバー情報
-	api.POST("/server-info", func(c echo.Context) error {
+	// frontend の server-metric widget は `misskeyApiGet` で GET 呼び出し、
+	// それ以外の MkVisitorDashboard 等は POST で呼ぶため両メソッドを登録。
+	serverInfoHandler := func(c echo.Context) error {
 		if m, err := metaRepo.Fetch(); err == nil && m.EnableServerMachineStats {
 			return c.JSON(http.StatusOK, serverstats.Collect())
 		}
 		return c.JSON(http.StatusOK, serverstats.Empty())
-	})
+	}
+	api.POST("/server-info", serverInfoHandler)
+	api.GET("/server-info", serverInfoHandler)
 
 	// endpoints — 登録済みAPIエンドポイント一覧
 	api.POST("/endpoints", func(c echo.Context) error {
