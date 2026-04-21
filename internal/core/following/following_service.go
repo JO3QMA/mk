@@ -393,7 +393,9 @@ func (s *Service) RejectRequest(followeeID, followerID string) error {
 	if err := s.followRequestRepo.Delete(req); err != nil {
 		return err
 	}
-	// CancelRequest と同じく publisher 未配線なら DB lookup を省く。
+	// publisher 未配線なら DB lookup を省く (RejectRequest は federation
+	// hook を呼ばないので CancelRequest と違い mainStreamPublisher だけ
+	// チェックすれば十分)。
 	// 拒否された側 (follower) の frontend MkFollowButton がリロード
 	// なしで「フォロー」表示に戻るよう unfollow main stream event を
 	// publish する経路。
