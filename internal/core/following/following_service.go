@@ -390,7 +390,22 @@ func (s *Service) RejectRequest(followeeID, followerID string) error {
 	if err != nil {
 		return ErrRequestNotFound
 	}
-	return s.followRequestRepo.Delete(req)
+	if err := s.followRequestRepo.Delete(req); err != nil {
+		return err
+	}
+	// publisher 未配線なら DB lookup を省く (RejectRequest は federation
+	// hook を呼ばないので CancelRequest と違い mainStreamPublisher だけ
+	// チェックすれば十分)。
+	// 拒否された側 (follower) の frontend MkFollowButton がリロード
+	// なしで「フォロー」表示に戻るよう unfollow main stream event を
+	// publish する経路。
+	if s.mainStreamPublisher == nil {
+		return nil
+	}
+	if followee, ferr := s.userRepo.FindByID(followeeID); ferr == nil {
+		s.publishFollowRequestResolved(followerID, followee)
+	}
+	return nil
 }
 
 // CancelRequest cancels an outgoing follow request created by the follower.
@@ -407,16 +422,46 @@ func (s *Service) CancelRequest(followerID, followeeID string) error {
 	if err := s.followRequestRepo.Delete(req); err != nil {
 		return err
 	}
-	// federationHook.OnLocalUnfollowed は shouldDeliverFollow でローカル→
+	// Unfollow と同じ guard: hooks / publisher のいずれもが未配線なら DB
+	// lookup 自体を省く。テスト時に userRepo が minimal でも影響しない。
+	if s.federationHook == nil && s.mainStreamPublisher == nil {
+		return nil
+	}
+	followee, eerr := s.userRepo.FindByID(followeeID)
+	if eerr != nil {
+		return nil
+	}
+	// federationHook.OnLocalUnfollowed は shouldDeliverFollow でローカル →
 	// リモート条件を判定するので、ローカル followee の場合は自動的に no-op。
+	// 呼ぶには follower も必要なので follower の lookup もここで行う
+	// (失敗時は federation hook だけスキップして streaming publish は続行)。
 	if s.federationHook != nil {
-		follower, ferr := s.userRepo.FindByID(followerID)
-		followee, eerr := s.userRepo.FindByID(followeeID)
-		if ferr == nil && eerr == nil {
+		if follower, ferr := s.userRepo.FindByID(followerID); ferr == nil {
 			s.federationHook.OnLocalUnfollowed(follower, followee)
 		}
 	}
+	s.publishFollowRequestResolved(followerID, followee)
 	return nil
+}
+
+// publishFollowRequestResolved notifies the local follower via the main stream
+// that a pending follow request has been resolved (rejected or canceled).
+// frontend MkFollowButton listens to `unfollow` events and resets
+// isFollowing / hasPendingFollowRequestFromYou to false, giving users a live
+// reset without reloading. Callers must pass the pre-loaded followee to avoid
+// a redundant DB lookup.
+func (s *Service) publishFollowRequestResolved(followerID string, followee *model.User) {
+	if s.mainStreamPublisher == nil || followee == nil {
+		return
+	}
+	// follower がリモートなら local WebSocket subscriber はいないので publish
+	// 不要。federation processor 経由の Undo / Reject ではここに remote user ID
+	// が入ることがあるので明示的にスキップする。
+	follower, err := s.userRepo.FindByID(followerID)
+	if err != nil || !follower.IsLocal() {
+		return
+	}
+	s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserForFollowStreamEvent(followee, false, false))
 }
 
 // ListReceivedRequests returns follow requests received by userID.
