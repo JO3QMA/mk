@@ -266,6 +266,19 @@ func TestRenderer_RenderAccept(t *testing.T) {
 	assert.Equal(t, "Accept", a.Type)
 	assert.Equal(t, "https://example.com/users/alice", a.Actor)
 	assert.NotNil(t, a.Object)
+	// id は Misskey/CherryPick の InboxProcessorService が必須としている
+	// ("skip: activity id is not a string" で弾かれる)。{baseURL}/{UUID}
+	// 形式で必ず埋める。
+	require.NotEmpty(t, a.ID)
+	assert.True(t, strings.HasPrefix(a.ID, "https://example.com/"), "id should be rooted at baseURL: %s", a.ID)
+}
+
+func TestRenderer_RenderAcceptIDUnique(t *testing.T) {
+	// 同じrendererからの複数のAcceptは毎回違うidを持つ (UUIDベース)。
+	r := newRenderer()
+	a1 := r.RenderAccept("alice", map[string]any{"type": "Follow"})
+	a2 := r.RenderAccept("alice", map[string]any{"type": "Follow"})
+	assert.NotEqual(t, a1.ID, a2.ID)
 }
 
 func TestRenderer_RenderFollowRelay(t *testing.T) {

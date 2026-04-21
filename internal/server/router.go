@@ -400,6 +400,7 @@ func (s *Server) setupRoutes() {
 	federationResolver.SetPollRepo(pollRepo)
 	federationResolver.SetEmojiRepo(emojiRepo)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
+	federationProcessor.SetLocalBaseURL(s.config.URL)
 
 	// users/show 経由で host が指定されたリモートユーザーをローカル DB に
 	// キャッシュが無くても解決できるようにする (#269)。webfinger で actor URI
@@ -435,7 +436,11 @@ func (s *Server) setupRoutes() {
 	noteDeliveryHook := corefederation.NewNoteDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo, noteRepo)
 	noteDeliveryHook.SetRelayBroadcaster(relaySvc)
 	noteCreateService.SetFederationHook(noteDeliveryHook)
-	followingService.SetFederationHook(corefederation.NewFollowingDeliveryHook(deliverService, apRenderer, apURLs))
+	followingDeliveryHook := corefederation.NewFollowingDeliveryHook(deliverService, apRenderer, apURLs)
+	followingService.SetFederationHook(followingDeliveryHook)
+	// inbound Follow に対する Accept 返送は processor から直接呼ぶ (original
+	// Follow の id を保持したまま相手に返すため、service 層を経由しない)。
+	federationProcessor.SetInboundFollowAcceptor(followingDeliveryHook)
 	reactionService.SetFederationHook(corefederation.NewReactionDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo))
 	noteDeleteHook := corefederation.NewNoteDeleteDeliveryHook(deliverService, apRenderer, apURLs)
 	noteDeleteHook.SetUserRepo(userRepo)

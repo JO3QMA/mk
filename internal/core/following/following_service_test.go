@@ -188,6 +188,57 @@ func TestFollow_LockedUser_PublishesReceiveFollowRequest(t *testing.T) {
 	assert.Equal(t, "alice", m["username"])
 }
 
+// stubFederationHook は federationHook の呼び出しを検証用に記録する。
+type stubFederationHook struct {
+	followed   []string
+	unfollowed []string
+	accepted   []string
+}
+
+func (h *stubFederationHook) OnLocalFollowed(follower, followee *model.User) {
+	h.followed = append(h.followed, follower.ID+"->"+followee.ID)
+}
+func (h *stubFederationHook) OnLocalUnfollowed(follower, followee *model.User) {
+	h.unfollowed = append(h.unfollowed, follower.ID+"->"+followee.ID)
+}
+func (h *stubFederationHook) OnLocalFollowAccepted(follower, followee *model.User) {
+	h.accepted = append(h.accepted, follower.ID+"->"+followee.ID)
+}
+
+func TestFollow_LockedUser_InvokesFederationHook(t *testing.T) {
+	// 承認制の相手に対する follow でも AP Follow activity が飛ぶ必要がある
+	// (相手側の承認を待つフロー)。federationHook.OnLocalFollowed が呼ばれ、
+	// 実装側の shouldDeliverFollow でリモートかどうか判定される。
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	fed := &stubFederationHook{}
+	svc.SetFederationHook(fed)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"alice->bob"}, fed.followed)
+}
+
+func TestFollow_PublicUser_InvokesOutboundFollowOnly(t *testing.T) {
+	// non-locked follow では OnLocalFollowed (ローカル→リモートの outbound
+	// Follow 用) のみ呼ぶ。インバウンド (remote→local) の Accept 返送は
+	// processor 層で original Follow ID を保持した状態で直接行うため、
+	// service 層の federationHook では Accept を発行しない。
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	fed := &stubFederationHook{}
+	svc.SetFederationHook(fed)
+
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"alice->bob"}, fed.followed)
+	assert.Empty(t, fed.accepted)
+}
+
 func TestFollow_PublicUser_DoesNotPublishReceiveFollowRequest(t *testing.T) {
 	svc, userRepo, _, _ := newSvc(t)
 	addUser(t, userRepo, "alice", false)
@@ -219,7 +270,7 @@ func TestFollow_PublicUser_PublishesFollowAndFollowed(t *testing.T) {
 	// 1件目: follower (alice) の main に `follow` (body = followee=bob)
 	assert.Equal(t, "alice", pub.calls[0].userID)
 	assert.Equal(t, "follow", pub.calls[0].eventType)
-	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", true, false)
 	// 2件目: followee (bob) の main に `followed` (body = follower=alice)
 	assert.Equal(t, "bob", pub.calls[1].userID)
 	assert.Equal(t, "followed", pub.calls[1].eventType)
@@ -241,7 +292,7 @@ func TestUnfollow_PublishesUnfollow(t *testing.T) {
 	require.Len(t, pub.calls, 1)
 	assert.Equal(t, "alice", pub.calls[0].userID)
 	assert.Equal(t, "unfollow", pub.calls[0].eventType)
-	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", false, false)
 }
 
 // assertPackedUserLiteID は body が UserLite 相当の JSON 表現で、id
@@ -253,6 +304,21 @@ func assertPackedUserLiteID(t *testing.T, body any, expectID string) {
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(raw, &m))
 	assert.Equal(t, expectID, m["id"])
+}
+
+// assertFollowStreamBody は follow/unfollow の body が UserDetailed shape で
+// id / isFollowing / hasPendingFollowRequestFromYou を期待値どおりに持つこと
+// を検証する。frontend MkFollowButton.onFollowChangeがこれらfieldを直接読む
+// ので streaming event body の shape はここに明示的にロックする。
+func assertFollowStreamBody(t *testing.T, body any, expectID string, isFollowing, hasPending bool) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	assert.Equal(t, expectID, m["id"])
+	assert.Equal(t, isFollowing, m["isFollowing"], "isFollowing mismatch")
+	assert.Equal(t, hasPending, m["hasPendingFollowRequestFromYou"], "hasPendingFollowRequestFromYou mismatch")
 }
 
 func TestFollow_SelfFollow(t *testing.T) {
@@ -427,7 +493,7 @@ func TestAcceptRequest_PublishesFollowAndFollowed(t *testing.T) {
 	// 1件目: follower (alice) の main に `follow` (body = followee=bob)
 	assert.Equal(t, "alice", pub.calls[0].userID)
 	assert.Equal(t, "follow", pub.calls[0].eventType)
-	assertPackedUserLiteID(t, pub.calls[0].body, "bob")
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", true, false)
 	// 2件目: followee (bob) の main に `followed` (body = follower=alice)
 	assert.Equal(t, "bob", pub.calls[1].userID)
 	assert.Equal(t, "followed", pub.calls[1].eventType)
@@ -469,6 +535,26 @@ func TestCancelRequest_NotFound(t *testing.T) {
 	svc, _, _, _ := newSvc(t)
 	err := svc.CancelRequest("alice", "bob")
 	assert.True(t, errors.Is(err, following.ErrRequestNotFound))
+}
+
+func TestCancelRequest_InvokesUnfollowHook(t *testing.T) {
+	// pending request を cancel したら、リモート locked followee に
+	// Undo Follow を送るために OnLocalUnfollowed を呼ぶ必要がある。
+	// hook 内の shouldDeliverFollow で local followee は自動的に no-op に
+	// なるのでここでは呼び出し有無だけ検証する。
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	fed := &stubFederationHook{}
+	svc.SetFederationHook(fed)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	// Follow() の中で OnLocalFollowed が呼ばれているはずなのでリセットして
+	// cancel 分だけを観察する。
+	fed.unfollowed = nil
+
+	require.NoError(t, svc.CancelRequest("alice", "bob"))
+	assert.Equal(t, []string{"alice->bob"}, fed.unfollowed)
 }
 
 func TestListReceivedRequests(t *testing.T) {

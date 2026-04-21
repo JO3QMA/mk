@@ -73,6 +73,60 @@ type Processor struct {
 	// noteCreateService経由でfanoutされるが、リモートノートはIngestNote/
 	// handleAnnounce経由でDB直挿入されるためここで明示的にfanoutする。
 	fanoutHook TimelineFanoutHook
+
+	// localBaseURL はローカルユーザーのcanonical URI prefix
+	// (例: "https://go.k7a.org") を保持する。inboxで受信したactivityの
+	// object が "{localBaseURL}/users/{id}" 形式のとき、ローカルユーザーを
+	// ID で lookup するために使用する (ローカルユーザーの user.uri は NULL
+	// なので FindByURI では解決できない)。
+	localBaseURL string
+
+	// inboundFollowAcceptor は inbound Follow に対して Accept activity を
+	// 送り返す。original Follow のID (リモート側のURL) を参照しないと相手が
+	// Acceptをマッチングできないため、processorが受け取った raw activity を
+	// そのまま Accept の object に包んで送る。nil なら何もしない (locked
+	// follow 経路ではここを通らないのでOK)。
+	inboundFollowAcceptor InboundFollowAcceptor
+}
+
+// InboundFollowAcceptor delivers an Accept activity in response to an inbound
+// Follow. The raw Follow (as received on our inbox) is wrapped as the inner
+// object so the remote server can match the Accept to the original Follow id.
+type InboundFollowAcceptor interface {
+	SendAcceptForInboundFollow(follower, followee *model.User, originalFollow json.RawMessage) error
+}
+
+// SetInboundFollowAcceptor wires the sender that delivers Accept activities
+// for inbound Follow activities targeting local users.
+func (p *Processor) SetInboundFollowAcceptor(a InboundFollowAcceptor) {
+	p.inboundFollowAcceptor = a
+}
+
+// SetLocalBaseURL configures the local instance's base URL. This is used to
+// detect whether an inbound activity's object refers to a local user.
+func (p *Processor) SetLocalBaseURL(baseURL string) {
+	p.localBaseURL = baseURL
+}
+
+// resolveTargetUser looks up a user referenced by URI in an inbound activity.
+// ローカルユーザの user.uri は DB 上 NULL なので FindByURI では解決できない。
+// 対策として localBaseURL 配下の URI ("{baseURL}/users/{id}") を検出し、
+// ID パートを抜き出して FindByID で lookup する。リモートユーザーは従来通り
+// FindByURI で解決する。
+func (p *Processor) resolveTargetUser(uri string) (*model.User, error) {
+	if p.localBaseURL != "" {
+		prefix := p.localBaseURL + "/users/"
+		if id, ok := strings.CutPrefix(uri, prefix); ok {
+			// id の中に "/" が残る (例: "/outbox") ケースがあるので切り落とす。
+			if slash := strings.IndexByte(id, '/'); slash >= 0 {
+				id = id[:slash]
+			}
+			if id != "" {
+				return p.userRepo.FindByID(id)
+			}
+		}
+	}
+	return p.userRepo.FindByURI(uri)
 }
 
 // ChatMessageReceiver handles inbound Misskey:ChatMessage activities.
@@ -268,16 +322,33 @@ func (p *Processor) handleFollow(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	followee, err := p.userRepo.FindByURI(followeeURI)
+	followee, err := p.resolveTargetUser(followeeURI)
 	if err != nil {
 		return errors.New("unknown followee")
 	}
-	if _, err := p.followingService.Follow(follower.ID, followee.ID); err != nil {
-		// 既にフォロー済みは許容
-		if errors.Is(err, corefollowing.ErrAlreadyFollowing) {
-			return nil
-		}
+	result, err := p.followingService.Follow(follower.ID, followee.ID)
+	alreadyFollowing := errors.Is(err, corefollowing.ErrAlreadyFollowing)
+	// ErrAlreadyRequested はlocked followeeへの再送。既に FollowRequest が
+	// 存在するので何もしなくて良い (Accept は承認時に送られる)。エラーとして
+	// 上に返すと inbox が 4xx を返して相手が retry を続けるので swallow する。
+	alreadyRequested := errors.Is(err, corefollowing.ErrAlreadyRequested)
+	if err != nil && !alreadyFollowing && !alreadyRequested {
 		return err
+	}
+	// Accept を返送するのは Following が成立した (新規 or 既存) 場合のみ。
+	// 既にフォローされている (ErrAlreadyFollowing) 場合も Accept を再送する:
+	// 相手サーバーが Accept を見逃していた or retry で新規 Follow を
+	// 送り直した状況で、我々が何も返さないと相手は永遠に pending のままに
+	// なる (idempotent な Accept 再送で解消する)。original Follow の raw を
+	// そのまま object に包むことでリモート側が送った Follow と matching
+	// できる。FollowRequest 止まり (locked followee) の場合は acceptor を
+	// 呼ばない (Accept は明示承認後)。
+	shouldAccept := alreadyFollowing || (result != nil && result.Following != nil)
+	if shouldAccept && p.inboundFollowAcceptor != nil {
+		if err := p.inboundFollowAcceptor.SendAcceptForInboundFollow(follower, followee, act.raw); err != nil {
+			slog.Warn("inbound follow accept delivery failed",
+				"follower", follower.ID, "followee", followee.ID, "err", err)
+		}
 	}
 	return nil
 }
@@ -313,7 +384,7 @@ func (p *Processor) handleUndoFollow(act genericActivity, inner genericActivity)
 	if err != nil {
 		return err
 	}
-	followee, err := p.userRepo.FindByURI(followeeURI)
+	followee, err := p.resolveTargetUser(followeeURI)
 	if err != nil {
 		return errors.New("unknown followee")
 	}
@@ -673,7 +744,11 @@ func (p *Processor) handleReject(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	follower, err := p.userRepo.FindByURI(followerURI)
+	// ローカルユーザーは user.uri が NULL なので resolveTargetUser で ID
+	// 解決する。これをやらないと FindByURI が fail して reject が silent drop
+	// されてしまい、ローカル側の FollowRequest が消えずに永遠に pending の
+	// ままになる。
+	follower, err := p.resolveTargetUser(followerURI)
 	if err != nil {
 		return nil
 	}
@@ -703,7 +778,9 @@ func (p *Processor) handleBlock(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	// ローカルユーザーは user.uri が NULL なので FindByURI では解決できない。
+	// resolveTargetUser が localBaseURL prefix パターンから ID を抽出する。
+	blockee, err := p.resolveTargetUser(blockeeURI)
 	if err != nil {
 		return errors.New("unknown blockee")
 	}
@@ -733,7 +810,8 @@ func (p *Processor) handleUndoBlock(act genericActivity, inner genericActivity) 
 	if err != nil {
 		return err
 	}
-	blockee, err := p.userRepo.FindByURI(blockeeURI)
+	// Block と同様、ローカルユーザー解決は resolveTargetUser で行う。
+	blockee, err := p.resolveTargetUser(blockeeURI)
 	if err != nil {
 		return errors.New("unknown blockee")
 	}

@@ -185,3 +185,18 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 
 	return d
 }
+
+// PackUserForFollowStreamEvent returns a UserDetailed envelope suitable for
+// the main channel's "follow" and "unfollow" stream events. Upstream Misskey
+// packs these events with the UserDetailedNotMe schema, and
+// MkFollowButton.onFollowChange reads isFollowing and
+// hasPendingFollowRequestFromYou directly to toggle the button — so both
+// fields must be populated from the viewer's perspective. Other viewer-
+// dependent fields (isBlocking, isMuted, etc.) are left at their zero values
+// because the follow button does not consume them.
+func PackUserForFollowStreamEvent(u *model.User, isFollowing, hasPendingFollowRequestFromYou bool) UserDetailed {
+	d := PackUserDetailed(u, nil)
+	d.IsFollowing = &isFollowing
+	d.HasPendingFollowRequestFromYou = &hasPendingFollowRequestFromYou
+	return d
+}

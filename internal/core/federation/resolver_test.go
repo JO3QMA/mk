@@ -81,6 +81,32 @@ func TestResolveActor_NewUserIngestsIconBanner(t *testing.T) {
 	assert.Equal(t, "https://remote.example/banner.png", *user.BannerURL)
 }
 
+func TestResolveActor_NewUserIngestsManuallyApproves(t *testing.T) {
+	// actor.manuallyApprovesFollowers が true のリモートアカウントは
+	// IsLocked=true で保存する (follow 時に FollowRequest 経路に入るように
+	// するため)。
+	body := `{
+		"id": "https://remote.example/users/locked",
+		"type": "Person",
+		"preferredUsername": "locked",
+		"inbox": "https://remote.example/users/locked/inbox",
+		"manuallyApprovesFollowers": true,
+		"publicKey": {"publicKeyPem": "FAKE"}
+	}`
+	r, _ := newResolver(t, body, nil)
+	user, err := r.ResolveActor("https://remote.example/users/locked")
+	require.NoError(t, err)
+	assert.True(t, user.IsLocked, "IsLocked should be true when actor.manuallyApprovesFollowers is true")
+}
+
+func TestResolveActor_NewUserWithoutManuallyApproves(t *testing.T) {
+	// manuallyApprovesFollowers 省略時は IsLocked=false。
+	r, _ := newResolver(t, sampleActor, nil)
+	user, err := r.ResolveActor("https://remote.example/users/alice")
+	require.NoError(t, err)
+	assert.False(t, user.IsLocked)
+}
+
 func TestResolveActor_NewUserWithoutIconBanner(t *testing.T) {
 	// icon / image を持たない actor は avatarUrl / bannerUrl を nil のまま。
 	r, _ := newResolver(t, sampleActor, nil)
@@ -896,6 +922,36 @@ func TestResolveActor_TTLRefreshPreservesIconWhenOmitted(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, user.AvatarURL)
 	assert.Equal(t, "https://remote.example/keep-avatar.png", *user.AvatarURL)
+}
+
+func TestResolveActor_TTLRefreshUpdatesIsLocked(t *testing.T) {
+	// TTL refresh でリモートが manuallyApprovesFollowers を true→false or
+	// false→true に切り替えたときにローカルの IsLocked も追従する。
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	uri := "https://remote.example/users/alice"
+	old := time.Now().Add(-48 * time.Hour)
+	repo.Users["existing"] = &model.User{
+		ID:            "existing",
+		Username:      "alice",
+		URI:           &uri,
+		IsLocked:      false,
+		LastFetchedAt: &old,
+	}
+	updated := `{
+		"id": "https://remote.example/users/alice",
+		"type": "Person",
+		"preferredUsername": "alice",
+		"inbox": "https://remote.example/users/alice/inbox",
+		"manuallyApprovesFollowers": true,
+		"publicKey": {"publicKeyPem": "REFRESHED"}
+	}`
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(updated)}, idGen)
+	user, err := r.ResolveActor(uri)
+	require.NoError(t, err)
+	assert.True(t, user.IsLocked, "IsLocked should flip to true on refresh when remote opts in")
 }
 
 func TestResolveActor_NoRefreshWhenFresh(t *testing.T) {

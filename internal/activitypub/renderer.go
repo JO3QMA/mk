@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/shiroha-a/mk/internal/activitypub/mfm"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -550,11 +551,19 @@ func (r *Renderer) RenderFollowRelay(relayID string, relayActorID string) *Follo
 }
 
 // RenderAccept wraps an inner activity in an Accept.
+//
+// id は Misskey TS `addContext` 互換で `{baseURL}/{UUID}` 形式で必ず入れる。
+// id なしの Accept は受信側 (Misskey / CherryPick) の InboxProcessorService
+// で "skip: activity id is not a string" として弾かれるため、フォロー承認
+// フローが成立しない。
 func (r *Renderer) RenderAccept(actorID string, inner any) *Accept {
 	a := &Accept{
 		Activity: Activity{
-			Object: Object{Type: "Accept"},
-			Actor:  r.urls.UserURI(actorID),
+			Object: Object{
+				ID:   r.urls.baseURL + "/" + uuid.NewString(),
+				Type: "Accept",
+			},
+			Actor: r.urls.UserURI(actorID),
 		},
 		Object: inner,
 	}

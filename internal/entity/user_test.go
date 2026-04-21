@@ -323,3 +323,41 @@ func TestPackUserDetailed_FieldsDefaultWhenProfileNil(t *testing.T) {
 	assert.Contains(t, string(b), `"fields":[]`)
 	assert.NotContains(t, string(b), `"fields":null`)
 }
+
+func TestPackUserForFollowStreamEvent(t *testing.T) {
+	u := &model.User{ID: "u1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+
+	t.Run("follow event sets isFollowing=true and hasPending=false", func(t *testing.T) {
+		out := PackUserForFollowStreamEvent(u, true, false)
+		require.NotNil(t, out.IsFollowing)
+		assert.True(t, *out.IsFollowing)
+		require.NotNil(t, out.HasPendingFollowRequestFromYou)
+		assert.False(t, *out.HasPendingFollowRequestFromYou)
+		assert.Equal(t, "u1", out.ID)
+		assert.Equal(t, "alice", out.Username)
+	})
+
+	t.Run("unfollow event sets isFollowing=false and hasPending=false", func(t *testing.T) {
+		out := PackUserForFollowStreamEvent(u, false, false)
+		require.NotNil(t, out.IsFollowing)
+		assert.False(t, *out.IsFollowing)
+		require.NotNil(t, out.HasPendingFollowRequestFromYou)
+		assert.False(t, *out.HasPendingFollowRequestFromYou)
+	})
+
+	t.Run("pending request sets isFollowing=false and hasPending=true", func(t *testing.T) {
+		out := PackUserForFollowStreamEvent(u, false, true)
+		require.NotNil(t, out.IsFollowing)
+		assert.False(t, *out.IsFollowing)
+		require.NotNil(t, out.HasPendingFollowRequestFromYou)
+		assert.True(t, *out.HasPendingFollowRequestFromYou)
+	})
+
+	t.Run("serialized JSON exposes the viewer fields", func(t *testing.T) {
+		out := PackUserForFollowStreamEvent(u, true, false)
+		b, err := json.Marshal(out)
+		require.NoError(t, err)
+		assert.Contains(t, string(b), `"isFollowing":true`)
+		assert.Contains(t, string(b), `"hasPendingFollowRequestFromYou":false`)
+	})
+}

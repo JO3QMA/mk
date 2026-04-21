@@ -214,6 +214,13 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		if s.notificationHook != nil {
 			s.notificationHook.OnFollowRequested(followerID, followeeID)
 		}
+		// リモートの承認制followeeにはAP Follow activityを送る必要がある
+		// (相手側の inbox で FollowRequest が作られ、承認時に Accept が
+		// 返ってくる)。federationHook.OnLocalFollowed は shouldDeliverFollow
+		// でローカル→リモート条件を確認してから配信する。
+		if s.federationHook != nil {
+			s.federationHook.OnLocalFollowed(follower, followee)
+		}
 		// TS本家: UserFollowingService は `receiveFollowRequest` を
 		// followee の main stream に publish する。body は follower User。
 		// UserLite で送るのは他のWSイベント (notification内のuser等) と
@@ -248,6 +255,10 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 		s.notificationHook.OnFollowed(followerID, followeeID)
 	}
 	if s.federationHook != nil {
+		// アウトバウンド: local→remote follow の場合は Follow activity を送る。
+		// インバウンド (remote→local) の Accept 返送は processor 側で original
+		// Follow の ID を使って直接発行する (ここで OnLocalFollowAccepted を
+		// 呼ぶと original ID が失われ、相手が Accept をマッチングできない)。
 		s.federationHook.OnLocalFollowed(follower, followee)
 	}
 	if s.chartHook != nil {
@@ -260,9 +271,11 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 	}
 	// TS本家 UserFollowingService.follow() は follower の main に `follow`
 	// (相手側の User)、followee の main に `followed` (自分を follow した
-	// User) を publish する。本実装は hot path のため UserLite で送る。
+	// User) を publish する。frontend MkFollowButton.onFollowChangeが
+	// body.isFollowing / body.hasPendingFollowRequestFromYouを読むため、
+	// UserDetailed shapeでpackしてviewer依存フィールドも埋めておく。
 	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(followerID, "follow", entity.PackUserLite(followee))
+		s.mainStreamPublisher.PublishMainEvent(followerID, "follow", entity.PackUserForFollowStreamEvent(followee, true, false))
 		s.mainStreamPublisher.PublishMainEvent(followeeID, "followed", entity.PackUserLite(follower))
 	}
 
@@ -304,9 +317,11 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 				s.webhookHook.OnUnfollow(follower, followee)
 			}
 			// TS本家は自分が unfollow した相手を main に publish する
-			// (フォローボタン等の即時反映)。
+			// (フォローボタン等の即時反映)。follow event と同様、UserDetailed
+			// shapeでisFollowing=false / hasPendingFollowRequestFromYou=falseを
+			// 明示的に埋める (frontendはこれらを直接代入するのでundefined不可)。
 			if s.mainStreamPublisher != nil {
-				s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserLite(followee))
+				s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserForFollowStreamEvent(followee, false, false))
 			}
 		}
 	}
@@ -359,9 +374,9 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 			// Accept によって Following が成立するので、Follow() と同じく
 			// follower の main に `follow`、followee の main に `followed`
 			// を publish する (TS本家 UserFollowingService.acceptFollow
-			// と同等)。
+			// と同等)。follow event body は UserDetailed + isFollowing=true。
 			if s.mainStreamPublisher != nil {
-				s.mainStreamPublisher.PublishMainEvent(req.FollowerID, "follow", entity.PackUserLite(followee))
+				s.mainStreamPublisher.PublishMainEvent(req.FollowerID, "follow", entity.PackUserForFollowStreamEvent(followee, true, false))
 				s.mainStreamPublisher.PublishMainEvent(req.FolloweeID, "followed", entity.PackUserLite(follower))
 			}
 		}
@@ -379,12 +394,29 @@ func (s *Service) RejectRequest(followeeID, followerID string) error {
 }
 
 // CancelRequest cancels an outgoing follow request created by the follower.
+// フォロー申請の送信元 (local follower) がキャンセル操作をしたときに呼ばれる。
+// リモート locked followee に対する申請の場合は Undo Follow activity を相手に
+// 送って pending FollowRequest を取り消してもらう必要がある。送らないと相手
+// 側に stale なリクエストが残り、後で承認されても local には Following が
+// 存在しない矛盾状態になる。
 func (s *Service) CancelRequest(followerID, followeeID string) error {
 	req, err := s.followRequestRepo.FindByPair(followerID, followeeID)
 	if err != nil {
 		return ErrRequestNotFound
 	}
-	return s.followRequestRepo.Delete(req)
+	if err := s.followRequestRepo.Delete(req); err != nil {
+		return err
+	}
+	// federationHook.OnLocalUnfollowed は shouldDeliverFollow でローカル→
+	// リモート条件を判定するので、ローカル followee の場合は自動的に no-op。
+	if s.federationHook != nil {
+		follower, ferr := s.userRepo.FindByID(followerID)
+		followee, eerr := s.userRepo.FindByID(followeeID)
+		if ferr == nil && eerr == nil {
+			s.federationHook.OnLocalUnfollowed(follower, followee)
+		}
+	}
+	return nil
 }
 
 // ListReceivedRequests returns follow requests received by userID.

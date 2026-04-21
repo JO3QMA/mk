@@ -2,6 +2,7 @@ package federation_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -51,6 +52,127 @@ func TestProcess_FollowHappyPath(t *testing.T) {
 	}`)
 	require.NoError(t, p.Process(body))
 	assert.Len(t, followingRepo.Followings, 1)
+}
+
+// stubInboundFollowAcceptor records SendAcceptForInboundFollow calls for
+// assertion.
+type stubInboundFollowAcceptor struct {
+	calls []struct {
+		followerID, followeeID string
+		followRaw              string
+	}
+}
+
+func (s *stubInboundFollowAcceptor) SendAcceptForInboundFollow(follower, followee *model.User, raw json.RawMessage) error {
+	s.calls = append(s.calls, struct {
+		followerID, followeeID string
+		followRaw              string
+	}{follower.ID, followee.ID, string(raw)})
+	return nil
+}
+
+func TestProcess_FollowInvokesAcceptorWithOriginalRaw(t *testing.T) {
+	// inbound Follow が成立 (Following 作成) したら、original Follow の raw を
+	// そのまま InboundFollowAcceptor に渡す。相手は自分の送った Follow.id と
+	// 照合できるようになる。
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+	acceptor := &stubInboundFollowAcceptor{}
+	p.SetInboundFollowAcceptor(acceptor)
+
+	body := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/abc123",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	require.Len(t, acceptor.calls, 1)
+	assert.Equal(t, "bob", acceptor.calls[0].followeeID)
+	// original の id を含んだ raw JSON が渡っていること。
+	assert.Contains(t, acceptor.calls[0].followRaw, "https://remote.example/follows/abc123")
+}
+
+func TestProcess_FollowAlreadyFollowingStillSendsAccept(t *testing.T) {
+	// 既に Following が成立している状態で再度 Follow が来た場合 (相手が
+	// Accept を見逃したなど) も Accept を再送する。remote 側の pending
+	// 状態を idempotent に解消するため。
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+	// 事前に Following を作っておく (remote alice → local bob)
+	// alice の ID は aliceActor の ResolveActor 結果に依存するので一旦
+	// Process を走らせて row を作らせる。
+	body := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/first",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	require.Len(t, followingRepo.Followings, 1)
+
+	// 同じ Follow を再送 → ErrAlreadyFollowing で service.Follow は弾くが
+	// acceptor は呼ばれるべき。
+	acceptor := &stubInboundFollowAcceptor{}
+	p.SetInboundFollowAcceptor(acceptor)
+	retryBody := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/retry",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(retryBody))
+	require.Len(t, acceptor.calls, 1)
+	assert.Contains(t, acceptor.calls[0].followRaw, "https://remote.example/follows/retry")
+}
+
+func TestProcess_FollowAlreadyRequestedStillSucceeds(t *testing.T) {
+	// locked local user に対する再送 Follow。1回目で FollowRequest が作られ、
+	// 2回目は ErrAlreadyRequested で弾かれるが handleFollow 側では吸収して
+	// エラーを返さない (相手が retry を続けるのを防ぐ)。Accept は送らない
+	// (まだ承認されていないので)。
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	// locked local user
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", IsLocked: true}
+	acceptor := &stubInboundFollowAcceptor{}
+	p.SetInboundFollowAcceptor(acceptor)
+
+	body := []byte(`{
+		"type": "Follow",
+		"id": "https://remote.example/follows/first",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	// 2回目もエラーを返さない
+	require.NoError(t, p.Process(body))
+	// locked 相手の Follow は Accept を送らない (承認時に送る)
+	assert.Empty(t, acceptor.calls)
+}
+
+func TestProcess_FollowLocalUserByIDResolution(t *testing.T) {
+	// 実本番のローカルユーザー row は user.uri が NULL のまま保存されるため、
+	// FindByURI では解決できない。localBaseURL が設定されていれば
+	// "{baseURL}/users/{id}" 形式の URI から ID を抜き出して FindByID で
+	// lookup する経路が通るはず。
+	p, repo, followingRepo, _ := newProcessor(t, aliceActor)
+	p.SetLocalBaseURL("https://example.com")
+	// URI を持たないローカルユーザー
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+
+	body := []byte(`{
+		"type": "Follow",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/users/bob"
+	}`)
+	require.NoError(t, p.Process(body))
+	require.Len(t, followingRepo.Followings, 1)
+	for _, f := range followingRepo.Followings {
+		assert.Equal(t, "bob", f.FolloweeID)
+	}
 }
 
 func TestProcess_FollowAlreadyFollowing(t *testing.T) {
@@ -380,8 +502,10 @@ func newProcessorWithBlocking(t *testing.T) (*federation.Processor, *testutil.Mo
 
 func TestProcess_BlockHappyPath(t *testing.T) {
 	p, repo, blockingRepo := newProcessorWithBlocking(t)
-	bobURI := "https://example.com/users/bob"
-	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+	// 実本番のローカルユーザー row は user.uri が NULL なので、この条件で
+	// test する (handleBlock が resolveTargetUser で ID 解決することを検証)。
+	p.SetLocalBaseURL("https://example.com")
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
 
 	body := []byte(`{
 		"type": "Block",
