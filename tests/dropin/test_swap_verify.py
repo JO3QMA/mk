@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from conftest import B_DOMAIN  # type: ignore[import-not-found]
+from conftest import A_DOMAIN  # type: ignore[import-not-found]
 from conftest_base import MisskeyLikeClient, poll_until  # type: ignore[import-not-found]
 from test_swap_setup import BASELINE_NOTE_TEXT  # type: ignore[import-not-found]
 
@@ -103,8 +103,12 @@ def test_post_swap_alice_can_react(
         for n in notifications:
             if n.get("type") != "reaction":
                 continue
+            # alice は instance B から見ると remote (host = A_DOMAIN = "a")。
+            # 旧実装は `host in (None, "")` で local user を許容していたが、
+            # それだと B 上の任意の local user の reaction が誤マッチして
+            # xfail(strict=True) を意図せず通してしまう (Devin #370 #2)。
             from_user = n.get("user") or {}
-            if from_user.get("host") in (None, "") or from_user.get("username") == "alice":
+            if from_user.get("username") == "alice" and from_user.get("host") == A_DOMAIN:
                 return True
         return False
 
