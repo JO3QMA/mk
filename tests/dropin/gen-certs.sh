@@ -22,3 +22,13 @@ for domain in $DOMAINS; do
     echo "Generated cert for $domain"
   fi
 done
+
+# bundle.pem は mk-go が SSL_CERT_FILE 経由で trust store に読ませるためのもの。
+# Phase 13-2 (#367) で TS-A の backend を mk-A に差し替える時、mk-A が連合先
+# instance B の自己署名 cert を検証できるようにする。Phase 13-1 では未使用だが
+# ファイル生成は冪等なので常に作って置く。
+: > "$CERT_DIR/bundle.pem"
+for domain in $DOMAINS; do
+  cat "$CERT_DIR/$domain.crt" >> "$CERT_DIR/bundle.pem"
+done
+echo "Wrote $CERT_DIR/bundle.pem"

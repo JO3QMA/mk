@@ -1,0 +1,51 @@
+# docker-compose.dropin.mk.yml — Phase 13-2 (#367) overlay.
+#
+# 使い方:
+#   docker compose \
+#     -f docker-compose.dropin.yml \
+#     -f docker-compose.dropin.mk.yml up -d --build
+#
+# このオーバーレイは `app-a` (Misskey TS) を mk-go ビルドに差し替える。
+# postgres-a / redis-a / nginx-a / instance B 系列はベースから引き継ぐので、
+# nginx-a の upstream (`app-a:3000`) はそのまま mk-go を指す。
+#
+# Phase 13-1 (TS-A only) と Phase 13-2 (mk-A) の両方で `app-a` というサービス
+# 名を維持しているのは、nginx config が `upstream a_backend { server app-a:3000; }`
+# のようにハードコードしているため。サービス名を変えると nginx config も書き
+# 換える必要があり、TS↔mk swap シナリオの外科性が損なわれる。
+
+services:
+  app-a:
+    # 既存 TS image を上書きする (compose merge ルールで image / build /
+    # entrypoint が overlay 側に置き換わる)。
+    image: ""
+    build:
+      context: .
+      # 既存の federation 用 Dockerfile を再利用する。migrate と server を
+      # 両方ビルドし、entrypoint で migrate up → server start する構成。
+      # mk-go のマイグレーションは TS schema に対して追加のみで破壊的変更
+      # なし (CLAUDE.md §10) なので、TS-A が書いた DB-A をそのまま読める。
+      dockerfile: tests/federation/common/Dockerfile.mkgo
+    environment:
+      # Go 標準 trust store に dropin 用 self-signed cert を読ませる。
+      # gen-certs.sh が生成する bundle.pem には a / b の両 cert が入っている。
+      SSL_CERT_FILE: /certs/bundle.pem
+      TZ: Asia/Tokyo
+    volumes:
+      - ./tests/dropin/instance_a_mk.yml:/app/.config/default.yml:ro
+      - certs:/certs:ro
+    # mk-go の /healthz は GET なので TS の healthcheck (POST /api/ping) と
+    # 命令が違う。差し替え後は GET /healthz で healthy を判定する。
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      postgres-a:
+        condition: service_healthy
+      redis-a:
+        condition: service_healthy
+      certs:
+        condition: service_completed_successfully

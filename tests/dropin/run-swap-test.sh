@@ -1,0 +1,91 @@
+#!/bin/bash
+# Phase 13-2 (#367) drop-in swap test orchestrator.
+#
+# 流れ:
+#   1. TS-A + TS-B stack を起動 (Phase 13-1 と同じ)
+#   2. test_swap_setup.py で alice/bob/follow/baseline note を作る
+#   3. TS-A backend (app-a) を停止 — DB-A / Redis-A は走り続ける
+#   4. mk-go overlay で app-a を mk-go ビルドに置き換えて起動
+#   5. mk-A の healthy 待ち
+#   6. test_swap_verify.py で state preserved + 新規 federation 動作を確認
+#   7. cleanup
+#
+# pytest セッションを跨いで docker compose を切り替える必要があるため、
+# orchestration を bash で外側に置く。test runner コンテナ内に docker CLI を
+# 入れるとイメージが太るしソケットマウントの security trade-off があるので、
+# bash + 複数回 pytest 起動の構成にした。
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+BASE=docker-compose.dropin.yml
+OVERLAY=docker-compose.dropin.mk.yml
+
+cleanup() {
+  echo "===> cleanup"
+  docker compose -f "$BASE" -f "$OVERLAY" down -v >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+echo "===> stage 1: bring up TS-A + TS-B stack"
+docker compose -f "$BASE" up -d --build
+
+echo "===> stage 1b: wait for both TS instances healthy"
+deadline=$(($(date +%s) + 240))
+while :; do
+  states=$(docker compose -f "$BASE" ps --format json | python3 -c "
+import sys, json
+ls=[json.loads(l) for l in sys.stdin if l.strip()]
+healthy=[s for s in ls if s.get('Service') in ('app-a','app-b') and s.get('Health')=='healthy']
+print(len(healthy))
+")
+  if [ "$states" = "2" ]; then
+    break
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "FAIL: TS instances did not become healthy within 240s"
+    docker compose -f "$BASE" ps
+    exit 1
+  fi
+  sleep 3
+done
+
+echo "===> stage 2: setup alice / bob / follow / baseline note"
+docker compose -f "$BASE" --profile test run --rm test-runner pytest test_swap_setup.py -v
+
+echo "===> stage 3: stop TS-A backend (DB-A / Redis-A keep state)"
+docker compose -f "$BASE" stop app-a
+
+echo "===> stage 4: bring up mk-go overlay on instance A"
+docker compose -f "$BASE" -f "$OVERLAY" up -d --build app-a
+
+echo "===> stage 5: wait for mk-A healthy"
+deadline=$(($(date +%s) + 180))
+while :; do
+  state=$(docker compose -f "$BASE" -f "$OVERLAY" ps --format json | python3 -c "
+import sys, json
+ls=[json.loads(l) for l in sys.stdin if l.strip()]
+ms=[s for s in ls if s.get('Service')=='app-a']
+print(ms[0].get('Health') if ms else 'missing')
+")
+  if [ "$state" = "healthy" ]; then
+    break
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "FAIL: mk-A did not become healthy within 180s"
+    docker compose -f "$BASE" -f "$OVERLAY" logs app-a | tail -50
+    exit 1
+  fi
+  sleep 3
+done
+
+echo "===> stage 5b: restart nginx-a so the upstream re-resolves to mk-A"
+# stop app-a 中に nginx-a が backend を unreachable と覚え込む可能性があるので
+# 念のため restart する。
+docker compose -f "$BASE" -f "$OVERLAY" restart nginx-a
+
+echo "===> stage 6: verify state preserved on mk-A"
+docker compose -f "$BASE" -f "$OVERLAY" --profile test run --rm test-runner pytest test_swap_verify.py -v
+
+echo "===> all stages PASS"
