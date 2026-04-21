@@ -393,9 +393,13 @@ func (s *Service) RejectRequest(followeeID, followerID string) error {
 	if err := s.followRequestRepo.Delete(req); err != nil {
 		return err
 	}
+	// CancelRequest と同じく publisher 未配線なら DB lookup を省く。
 	// 拒否された側 (follower) の frontend MkFollowButton がリロード
-	// なしで「フォロー」表示に戻るよう、unfollow main stream event を
-	// publish する (Unfollow / Follow event と同じ経路)。
+	// なしで「フォロー」表示に戻るよう unfollow main stream event を
+	// publish する経路。
+	if s.mainStreamPublisher == nil {
+		return nil
+	}
 	if followee, ferr := s.userRepo.FindByID(followeeID); ferr == nil {
 		s.publishFollowRequestResolved(followerID, followee)
 	}
@@ -446,6 +450,13 @@ func (s *Service) CancelRequest(followerID, followeeID string) error {
 // a redundant DB lookup.
 func (s *Service) publishFollowRequestResolved(followerID string, followee *model.User) {
 	if s.mainStreamPublisher == nil || followee == nil {
+		return
+	}
+	// follower がリモートなら local WebSocket subscriber はいないので publish
+	// 不要。federation processor 経由の Undo / Reject ではここに remote user ID
+	// が入ることがあるので明示的にスキップする。
+	follower, err := s.userRepo.FindByID(followerID)
+	if err != nil || !follower.IsLocal() {
 		return
 	}
 	s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserForFollowStreamEvent(followee, false, false))
