@@ -20,9 +20,27 @@ OVERLAY=docker-compose.dropin-frontend.mk.yml
 
 cleanup() {
   echo "===> cleanup"
+  # down -v でコンテナを消す前にログを保存する (Devin #398 #1)。
+  # CI の "Capture logs on failure" は down 後に実行されてしまうので、
+  # orchestrator 側でログを tmp に書き出しておく必要がある。
+  #
+  # 書き込み先は `DROPIN_LOG_DIR` (CI から指定) または repo 配下の
+  # `.dropin-logs/` (gitignore 済)。失敗時のみ保存したいので
+  # `SCRIPT_EXIT_CODE` を参照する。
+  if [ "${SCRIPT_EXIT_CODE:-0}" != "0" ]; then
+    local log_dir="${DROPIN_LOG_DIR:-$REPO_ROOT/.dropin-logs}"
+    mkdir -p "$log_dir"
+    echo "===> saving compose logs to $log_dir"
+    docker compose -f "$BASE" -f "$OVERLAY" logs \
+      > "$log_dir/compose.log" 2>&1 || true
+    docker compose -f "$BASE" -f "$OVERLAY" ps \
+      > "$log_dir/ps.log" 2>&1 || true
+  fi
   docker compose -f "$BASE" -f "$OVERLAY" down -v >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+# set -e で exit した時 ERR が先に走らないので EXIT trap に値を渡す。
+track_exit() { SCRIPT_EXIT_CODE=$?; }
+trap 'track_exit; cleanup' EXIT
 
 # -----------------------------------------------------------------------
 # stage 1: TS-A / B / C stack 起動

@@ -48,25 +48,26 @@ jobs:
           docker pull cypress/included:15.11.0 &
 
       - name: Run dropin frontend e2e
+        # DROPIN_LOG_DIR をセットして orchestrator の cleanup trap に失敗時
+        # ログの保存先を教える (Devin #398 #1): trap 内で `down -v` する前に
+        # 保存しないと CI 側の `if: failure()` が走る頃にはコンテナが消えて
+        # logs が空になる。
+        env:
+          DROPIN_LOG_DIR: /tmp/dropin-frontend-logs
         run: |
+          mkdir -p /tmp/dropin-frontend-logs
           if [ "${{ inputs.mode || 'swap' }}" = "baseline" ]; then
             make dropin-frontend-baseline
           else
             make dropin-frontend-swap-test
           fi
 
-      # 失敗時のみ docker compose logs + cypress 成果物を artifact 化する。
-      - name: Capture logs on failure
+      # 失敗時のみ cypress 成果物を追加で取り込む。compose logs / ps は
+      # orchestrator の cleanup が既に上書きしているので重複無し。
+      - name: Capture cypress artifacts on failure
         if: failure()
         run: |
           mkdir -p /tmp/dropin-frontend-logs
-          docker compose -f docker-compose.dropin-frontend.yml \
-            -f docker-compose.dropin-frontend.mk.yml logs \
-            > /tmp/dropin-frontend-logs/compose.log 2>&1 || true
-          docker compose -f docker-compose.dropin-frontend.yml \
-            -f docker-compose.dropin-frontend.mk.yml ps \
-            > /tmp/dropin-frontend-logs/ps.log 2>&1 || true
-          # cypress 成果物 (videos / screenshots) が残っていたら取り込む。
           if [ -d tests/dropin_frontend/cypress/cypress ]; then
             cp -r tests/dropin_frontend/cypress/cypress /tmp/dropin-frontend-logs/ || true
           fi
