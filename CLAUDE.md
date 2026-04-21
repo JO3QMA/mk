@@ -137,9 +137,12 @@ make dropin-swap-test       # TS-then-mk 切替シナリオ (bash orchestrator)
 
 # Drop-in frontend e2e (#380 / Phase 14) — 3 Misskey TS インスタンス + cypress
 # 実ブラウザでフロントエンド視点の drop-in 互換を検証する基盤。
-make dropin-frontend-baseline  # TS-A/B/C + cypress baseline spec 実行
-make dropin-frontend-up        # stack だけ立ち上げ (手動デバッグ用)
-make dropin-frontend-down      # volume ごと cleanup
+make dropin-frontend-baseline    # TS-A/B/C + cypress baseline spec 実行
+make dropin-frontend-up          # stack だけ立ち上げ (手動デバッグ用)
+make dropin-frontend-down        # volume ごと cleanup
+make dropin-frontend-swap-test   # TS-A → mk-A 切替まで含む end-to-end (Phase 14-3)
+make dropin-frontend-mk-up       # mk overlay だけ立ち上げ (clean DB の mk-A から起動)
+make dropin-frontend-mk-down     # mk overlay cleanup
 ```
 
 エントリポイント：
@@ -435,6 +438,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
+- **2026-04-22**: drop-in frontend e2e Phase 14-3 (#394) を追加。`docker-compose.dropin-frontend.mk.yml` overlay と `tests/dropin_frontend/run-frontend-swap-test.sh` orchestrator で、TS-A 切替後の mk-A でも cypress spec が pass することを e2e 検証する。`CYPRESS_MODE=baseline|swap` を spec に渡す `support/mode.ts` と `skipInSwap` helper を追加。#396 (users/lists/push duplicate) / #397 (specified DM mentions) / #379 (delete propagation) / #389 (reply_chain) を swap mode で skip 扱いに。`.github/workflows/dropin-frontend-e2e.yml` で毎日 19:00 UTC nightly 実行。
 - **2026-04-21**: drop-in frontend e2e Phase 14-2 (#387) を追加。spec マトリクスに `visibility.cy.ts` / `user_list.cy.ts` / `cross_instance_view.cy.ts` / `delete_note.cy.ts` の 4 本を追加 (12 passing)。`reply_chain.cy.ts` は federation queue back-pressure で brittle なので #389 で調整後に activate 予定 (現状 `describe.skip`)。共通 setup を `support/setup.ts` に切り出し、cypress plugin task `tokenCache:*` で token を spec 間共有して signin rate limit を回避する。
 - **2026-04-21**: drop-in frontend e2e Phase 14-1 (#381) を追加。3 Misskey TS インスタンス (A/B/C) + cypress runner 構成 (`docker-compose.dropin-frontend.yml` + `tests/dropin_frontend/`) で baseline smoke spec (`smoke.cy.ts`) を動かす。spec マトリクス拡充は Phase 14-2、mk 差し替え overlay + CI 統合は Phase 14-3。
 - **2026-04-21**: drop-in e2e Phase 13-4 (#374) を追加。`.github/workflows/dropin-e2e.yml` で `make dropin-swap-test` を nightly cron (18:00 UTC) + workflow_dispatch で実行。PR の required check には含めず、失敗時は docker compose logs を artifact 化して原因調査できるようにする。

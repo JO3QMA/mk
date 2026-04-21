@@ -1,0 +1,88 @@
+name: Drop-in frontend e2e (nightly)
+
+# Phase 14-3 (#394): 3 Misskey TS + cypress の drop-in 互換 e2e を CI で
+# 定期実行する。pytest 版 (`dropin-e2e.yml` #374) と同様の運用で、PR の
+# required check には**含めない** (15-30 min かかり flaky 要素を含むため)。
+#
+# - schedule: 毎日 UTC 19:00 (pytest 版 18:00 の 1h 後にずらして runner 圧縮)
+# - workflow_dispatch: 手動実行 (baseline-only / swap 両方選択可)
+
+on:
+  schedule:
+    # 19:00 UTC = 04:00 JST。
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / SHA to test"
+        required: false
+        default: "develop"
+      mode:
+        description: "Test mode: swap (default, full baseline+swap) / baseline (only TS-only)"
+        required: false
+        default: "swap"
+        type: choice
+        options:
+          - swap
+          - baseline
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || 'develop' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Pre-pull heavy images in background
+        run: |
+          docker pull misskey/misskey:2025.2.1 &
+          docker pull cypress/included:15.11.0 &
+
+      - name: Run dropin frontend e2e
+        run: |
+          if [ "${{ inputs.mode || 'swap' }}" = "baseline" ]; then
+            make dropin-frontend-baseline
+          else
+            make dropin-frontend-swap-test
+          fi
+
+      # 失敗時のみ docker compose logs + cypress 成果物を artifact 化する。
+      - name: Capture logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/dropin-frontend-logs
+          docker compose -f docker-compose.dropin-frontend.yml \
+            -f docker-compose.dropin-frontend.mk.yml logs \
+            > /tmp/dropin-frontend-logs/compose.log 2>&1 || true
+          docker compose -f docker-compose.dropin-frontend.yml \
+            -f docker-compose.dropin-frontend.mk.yml ps \
+            > /tmp/dropin-frontend-logs/ps.log 2>&1 || true
+          # cypress 成果物 (videos / screenshots) が残っていたら取り込む。
+          if [ -d tests/dropin_frontend/cypress/cypress ]; then
+            cp -r tests/dropin_frontend/cypress/cypress /tmp/dropin-frontend-logs/ || true
+          fi
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dropin-frontend-logs
+          path: /tmp/dropin-frontend-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Final teardown
+        if: always()
+        run: |
+          docker compose -f docker-compose.dropin-frontend.yml \
+            -f docker-compose.dropin-frontend.mk.yml down -v \
+            >/dev/null 2>&1 || true
