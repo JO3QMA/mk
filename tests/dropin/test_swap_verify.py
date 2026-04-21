@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from conftest import A_DOMAIN  # type: ignore[import-not-found]
 from conftest_base import MisskeyLikeClient, poll_until  # type: ignore[import-not-found]
 from test_swap_setup import (  # type: ignore[import-not-found]
@@ -111,13 +109,6 @@ def test_post_swap_user_list_timeline_preserved(
         "user-list-timeline lost baseline note from list member after swap"
 
 
-@pytest.mark.xfail(
-    reason="mk-go の NoteDeliveryHook (#369) は reply target 個別 deliver を未実装。"
-    "alice の followers (=0 人) + text mention (=なし) しか対象にしないため、"
-    "リモートユーザーへの reply は配信されない。drop-in 切替に固有の問題ではなく、"
-    "fresh インストールでも同じ振る舞い。Phase 13-3 で federation 修正後に xfail 解除。",
-    strict=True,
-)
 def test_post_swap_alice_can_reply(
     instance_a: MisskeyLikeClient,
     instance_b: MisskeyLikeClient,
@@ -150,12 +141,6 @@ def test_post_swap_alice_can_reply(
     assert poll_until(_arrived, timeout=120, desc="bob receives reply from mk-A alice")
 
 
-@pytest.mark.xfail(
-    reason="reaction の federation deliver も #369 と同じ NoteDeliveryHook 経路を"
-    "通るため、リモートユーザーへ reaction が配信されない。Phase 13-3 で連動して"
-    "解除予定。",
-    strict=True,
-)
 def test_post_swap_alice_can_react(
     instance_a: MisskeyLikeClient,
     instance_b: MisskeyLikeClient,

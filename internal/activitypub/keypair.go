@@ -67,12 +67,29 @@ func GenerateEd25519Keypair() (privatePEM string, publicPEM string, err error) {
 }
 
 // ParseRSAPrivateKey decodes a PEM-encoded RSA private key.
+// PKCS1 ("BEGIN RSA PRIVATE KEY") と PKCS8 ("BEGIN PRIVATE KEY") の両形式を
+// 受け付ける。Misskey TS は PKCS8 で RSA 鍵を保存するため、drop-in 切替で
+// mk-go が TS 生成の鍵を読む場合に PKCS8 fallback が必要 (#369 関連)。
 func ParseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(pemStr))
 	if block == nil {
 		return nil, errors.New("invalid PEM block")
 	}
-	return x509.ParsePKCS1PrivateKey(block.Bytes)
+	// 1. まず PKCS1 (mk-go が自分で生成した鍵はこの形式) を試す。
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	// 2. PKCS1 失敗時は PKCS8 を試す。TS Misskey は openssl 3.x デフォルトで
+	//    `-----BEGIN PRIVATE KEY-----` の PKCS8 形式を生成する。
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse RSA private key (tried PKCS1 and PKCS8): %w", err)
+	}
+	rsaKey, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("PKCS8 key is not RSA: %T", parsed)
+	}
+	return rsaKey, nil
 }
 
 // ParseEd25519PrivateKey decodes a PEM-encoded Ed25519 private key (PKCS8).
