@@ -35,6 +35,22 @@ jobs:
           # COPY対象になるため、submoduleを取得しないとbuildが失敗する。
           submodules: recursive
 
+      # Dockerfileが /twemoji (本家frontendの絵文字SVG set) をCOPYするが、
+      # その実体は third_party/misskey/packages/backend/node_modules/@discordapp/twemoji
+      # 配下にあり、pnpm install 後にしか存在しない。runner上で事前にinstallして
+      # Docker build contextに含める (issue #359)。
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install third_party/misskey node_modules
+        working-directory: third_party/misskey
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+          pnpm install --frozen-lockfile
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
