@@ -671,14 +671,18 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 			existing.Emojis = emojis
 		}
 	}
-	// AP `attachment` 配列の差分を反映する (#378)。
-	fileIDs := r.upsertAttachments(extractAttachments(apNote.Attachment), &existing.UserID, existing.UserHost)
-	if !slices.Equal([]string(existing.FileIDs), []string(fileIDs)) {
-		fields["fileIds"] = pq.StringArray(fileIDs)
-		existing.FileIDs = pq.StringArray(fileIDs)
-		types := r.collectAttachedFileTypes(fileIDs)
-		fields["attachedFileTypes"] = pq.StringArray(types)
-		existing.AttachedFileTypes = pq.StringArray(types)
+	// AP `attachment` 配列の差分を反映する (#378)。driveFileRepo 未設定時は
+	// upsertAttachments が空 slice を返すので何もしない (= 既存 fileIDs を
+	// 誤って空に上書きしない、Devin #400 #1)。
+	if r.driveFileRepo != nil {
+		fileIDs := r.upsertAttachments(extractAttachments(apNote.Attachment), &existing.UserID, existing.UserHost)
+		if !slices.Equal([]string(existing.FileIDs), []string(fileIDs)) {
+			fields["fileIds"] = pq.StringArray(fileIDs)
+			existing.FileIDs = pq.StringArray(fileIDs)
+			types := r.collectAttachedFileTypes(fileIDs)
+			fields["attachedFileTypes"] = pq.StringArray(types)
+			existing.AttachedFileTypes = pq.StringArray(types)
+		}
 	}
 	if len(fields) == 0 {
 		return existing, nil
