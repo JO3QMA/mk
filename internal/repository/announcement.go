@@ -50,10 +50,14 @@ func (r *announcementRepository) FindByID(id string) (*model.Announcement, error
 	return &a, nil
 }
 
-// announcementPaginationOrder mirrors 本家 QueryService.makePaginationQuery:
-// sinceID 単独指定時のみ ASC に反転し、次ページ要求 (新しい方向) で並び順が
-// 壊れないようにする。両方指定 / untilID のみ / 未指定は DESC。
+// announcementPaginationOrder returns the ORDER BY direction for announcement
+// pagination. When only sinceID is specified, it flips to ASC so that
+// cursor-based fetching in the newer direction keeps sequential ordering;
+// otherwise (both specified / untilID only / neither) it stays DESC. This
+// mirrors the upstream Misskey QueryService.makePaginationQuery behavior.
 func announcementPaginationOrder(sinceID, untilID string) string {
+	// sinceID単独指定で DESC のままだと、次ページ(新しい方向)要求時に
+	// カーソル計算が壊れるため ASC に反転させる。
 	if sinceID != "" && untilID == "" {
 		return "id ASC"
 	}

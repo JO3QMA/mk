@@ -272,8 +272,8 @@ func TestAnnouncementRepository_ListForUser_CursorPagination(t *testing.T) {
 	assert.True(t, ids[a3.ID])
 }
 
-// 本家 QueryService.makePaginationQuery は sinceID 単独指定時に ASC に反転する。
-// DESC のままだと「次ページ (新しい方向) を取る」操作でカーソルが壊れるので
+// 本家QueryService.makePaginationQueryはsinceID単独指定時にASCに反転する。
+// DESCのままだと「次ページ(新しい方向)を取る」操作でカーソルが壊れるので
 // 回帰防止テスト。
 func TestAnnouncementRepository_SinceIDFlipsOrderASC(t *testing.T) {
 	repo := NewAnnouncementRepository(testDB)
