@@ -1,0 +1,45 @@
+# mk-go configuration for instance A (drop-in swap target).
+#
+# Phase 13-2 (#367): TS-A の backend を mk-go に差し替えるシナリオで使う。
+# 接続先は instance_a.yml と完全に同じ postgres-a / redis-a で、TS-A が書いた
+# DB / Redis をそのまま読み続ける必要がある。
+#
+# - `url` は TS-A と同一 (`https://a/`) — 連合相手 (instance B) から見た host が
+#   切り替えで変わってはいけない。
+# - `redis.prefix` は未指定 → config.go の resolveRedis が `<host>:` (= `a:`)
+#   に解決する (#363)。これにより TS-A と同じ Redis キー名前空間に乗る。
+
+url: https://a/
+port: 3000
+
+db:
+  host: postgres-a
+  port: 5432
+  db: misskey
+  user: misskey
+  pass: testpass
+
+redis:
+  host: redis-a
+  port: 6379
+
+redisForPubsub:
+  host: redis-a
+  port: 6379
+
+redisForJobQueue:
+  host: redis-a
+  port: 6379
+
+redisForTimelines:
+  host: redis-a
+  port: 6379
+
+id: aidx
+
+# 連合先 (instance B) との相互到達のため docker 内部 IP を許可する。
+allowedPrivateNetworks:
+  - 127.0.0.0/8
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16

@@ -1,5 +1,9 @@
--- page_visibility enum
-CREATE TYPE page_visibility_enum AS ENUM ('public', 'followers', 'specified');
+-- page_visibility enum。drop-in 切替 (#367) で TS が既に作成済みの場合
+-- duplicate_object を無視して continue する。
+DO $$ BEGIN
+    CREATE TYPE page_visibility_enum AS ENUM ('public', 'followers', 'specified');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- page: ユーザー作成のページ (Misskey 互換)
 CREATE TABLE IF NOT EXISTS "page" (

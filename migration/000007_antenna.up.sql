@@ -1,5 +1,10 @@
--- antenna_src enum: フィードのソースを表す
-CREATE TYPE antenna_src_enum AS ENUM ('home', 'all', 'users', 'list', 'users_blacklist');
+-- antenna_src enum: フィードのソースを表す。
+-- TS Misskey が同名 enum を既に作っているケース (drop-in 切替 #367) でも
+-- migrate up が失敗しないよう duplicate_object を無視する。
+DO $$ BEGIN
+    CREATE TYPE antenna_src_enum AS ENUM ('home', 'all', 'users', 'list', 'users_blacklist');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- antenna: ユーザー作成のキーワード/ユーザベースカスタムフィード (Misskey 互換)
 CREATE TABLE IF NOT EXISTS "antenna" (

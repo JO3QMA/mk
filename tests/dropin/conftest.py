@@ -54,13 +54,30 @@ def instance_b() -> MisskeyLikeClient:
     return MisskeyLikeClient(B_URL, B_DOMAIN)
 
 
+def _ensure_user_id(client: MisskeyLikeClient, raw: dict) -> dict:
+    """Return raw with an `id` field even if create_admin fell through to signin.
+
+    create_admin returns either:
+    - admin/accounts/create response (fresh): `{id, username, token, ...}`
+    - signin response (existing): `{i: token, finished: true}` (no id)
+
+    Phase 13-2 の swap シナリオでは setup → swap → verify と pytest セッションが
+    分かれるため、後段 (verify) は必ず signin パスに落ちる。`alice["id"]` を
+    使う test_swap_verify.py が動くように /api/i で hydrate する。
+    """
+    if "id" in raw:
+        return raw
+    me = client._api("i")
+    return {**me, **raw}
+
+
 @pytest.fixture(scope="session")
 def alice(instance_a: MisskeyLikeClient) -> dict:
     """Root user on instance A."""
-    return instance_a.create_admin("alice", "password1234")
+    return _ensure_user_id(instance_a, instance_a.create_admin("alice", "password1234"))
 
 
 @pytest.fixture(scope="session")
 def bob(instance_b: MisskeyLikeClient) -> dict:
     """Root user on instance B."""
-    return instance_b.create_admin("bob", "password1234")
+    return _ensure_user_id(instance_b, instance_b.create_admin("bob", "password1234"))

@@ -45,10 +45,45 @@ make dropin-logs
 
 ## Phase 進捗
 
-- [x] Phase 13-1 (#365): TS ↔ TS 基盤 + smoke test (本ドキュメント)
-- [ ] Phase 13-2: mk-go 差し替え overlay
+- [x] Phase 13-1 (#365): TS ↔ TS 基盤 + smoke test
+- [x] Phase 13-2 (#367): mk-go 差し替え overlay + swap シナリオ test
 - [ ] Phase 13-3: 機能マトリクス (ノート / リアクション / カスタム絵文字 / タイムライン退行検出 / 通知)
 - [ ] Phase 13-4: CI nightly 統合
+
+## Phase 13-2: mk-go 差し替え (drop-in swap)
+
+`docker-compose.dropin.mk.yml` overlay と bash orchestrator
+(`tests/dropin/run-swap-test.sh`) で「TS-A backend を mk-go に差し替えても DB /
+Redis 上の state がそのまま引き継がれる」ことを e2e で検証する。
+
+### 通常実行
+
+```bash
+# 完全自動の swap シナリオ test (推奨)
+make dropin-swap-test
+
+# orchestrator は以下を順次実行する:
+#   1. TS-A + TS-B stack 起動
+#   2. pytest test_swap_setup.py    (alice/bob/follow/baseline note)
+#   3. docker compose stop app-a    (TS-A backend 停止、DB / Redis は維持)
+#   4. overlay で app-a を mk-go ビルドに差し替えて起動
+#   5. pytest test_swap_verify.py   (timeline 残存、新規 reply / reaction の連合)
+#   6. teardown
+```
+
+### 手動運用 (デバッグ向け)
+
+mk overlay を直接立ち上げて確認したい場合:
+
+```bash
+make dropin-mk-up      # base + overlay (= mk-A + TS-B)
+make dropin-mk-test    # smoke test を mk-A に対して実行
+make dropin-mk-down    # cleanup
+make dropin-mk-logs    # ログ追跡
+```
+
+注意: `dropin-mk-up` は **clean DB** から mk-A を起動するので、TS-A→mk-A の
+state 引き継ぎは検証されない。state 検証は `dropin-swap-test` 専用。
 
 ## トラブルシューティング
 
