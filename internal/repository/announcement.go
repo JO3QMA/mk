@@ -56,8 +56,8 @@ func (r *announcementRepository) FindByID(id string) (*model.Announcement, error
 // otherwise (both specified / untilID only / neither) it stays DESC. This
 // mirrors the upstream Misskey QueryService.makePaginationQuery behavior.
 func announcementPaginationOrder(sinceID, untilID string) string {
-	// sinceID単独指定で DESC のままだと、次ページ(新しい方向)要求時に
-	// カーソル計算が壊れるため ASC に反転させる。
+	// sinceID単独指定でDESCのままだと、次ページ(新しい方向)要求時に
+	// カーソル計算が壊れるためASCに反転させる。
 	if sinceID != "" && untilID == "" {
 		return "id ASC"
 	}

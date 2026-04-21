@@ -287,7 +287,7 @@ func TestAnnouncementRepository_SinceIDFlipsOrderASC(t *testing.T) {
 	require.NoError(t, repo.Create(a2))
 	require.NoError(t, repo.Create(a3))
 
-	// sinceID 単独指定: ASC (古い→新しい)
+	// sinceID単独指定: ASC (古い→新しい)
 	items, err := repo.List(true, 100, 0, a1.ID, "")
 	require.NoError(t, err)
 	assertOwn := func(items []*model.Announcement) []*model.Announcement {
@@ -304,14 +304,14 @@ func TestAnnouncementRepository_SinceIDFlipsOrderASC(t *testing.T) {
 	assert.Equal(t, a2.ID, own[0].ID)
 	assert.Equal(t, a3.ID, own[1].ID)
 
-	// untilID 単独指定: DESC (新しい→古い)
+	// untilID単独指定: DESC (新しい→古い)
 	items, err = repo.List(true, 100, 0, "", a3.ID)
 	require.NoError(t, err)
 	own = assertOwn(items)
-	require.Len(t, own, 1) // a1, a2 のうち test fixture では a2 のみが a3 より前
-	// own に含まれる順序も DESC であること
-	// (a2 が最初に来るはずだが fixture に他のレコードが混ざる可能性があるため
-	// 先頭/末尾ではなく全体の ID 降順を検証)
+	require.Len(t, own, 1) // a1, a2のうちtest fixtureではa2のみがa3より前
+	// ownに含まれる順序もDESCであること
+	// (a2が最初に来るはずだがfixtureに他のレコードが混ざる可能性があるため
+	// 先頭/末尾ではなく全体のID降順を検証)
 	for i := 1; i < len(items); i++ {
 		assert.GreaterOrEqual(t, items[i-1].ID, items[i].ID, "DESC order expected")
 	}
@@ -323,7 +323,7 @@ func TestAnnouncementRepository_SinceIDFlipsOrderASC(t *testing.T) {
 		assert.GreaterOrEqual(t, items[i-1].ID, items[i].ID, "DESC order expected")
 	}
 
-	// ListGlobal / ListForUser も同様に ASC 反転すること
+	// ListGlobal / ListForUserも同様にASC反転すること
 	items, err = repo.ListGlobal(true, 100, 0, a1.ID, "")
 	require.NoError(t, err)
 	own = assertOwn(items)
