@@ -66,9 +66,23 @@ make dropin-frontend-logs
 
 ## Phase 進捗
 
-- [x] Phase 14-1 (#381): 3 TS 基盤 + cypress smoke spec (本ドキュメント)
-- [ ] Phase 14-2: spec マトリクス拡充 (attachment / delete / reaction / visibility / emoji / userList / reply chain)
+- [x] Phase 14-1 (#381): 3 TS 基盤 + cypress smoke spec
+- [x] Phase 14-2 (#387): spec マトリクス拡充 (visibility / userList / cross-instance / delete)
 - [ ] Phase 14-3: mk-go 差し替え overlay + baseline / swap 両モード orchestrator + CI nightly
+
+## Phase 14-2 カバー spec
+
+| spec | 内容 | 状態 |
+|------|------|------|
+| `smoke.cy.ts` | ping / webfinger / A follows B / C note → A | pass |
+| `visibility.cy.ts` | public / home / followers / specified (DM) 4 種 | pass |
+| `user_list.cy.ts` | alice が list 作成 + bob 追加 + list timeline 取得 | pass |
+| `cross_instance_view.cy.ts` | charlie note を A/B 両方から observe して一致確認 | pass |
+| `delete_note.cy.ts` | charlie 削除 → A/B timeline から消える | pass |
+| `reply_chain.cy.ts` | charlie → bob reply の 2 hop | skip (#389 で調整後 activate) |
+
+attachment / emoji / reaction は Phase 14-2.5 以降 (admin emoji 投入フロー / 
+remote image ingest (#378) / reaction deliver (#369) の条件整備が必要)。
 
 ## トラブルシューティング
 
