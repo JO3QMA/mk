@@ -127,6 +127,13 @@ make docker-down
 make dropin-up              # TS-A / TS-B stack 起動
 make dropin-test            # pytest smoke test 実行
 make dropin-down            # stack + volume 全削除
+
+# Drop-in mk overlay + swap test (#367) — instance A の backend を mk-go に
+# 差し替える e2e シナリオ。
+make dropin-mk-up           # base + mk overlay (clean DB から mk-A 起動)
+make dropin-mk-test         # mk-A に対する smoke test
+make dropin-mk-down         # cleanup
+make dropin-swap-test       # TS-then-mk 切替シナリオ (bash orchestrator)
 ```
 
 エントリポイント：
@@ -413,6 +420,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
+- **2026-04-21**: drop-in e2e Phase 13-2 (#367) を追加。`docker-compose.dropin.mk.yml` overlay と `tests/dropin/run-swap-test.sh` orchestrator で「TS-A backend を mk-go に差し替えても DB / Redis 上の state が引き継がれる」ことを e2e 検証する。途中で発覚した `note.pageCount` / `note.renoteChannelId` カラム欠如を `migration/000039_dropin_compat.up.sql` で補填。reply / reaction の federation deliver 不足は別バグ #368 として切り出し、対応する 2 テストは `xfail` 済。
 - **2026-04-21**: drop-in e2e テスト基盤 Phase 13-1 (#365) を追加。`docker-compose.dropin.yml` と `tests/dropin/` で Misskey TS 2 インスタンスを立ち上げ、pytest で federation smoke test を実行する。Phase 13-2 で mk 差し替え overlay を追加予定。
 - **2026-04-20**: CIの`test`ジョブを4-way matrix shardで並列化。総実行時間を約4.7分→約1.5-2分に短縮。各shardは独立サービスコンテナで動作し、ImportPath順modulo分配で決定的にパッケージを割り当てる。
 - **2026-04-18**: `internal/repository`パッケージのテストを拡充しカバレッジを76.4%→99.9%に引き上げ、CI閾値を90%に戻す。`internal/api/admin`の閾値を60%→80%に引き上げ(現状83.8%)。CI step "Run all tests with coverage"に`set -o pipefail`を追加してテスト失敗の握り潰し解消 (#260)。

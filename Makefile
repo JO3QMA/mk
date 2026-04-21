@@ -2,6 +2,7 @@
 	federation-misskey-build federation-misskey-up federation-misskey-test \
 	federation-misskey-down federation-misskey-logs \
 	dropin-up dropin-down dropin-test dropin-logs \
+	dropin-mk-up dropin-mk-test dropin-mk-down dropin-mk-logs dropin-swap-test \
 	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
 	uds-init uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
 	bench-up bench-run bench-down bench-logs
@@ -102,6 +103,33 @@ dropin-down:
 
 dropin-logs:
 	docker compose -f $(DROPIN_COMPOSE) logs -f
+
+# Drop-in mk overlay (#367) — instance A の backend を mk-go に差し替えた
+# 状態で TS-A 用 stack を起動する。連合先 (instance B) は TS のままなので
+# mk ↔ TS federation も同時に検証できる。
+DROPIN_MK_OVERLAY=docker-compose.dropin.mk.yml
+
+dropin-mk-up:
+	docker compose -f $(DROPIN_COMPOSE) -f $(DROPIN_MK_OVERLAY) up -d --build
+
+dropin-mk-test:
+	docker compose -f $(DROPIN_COMPOSE) -f $(DROPIN_MK_OVERLAY) --profile test run --rm test-runner
+
+dropin-mk-down:
+	docker compose -f $(DROPIN_COMPOSE) -f $(DROPIN_MK_OVERLAY) down -v
+
+dropin-mk-logs:
+	docker compose -f $(DROPIN_COMPOSE) -f $(DROPIN_MK_OVERLAY) logs -f
+
+# Drop-in swap シナリオ (#367): TS-A → mk-A 切替で state が引き継げることを
+# 検証する end-to-end テスト。bash orchestrator が以下を順次実行する:
+#   1. TS-A + TS-B 起動
+#   2. test_swap_setup.py で alice/bob/follow/note を作る
+#   3. TS-A backend を停止
+#   4. overlay で mk-A 起動 (DB-A / Redis-A はそのまま)
+#   5. test_swap_verify.py で state preserved + 新規 federation を確認
+dropin-swap-test:
+	./tests/dropin/run-swap-test.sh
 
 # Cypress e2e ― Misskey 本家の cypress spec を mk-go に向けて実行する。
 #
