@@ -91,14 +91,14 @@ state 引き継ぎは検証されない。state 検証は `dropin-swap-test` 専
 
 | シナリオ | テスト | 状態 |
 |---------|--------|------|
-| baseline note の home timeline 残存 | `test_post_swap_baseline_note_preserved` | ✅ |
-| home visibility ノート残存 | `test_post_swap_home_visibility_preserved` | ✅ |
-| followers visibility ノート残存 | `test_post_swap_followers_visibility_preserved` | ✅ |
-| specified visibility (DM) 残存 | `test_post_swap_specified_note_preserved` | ✅ |
-| user list メタデータ残存 | `test_post_swap_user_list_preserved` | ✅ |
-| user list timeline 残存 (membership 間接検証) | `test_post_swap_user_list_timeline_preserved` | ✅ |
-| mk-A から remote bob への reply 配信 | `test_post_swap_alice_can_reply` | ⏸ #369 待ち (xfail) |
-| mk-A から remote bob への reaction 配信 | `test_post_swap_alice_can_react` | ⏸ #369 待ち (xfail) |
+| baseline note の home timeline 残存 | `test_post_swap_baseline_note_preserved` | pass |
+| home visibility ノート残存 | `test_post_swap_home_visibility_preserved` | pass |
+| followers visibility ノート残存 | `test_post_swap_followers_visibility_preserved` | pass |
+| specified visibility (DM) 残存 | `test_post_swap_specified_note_preserved` | pass |
+| user list メタデータ残存 | `test_post_swap_user_list_preserved` | pass |
+| user list timeline 残存 (membership 間接検証) | `test_post_swap_user_list_timeline_preserved` | pass |
+| mk-A から remote bob への reply 配信 | `test_post_swap_alice_can_reply` | xfail (#369 待ち) |
+| mk-A から remote bob への reaction 配信 | `test_post_swap_alice_can_react` | xfail (#369 待ち) |
 
 未カバー (Phase 13-3.5 以降の検討対象):
 
