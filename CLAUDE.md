@@ -336,6 +336,15 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 - `go vet ./...`
 - `gofmt -s -d .` で差分がないことを確認。差分があれば失敗。
 
+### `dropin-e2e` workflow (nightly)
+
+- `.github/workflows/dropin-e2e.yml` で `make dropin-swap-test` を毎日 18:00 UTC
+  (= JST 03:00) に develop に対して実行する。
+- `workflow_dispatch` で任意の ref に対して手動実行も可。
+- PR の required check には**含めない** (8-10 min かかり flaky 要素もあるため)。
+  drop-in 互換 regression は nightly で検出する運用。
+- 失敗時は docker compose logs を `dropin-logs` artifact として 14 日保持。
+
 ### CI失敗時の対応
 
 - カバレッジ不足 → テストケースを追加してから再push。
@@ -420,6 +429,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
+- **2026-04-21**: drop-in e2e Phase 13-4 (#374) を追加。`.github/workflows/dropin-e2e.yml` で `make dropin-swap-test` を nightly cron (18:00 UTC) + workflow_dispatch で実行。PR の required check には含めず、失敗時は docker compose logs を artifact 化して原因調査できるようにする。
 - **2026-04-21**: drop-in e2e Phase 13-3 (#372) を追加。state preservation 機能マトリクスを 6 シナリオに拡充 (home/followers/specified visibility ノート, user list メタ, user list timeline)。`tests/dropin/test_swap_setup.py` と `test_swap_verify.py` に追加。
 - **2026-04-21**: drop-in e2e Phase 13-2 (#367) を追加。`docker-compose.dropin.mk.yml` overlay と `tests/dropin/run-swap-test.sh` orchestrator で「TS-A backend を mk-go に差し替えても DB / Redis 上の state が引き継がれる」ことを e2e 検証する。途中で発覚した `note.pageCount` / `note.renoteChannelId` カラム欠如を `migration/000039_dropin_compat.up.sql` で補填。reply / reaction の federation deliver 不足は別バグ #368 として切り出し、対応する 2 テストは `xfail` 済。
 - **2026-04-21**: drop-in e2e テスト基盤 Phase 13-1 (#365) を追加。`docker-compose.dropin.yml` と `tests/dropin/` で Misskey TS 2 インスタンスを立ち上げ、pytest で federation smoke test を実行する。Phase 13-2 で mk 差し替え overlay を追加予定。

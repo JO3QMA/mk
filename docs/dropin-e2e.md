@@ -48,7 +48,7 @@ make dropin-logs
 - [x] Phase 13-1 (#365): TS ↔ TS 基盤 + smoke test
 - [x] Phase 13-2 (#367): mk-go 差し替え overlay + swap シナリオ test
 - [x] Phase 13-3 (#372): 機能マトリクス拡充 (visibility 種別 / userList / specified DM)
-- [ ] Phase 13-4: CI nightly 統合
+- [x] Phase 13-4 (#374): GitHub Actions nightly 統合
 
 ## Phase 13-2: mk-go 差し替え (drop-in swap)
 
@@ -125,3 +125,18 @@ compose 内で pull を再試行するか `docker pull misskey/misskey:2025.2.1`
 
 `make dropin-down` が volume まで削除する (`down -v`)。named volume `certs` も
 同時に削除されるため、次回 `dropin-up` で再生成される。
+
+## CI nightly 実行 (Phase 13-4)
+
+`.github/workflows/dropin-e2e.yml` で `make dropin-swap-test` を以下のタイミングで実行する:
+
+- **schedule**: 毎日 18:00 UTC (= JST 03:00) に develop ブランチに対して
+- **workflow_dispatch**: GitHub Actions UI から手動実行 (任意の ref を指定可)
+
+PR の required check には**入れない**。理由:
+
+- 1 回 8-10 min かかり、PR 単位の check として重い
+- federation delivery の poll を含み若干 flaky
+- drop-in 互換は本質的にバージョン横断の確認なので nightly で十分
+
+失敗時は docker compose のログを `dropin-logs` artifact として 14 日保持する。Actions 上で download して原因調査する。
