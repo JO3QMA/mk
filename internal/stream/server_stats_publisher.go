@@ -124,9 +124,11 @@ func (p *ServerStatsPublisher) tick() {
 
 func (p *ServerStatsPublisher) collect() serverStatsSnapshot {
 	var snap serverStatsSnapshot
-	// CPU全体使用率 (非block: interval=0は前回計測との差分を返す)
+	// CPU全体使用率 (非block: interval=0は前回計測との差分を返す)。
+	// frontend widget (pie.vue等) は 0-1 範囲の fraction を期待し `value * 100`
+	// で%表示するため、gopsutil の 0-100 パーセント値を 100 で割って合わせる。
 	if cpus, err := cpu.Percent(0, false); err == nil && len(cpus) > 0 {
-		snap.CPU = cpus[0]
+		snap.CPU = cpus[0] / 100
 	}
 	if vm, err := mem.VirtualMemory(); err == nil {
 		snap.Mem.Used = vm.Total - vm.Available
