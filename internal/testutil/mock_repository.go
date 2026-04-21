@@ -317,9 +317,9 @@ func applyUserFields(u *model.User, fields map[string]any) {
 				u.Token = &s
 			}
 		case "movedToUri":
-			// core/move が string を直接、resolver.refreshActor が *string を
-			// 渡す。GORM側は両方受けて *string カラムに書き込むので mock も
-			// 両方ハンドルする (どちらか片方だけだとsilent dropする、issue #357)。
+			// core/moveはstringを直接、resolver.refreshActorは*stringを
+			// 渡す。GORM側は両方受けて*stringカラムに書き込むのでmockも
+			// 両方ハンドルする(どちらか片方だけだとsilent dropする、issue #357)。
 			switch s := v.(type) {
 			case *string:
 				u.MovedToURI = s

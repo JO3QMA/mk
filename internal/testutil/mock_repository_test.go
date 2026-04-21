@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// applyUserFieldsは mock 内部関数だが、production の resolver / move 双方が
-// 渡す 型 (string / *string, time.Time / *time.Time) を両方正しく反映する
-// ことを issue #357 の回帰防止として検証する。
+// applyUserFieldsはmock内部関数だが、productionのresolver/move双方が
+// 渡す型(string/*string, time.Time/*time.Time)を両方正しく反映する
+// ことをissue #357の回帰防止として検証する。
 func TestApplyUserFields_MovedAndAlsoKnownAs_BothForms(t *testing.T) {
 	repo := NewMockUserRepository()
 	const uid = "u_applytest"
