@@ -13,10 +13,17 @@ import (
 )
 
 // scriptedFetcher returns canned responses keyed by call order.
+// FetchObject / FetchHTML それぞれ独立カウンタで bodies / errs を消費する。
 type scriptedFetcher struct {
 	bodies [][]byte
 	errs   []error
 	idx    int
+
+	// HTMLレスポンスは FetchObject と独立に供給する。未設定ならFetchHTML呼出
+	// は error を返してicon抽出 step を no-op にする (nodeinfo テストを
+	// icon logicの追加で壊さないため)。
+	htmlBody []byte
+	htmlErr  error
 }
 
 func (s *scriptedFetcher) FetchObject(_ string) ([]byte, error) {
@@ -30,6 +37,16 @@ func (s *scriptedFetcher) FetchObject(_ string) ([]byte, error) {
 	}
 	s.idx++
 	return b, err
+}
+
+func (s *scriptedFetcher) FetchHTML(_ string) ([]byte, error) {
+	if s.htmlErr != nil {
+		return nil, s.htmlErr
+	}
+	if s.htmlBody == nil {
+		return nil, errors.New("no html body")
+	}
+	return s.htmlBody, nil
 }
 
 func newFetchSvc(t *testing.T, bodies [][]byte, errs []error) (*instance.FetchMetadataService, *testutil.MockInstanceRepository) {
@@ -148,6 +165,84 @@ func TestFetch_DocumentMinimalFields(t *testing.T) {
 	assert.Nil(t, got.Name)
 	assert.Nil(t, got.Description)
 	assert.Nil(t, got.ThemeColor)
+}
+
+func TestFetch_IconFromHTML(t *testing.T) {
+	htmlBody := `<html><head>
+		<link rel="icon" href="/favicon-16.png">
+		<link rel="apple-touch-icon" href="https://cdn.example/apple-touch.png">
+	</head></html>`
+	svc, repo := newFetchSvc(t,
+		[][]byte{[]byte(discoveryBody), []byte(documentBody)}, nil)
+	repo.Instances["remote.example"] = &model.Instance{ID: "i1", Host: "remote.example"}
+	// scriptedFetcherに直接htmlBody仕込む。 fetcher取得はnewFetchSvc内部なので
+	// この test では直接 service を作り直す必要がある。
+	fetcher := &scriptedFetcher{
+		bodies:   [][]byte{[]byte(discoveryBody), []byte(documentBody)},
+		htmlBody: []byte(htmlBody),
+	}
+	svc = instance.NewFetchMetadataService(repo, fetcher)
+	require.NoError(t, svc.Fetch("remote.example"))
+
+	got := repo.Instances["remote.example"]
+	require.NotNil(t, got.IconURL)
+	// apple-touch-iconが優先され、絶対URLのまま保存される。
+	assert.Equal(t, "https://cdn.example/apple-touch.png", *got.IconURL)
+	require.NotNil(t, got.FaviconURL)
+	assert.Equal(t, "https://remote.example/favicon.ico", *got.FaviconURL)
+}
+
+func TestFetch_IconFromHTML_RelativeResolved(t *testing.T) {
+	htmlBody := `<html><head><link rel="shortcut icon" href="/static/icon.svg"></head></html>`
+	repo := testutil.NewMockInstanceRepository()
+	repo.Instances["remote.example"] = &model.Instance{ID: "i1", Host: "remote.example"}
+	fetcher := &scriptedFetcher{
+		bodies:   [][]byte{[]byte(discoveryBody), []byte(documentBody)},
+		htmlBody: []byte(htmlBody),
+	}
+	svc := instance.NewFetchMetadataService(repo, fetcher)
+	require.NoError(t, svc.Fetch("remote.example"))
+
+	got := repo.Instances["remote.example"]
+	require.NotNil(t, got.IconURL)
+	// 相対パスは pageURL (https://remote.example/) を基準に絶対化される。
+	assert.Equal(t, "https://remote.example/static/icon.svg", *got.IconURL)
+}
+
+func TestFetch_IconFromHTML_NoLinkTag(t *testing.T) {
+	htmlBody := `<html><head><title>no icon</title></head></html>`
+	repo := testutil.NewMockInstanceRepository()
+	repo.Instances["remote.example"] = &model.Instance{ID: "i1", Host: "remote.example"}
+	fetcher := &scriptedFetcher{
+		bodies:   [][]byte{[]byte(discoveryBody), []byte(documentBody)},
+		htmlBody: []byte(htmlBody),
+	}
+	svc := instance.NewFetchMetadataService(repo, fetcher)
+	require.NoError(t, svc.Fetch("remote.example"))
+
+	got := repo.Instances["remote.example"]
+	// iconUrl は抽出できないので nilのまま。
+	assert.Nil(t, got.IconURL)
+	// faviconUrl は HTML取得成功時でもconventionalな /favicon.ico で上書きされる。
+	require.NotNil(t, got.FaviconURL)
+	assert.Equal(t, "https://remote.example/favicon.ico", *got.FaviconURL)
+}
+
+func TestFetch_IconHTMLFetchError(t *testing.T) {
+	repo := testutil.NewMockInstanceRepository()
+	repo.Instances["remote.example"] = &model.Instance{ID: "i1", Host: "remote.example"}
+	fetcher := &scriptedFetcher{
+		bodies:  [][]byte{[]byte(discoveryBody), []byte(documentBody)},
+		htmlErr: errors.New("conn refused"),
+	}
+	svc := instance.NewFetchMetadataService(repo, fetcher)
+	require.NoError(t, svc.Fetch("remote.example"))
+
+	got := repo.Instances["remote.example"]
+	// HTMLが取れなくてもfaviconは決め打ちで保存される。
+	assert.Nil(t, got.IconURL)
+	require.NotNil(t, got.FaviconURL)
+	assert.Equal(t, "https://remote.example/favicon.ico", *got.FaviconURL)
 }
 
 func TestFetch_SetClock(t *testing.T) {

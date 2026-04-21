@@ -109,3 +109,27 @@ func (c *Client) FetchUnsigned(url string) ([]byte, error) {
 	}
 	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
 }
+
+// FetchHTML performs a plain GET with Accept: text/html. リモートインスタンスの
+// トップページを取得して <link rel="icon"> 等を抽出するための用途を想定。
+// 同じhttpClient (SSRF guard / timeout / redirect policy) を使うので nodeinfo
+// 取得と同水準の安全策が効く。
+func (c *Client) FetchHTML(url string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.5")
+	if c.userAgent != "" {
+		req.Header.Set("User-Agent", c.userAgent)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errors.New("unexpected status: " + resp.Status)
+	}
+	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
+}

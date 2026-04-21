@@ -1,17 +1,22 @@
 package instance
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/repository"
+	"golang.org/x/net/html"
 )
 
-// HTTPFetcher abstracts the HTTP client used to fetch nodeinfo documents.
-// 実装は activitypub.Client の薄いラッパで十分。
+// HTTPFetcher abstracts the HTTP clients used to fetch nodeinfo documents and
+// remote HTML. 実装は activitypub.Client の薄いラッパで十分。
 type HTTPFetcher interface {
 	FetchObject(uri string) ([]byte, error)
+	FetchHTML(uri string) ([]byte, error)
 }
 
 // FetchMetadataService fetches /.well-known/nodeinfo for a remote host and
@@ -114,7 +119,103 @@ func (s *FetchMetadataService) Fetch(host string) error {
 		v := doc.Metadata.ThemeColor
 		fields["themeColor"] = &v
 	}
+
+	// nodeinfoはicon/faviconを含まないため、リモートトップページHTMLから
+	// 抽出する。取得失敗は致命ではない (nodeinfo 情報のpersistは継続する)。
+	if iconURL, faviconURL := s.fetchIcons(host); iconURL != "" || faviconURL != "" {
+		if iconURL != "" {
+			fields["iconUrl"] = &iconURL
+		}
+		if faviconURL != "" {
+			fields["faviconUrl"] = &faviconURL
+		}
+	}
+
 	return s.repo.UpdateFields(host, fields)
+}
+
+// fetchIcons attempts to extract iconUrl (from <link rel="icon">) and set
+// faviconUrl to the conventional /favicon.ico path. 本家Misskey の
+// FetchInstanceMetadataService と同様、faviconは実在検証せず `https://host/favicon.ico`
+// を決め打ちで保存する (frontendが404時は非表示になるだけなので害は小さい)。
+func (s *FetchMetadataService) fetchIcons(host string) (iconURL, faviconURL string) {
+	rootURL := "https://" + host + "/"
+	// 画面に表示される favicon は frontend で fallback されるので、HTMLが
+	// 取得できなくても /favicon.ico は必ずセットする。
+	faviconURL = "https://" + host + "/favicon.ico"
+
+	body, err := s.fetcher.FetchHTML(rootURL)
+	if err != nil {
+		return "", faviconURL
+	}
+	iconURL = parseIconFromHTML(body, rootURL)
+	return iconURL, faviconURL
+}
+
+// parseIconFromHTML finds the first <link rel="icon"> or <link rel="apple-touch-icon">
+// in doc and returns its href resolved against pageURL. 解析失敗や該当なしは空文字。
+func parseIconFromHTML(body []byte, pageURL string) string {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		return ""
+	}
+	var icon, appleTouchIcon string
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "link" {
+			rel := strings.ToLower(attrValue(n, "rel"))
+			href := attrValue(n, "href")
+			if href != "" {
+				switch rel {
+				case "icon", "shortcut icon":
+					if icon == "" {
+						icon = href
+					}
+				case "apple-touch-icon", "apple-touch-icon-precomposed":
+					if appleTouchIcon == "" {
+						appleTouchIcon = href
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	// 本家優先順位に倣い、appleTouchIconの方が高解像度で綺麗なため優先する。
+	chosen := firstNonEmptyStr(appleTouchIcon, icon)
+	if chosen == "" {
+		return ""
+	}
+	ref, err := url.Parse(chosen)
+	if err != nil {
+		return ""
+	}
+	return base.ResolveReference(ref).String()
+}
+
+func attrValue(n *html.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // fetchDiscovery fetches /.well-known/nodeinfo and decodes the link list.

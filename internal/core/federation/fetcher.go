@@ -19,3 +19,9 @@ func NewAPFetcher(client *activitypub.Client) *APFetcher {
 func (f *APFetcher) FetchObject(uri string) ([]byte, error) {
 	return f.client.FetchUnsigned(uri)
 }
+
+// FetchHTML performs an unsigned GET with Accept: text/html. Instance metadata
+// fetcher がリモートトップページから <link rel="icon"> を抜き出す用途で使う。
+func (f *APFetcher) FetchHTML(uri string) ([]byte, error) {
+	return f.client.FetchHTML(uri)
+}
