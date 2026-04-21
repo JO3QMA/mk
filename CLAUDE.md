@@ -157,6 +157,7 @@ make dropin-frontend-down      # volume ごと cleanup
   - **目標ライン: 100%** — 新規パッケージや小規模パッケージでは積極的に狙う。
   - 例外パッケージ：
     - `internal/api/admin`: 80%以上 — `handler_stubs.go`にSMTP/queue/DB集計等の外部依存が多く90%未到達。現状83.8%で小マージン確保のため80%にロック
+    - `internal/testutil`: 0% — mock/test helper専用パッケージ。production codeではなく他テストから呼ばれるだけなのでe2eと同様に閾値対象外
 - テストファイルは対象と同じパッケージに`_test.go`サフィックスで配置。
 
 ### 実行方法
@@ -330,6 +331,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 - **カバレッジ閾値チェック** (各shard内で実行)：
   - `internal/api/admin`配下: 80%以上（SMTP/queue/DB集計等の外部依存で90%未到達のため暫定緩和）
   - `e2e`配下: 0%
+  - `internal/testutil`: 0%（mock/test helper専用、production codeを含まないためe2eと同様扱い）
   - それ以外のパッケージ: 90%以上
   - shard内のいずれかのパッケージが閾値未達なら、そのshardが失敗する。
 - カバレッジレポートは`coverage-shard-N`アーティファクトとして各shardからアップロード。
