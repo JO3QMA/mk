@@ -1,0 +1,33 @@
+url: https://a/
+port: 3000
+
+db:
+  host: postgres-a
+  port: 5432
+  db: misskey
+  user: misskey
+  pass: testpass
+
+redis:
+  host: redis-a
+  port: 6379
+
+redisForPubsub:
+  host: redis-a
+  port: 6379
+
+redisForJobQueue:
+  host: redis-a
+  port: 6379
+
+redisForTimelines:
+  host: redis-a
+  port: 6379
+
+id: aidx
+
+allowedPrivateNetworks:
+  - 127.0.0.0/8
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
