@@ -3,6 +3,7 @@
 	federation-misskey-down federation-misskey-logs \
 	dropin-up dropin-down dropin-test dropin-logs \
 	dropin-mk-up dropin-mk-test dropin-mk-down dropin-mk-logs dropin-swap-test \
+	dropin-frontend-up dropin-frontend-down dropin-frontend-baseline dropin-frontend-logs \
 	e2e-submodule-init e2e-frontend-build e2e-deps e2e-run e2e-open \
 	uds-init uds-frontend-build uds-build uds-up uds-down uds-down-v uds-logs uds-ps \
 	bench-up bench-run bench-down bench-logs
@@ -130,6 +131,25 @@ dropin-mk-logs:
 #   5. test_swap_verify.py で state preserved + 新規 federation を確認
 dropin-swap-test:
 	./tests/dropin/run-swap-test.sh
+
+# Drop-in frontend e2e (#380 / Phase 14) ― 3 Misskey TS インスタンス上で
+# cypress を回して、共有 TS フロントエンドから観測可能なアクティビティの
+# 整合性を検証する基盤。Phase 14-1 は baseline (all TS) のみ。
+DROPIN_FRONTEND_COMPOSE=docker-compose.dropin-frontend.yml
+
+dropin-frontend-up:
+	docker compose -f $(DROPIN_FRONTEND_COMPOSE) up -d
+
+dropin-frontend-down:
+	docker compose -f $(DROPIN_FRONTEND_COMPOSE) down -v
+
+dropin-frontend-logs:
+	docker compose -f $(DROPIN_FRONTEND_COMPOSE) logs -f
+
+# baseline: all TS な状態で cypress spec が全 pass することを確認する
+# (Phase 14-1 #381)。
+dropin-frontend-baseline:
+	./tests/dropin_frontend/run-frontend-baseline.sh
 
 # Cypress e2e ― Misskey 本家の cypress spec を mk-go に向けて実行する。
 #

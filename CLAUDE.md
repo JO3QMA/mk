@@ -134,6 +134,12 @@ make dropin-mk-up           # base + mk overlay (clean DB から mk-A 起動)
 make dropin-mk-test         # mk-A に対する smoke test
 make dropin-mk-down         # cleanup
 make dropin-swap-test       # TS-then-mk 切替シナリオ (bash orchestrator)
+
+# Drop-in frontend e2e (#380 / Phase 14) — 3 Misskey TS インスタンス + cypress
+# 実ブラウザでフロントエンド視点の drop-in 互換を検証する基盤。
+make dropin-frontend-baseline  # TS-A/B/C + cypress baseline spec 実行
+make dropin-frontend-up        # stack だけ立ち上げ (手動デバッグ用)
+make dropin-frontend-down      # volume ごと cleanup
 ```
 
 エントリポイント：
@@ -429,6 +435,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
+- **2026-04-21**: drop-in frontend e2e Phase 14-1 (#381) を追加。3 Misskey TS インスタンス (A/B/C) + cypress runner 構成 (`docker-compose.dropin-frontend.yml` + `tests/dropin_frontend/`) で baseline smoke spec (`smoke.cy.ts`) を動かす。spec マトリクス拡充は Phase 14-2、mk 差し替え overlay + CI 統合は Phase 14-3。
 - **2026-04-21**: drop-in e2e Phase 13-4 (#374) を追加。`.github/workflows/dropin-e2e.yml` で `make dropin-swap-test` を nightly cron (18:00 UTC) + workflow_dispatch で実行。PR の required check には含めず、失敗時は docker compose logs を artifact 化して原因調査できるようにする。
 - **2026-04-21**: drop-in e2e Phase 13-3 (#372) を追加。state preservation 機能マトリクスを 6 シナリオに拡充 (home/followers/specified visibility ノート, user list メタ, user list timeline)。`tests/dropin/test_swap_setup.py` と `test_swap_verify.py` に追加。
 - **2026-04-21**: drop-in e2e Phase 13-2 (#367) を追加。`docker-compose.dropin.mk.yml` overlay と `tests/dropin/run-swap-test.sh` orchestrator で「TS-A backend を mk-go に差し替えても DB / Redis 上の state が引き継がれる」ことを e2e 検証する。途中で発覚した `note.pageCount` / `note.renoteChannelId` カラム欠如を `migration/000039_dropin_compat.up.sql` で補填。reply / reaction の federation deliver 不足は別バグ #368 として切り出し、対応する 2 テストは `xfail` 済。
