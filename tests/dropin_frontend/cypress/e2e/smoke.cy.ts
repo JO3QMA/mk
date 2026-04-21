@@ -24,7 +24,7 @@ describe('dropin-frontend smoke (Phase 14-1)', () => {
       aliceToken = r.token;
     });
     createRootOrSignin(INSTANCES.b, 'bob', 'password1234').then((r) => {
-      bobId = r.id!;
+      bobId = r.id;
       bobToken = r.token;
     });
     createRootOrSignin(INSTANCES.c, 'charlie', 'password1234').then((r) => {
@@ -117,6 +117,17 @@ describe('dropin-frontend smoke (Phase 14-1)', () => {
       api(INSTANCES.a, 'following/create', {
         i: aliceToken,
         userId: remoteCharlieId,
+      }).then((followResp) => {
+        // 既 follow は許容、それ以外の 4xx/5xx は即 fail させて late timeout と
+        // confusing error message を避ける (Devin #385-2 #5)。
+        if (followResp.status !== 204 && followResp.status !== 200) {
+          const code = followResp.body?.error?.code;
+          if (code !== 'ALREADY_FOLLOWING') {
+            throw new Error(
+              `charlie follow failed: ${followResp.status} ${JSON.stringify(followResp.body)}`,
+            );
+          }
+        }
       });
     });
 

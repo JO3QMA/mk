@@ -44,11 +44,15 @@ export function waitForInstance(inst: InstanceInfo, retries = 60): Cypress.Chain
 // 初回ユーザーを root として作成する。既存ならそのユーザーで signin する。
 // Misskey TS の `admin/accounts/create` は root 作成時のみ開く。以降は 400/403
 // が返るので signin-flow にフォールバックする。
+//
+// signin-flow のレスポンスは `{finished: true, i: <token>}` で `id` を含まない
+// ため、/api/i で hydrate する (Phase 13 の `_ensure_user_id` ヘルパ相当)。
+// Devin #385 #1。
 export function createRootOrSignin(
   inst: InstanceInfo,
   username: string,
   password: string,
-): Cypress.Chainable<{ id?: string; token: string }> {
+): Cypress.Chainable<{ id: string; token: string }> {
   return cy
     .request({
       method: 'POST',
@@ -58,7 +62,7 @@ export function createRootOrSignin(
     })
     .then((resp) => {
       if (resp.status === 200 && resp.body?.token) {
-        return { id: resp.body.id, token: resp.body.token };
+        return cy.wrap({ id: resp.body.id, token: resp.body.token });
       }
       return cy
         .request({
@@ -68,7 +72,18 @@ export function createRootOrSignin(
         })
         .then((signin) => {
           const token = signin.body.i ?? signin.body.token;
-          return { id: signin.body.id, token };
+          if (signin.body.id) {
+            return cy.wrap({ id: signin.body.id as string, token });
+          }
+          // signin-flow が id を返さない場合は /api/i で自分の user info を
+          // 引いて id を埋める。
+          return cy
+            .request({
+              method: 'POST',
+              url: `${inst.url}/api/i`,
+              body: { i: token },
+            })
+            .then((me) => cy.wrap({ id: me.body.id as string, token }));
         });
     });
 }
