@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/shiroha-a/mk/internal/safehttp"
 )
@@ -11,6 +12,12 @@ import (
 // MaxBodyBytes caps the response body size for FetchJSON / FetchUnsigned to
 // prevent memory exhaustion via attacker-controlled remote AP servers (#323).
 const MaxBodyBytes = safehttp.DefaultAPBodyLimit
+
+// MaxHTMLBodyBytes caps the response body size for FetchHTML. Landing pages
+// of real Misskey / Mastodon 等は inline JS/CSS が多く1MiB (AP payload想定)
+// だと超えることが多い (#351のDevin指摘)。SPAバンドル込みでも 5MiB あれば
+// 実用上 icon 抽出成功率が上がる。AP JSON 側の safety cap はそのまま。
+const MaxHTMLBodyBytes = 5 * 1024 * 1024
 
 // Client is a thin wrapper around http.Client that signs outgoing AP requests.
 type Client struct {
@@ -108,4 +115,38 @@ func (c *Client) FetchUnsigned(url string) ([]byte, error) {
 		return nil, errors.New("unexpected status: " + resp.Status)
 	}
 	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
+}
+
+// FetchHTML performs a plain GET with Accept: text/html. リモートインスタンスの
+// トップページを取得して <link rel="icon"> 等を抽出するための用途を想定。
+// 同じhttpClient (SSRF guard / timeout / redirect policy) を使うので nodeinfo
+// 取得と同水準の安全策が効く。
+func (c *Client) FetchHTML(url string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.5")
+	if c.userAgent != "" {
+		req.Header.Set("User-Agent", c.userAgent)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errors.New("unexpected status: " + resp.Status)
+	}
+	// Content-Type が明示的に text/html(または xhtml)以外なら 5 MiB まで
+	// 読み込まず早期 error。相手が JSON / binaryを返すケースで帯域と
+	// メモリを無駄にしない (Devin #4 指摘)。Content-Type 未設定は許容する
+	// (一部の古いサーバーが含めないため)。
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		lower := strings.ToLower(ct)
+		if !strings.Contains(lower, "text/html") && !strings.Contains(lower, "application/xhtml") {
+			return nil, errors.New("unexpected content-type: " + ct)
+		}
+	}
+	return safehttp.ReadAllLimit(resp.Body, MaxHTMLBodyBytes)
 }

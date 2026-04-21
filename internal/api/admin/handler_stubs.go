@@ -1234,12 +1234,22 @@ func (h *Handler) FederationDeleteAllFiles(c echo.Context) error {
 }
 
 // FederationRefreshRemoteInstanceMetadata handles POST /api/admin/federation/refresh-remote-instance-metadata.
+// InstanceMetadataFetcher (= coreinstance.FetchMetadataService) 経由で指定ホストの
+// nodeinfo + iconUrl / faviconUrl を再取得する。fetcher 未設定または host 未指定
+// の場合は no-op で 204 を返す (本家 TS も失敗時エラーコードは返さない挙動)。
 func (h *Handler) FederationRefreshRemoteInstanceMetadata(c echo.Context) error {
 	var req struct {
 		Host string `json:"host"`
 	}
 	_ = c.Bind(&req)
-	// メタデータ再取得は将来対応 (FetchMetadataServiceの呼び出しが必要)
+	if h.instanceMetadataFetcher == nil || req.Host == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// fetch 失敗はユーザーへ明示的にエラー返す必要はない (frontendは成功前提
+	// でUI更新するだけ)。ログに残してリトライ可能な状態にしておく。
+	if err := h.instanceMetadataFetcher.Fetch(req.Host); err != nil {
+		slog.Warn("federation refresh metadata failed", "host", req.Host, "err", err)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

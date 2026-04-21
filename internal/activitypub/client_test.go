@@ -175,6 +175,67 @@ func TestClient_FetchJSON_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestClient_FetchHTML(t *testing.T) {
+	const body = `<html><head><link rel="icon" href="/x.png"></head></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.Header.Get("Accept"), "text/html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "mk-test/1.0")
+	got, err := c.FetchHTML(srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, body, string(got))
+}
+
+func TestClient_FetchHTML_NonOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "")
+	_, err := c.FetchHTML(srv.URL)
+	assert.Error(t, err)
+}
+
+func TestClient_FetchHTML_BadURL(t *testing.T) {
+	c := NewClient(nil, "")
+	_, err := c.FetchHTML("://bad")
+	assert.Error(t, err)
+}
+
+func TestClient_FetchHTML_NonHTMLContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "")
+	_, err := c.FetchHTML(srv.URL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected content-type")
+}
+
+func TestClient_FetchHTML_ResponseTooLarge(t *testing.T) {
+	oversized := make([]byte, int(MaxHTMLBodyBytes)+10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// body sniffingで application/octet-stream に推定されてContent-Type
+		// checkに引っかからないよう明示的にtext/htmlをセットする。
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(oversized)
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "")
+	_, err := c.FetchHTML(srv.URL)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, safehttp.ErrResponseTooLarge))
+}
+
 func TestNewClient_DefaultHTTPClient(t *testing.T) {
 	c := NewClient(nil, "")
 	assert.NotNil(t, c)
