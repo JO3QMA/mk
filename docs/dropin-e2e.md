@@ -47,7 +47,7 @@ make dropin-logs
 
 - [x] Phase 13-1 (#365): TS ↔ TS 基盤 + smoke test
 - [x] Phase 13-2 (#367): mk-go 差し替え overlay + swap シナリオ test
-- [ ] Phase 13-3: 機能マトリクス (ノート / リアクション / カスタム絵文字 / タイムライン退行検出 / 通知)
+- [x] Phase 13-3 (#372): 機能マトリクス拡充 (visibility 種別 / userList / specified DM)
 - [ ] Phase 13-4: CI nightly 統合
 
 ## Phase 13-2: mk-go 差し替え (drop-in swap)
@@ -84,6 +84,28 @@ make dropin-mk-logs    # ログ追跡
 
 注意: `dropin-mk-up` は **clean DB** から mk-A を起動するので、TS-A→mk-A の
 state 引き継ぎは検証されない。state 検証は `dropin-swap-test` 専用。
+
+## Phase 13-3: 機能マトリクス (現状カバー範囲)
+
+`make dropin-swap-test` の verify 段階で以下を検証する:
+
+| シナリオ | テスト | 状態 |
+|---------|--------|------|
+| baseline note の home timeline 残存 | `test_post_swap_baseline_note_preserved` | pass |
+| home visibility ノート残存 | `test_post_swap_home_visibility_preserved` | pass |
+| followers visibility ノート残存 | `test_post_swap_followers_visibility_preserved` | pass |
+| specified visibility (DM) 残存 | `test_post_swap_specified_note_preserved` | pass |
+| user list メタデータ残存 | `test_post_swap_user_list_preserved` | pass |
+| user list timeline 残存 (membership 間接検証) | `test_post_swap_user_list_timeline_preserved` | pass |
+| mk-A から remote bob への reply 配信 | `test_post_swap_alice_can_reply` | xfail (#369 待ち) |
+| mk-A から remote bob への reaction 配信 | `test_post_swap_alice_can_react` | xfail (#369 待ち) |
+
+未カバー (Phase 13-3.5 以降の検討対象):
+
+- カスタム絵文字 (display name / note 本文の :emoji:) — TS で emoji を作成する admin API 周りが必要
+- WebSocket streaming (`/streaming` channel 接続後の note push 受信)
+- channel timeline 残存
+- 双方向切替 (mk-A → TS-A 戻し)
 
 ## トラブルシューティング
 

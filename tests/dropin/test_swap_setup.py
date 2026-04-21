@@ -17,6 +17,10 @@ from conftest_base import MisskeyLikeClient, poll_until  # type: ignore[import-n
 # verify 段で使う marker。run-swap-test.sh が同じ pytest コマンドを 2 回呼ぶので
 # テストファイル間で値を共有する必要があり、定数として定義する。
 BASELINE_NOTE_TEXT = "dropin-baseline-pre-swap"
+HOME_NOTE_TEXT = "dropin-home-visibility-pre-swap"
+FOLLOWERS_NOTE_TEXT = "dropin-followers-visibility-pre-swap"
+SPECIFIED_NOTE_TEXT = "dropin-specified-visibility-pre-swap"
+LIST_NAME = "dropin-buddies"
 
 
 def test_setup_alice_follows_bob(
@@ -63,3 +67,120 @@ def test_setup_baseline_note(
         return any(n.get("text") == BASELINE_NOTE_TEXT for n in tl)
 
     assert poll_until(_arrived, timeout=90, desc="alice receives baseline note")
+
+
+def test_setup_home_visibility_note(
+    instance_a: MisskeyLikeClient,
+    instance_b: MisskeyLikeClient,
+    alice: dict,
+    bob: dict,
+) -> None:
+    """bob が home visibility ノートを投稿し alice の home timeline に届く。
+
+    home visibility は AP `to: [followers]` + `cc: []` で配信される。public と
+    比べて global timeline には現れないが follower (= alice) の home には届く。
+    """
+    instance_b.create_note(HOME_NOTE_TEXT, visibility="home")
+
+    def _arrived() -> bool:
+        tl = instance_a._api("notes/timeline", {"limit": 40})
+        return any(n.get("text") == HOME_NOTE_TEXT for n in tl)
+
+    assert poll_until(_arrived, timeout=90, desc="alice receives home-visibility note")
+
+
+def test_setup_followers_visibility_note(
+    instance_a: MisskeyLikeClient,
+    instance_b: MisskeyLikeClient,
+    alice: dict,
+    bob: dict,
+) -> None:
+    """bob が followers visibility ノートを投稿し alice の home timeline に届く。
+
+    followers visibility は AP `to: [followers]`、cc 無しで完全に follower 限定。
+    """
+    instance_b.create_note(FOLLOWERS_NOTE_TEXT, visibility="followers")
+
+    def _arrived() -> bool:
+        tl = instance_a._api("notes/timeline", {"limit": 40})
+        return any(n.get("text") == FOLLOWERS_NOTE_TEXT for n in tl)
+
+    assert poll_until(_arrived, timeout=90, desc="alice receives followers-visibility note")
+
+
+def test_setup_specified_visibility_note(
+    instance_a: MisskeyLikeClient,
+    instance_b: MisskeyLikeClient,
+    alice: dict,
+    bob: dict,
+) -> None:
+    """bob が alice 宛 specified (DM) ノートを投稿し alice 側に届く。
+
+    specified visibility は AP `to: [<alice URI>]` で direct message 相当。
+    home timeline には載らないので /api/notes/mentions で確認する。
+    """
+    remote_alice = poll_until(
+        lambda: instance_b.users_show("alice", host=A_DOMAIN),
+        timeout=60,
+        desc="bob resolves alice via AP",
+    )
+    instance_b.create_note(
+        SPECIFIED_NOTE_TEXT,
+        visibility="specified",
+        visibleUserIds=[remote_alice["id"]],
+    )
+
+    def _arrived() -> bool:
+        # specified note は home timeline には現れない。/api/notes/mentions に
+        # `visibility="specified"` を指定して DM だけ引く (mk-go の仕様: 既定
+        # では non-specified mention のみ返るため)。
+        mentions = instance_a._api(
+            "notes/mentions", {"limit": 40, "visibility": "specified"}
+        )
+        return any(n.get("text") == SPECIFIED_NOTE_TEXT for n in mentions)
+
+    assert poll_until(_arrived, timeout=90, desc="alice receives specified-visibility DM")
+
+
+def test_setup_user_list_with_remote_member(
+    instance_a: MisskeyLikeClient,
+    instance_b: MisskeyLikeClient,
+    alice: dict,
+    bob: dict,
+) -> None:
+    """alice が user list を作って bob (remote) を member に追加する。
+
+    User list の membership は user_list_membership テーブルに保存される。
+    切替後に list 自体と member 構成が引き継がれることを後段で検証する。
+    """
+    remote_bob = poll_until(
+        lambda: instance_a.users_show("bob", host=B_DOMAIN),
+        timeout=60,
+        desc="alice resolves bob",
+    )
+
+    # 既存の同名 list があれば再利用 (再実行性)
+    existing = instance_a._api("users/lists/list")
+    list_id = None
+    for lst in existing:
+        if lst.get("name") == LIST_NAME:
+            list_id = lst["id"]
+            break
+    if list_id is None:
+        created = instance_a._api("users/lists/create", {"name": LIST_NAME})
+        list_id = created["id"]
+
+    try:
+        instance_a._api("users/lists/push", {"listId": list_id, "userId": remote_bob["id"]})
+    except RuntimeError as e:
+        # 既に member の場合は許容
+        if "ALREADY_ADDED" not in str(e) and "Already" not in str(e):
+            raise
+
+    # 直後に show して list 自体が存在することを確認 (member 構成の確認は
+    # 後段で user-list-timeline 経由で行う。Misskey TS の `users/lists/show` は
+    # `userIds: string[]` を返すが、mk-go の同 endpoint は raw UserList を
+    # 返すだけで userIds を含まない既知の API gap がある — drop-in test では
+    # この差分の影響を避けるため間接検証に倒す)。
+    shown = instance_a._api("users/lists/show", {"listId": list_id})
+    assert shown.get("id") == list_id, "user list lookup failed right after creation"

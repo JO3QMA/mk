@@ -420,6 +420,7 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 本ドキュメントの主要な変更履歴。新規変更時は一番上に追記する（日付降順）。
 
+- **2026-04-21**: drop-in e2e Phase 13-3 (#372) を追加。state preservation 機能マトリクスを 6 シナリオに拡充 (home/followers/specified visibility ノート, user list メタ, user list timeline)。`tests/dropin/test_swap_setup.py` と `test_swap_verify.py` に追加。
 - **2026-04-21**: drop-in e2e Phase 13-2 (#367) を追加。`docker-compose.dropin.mk.yml` overlay と `tests/dropin/run-swap-test.sh` orchestrator で「TS-A backend を mk-go に差し替えても DB / Redis 上の state が引き継がれる」ことを e2e 検証する。途中で発覚した `note.pageCount` / `note.renoteChannelId` カラム欠如を `migration/000039_dropin_compat.up.sql` で補填。reply / reaction の federation deliver 不足は別バグ #368 として切り出し、対応する 2 テストは `xfail` 済。
 - **2026-04-21**: drop-in e2e テスト基盤 Phase 13-1 (#365) を追加。`docker-compose.dropin.yml` と `tests/dropin/` で Misskey TS 2 インスタンスを立ち上げ、pytest で federation smoke test を実行する。Phase 13-2 で mk 差し替え overlay を追加予定。
 - **2026-04-20**: CIの`test`ジョブを4-way matrix shardで並列化。総実行時間を約4.7分→約1.5-2分に短縮。各shardは独立サービスコンテナで動作し、ImportPath順modulo分配で決定的にパッケージを割り当てる。
