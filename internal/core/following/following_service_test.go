@@ -557,6 +557,46 @@ func TestCancelRequest_InvokesUnfollowHook(t *testing.T) {
 	assert.Equal(t, []string{"alice->bob"}, fed.unfollowed)
 }
 
+func TestCancelRequest_PublishesUnfollowEvent(t *testing.T) {
+	// frontend MkFollowButton は main channel の unfollow event を受けて
+	// ボタンを「フォロー」表示にリセットする。CancelRequest でも publish する
+	// ことでリロードなしの UI 更新を実現する。
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	// Follow() 内の receiveFollowRequest は followee (bob) 宛。cancel 分を
+	// 観察するためリセット。
+	pub.calls = nil
+
+	require.NoError(t, svc.CancelRequest("alice", "bob"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "unfollow", pub.calls[0].eventType)
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", false, false)
+}
+
+func TestRejectRequest_PublishesUnfollowEvent(t *testing.T) {
+	// 拒否された follower (alice) の frontend が「承認待ち」→「フォロー」
+	// にリロードなしで戻るよう、main channel に unfollow event を publish する。
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	pub := &stubMainStreamPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	require.NoError(t, svc.RejectRequest("bob", "alice"))
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "alice", pub.calls[0].userID)
+	assert.Equal(t, "unfollow", pub.calls[0].eventType)
+	assertFollowStreamBody(t, pub.calls[0].body, "bob", false, false)
+}
+
 func TestListReceivedRequests(t *testing.T) {
 	svc, userRepo, _, _ := newSvc(t)
 	addUser(t, userRepo, "alice", false)

@@ -385,12 +385,20 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 }
 
 // RejectRequest rejects a pending follow request received by the followee.
+// 拒否された側 (follower) の frontend MkFollowButton がリロードなしで
+// 「フォロー」表示に戻るよう、`unfollow` main stream event を publish する。
+// UserDetailed shape に isFollowing=false / hasPendingFollowRequestFromYou=
+// false を埋めるのは Unfollow / Follow event と同じ方針。
 func (s *Service) RejectRequest(followeeID, followerID string) error {
 	req, err := s.followRequestRepo.FindByPair(followerID, followeeID)
 	if err != nil {
 		return ErrRequestNotFound
 	}
-	return s.followRequestRepo.Delete(req)
+	if err := s.followRequestRepo.Delete(req); err != nil {
+		return err
+	}
+	s.publishFollowRequestResolved(followerID, followeeID)
+	return nil
 }
 
 // CancelRequest cancels an outgoing follow request created by the follower.
@@ -416,7 +424,24 @@ func (s *Service) CancelRequest(followerID, followeeID string) error {
 			s.federationHook.OnLocalUnfollowed(follower, followee)
 		}
 	}
+	s.publishFollowRequestResolved(followerID, followeeID)
 	return nil
+}
+
+// publishFollowRequestResolved notifies the local follower via the main stream
+// that a pending follow request has been resolved (rejected or canceled).
+// frontend MkFollowButton listens to `unfollow` events and resets
+// isFollowing / hasPendingFollowRequestFromYou to false, giving users a live
+// reset without reloading.
+func (s *Service) publishFollowRequestResolved(followerID, followeeID string) {
+	if s.mainStreamPublisher == nil {
+		return
+	}
+	followee, err := s.userRepo.FindByID(followeeID)
+	if err != nil {
+		return
+	}
+	s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserForFollowStreamEvent(followee, false, false))
 }
 
 // ListReceivedRequests returns follow requests received by userID.
