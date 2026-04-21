@@ -1,0 +1,12 @@
+{
+  "name": "mk-go-dropin-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Phase 14 drop-in frontend e2e cypress assets",
+  "license": "SEE LICENSE IN ../../../LICENSE",
+  "devDependencies": {
+    "cypress": "15.11.0",
+    "typescript": "5.5.0",
+    "@types/node": "20.0.0"
+  }
+}
