@@ -17,7 +17,13 @@ import pytest
 
 from conftest import A_DOMAIN  # type: ignore[import-not-found]
 from conftest_base import MisskeyLikeClient, poll_until  # type: ignore[import-not-found]
-from test_swap_setup import BASELINE_NOTE_TEXT  # type: ignore[import-not-found]
+from test_swap_setup import (  # type: ignore[import-not-found]
+    BASELINE_NOTE_TEXT,
+    FOLLOWERS_NOTE_TEXT,
+    HOME_NOTE_TEXT,
+    LIST_NAME,
+    SPECIFIED_NOTE_TEXT,
+)
 
 
 def test_post_swap_baseline_note_preserved(
@@ -31,6 +37,78 @@ def test_post_swap_baseline_note_preserved(
     tl = instance_a._api("notes/timeline", {"limit": 40})
     assert any(n.get("text") == BASELINE_NOTE_TEXT for n in tl), \
         "baseline note disappeared from alice's home after backend swap"
+
+
+def test_post_swap_home_visibility_preserved(
+    instance_a: MisskeyLikeClient,
+    alice: dict,
+) -> None:
+    """home visibility ノートも切替後に home timeline に残っている。"""
+    tl = instance_a._api("notes/timeline", {"limit": 40})
+    assert any(n.get("text") == HOME_NOTE_TEXT for n in tl), \
+        "home-visibility note missing from alice's home after swap"
+
+
+def test_post_swap_followers_visibility_preserved(
+    instance_a: MisskeyLikeClient,
+    alice: dict,
+) -> None:
+    """followers visibility ノートも切替後に home timeline に残っている。"""
+    tl = instance_a._api("notes/timeline", {"limit": 40})
+    assert any(n.get("text") == FOLLOWERS_NOTE_TEXT for n in tl), \
+        "followers-visibility note missing from alice's home after swap"
+
+
+def test_post_swap_specified_note_preserved(
+    instance_a: MisskeyLikeClient,
+    alice: dict,
+) -> None:
+    """specified visibility (DM) ノートが /api/notes/mentions?visibility=specified
+    に残っている。
+    """
+    mentions = instance_a._api(
+        "notes/mentions", {"limit": 40, "visibility": "specified"}
+    )
+    assert any(n.get("text") == SPECIFIED_NOTE_TEXT for n in mentions), \
+        "specified-visibility DM missing from alice's mentions after swap"
+
+
+def test_post_swap_user_list_preserved(
+    instance_a: MisskeyLikeClient,
+    alice: dict,
+) -> None:
+    """alice の user list 自体が引き継がれている (list メタデータの存在確認)。
+
+    membership 構成の検証は test_post_swap_user_list_timeline_preserved で
+    user-list-timeline 経由 (= 実際に list メンバーのノートが返る) で間接的に
+    行う。mk-go の `users/lists/show` は TS 互換の `userIds` フィールドを
+    返さない既知の API gap があるため、ここでは list のメタ情報のみ確認。
+    """
+    lists = instance_a._api("users/lists/list")
+    target = next((l for l in lists if l.get("name") == LIST_NAME), None)
+    assert target is not None, f"user list '{LIST_NAME}' missing after swap"
+
+
+def test_post_swap_user_list_timeline_preserved(
+    instance_a: MisskeyLikeClient,
+    alice: dict,
+) -> None:
+    """user list timeline で baseline note (bob 由来) が引き続き読める。
+
+    /api/notes/user-list-timeline は user_list_membership JOIN クエリで
+    list メンバーのノートを集める。Redis fanout キャッシュが残っていれば
+    そこから、空なら DB fallback で同じ結果になる。
+    """
+    lists = instance_a._api("users/lists/list")
+    target = next((l for l in lists if l.get("name") == LIST_NAME), None)
+    assert target is not None
+
+    tl = instance_a._api(
+        "notes/user-list-timeline",
+        {"listId": target["id"], "limit": 40},
+    )
+    assert any(n.get("text") == BASELINE_NOTE_TEXT for n in tl), \
+        "user-list-timeline lost baseline note from list member after swap"
 
 
 @pytest.mark.xfail(
