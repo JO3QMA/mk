@@ -1,0 +1,42 @@
+# mk-go configuration for instance A in the drop-in frontend swap scenario.
+#
+# Phase 14-3 (#394): TS-A の backend を mk-go に差し替える時に使う config。
+# Phase 13-2 の `tests/dropin/instance_a_mk.yml` と同じ方針:
+#
+# - postgres-a / redis-a は TS-A と共有 (= TS が書いた state を継続利用)
+# - url は `https://a/` のまま (連合相手から見た host が変わらない)
+# - redis.prefix は未指定 → resolveRedis() が `a` に自動解決 (#363)
+
+url: https://a/
+port: 3000
+
+db:
+  host: postgres-a
+  port: 5432
+  db: misskey
+  user: misskey
+  pass: testpass
+
+redis:
+  host: redis-a
+  port: 6379
+
+redisForPubsub:
+  host: redis-a
+  port: 6379
+
+redisForJobQueue:
+  host: redis-a
+  port: 6379
+
+redisForTimelines:
+  host: redis-a
+  port: 6379
+
+id: aidx
+
+allowedPrivateNetworks:
+  - 127.0.0.0/8
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16

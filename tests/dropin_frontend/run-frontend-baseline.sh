@@ -18,9 +18,18 @@ COMPOSE=docker-compose.dropin-frontend.yml
 
 cleanup() {
   echo "===> cleanup"
+  # down -v でコンテナを消す前にログを保存する (Devin #398 #1 の同パターン)。
+  if [ "${SCRIPT_EXIT_CODE:-0}" != "0" ]; then
+    local log_dir="${DROPIN_LOG_DIR:-$REPO_ROOT/.dropin-logs}"
+    mkdir -p "$log_dir"
+    echo "===> saving compose logs to $log_dir"
+    docker compose -f "$COMPOSE" logs > "$log_dir/compose.log" 2>&1 || true
+    docker compose -f "$COMPOSE" ps > "$log_dir/ps.log" 2>&1 || true
+  fi
   docker compose -f "$COMPOSE" down -v >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+track_exit() { SCRIPT_EXIT_CODE=$?; }
+trap 'track_exit; cleanup' EXIT
 
 echo "===> stage 1: bring up TS-A/B/C stack"
 docker compose -f "$COMPOSE" up -d
