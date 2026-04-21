@@ -19,7 +19,7 @@ describe('dropin-frontend delete propagation (Phase 14-2)', () => {
     cy.then(() => establishFederation(trio));
   });
 
-  it('charlie がノートを削除すると A と B の timeline から消える', () => {
+  it('charlie deletes a note and it disappears from A and B timelines', () => {
     const marker = `phase14-delete-${Date.now()}`;
     let originalId = '';
 

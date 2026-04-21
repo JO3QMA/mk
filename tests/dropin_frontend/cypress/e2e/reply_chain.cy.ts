@@ -21,7 +21,7 @@ describe.skip('dropin-frontend reply chain (Phase 14-2, skipped — #389)', () =
     cy.then(() => establishFederation(trio));
   });
 
-  it('charlie の note に bob が reply した chain が alice に届く', () => {
+  it('bob reply to charlie note reaches alice via federation', () => {
     const tag = Date.now().toString();
     const originalText = `phase14-chain-origin-${tag}`;
     const bobReplyText = `phase14-chain-bob-${tag}`;

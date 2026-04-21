@@ -121,12 +121,30 @@ export function followRemote(viewer: Principal, target: Principal): Cypress.Chai
     );
 }
 
-// A→B, A→C, B→C の mutual follow を全部張る。
+// A→B, A→C, B→C の**片方向** follow を 3 本張る。alice が bob / charlie を
+// follow、bob が charlie を follow する形。Phase 14-2 時点の spec は
+// "follower が followee のノートを home で受け取る" 検証に使うため片方向で
+// 十分。逆方向 (B→A, C→A, C→B) が必要になる場合 (例: bob が alice の
+// followers-visibility note を見るテスト) は別関数で拡張する。
 export function establishFederation(trio: Trio): Cypress.Chainable {
   return cy
     .then(() => followRemote(trio.alice, trio.bob))
     .then(() => followRemote(trio.alice, trio.charlie))
     .then(() => followRemote(trio.bob, trio.charlie));
+}
+
+// A↔B, A↔C, B↔C の 6 本 bidirectional follow を張る。establishFederation が
+// 片方向で足りない spec (例: bob が alice の followers-only note を観測) の
+// ために用意。Phase 14-2 時点では未使用だが Phase 14-3 以降で追加予定
+// (Devin #390)。
+export function establishMutualFederation(trio: Trio): Cypress.Chainable {
+  return cy
+    .then(() => followRemote(trio.alice, trio.bob))
+    .then(() => followRemote(trio.bob, trio.alice))
+    .then(() => followRemote(trio.alice, trio.charlie))
+    .then(() => followRemote(trio.charlie, trio.alice))
+    .then(() => followRemote(trio.bob, trio.charlie))
+    .then(() => followRemote(trio.charlie, trio.bob));
 }
 
 // 一つのノート投稿 + 指定 instance の timeline に届くまで poll。

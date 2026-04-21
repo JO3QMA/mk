@@ -4,8 +4,8 @@
 // から観測した note (text / user.username / user.host) が一致することを確認。
 // federation delivery の整合性が取れているか = 同じ原本が両サイドで見えるか。
 //
-// 観測先は `notes/timeline` (home 経由) に加えて `users/notes` (by userId) も
-// 見て、両 path で一致することを検証する。
+// 観測先は `notes/timeline` (home 経由) のみ。A と B の home それぞれに
+// charlie の note が届いて同一内容に見えれば十分。
 
 import { api, INSTANCES } from '../support/api';
 import { establishFederation, setupTrio, waitForNoteInTimeline, Trio } from '../support/setup';
@@ -20,7 +20,7 @@ describe('dropin-frontend cross-instance view (Phase 14-2)', () => {
     cy.then(() => establishFederation(trio));
   });
 
-  it('charlie の 1 note が A と B で同じ text / author として観測できる', () => {
+  it('charlie note is observed identically on A and B via federation', () => {
     const marker = `phase14-cross-${Date.now()}`;
 
     api(INSTANCES.c, 'notes/create', {
