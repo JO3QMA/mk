@@ -199,9 +199,13 @@ services:
     # cypress/included は ENTRYPOINT ["cypress"] なので command は 引数のみ。
     command: ["run", "--config-file", "cypress.config.ts"]
     depends_on:
-      app-a: {condition: service_healthy}
-      app-b: {condition: service_healthy}
-      app-c: {condition: service_healthy}
+      # cypress は `https://a`, `https://b`, `https://c` (nginx の alias)
+      # 経由で通信するので nginx-* を待つ必要がある。app-* は nginx-* が
+      # healthy を待つので間接的に起動順は保障される (既存 `docker-compose.
+      # dropin.yml` の test-runner も同じ pattern)。Devin #385 #1。
+      nginx-a: {condition: service_started}
+      nginx-b: {condition: service_started}
+      nginx-c: {condition: service_started}
     networks: [dropin_frontend]
 
 volumes:
