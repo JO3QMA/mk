@@ -119,6 +119,20 @@ func TestULID_Monotonic(t *testing.T) {
 	assert.True(t, id2 > id1, "ULID should be monotonically increasing")
 }
 
+// issue #388: 自前実装では下位5bit truncationにより1/32の確率で単調性が
+// 破れたflakyバグがあった。oklog/ulid の80bit monotonic entropyに置き換
+// えた後は1000回連続で単調性が保たれることを検証する。
+func TestULID_MonotonicStress(t *testing.T) {
+	g, _ := NewGenerator("ulid")
+	now := time.Now()
+	prev := g.Generate(now)
+	for i := 0; i < 1000; i++ {
+		cur := g.Generate(now)
+		require.Greater(t, cur, prev, "monotonic broken at iteration %d: prev=%s cur=%s", i, prev, cur)
+		prev = cur
+	}
+}
+
 func TestParseTime_InvalidInput(t *testing.T) {
 	methods := []string{"aid", "aidx", "meid", "objectid", "ulid"}
 	for _, m := range methods {
