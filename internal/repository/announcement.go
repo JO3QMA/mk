@@ -50,8 +50,18 @@ func (r *announcementRepository) FindByID(id string) (*model.Announcement, error
 	return &a, nil
 }
 
+// announcementPaginationOrder mirrors 本家 QueryService.makePaginationQuery:
+// sinceID 単独指定時のみ ASC に反転し、次ページ要求 (新しい方向) で並び順が
+// 壊れないようにする。両方指定 / untilID のみ / 未指定は DESC。
+func announcementPaginationOrder(sinceID, untilID string) string {
+	if sinceID != "" && untilID == "" {
+		return "id ASC"
+	}
+	return "id DESC"
+}
+
 func (r *announcementRepository) List(activeOnly bool, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error) {
-	q := r.db.Order("id DESC")
+	q := r.db.Order(announcementPaginationOrder(sinceID, untilID))
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}
@@ -80,7 +90,7 @@ func (r *announcementRepository) List(activeOnly bool, limit, offset int, sinceI
 }
 
 func (r *announcementRepository) ListGlobal(activeOnly bool, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error) {
-	q := r.db.Where(`"userId" IS NULL`).Order("id DESC")
+	q := r.db.Where(`"userId" IS NULL`).Order(announcementPaginationOrder(sinceID, untilID))
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}
@@ -111,7 +121,7 @@ func (r *announcementRepository) ListForUser(userID string, activeOnly bool, lim
 	// GORMは連続.WhereをANDで繋ぐがraw SQL側のORはデフォルトでは括弧で
 	// 囲まれないので、明示的に囲まないとAND側の他フィルタ(isActive等)を
 	// バイパスしてしまう(SQL優先順位: AND > OR)。note.go:423と同じ gotcha。
-	q := r.db.Where(`("userId" IS NULL OR "userId" = ?)`, userID).Order("id DESC")
+	q := r.db.Where(`("userId" IS NULL OR "userId" = ?)`, userID).Order(announcementPaginationOrder(sinceID, untilID))
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}
