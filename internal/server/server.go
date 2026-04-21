@@ -32,6 +32,16 @@ type Server struct {
 	queueScheduler *queue.Scheduler
 	queueInspector *queue.Inspector
 	chartMgmt      *chart.ManagementService
+
+	// shutdownHooks はShutdown()時にqueue/HTTP echoより先に呼ばれる
+	// ティッカー系ジョブの停止用。publisher goroutineをcleanに止める。
+	shutdownHooks []func()
+}
+
+// registerShutdownHook registers fn to be invoked during Shutdown.
+// Hooks run in registration order before the asynq / echo shutdown.
+func (s *Server) registerShutdownHook(fn func()) {
+	s.shutdownHooks = append(s.shutdownHooks, fn)
 }
 
 // New creates a new Server.
@@ -154,6 +164,10 @@ func (s *Server) Start() error {
 // Shutdown gracefully shuts down the server, the asynq worker and
 // any background services such as the chart management loop.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// 登録順にshutdown hookを走らせる。publisher goroutineをclean停止。
+	for _, hook := range s.shutdownHooks {
+		hook()
+	}
 	if s.chartMgmt != nil {
 		s.chartMgmt.Stop(ctx)
 	}

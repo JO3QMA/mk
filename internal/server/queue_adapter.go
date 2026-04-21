@@ -3,7 +3,28 @@ package server
 import (
 	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/stream"
 )
+
+// queueStatsInspectorAdapter adapts queue.Inspector to the minimal
+// stream.QueueInspector interface needed by QueueStatsPublisher. Keeping this
+// adapter in internal/server prevents internal/stream from importing
+// internal/queue (which would create a circular dep via asynq types).
+type queueStatsInspectorAdapter struct {
+	inner *queue.Inspector
+}
+
+func (a *queueStatsInspectorAdapter) GetQueueInfo(qname string) (*stream.QueueStatsInfo, error) {
+	info, err := a.inner.GetQueueInfo(qname)
+	if err != nil {
+		return nil, err
+	}
+	return &stream.QueueStatsInfo{
+		Active:  info.Active,
+		Pending: info.Pending,
+		Retry:   info.Retry,
+	}, nil
+}
 
 // queueInspectorAdapter adapts queue.Inspector to admin.QueueInspector.
 type queueInspectorAdapter struct {

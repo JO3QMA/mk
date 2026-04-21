@@ -1311,6 +1311,18 @@ func (s *Server) setupRoutes() {
 	reversiPublisher := stream.NewReversiGamePublisher(streamPubSub)
 	mainStreamPublisher := stream.NewMainStreamPublisher(streamPubSub)
 
+	// server / queue stats publishers (#344)。起動時から tick を回して
+	// `serverStats` / `queueStats` トピックへ定期 publish する。
+	// ShutdownでStop()を呼ぶ (server.go 側でdefer)。
+	serverStatsPub := stream.NewServerStatsPublisher(streamPubSub, 0)
+	serverStatsPub.Start()
+	s.registerShutdownHook(serverStatsPub.Stop)
+	if s.queueInspector != nil {
+		queueStatsPub := stream.NewQueueStatsPublisher(&queueStatsInspectorAdapter{inner: s.queueInspector}, streamPubSub, 0)
+		queueStatsPub.Start()
+		s.registerShutdownHook(queueStatsPub.Stop)
+	}
+
 	// 4. 既存サービスへ publisher を注入する。これらはいずれも nil 安全な
 	//    setter で、未設定なら何もしない (テスト互換)。
 	timelineFanoutHook.SetStreamingPublisher(notePublisher)
