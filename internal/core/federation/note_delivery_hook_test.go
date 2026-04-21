@@ -283,6 +283,150 @@ func TestNoteDeliveryHook_MentionedRemoteUser_NoMentions(t *testing.T) {
 	assert.Empty(t, enq.calls)
 }
 
+// --- #369: reply target / quote renote target への直接 deliver -----------
+
+func TestNoteDeliveryHook_ReplyToRemote_DeliversToReplyAuthor(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	host := "remote.example"
+	inbox := "https://remote.example/users/bob/inbox"
+	bob := &model.User{
+		ID: "bob", Username: "bob", UsernameLower: "bob",
+		Host: &host, Inbox: &inbox,
+	}
+	userRepo.Users["bob"] = bob
+	bobNote := &model.Note{ID: "bobnote", UserID: "bob"}
+	noteRepo.Notes["bobnote"] = bobNote
+
+	replyID := "bobnote"
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	note.ReplyID = &replyID
+	// 本文には bob への mention を含めない (mention 経路で誤って拾われていない
+	// ことを確認するため)
+	text := "just a plain reply without @mention"
+	note.Text = &text
+
+	hook.OnNoteCreated(note, author)
+
+	// no followers、mention も text になし。reply target 経路のみで 1 回 enqueue。
+	require.Len(t, enq.calls, 1)
+	assert.Equal(t, inbox, enq.calls[0].Inbox)
+}
+
+func TestNoteDeliveryHook_ReplyToLocal_NoDelivery(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	localBob := &model.User{ID: "bob", Username: "bob", UsernameLower: "bob"}
+	userRepo.Users["bob"] = localBob
+	bobNote := &model.Note{ID: "bobnote", UserID: "bob"}
+	noteRepo.Notes["bobnote"] = bobNote
+
+	replyID := "bobnote"
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	note.ReplyID = &replyID
+
+	hook.OnNoteCreated(note, author)
+	// local target は連合配信不要
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeliveryHook_ReplyToSelf_NoDelivery(t *testing.T) {
+	// 自分の note への reply (self-reply) は連合配信不要。seen dedup で弾く。
+	hook, enq, userRepo, _, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	selfNote := &model.Note{ID: "self1", UserID: author.ID}
+	noteRepo.Notes["self1"] = selfNote
+	replyID := "self1"
+
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	note.ReplyID = &replyID
+
+	hook.OnNoteCreated(note, author)
+	assert.Empty(t, enq.calls)
+}
+
+func TestNoteDeliveryHook_ReplyMentionDedup(t *testing.T) {
+	// reply target が mention と同じリモートユーザーの場合、重複配信しない。
+	hook, enq, userRepo, _, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	host := "remote.example"
+	inbox := "https://remote.example/users/bob/inbox"
+	bob := &model.User{
+		ID: "bob", Username: "bob", UsernameLower: "bob",
+		Host: &host, Inbox: &inbox,
+	}
+	userRepo.Users["bob"] = bob
+	bobNote := &model.Note{ID: "bobnote", UserID: "bob"}
+	noteRepo.Notes["bobnote"] = bobNote
+
+	replyID := "bobnote"
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	note.ReplyID = &replyID
+	text := "@bob@remote.example hi" // mention にも bob
+	note.Text = &text
+
+	hook.OnNoteCreated(note, author)
+	// mention + reply target = 同一 user → 1 回のみ
+	require.Len(t, enq.calls, 1)
+}
+
+func TestNoteDeliveryHook_QuoteRenote_DeliversToRenoteAuthor(t *testing.T) {
+	hook, enq, userRepo, _, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+
+	host := "remote.example"
+	inbox := "https://remote.example/users/bob/inbox"
+	bob := &model.User{
+		ID: "bob", Username: "bob", UsernameLower: "bob",
+		Host: &host, Inbox: &inbox,
+	}
+	userRepo.Users["bob"] = bob
+	bobNote := &model.Note{ID: "bobnote", UserID: "bob"}
+	noteRepo.Notes["bobnote"] = bobNote
+
+	renoteID := "bobnote"
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	note.RenoteID = &renoteID
+	text := "my quote comment" // text があるので pure renote ではなく quote renote
+	note.Text = &text
+
+	hook.OnNoteCreated(note, author)
+	require.Len(t, enq.calls, 1)
+	assert.Equal(t, inbox, enq.calls[0].Inbox)
+}
+
+func TestNoteDeliveryHook_PureRenoteRemote_NoDirectDelivery(t *testing.T) {
+	// pure renote は Announce で follower に配信されるので、quote 経路の
+	// 直接配信は発動しない。
+	hook, enq, userRepo, followingRepo, keypairRepo, noteRepo := newNoteDeliveryHook(t)
+	author := makeLocalAuthor(t, userRepo, keypairRepo)
+	// follower は 0。Announce でも enqueue されない。
+	followingRepo.RemoteInboxes[author.ID] = []string{}
+
+	host := "remote.example"
+	inbox := "https://remote.example/users/bob/inbox"
+	bob := &model.User{
+		ID: "bob", Username: "bob", UsernameLower: "bob",
+		Host: &host, Inbox: &inbox,
+	}
+	userRepo.Users["bob"] = bob
+	bobNote := &model.Note{ID: "bobnote", UserID: "bob"}
+	noteRepo.Notes["bobnote"] = bobNote
+
+	renoteID := "bobnote"
+	note := makeNote(author.ID, model.NoteVisibilityPublic)
+	note.RenoteID = &renoteID
+	// text/cw/files なし → pure renote
+
+	hook.OnNoteCreated(note, author)
+	// follower 0 + pure renote → enqueue 無し (quote 直接配信は発動しない)
+	assert.Empty(t, enq.calls)
+}
+
 func TestNoteDeliveryHook_PureRenote_LocalTarget_EmitsAnnounce(t *testing.T) {
 	hook, enq, userRepo, followingRepo, keypairRepo, noteRepo := newNoteDeliveryHook(t)
 	author := makeLocalAuthor(t, userRepo, keypairRepo)

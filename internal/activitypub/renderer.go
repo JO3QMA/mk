@@ -329,7 +329,11 @@ func (r *Renderer) RenderNote(n *model.Note, idGen id.Generator) *Note {
 		out.Summary = *n.CW
 	}
 	if n.ReplyID != nil {
-		out.InReplyTo = r.urls.NoteURI(*n.ReplyID)
+		// リモート note への reply の場合、InReplyTo は相手側 (note.URI) を
+		// 指すべき。mk-go の local URL (`https://<self>/notes/<id>`) に
+		// してしまうと連合先が `inReplyTo` を解決できず reply chain が切れる
+		// (drop-in #369 で発覚)。
+		out.InReplyTo = r.resolveNoteURI(*n.ReplyID)
 	}
 
 	// Quote renote: text付きrenoteは_misskey_quote + quoteUrlを付ける
