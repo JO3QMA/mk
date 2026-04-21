@@ -82,14 +82,15 @@ type Resolver struct {
 	urls            *activitypub.URLBuilder
 	fetcher         HTTPFetcher
 	idGen           id.Generator
-	keys            map[string]publicKeyEntry  // userID → publicKey + fetchedAt
-	clock           func() time.Time           // テストで差し替える時計
-	actorTTL        time.Duration              // アクター情報の最大寿命
-	instanceTracker InstanceTracker            // optional: ホスト発見を通知
-	chartHook       ChartHook                  // optional: 新規 remote user の集計
-	publickeyRepo   PublickeyStore             // optional: 公開鍵の永続化
-	pollRepo        repository.PollRepository  // optional: Question(投票)のPoll作成
-	emojiRepo       repository.EmojiRepository // optional: リモート絵文字の永続化
+	keys            map[string]publicKeyEntry      // userID → publicKey + fetchedAt
+	clock           func() time.Time               // テストで差し替える時計
+	actorTTL        time.Duration                  // アクター情報の最大寿命
+	instanceTracker InstanceTracker                // optional: ホスト発見を通知
+	chartHook       ChartHook                      // optional: 新規 remote user の集計
+	publickeyRepo   PublickeyStore                 // optional: 公開鍵の永続化
+	pollRepo        repository.PollRepository      // optional: Question(投票)のPoll作成
+	emojiRepo       repository.EmojiRepository     // optional: リモート絵文字の永続化
+	driveFileRepo   repository.DriveFileRepository // optional: リモート添付の link 化
 }
 
 // NewResolver constructs a Resolver.
@@ -157,6 +158,13 @@ func (r *Resolver) SetPollRepo(repo repository.PollRepository) {
 // remote custom emoji from AP Person/Note Tag arrays (#330).
 func (r *Resolver) SetEmojiRepo(repo repository.EmojiRepository) {
 	r.emojiRepo = repo
+}
+
+// SetDriveFileRepo attaches a DriveFileRepository for ingesting AP
+// `attachment` arrays into drive_file rows (#378). 未設定なら attachment
+// は無視される (旧挙動)。
+func (r *Resolver) SetDriveFileRepo(repo repository.DriveFileRepository) {
+	r.driveFileRepo = repo
 }
 
 // PublicKeyForActor returns the cached public key PEM for an actor ID.
@@ -531,6 +539,13 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	if actor.Host != nil {
 		note.Emojis = r.upsertEmojis(extractEmojiTags(apNote.Tag), *actor.Host)
 	}
+	// AP `attachment` 配列を drive_file 行に upsert (#378)。link 形式のみで
+	// 実 fetch はせず、frontend が drive_file.url 経由で remote 取得する。
+	note.FileIDs = r.upsertAttachments(extractAttachments(apNote.Attachment), &actor.ID, actor.Host)
+	if len(note.FileIDs) > 0 {
+		// AttachedFileTypes は MIME type の配列 (TS との互換性)。
+		note.AttachedFileTypes = r.collectAttachedFileTypes(note.FileIDs)
+	}
 	// Question（投票）の場合はhasPollフラグをCreate前に設定
 	if len(apNote.OneOf) > 0 || len(apNote.AnyOf) > 0 {
 		note.HasPoll = true
@@ -655,6 +670,15 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 			fields["emojis"] = emojis
 			existing.Emojis = emojis
 		}
+	}
+	// AP `attachment` 配列の差分を反映する (#378)。
+	fileIDs := r.upsertAttachments(extractAttachments(apNote.Attachment), &existing.UserID, existing.UserHost)
+	if !slices.Equal([]string(existing.FileIDs), []string(fileIDs)) {
+		fields["fileIds"] = pq.StringArray(fileIDs)
+		existing.FileIDs = pq.StringArray(fileIDs)
+		types := r.collectAttachedFileTypes(fileIDs)
+		fields["attachedFileTypes"] = pq.StringArray(types)
+		existing.AttachedFileTypes = pq.StringArray(types)
 	}
 	if len(fields) == 0 {
 		return existing, nil
@@ -864,4 +888,127 @@ func hostFromURI(uri string) (string, error) {
 		return "", fmt.Errorf("missing host in %q", uri)
 	}
 	return u.Host, nil
+}
+
+// extractAttachments parses the AP `attachment` array (heterogeneous []any
+// after JSON unmarshal) and returns Document entries. type が "Document" /
+// "Image" / "Audio" / "Video" のいずれかで `url` を持つもののみ採用する。
+// #378。
+func extractAttachments(rawAttachments []any) []activitypub.Document {
+	if len(rawAttachments) == 0 {
+		return nil
+	}
+	out := make([]activitypub.Document, 0, len(rawAttachments))
+	for _, raw := range rawAttachments {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := m["type"].(string)
+		switch typ {
+		case "Document", "Image", "Audio", "Video":
+			// ok
+		default:
+			continue
+		}
+		urlStr, _ := m["url"].(string)
+		if urlStr == "" {
+			continue
+		}
+		mediaType, _ := m["mediaType"].(string)
+		name, _ := m["name"].(string)
+		sensitive, _ := m["sensitive"].(bool)
+		out = append(out, activitypub.Document{
+			Type:      typ,
+			MediaType: mediaType,
+			URL:       urlStr,
+			Name:      name,
+			Sensitive: sensitive,
+		})
+	}
+	return out
+}
+
+// upsertAttachments persists each AP Document as a drive_file row (link
+// 形式、isLink=true、実 fetch なし) and returns the resulting drive_file IDs
+// in original order. URI による dedup を行うので、同じ remote attachment が
+// 複数の note に紐付いても drive_file は 1 行のみ。
+//
+// driveFileRepo が未設定なら nil を返す (旧挙動)。userID はリモート user の
+// ID (note.UserID 相当)、host はリモート host (nil = ローカル、
+// attachment 文脈ではほぼ常に non-nil)。
+func (r *Resolver) upsertAttachments(docs []activitypub.Document, userID, host *string) pq.StringArray {
+	if r.driveFileRepo == nil || len(docs) == 0 {
+		return pq.StringArray{}
+	}
+	ids := make(pq.StringArray, 0, len(docs))
+	for _, doc := range docs {
+		// URI ベースで dedup。既存ならその ID を再利用する。
+		if existing, err := r.driveFileRepo.FindByURI(doc.URL); err == nil && existing != nil {
+			ids = append(ids, existing.ID)
+			continue
+		}
+		now := r.clock()
+		mediaType := doc.MediaType
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		name := doc.Name
+		if name == "" {
+			name = "file" // NOT NULL カラムへのフォールバック
+		}
+		var comment *string
+		if doc.Name != "" {
+			cn := doc.Name
+			comment = &cn
+		}
+		uri := doc.URL
+		f := &model.DriveFile{
+			ID:             r.idGen.Generate(now),
+			UserID:         userID,
+			UserHost:       host,
+			MD5:            "", // link 形式のため content hash 取得不可、placeholder
+			Name:           name,
+			Type:           mediaType,
+			Size:           0, // 未 fetch のため未知
+			Comment:        comment,
+			URL:            doc.URL,
+			URI:            &uri,
+			IsLink:         true,
+			IsSensitive:    doc.Sensitive,
+			MaybeSensitive: doc.Sensitive,
+			StoredInternal: false,
+		}
+		if err := r.driveFileRepo.Create(f); err != nil {
+			slog.Warn("upsertAttachments: create failed",
+				"url", doc.URL, "err", err)
+			continue
+		}
+		ids = append(ids, f.ID)
+	}
+	return ids
+}
+
+// collectAttachedFileTypes returns the MIME type list for the given drive
+// file IDs. note.AttachedFileTypes は TS 互換のためノート行に冗長保持される。
+func (r *Resolver) collectAttachedFileTypes(fileIDs []string) pq.StringArray {
+	if r.driveFileRepo == nil || len(fileIDs) == 0 {
+		return pq.StringArray{}
+	}
+	files, err := r.driveFileRepo.FindByIDs(fileIDs)
+	if err != nil {
+		return pq.StringArray{}
+	}
+	// FindByIDs の戻り順は不定なので id → type のマップで再整列する。
+	byID := make(map[string]string, len(files))
+	for _, f := range files {
+		byID[f.ID] = f.Type
+	}
+	out := make(pq.StringArray, 0, len(fileIDs))
+	for _, id := range fileIDs {
+		if t, ok := byID[id]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
 }
