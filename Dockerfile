@@ -19,6 +19,12 @@ RUN test -f third_party/misskey/packages/backend/assets/favicon.ico || \
     (echo "ERROR: third_party/misskey submodule not initialized (or partial clone)." && \
      echo "Run: git submodule update --init --recursive" && exit 1)
 
+# twemojiは本家frontendがUnicode絵文字描画に使うSVG set。pnpm installで
+# node_modulesに hoistされる前提 (make e2e-frontend-build等で install済み)。
+RUN test -f third_party/misskey/packages/backend/node_modules/@discordapp/twemoji/dist/svg/1f004.svg || \
+    (echo "ERROR: twemoji assets not found (pnpm install not run?)." && \
+     echo "Run: make e2e-frontend-build (installs third_party/misskey node_modules)" && exit 1)
+
 RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
     go build -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
@@ -39,6 +45,16 @@ COPY --from=builder /app/migration /app/migration
 # `git submodule update --init --recursive` が必要。
 COPY --from=builder /app/third_party/misskey/packages/backend/assets /app/static-assets
 ENV MISSKEY_STATIC_DIR=/app/static-assets
+
+# repo-level assets (ai.png等)。frontendが /assets/ai.png で参照する
+# (mascotImageUrl のデフォルト)。submodule直下 (issue #360)。
+COPY --from=builder /app/third_party/misskey/assets /app/repo-assets
+ENV MISSKEY_REPO_ASSETS_DIR=/app/repo-assets
+
+# twemoji SVG set (Unicode絵文字描画)。frontendが /twemoji/<codepoint>.svg
+# で参照する。約18MB (issue #359)。
+COPY --from=builder /app/third_party/misskey/packages/backend/node_modules/@discordapp/twemoji/dist/svg /app/twemoji
+ENV MISSKEY_TWEMOJI_DIR=/app/twemoji
 
 # デフォルト設定ファイルをコピー (docker-compose でマウント上書き可能)
 COPY .config/docker.yml /app/.config/default.yml

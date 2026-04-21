@@ -32,7 +32,8 @@ docker compose up -d
 - `MISSKEY_FRONTEND_DIST_DIR` — dist出力 (locales, fonts)
 - `MISSKEY_TWEMOJI_DIR` — twemoji SVG
 - `MISSKEY_CLIENT_ASSETS_DIR` — クライアントアセット
-- `MISSKEY_STATIC_DIR` — 静的ファイル
+- `MISSKEY_STATIC_DIR` — 静的ファイル (backend/assets: favicon等)
+- `MISSKEY_REPO_ASSETS_DIR` — リポジトリ直下の共通アセット (ai.png, banner等)
 
 TS版Misskeyのイメージからアセットをコピーすることも可能:
 
@@ -43,11 +44,13 @@ COPY --from=misskey-assets /misskey/built /frontend
 COPY --from=misskey-assets /misskey/packages/frontend/assets /client-assets
 COPY --from=misskey-assets /misskey/packages/backend/node_modules/@discordapp/twemoji/dist/svg /twemoji
 COPY --from=misskey-assets /misskey/packages/backend/assets /static
+COPY --from=misskey-assets /misskey/assets /repo-assets
 ENV MISSKEY_FRONTEND_DIR=/frontend/_frontend_vite_
 ENV MISSKEY_FRONTEND_DIST_DIR=/frontend/_frontend_dist_
 ENV MISSKEY_TWEMOJI_DIR=/twemoji
 ENV MISSKEY_CLIENT_ASSETS_DIR=/client-assets
 ENV MISSKEY_STATIC_DIR=/static
+ENV MISSKEY_REPO_ASSETS_DIR=/repo-assets
 ```
 
 ## Docker Compose (UDS)
