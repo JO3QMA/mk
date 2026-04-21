@@ -20,9 +20,10 @@ func (a *queueStatsInspectorAdapter) GetQueueInfo(qname string) (*stream.QueueSt
 		return nil, err
 	}
 	return &stream.QueueStatsInfo{
-		Active:  info.Active,
-		Pending: info.Pending,
-		Retry:   info.Retry,
+		Active:    info.Active,
+		Pending:   info.Pending,
+		Scheduled: info.Scheduled,
+		Retry:     info.Retry,
 	}, nil
 }
 

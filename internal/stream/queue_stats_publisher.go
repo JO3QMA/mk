@@ -16,10 +16,13 @@ type QueueInspector interface {
 
 // QueueStatsInfo mirrors the relevant fields from queue.InspectorInfo so that
 // this package does not have to import internal/queue. 循環依存防止。
+// Delayed は Bull 用語で asynq の Scheduled + Retry 合計に対応するので
+// 両方の field を保持する。
 type QueueStatsInfo struct {
-	Active  int
-	Pending int
-	Retry   int
+	Active    int
+	Pending   int
+	Scheduled int
+	Retry     int
 }
 
 // QueueStatsPublisher periodically queries asynq queue depths and publishes
@@ -139,6 +142,8 @@ func (p *QueueStatsPublisher) deliverEntry() queueStatsEntry {
 		ActiveSincePrevTick: info.Active,
 		Active:              info.Active,
 		Waiting:             info.Pending,
-		Delayed:             info.Retry,
+		// Bull の delayed は asynq の Scheduled (未来実行予定) と Retry
+		// (失敗後再試行待ち) の両方を含む。
+		Delayed: info.Scheduled + info.Retry,
 	}
 }

@@ -27,7 +27,7 @@ func (s *stubQueueInspector) GetQueueInfo(_ string) (*QueueStatsInfo, error) {
 
 func TestQueueStatsPublisher_PublishesDeliverDepths(t *testing.T) {
 	pub := &capturePubSub{}
-	insp := &stubQueueInspector{info: &QueueStatsInfo{Active: 3, Pending: 7, Retry: 1}}
+	insp := &stubQueueInspector{info: &QueueStatsInfo{Active: 3, Pending: 7, Scheduled: 2, Retry: 1}}
 	p := NewQueueStatsPublisher(insp, pub, 30*time.Millisecond)
 	p.Start()
 	time.Sleep(60 * time.Millisecond)
@@ -51,7 +51,8 @@ func TestQueueStatsPublisher_PublishesDeliverDepths(t *testing.T) {
 		require.NoError(t, json.Unmarshal(c.payload, &body))
 		assert.Equal(t, 3, body.Deliver.Active)
 		assert.Equal(t, 7, body.Deliver.Waiting)
-		assert.Equal(t, 1, body.Deliver.Delayed)
+		// Bull delayed = asynq Scheduled + Retry
+		assert.Equal(t, 3, body.Deliver.Delayed)
 		// inbox is a compatibility zero stub (mk-go has no inbox queue).
 		assert.Equal(t, 0, body.Inbox.Active)
 	}
