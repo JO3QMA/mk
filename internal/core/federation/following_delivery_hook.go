@@ -77,6 +77,11 @@ func (h *FollowingDeliveryHook) SendAcceptForInboundFollow(follower, followee *m
 		// local→remoteやlocal→local方向ならAP配信不要。
 		return nil
 	}
+	// OnLocalFollowAcceptedと同じdefensive guard。現状の呼び出し元はResolveActor
+	// 直後なのでURIは必ず埋まっているが、将来DBから再取得するケース等で防御。
+	if follower.URI == nil || *follower.URI == "" {
+		return nil
+	}
 	// raw をそのまま innerObject として渡す。json.RawMessage は Marshal 時に
 	// そのまま出力されるので、Accept.object フィールドに原 Follow が JSON
 	// 構造としてネストされる。
