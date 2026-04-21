@@ -105,12 +105,14 @@ jobs:
           # admin: handler_stubs.goにSMTP/queue/DB集計等の外部依存が多く90%未到達。
           #        現状83.8%で+3.8%のマージン確保のため80%にロック (将来90%に戻す)
           # e2e: 実挙動カバレッジで測る意味が薄いため0%
+          # testutil: mock / test helper 専用パッケージ。production code ではなく
+          #           他テストから呼ばれるだけなので e2e と同様に 0% 扱い。
           # 他の全パッケージは90%を維持
           grep '^ok' test_output.txt | awk '{
             pkg = $2
             match($0, /[0-9.]+%/)
             cov = substr($0, RSTART, RLENGTH-1) + 0
-            threshold = (pkg ~ /\/admin$/) ? 80 : (pkg ~ /\/e2e/) ? 0 : 90
+            threshold = (pkg ~ /\/admin$/) ? 80 : (pkg ~ /\/e2e/ || pkg ~ /\/testutil$/) ? 0 : 90
             if (cov < threshold) {
               printf "FAIL: %s coverage %.1f%% is below %d%%\n", pkg, cov, threshold
               fail = 1

@@ -317,16 +317,27 @@ func applyUserFields(u *model.User, fields map[string]any) {
 				u.Token = &s
 			}
 		case "movedToUri":
-			// core/move が string を直接渡す運用。nil は未対応 (現状の要件にない)。
-			if s, ok := v.(string); ok {
+			// core/move が string を直接、resolver.refreshActor が *string を
+			// 渡す。GORM側は両方受けて *string カラムに書き込むので mock も
+			// 両方ハンドルする (どちらか片方だけだとsilent dropする、issue #357)。
+			switch s := v.(type) {
+			case *string:
+				u.MovedToURI = s
+			case string:
 				u.MovedToURI = &s
 			}
 		case "movedAt":
-			if t, ok := v.(time.Time); ok {
+			switch t := v.(type) {
+			case *time.Time:
+				u.MovedAt = t
+			case time.Time:
 				u.MovedAt = &t
 			}
 		case "alsoKnownAs":
-			if s, ok := v.(string); ok {
+			switch s := v.(type) {
+			case *string:
+				u.AlsoKnownAs = s
+			case string:
 				u.AlsoKnownAs = &s
 			}
 		case "avatarUrl":
