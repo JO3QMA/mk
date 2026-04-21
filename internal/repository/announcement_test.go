@@ -272,6 +272,73 @@ func TestAnnouncementRepository_ListForUser_CursorPagination(t *testing.T) {
 	assert.True(t, ids[a3.ID])
 }
 
+// 本家QueryService.makePaginationQueryはsinceID単独指定時にASCに反転する。
+// DESCのままだと「次ページ(新しい方向)を取る」操作でカーソルが壊れるので
+// 回帰防止テスト。
+func TestAnnouncementRepository_SinceIDFlipsOrderASC(t *testing.T) {
+	repo := NewAnnouncementRepository(testDB)
+	a1 := &model.Announcement{ID: "ann_ord_a", Title: "A", Text: "t", Icon: "info", Display: "normal", IsActive: true}
+	a2 := &model.Announcement{ID: "ann_ord_b", Title: "B", Text: "t", Icon: "info", Display: "normal", IsActive: true}
+	a3 := &model.Announcement{ID: "ann_ord_c", Title: "C", Text: "t", Icon: "info", Display: "normal", IsActive: true}
+	defer cleanupAnnouncement(t, a1.ID)
+	defer cleanupAnnouncement(t, a2.ID)
+	defer cleanupAnnouncement(t, a3.ID)
+	require.NoError(t, repo.Create(a1))
+	require.NoError(t, repo.Create(a2))
+	require.NoError(t, repo.Create(a3))
+
+	// sinceID単独指定: ASC (古い→新しい)
+	items, err := repo.List(true, 100, 0, a1.ID, "")
+	require.NoError(t, err)
+	assertOwn := func(items []*model.Announcement) []*model.Announcement {
+		out := make([]*model.Announcement, 0, len(items))
+		for _, a := range items {
+			if a.ID == a2.ID || a.ID == a3.ID {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	own := assertOwn(items)
+	require.Len(t, own, 2)
+	assert.Equal(t, a2.ID, own[0].ID)
+	assert.Equal(t, a3.ID, own[1].ID)
+
+	// untilID単独指定: DESC (新しい→古い)
+	items, err = repo.List(true, 100, 0, "", a3.ID)
+	require.NoError(t, err)
+	own = assertOwn(items)
+	require.Len(t, own, 1) // a1, a2のうちtest fixtureではa2のみがa3より前
+	// ownに含まれる順序もDESCであること
+	// (a2が最初に来るはずだがfixtureに他のレコードが混ざる可能性があるため
+	// 先頭/末尾ではなく全体のID降順を検証)
+	for i := 1; i < len(items); i++ {
+		assert.GreaterOrEqual(t, items[i-1].ID, items[i].ID, "DESC order expected")
+	}
+
+	// 両方指定: DESC (既存挙動)
+	items, err = repo.List(true, 100, 0, a1.ID, a3.ID)
+	require.NoError(t, err)
+	for i := 1; i < len(items); i++ {
+		assert.GreaterOrEqual(t, items[i-1].ID, items[i].ID, "DESC order expected")
+	}
+
+	// ListGlobal / ListForUserも同様にASC反転すること
+	items, err = repo.ListGlobal(true, 100, 0, a1.ID, "")
+	require.NoError(t, err)
+	own = assertOwn(items)
+	require.Len(t, own, 2)
+	assert.Equal(t, a2.ID, own[0].ID)
+	assert.Equal(t, a3.ID, own[1].ID)
+
+	items, err = repo.ListForUser("u", true, 100, 0, a1.ID, "")
+	require.NoError(t, err)
+	own = assertOwn(items)
+	require.Len(t, own, 2)
+	assert.Equal(t, a2.ID, own[0].ID)
+	assert.Equal(t, a3.ID, own[1].ID)
+}
+
 func TestAnnouncementRepository_ListForUser_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
