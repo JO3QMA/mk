@@ -1311,6 +1311,18 @@ func (s *Server) setupRoutes() {
 	reversiPublisher := stream.NewReversiGamePublisher(streamPubSub)
 	mainStreamPublisher := stream.NewMainStreamPublisher(streamPubSub)
 
+	// server / queue stats publishers (#344)。起動時から tick を回して
+	// `serverStats` / `queueStats` トピックへ定期 publish する。
+	// ShutdownでStop()を呼ぶ (server.go 側でdefer)。
+	serverStatsPub := stream.NewServerStatsPublisher(streamPubSub, 0)
+	serverStatsPub.Start()
+	s.registerShutdownHook(serverStatsPub.Stop)
+	if s.queueInspector != nil {
+		queueStatsPub := stream.NewQueueStatsPublisher(&queueStatsInspectorAdapter{inner: s.queueInspector}, streamPubSub, 0)
+		queueStatsPub.Start()
+		s.registerShutdownHook(queueStatsPub.Stop)
+	}
+
 	// 4. 既存サービスへ publisher を注入する。これらはいずれも nil 安全な
 	//    setter で、未設定なら何もしない (テスト互換)。
 	timelineFanoutHook.SetStreamingPublisher(notePublisher)
@@ -1674,12 +1686,16 @@ func (s *Server) setupRoutes() {
 	})
 
 	// server-info (公開版) — サーバー情報
-	api.POST("/server-info", func(c echo.Context) error {
+	// frontend の server-metric widget は `misskeyApiGet` で GET 呼び出し、
+	// それ以外の MkVisitorDashboard 等は POST で呼ぶため両メソッドを登録。
+	serverInfoHandler := func(c echo.Context) error {
 		if m, err := metaRepo.Fetch(); err == nil && m.EnableServerMachineStats {
 			return c.JSON(http.StatusOK, serverstats.Collect())
 		}
 		return c.JSON(http.StatusOK, serverstats.Empty())
-	})
+	}
+	api.POST("/server-info", serverInfoHandler)
+	api.GET("/server-info", serverInfoHandler)
 
 	// endpoints — 登録済みAPIエンドポイント一覧
 	api.POST("/endpoints", func(c echo.Context) error {

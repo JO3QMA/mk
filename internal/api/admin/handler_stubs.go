@@ -3,6 +3,7 @@ package admin
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -1534,15 +1535,23 @@ func (h *Handler) listDelayedTasks(c echo.Context, queueName string) error {
 }
 
 // QueueJobs handles POST /api/admin/queue/jobs.
+//
+// frontend admin/job-queue.vue は state を Bull の state 名配列で送る
+// (`['completed', 'failed', 'active', 'delayed', 'wait']` など)。
+// mk-go は asynq バックなので Bull state 名を asynq の list 呼び出しに
+// マッピングする。合計 limit を超えないよう走査中に切り詰める。
 func (h *Handler) QueueJobs(c echo.Context) error {
 	if h.queueInspector == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
+	// state は string でも string[] でも受け取れるようにする (frontend は
+	// 配列、既存テストや admin CLI からは単一文字列でくる可能性がある)。
 	var req struct {
-		Queue string `json:"queue"`
-		State string `json:"state"`
-		Limit int    `json:"limit"`
-		Page  int    `json:"page"`
+		Queue  string          `json:"queue"`
+		State  json.RawMessage `json:"state"`
+		Limit  int             `json:"limit"`
+		Page   int             `json:"page"`
+		Search string          `json:"search"`
 	}
 	_ = c.Bind(&req)
 	if req.Limit <= 0 || req.Limit > 100 {
@@ -1551,8 +1560,7 @@ func (h *Handler) QueueJobs(c echo.Context) error {
 	if req.Page < 1 {
 		req.Page = 1
 	}
-	// Queue 名は Misskey の deliver/inbox 以外にも ap/relay など様々あるため、
-	// 明示指定が無い場合は全キューを走査して pending を返す。
+	states := parseStateField(req.State)
 	queues := []string{req.Queue}
 	if req.Queue == "" {
 		qs, err := h.queueInspector.Queues()
@@ -1561,39 +1569,78 @@ func (h *Handler) QueueJobs(c echo.Context) error {
 		}
 		queues = qs
 	}
-	state := req.State
-	if state == "" {
-		state = "pending"
-	}
-	// 複数キューを走査する場合でも合計で req.Limit を超えないように切り詰める
-	// (ページネーション契約の保持)。走査順序は Queues() の返り順に依存するため、
-	// 同じ state で全体ソートされない点は許容する。
+	seen := make(map[string]struct{}, req.Limit)
 	out := make([]map[string]any, 0, req.Limit)
 outer:
 	for _, q := range queues {
-		var rows []*QueueTaskSummary
-		var err error
-		switch state {
-		case "active":
-			rows, err = h.queueInspector.ListActiveTasks(q, req.Page, req.Limit)
-		case "scheduled":
-			rows, err = h.queueInspector.ListScheduledTasks(q, req.Page, req.Limit)
-		case "retry":
-			rows, err = h.queueInspector.ListRetryTasks(q, req.Page, req.Limit)
-		default:
-			rows, err = h.queueInspector.ListPendingTasks(q, req.Page, req.Limit)
-		}
-		if err != nil {
-			continue
-		}
-		for _, t := range rows {
-			if len(out) >= req.Limit {
-				break outer
+		for _, state := range states {
+			rows, err := h.listTasksForState(q, state, req.Page, req.Limit)
+			if err != nil {
+				continue
 			}
-			out = append(out, packTaskSummary(t))
+			for _, t := range rows {
+				if len(out) >= req.Limit {
+					break outer
+				}
+				// state指定が複数重なる (例: all タブ) とき同じ task が
+				// 重複しないよう ID で de-dup する。
+				if _, dup := seen[t.ID]; dup {
+					continue
+				}
+				seen[t.ID] = struct{}{}
+				out = append(out, packTaskSummary(t))
+			}
 		}
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// parseStateField normalizes the `state` request field which can be a single
+// string or an array of strings (Misskey frontend sends array). Empty input
+// defaults to "wait" (Bull wording) = asynq "pending".
+func parseStateField(raw json.RawMessage) []string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return []string{"wait"}
+	}
+	// try as array first
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		return arr
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil && single != "" {
+		return []string{single}
+	}
+	return []string{"wait"}
+}
+
+// listTasksForState maps a Bull/asynq state name to the matching asynq list
+// call. Returns an empty slice for states asynq does not support (completed /
+// failed / paused) so the admin tab renders an empty list instead of 500.
+func (h *Handler) listTasksForState(queue, state string, page, limit int) ([]*QueueTaskSummary, error) {
+	switch state {
+	case "active":
+		return h.queueInspector.ListActiveTasks(queue, page, limit)
+	case "scheduled":
+		return h.queueInspector.ListScheduledTasks(queue, page, limit)
+	case "retry":
+		return h.queueInspector.ListRetryTasks(queue, page, limit)
+	// Bull と asynq の用語対応
+	case "wait", "pending":
+		return h.queueInspector.ListPendingTasks(queue, page, limit)
+	case "delayed":
+		// delayed は Bull 用語で asynq の scheduled + retry に対応する。
+		sched, _ := h.queueInspector.ListScheduledTasks(queue, page, limit)
+		retry, _ := h.queueInspector.ListRetryTasks(queue, page, limit)
+		return append(sched, retry...), nil
+	case "completed", "failed", "paused":
+		// asynq は retention 未設定だと completed/failed 履歴を保持しない。
+		// 履歴APIが無いので空配列でフロントを通す (tab 表示自体は出す)。
+		return nil, nil
+	default:
+		return h.queueInspector.ListPendingTasks(queue, page, limit)
+	}
 }
 
 // QueuePromoteJobs handles POST /api/admin/queue/promote-jobs.
@@ -1627,10 +1674,78 @@ func (h *Handler) QueuePromoteJobs(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"promoted": promoted})
 }
 
+// shapeQueueForFrontend adapts a QueueInfoResult to the Misskey Bull-shaped
+// JSON expected by the admin/job-queue.vue page.
+//
+// BullMQ (Misskey本家のjob queue) と asynq は設計思想が根本的に異なり、
+// 完全互換は不可能：
+//   - asynq に存在しない queue 名 (inbox / db / relationship / system 等):
+//     frontend は Misskey.queueTypes で hardcode しており mk-go の queue 名
+//     (deliver / push / webhook / export / maintenance) と一致しない。
+//   - db.{memory,uptime,clients} は BullMQ が per-queue で持つ Redis 統計。
+//     asynq には相当機能が無い。
+//   - metrics.{completed,failed}.data は BullMQ の per-queue time-series。
+//     asynq は retention 設定なしでは履歴を持たない。
+//
+// BullMQ と完全互換のまま Go ネイティブ性能を活かすのは別レイヤ (独立
+// OSS ライブラリ化) で取り組む方針 (#377 参照)。それまでの中継措置として
+// 見た目が壊れないよう未対応 field を 0 固定で stub する。
+func shapeQueueForFrontend(info *QueueInfoResult) map[string]any {
+	// delayed は Misskey 用語で scheduled + retry の合計に相当する
+	// (どちらも「すぐには実行されない」状態)。
+	delayed := info.Scheduled + info.Retry
+	return map[string]any{
+		"name":          info.Queue,
+		"qualifiedName": info.Queue,
+		"isPaused":      false,
+		"counts": map[string]any{
+			"active":    info.Active,
+			"delayed":   delayed,
+			"waiting":   info.Pending,
+			"completed": info.Completed,
+			"failed":    info.Failed,
+		},
+		"metrics": map[string]any{
+			"completed": map[string]any{"data": []int{}, "count": info.Completed},
+			"failed":    map[string]any{"data": []int{}, "count": info.Failed},
+		},
+		// asynq にはBull相当のper-queue redis DB statsがないため、frontend
+		// が参照するフィールドを0固定でstubする。
+		"db": map[string]any{
+			"processId": 0,
+			"port":      0,
+			"runId":     "",
+			"clients":   map[string]any{"connected": 0, "blocked": 0},
+			"memory":    map[string]any{"peak": 0, "total": 0, "used": 0},
+			"uptime":    0,
+		},
+	}
+}
+
 // QueueQueueStats handles POST /api/admin/queue/queue-stats.
+// frontend admin/job-queue.vue の `fetchCurrentQueue` は単一 queue 名を
+// 受けて 1 queue の shape を返す設計になっているので、req.Queue が来たら
+// その queue だけ、来なければ全 queue を返すという両対応にする。
+//
+// frontend は Misskey Bull の queue 名を hardcode (`Misskey.queueTypes`) で
+// 列挙しており、mk-go の asynq queue 名 (deliver/push/maintenance/webhook/
+// export) と完全には一致しない。存在しない queue を叩かれたときは 500 で
+// はなくゼロ埋めの shape を返して、フロント側の queueInfo が stale に
+// ならないようにする。
 func (h *Handler) QueueQueueStats(c echo.Context) error {
 	if h.queueInspector == nil {
 		return c.JSON(http.StatusOK, map[string]any{})
+	}
+	var req struct {
+		Queue string `json:"queue"`
+	}
+	_ = c.Bind(&req)
+	if req.Queue != "" {
+		info, err := h.queueInspector.GetQueueInfo(req.Queue)
+		if err != nil || info == nil {
+			return c.JSON(http.StatusOK, shapeQueueForFrontend(&QueueInfoResult{Queue: req.Queue}))
+		}
+		return c.JSON(http.StatusOK, shapeQueueForFrontend(info))
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
@@ -1642,16 +1757,7 @@ func (h *Handler) QueueQueueStats(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		out[q] = map[string]any{
-			"queue":     info.Queue,
-			"size":      info.Size,
-			"active":    info.Active,
-			"pending":   info.Pending,
-			"completed": info.Completed,
-			"failed":    info.Failed,
-			"scheduled": info.Scheduled,
-			"retry":     info.Retry,
-		}
+		out[q] = shapeQueueForFrontend(info)
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -1671,16 +1777,7 @@ func (h *Handler) QueueQueues(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		result = append(result, map[string]any{
-			"queue":     info.Queue,
-			"size":      info.Size,
-			"active":    info.Active,
-			"pending":   info.Pending,
-			"completed": info.Completed,
-			"failed":    info.Failed,
-			"scheduled": info.Scheduled,
-			"retry":     info.Retry,
-		})
+		result = append(result, shapeQueueForFrontend(info))
 	}
 	return c.JSON(http.StatusOK, result)
 }
@@ -1745,14 +1842,43 @@ func (h *Handler) QueueShowJob(c echo.Context) error {
 // the admin UI usable without extra infra.
 func (h *Handler) QueueShowJobLogs(c echo.Context) error { return c.JSON(http.StatusOK, []any{}) }
 
-// packTaskSummary normalizes a QueueTaskSummary into the Misskey-compatible
-// JSON shape.
+// packTaskSummary normalizes a QueueTaskSummary into the Misskey Bull-shaped
+// JSON expected by admin/job-queue.vue and job-queue.job.vue. frontend は
+// `job.stacktrace.length` / `job.opts.attempts` / `job.opts.repeat` などを
+// 直接参照するので、未設定フィールドは undefined ではなく空配列 / 0 / nil
+// で埋めて render crash を防ぐ。
+//
+// asynqにしか無い field (state / queue / payload raw 等) は残しつつ、
+// Bull 互換 field を追加する形で出力する (両方を見るadmin toolへの配慮)。
 func packTaskSummary(t *QueueTaskSummary) map[string]any {
 	if t == nil {
 		return nil
 	}
+	isFailed := t.LastErr != ""
+	// asynqはBullと違いEnqueuedAtを保持しない (TaskInfoに該当field無し)。
+	// frontend の MkTl / MkTime は 0 を「たった今」として扱うので害はない。
 	pack := map[string]any{
-		"id":       t.ID,
+		// Bull 互換 field (frontend 必須)
+		"id":           t.ID,
+		"name":         t.Type,
+		"timestamp":    formatUnixMillisOrZero(t.NextProcessAt),
+		"processedAt":  formatUnixMillisOrZero(t.LastFailedAt),
+		"processedOn":  formatUnixMillisOrZero(t.LastFailedAt),
+		"finishedOn":   formatUnixMillisOrZero(t.CompletedAt),
+		"progress":     0,
+		"attempts":     t.Retried,
+		"attemptsMade": t.Retried,
+		"isFailed":     isFailed,
+		"delay":        0,
+		"returnValue":  nil,
+		"stacktrace":   stacktraceFrom(t.LastErr),
+		"data":         rawJSONOrString(t.Payload),
+		"opts": map[string]any{
+			"attempts": t.MaxRetry,
+			"delay":    0,
+			"repeat":   nil,
+		},
+		// asynq-native field (既存 admin tool 互換のために残す)
 		"queue":    t.Queue,
 		"type":     t.Type,
 		"state":    t.State,
@@ -1762,6 +1888,7 @@ func packTaskSummary(t *QueueTaskSummary) map[string]any {
 	}
 	if t.LastErr != "" {
 		pack["lastErr"] = t.LastErr
+		pack["failedReason"] = t.LastErr
 	}
 	if !t.LastFailedAt.IsZero() {
 		pack["lastFailedAt"] = t.LastFailedAt.UTC().Format(time.RFC3339Nano)
@@ -1773,6 +1900,39 @@ func packTaskSummary(t *QueueTaskSummary) map[string]any {
 		pack["completedAt"] = t.CompletedAt.UTC().Format(time.RFC3339Nano)
 	}
 	return pack
+}
+
+// formatUnixMillisOrZero returns the unix-ms representation of t, or 0 when
+// t is the zero time. Bull's timestamps are unix milliseconds.
+func formatUnixMillisOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+// stacktraceFrom returns a single-element stacktrace array when lastErr is
+// non-empty, otherwise an empty array. frontend は `job.stacktrace.length`
+// を見るため undefined では TypeError で crash する。
+func stacktraceFrom(lastErr string) []string {
+	if lastErr == "" {
+		return []string{}
+	}
+	return []string{lastErr}
+}
+
+// rawJSONOrString attempts to decode payload as JSON so the admin UI can
+// render structured data. Falls back to a string representation for payloads
+// that are not valid JSON.
+func rawJSONOrString(payload []byte) any {
+	if len(payload) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(payload, &decoded); err == nil {
+		return decoded
+	}
+	return string(payload)
 }
 
 // QueueStats handles POST /api/admin/queue/stats.
