@@ -34,7 +34,7 @@ def test_post_swap_baseline_note_preserved(
 
 
 @pytest.mark.xfail(
-    reason="mk-go の NoteDeliveryHook (#368) は reply target 個別 deliver を未実装。"
+    reason="mk-go の NoteDeliveryHook (#369) は reply target 個別 deliver を未実装。"
     "alice の followers (=0 人) + text mention (=なし) しか対象にしないため、"
     "リモートユーザーへの reply は配信されない。drop-in 切替に固有の問題ではなく、"
     "fresh インストールでも同じ振る舞い。Phase 13-3 で federation 修正後に xfail 解除。",
@@ -73,7 +73,7 @@ def test_post_swap_alice_can_reply(
 
 
 @pytest.mark.xfail(
-    reason="reaction の federation deliver も #368 と同じ NoteDeliveryHook 経路を"
+    reason="reaction の federation deliver も #369 と同じ NoteDeliveryHook 経路を"
     "通るため、リモートユーザーへ reaction が配信されない。Phase 13-3 で連動して"
     "解除予定。",
     strict=True,
