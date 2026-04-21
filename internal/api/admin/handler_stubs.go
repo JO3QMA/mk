@@ -1627,10 +1627,62 @@ func (h *Handler) QueuePromoteJobs(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"promoted": promoted})
 }
 
+// shapeQueueForFrontend adapts a QueueInfoResult to the Misskey Bull-shaped
+// JSON expected by the admin/job-queue.vue page. asynq にない Bull 固有の
+// field (db.clients / memory / uptime 等) は 0 固定で stub する — これが
+// ないと frontend が undefined アクセスで render crash して画面が一瞬
+// 表示されてすぐ消える。metrics.{completed,failed}.data は履歴データだ
+// が現状 chart が空配列で問題なく描画されるためゼロ埋め。
+func shapeQueueForFrontend(info *QueueInfoResult) map[string]any {
+	// delayed は Misskey 用語で scheduled + retry の合計に相当する
+	// (どちらも「すぐには実行されない」状態)。
+	delayed := info.Scheduled + info.Retry
+	return map[string]any{
+		"name":          info.Queue,
+		"qualifiedName": info.Queue,
+		"isPaused":      false,
+		"counts": map[string]any{
+			"active":    info.Active,
+			"delayed":   delayed,
+			"waiting":   info.Pending,
+			"completed": info.Completed,
+			"failed":    info.Failed,
+		},
+		"metrics": map[string]any{
+			"completed": map[string]any{"data": []int{}, "count": info.Completed},
+			"failed":    map[string]any{"data": []int{}, "count": info.Failed},
+		},
+		// asynq にはBull相当のper-queue redis DB statsがないため、frontend
+		// が参照するフィールドを0固定でstubする。
+		"db": map[string]any{
+			"processId": 0,
+			"port":      0,
+			"runId":     "",
+			"clients":   map[string]any{"connected": 0, "blocked": 0},
+			"memory":    map[string]any{"peak": 0, "total": 0, "used": 0},
+			"uptime":    0,
+		},
+	}
+}
+
 // QueueQueueStats handles POST /api/admin/queue/queue-stats.
+// frontend admin/job-queue.vue の `fetchCurrentQueue` は単一 queue 名を
+// 受けて 1 queue の shape を返す設計になっているので、req.Queue が来たら
+// その queue だけ、来なければ全 queue を返すという両対応にする。
 func (h *Handler) QueueQueueStats(c echo.Context) error {
 	if h.queueInspector == nil {
 		return c.JSON(http.StatusOK, map[string]any{})
+	}
+	var req struct {
+		Queue string `json:"queue"`
+	}
+	_ = c.Bind(&req)
+	if req.Queue != "" {
+		info, err := h.queueInspector.GetQueueInfo(req.Queue)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		}
+		return c.JSON(http.StatusOK, shapeQueueForFrontend(info))
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
@@ -1642,16 +1694,7 @@ func (h *Handler) QueueQueueStats(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		out[q] = map[string]any{
-			"queue":     info.Queue,
-			"size":      info.Size,
-			"active":    info.Active,
-			"pending":   info.Pending,
-			"completed": info.Completed,
-			"failed":    info.Failed,
-			"scheduled": info.Scheduled,
-			"retry":     info.Retry,
-		}
+		out[q] = shapeQueueForFrontend(info)
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -1671,16 +1714,7 @@ func (h *Handler) QueueQueues(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		result = append(result, map[string]any{
-			"queue":     info.Queue,
-			"size":      info.Size,
-			"active":    info.Active,
-			"pending":   info.Pending,
-			"completed": info.Completed,
-			"failed":    info.Failed,
-			"scheduled": info.Scheduled,
-			"retry":     info.Retry,
-		})
+		result = append(result, shapeQueueForFrontend(info))
 	}
 	return c.JSON(http.StatusOK, result)
 }

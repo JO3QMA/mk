@@ -201,6 +201,9 @@ func TestQueuePromoteJobs_RunsScheduledAndRetry(t *testing.T) {
 }
 
 func TestQueueQueueStats_WithInspector(t *testing.T) {
+	// frontend admin/job-queue.vue が期待する Misskey Bull shape
+	// ({name, counts:{active,delayed,waiting,...}, metrics:..., db:...})
+	// を返すことを検証する。
 	h, _, _, _ := newTestHandler(t)
 	insp := &stubQueueInspector{
 		queues: []string{"deliver"},
@@ -215,8 +218,36 @@ func TestQueueQueueStats_WithInspector(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	deliver, ok := got["deliver"].(map[string]any)
 	require.True(t, ok)
-	assert.EqualValues(t, 5, deliver["size"])
-	assert.EqualValues(t, 3, deliver["pending"])
+	assert.Equal(t, "deliver", deliver["name"])
+	counts, ok := deliver["counts"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 1, counts["active"])
+	assert.EqualValues(t, 3, counts["waiting"])
+	// scheduled(0) + retry(1) がdelayedに集約される。
+	assert.EqualValues(t, 1, counts["delayed"])
+}
+
+func TestQueueQueueStats_SingleQueueQuery(t *testing.T) {
+	// frontend の fetchCurrentQueue は {queue: "deliver"} を投げて
+	// 単一 queue の shape を受ける。req.Queue が与えられた場合はその
+	// queue 1 つ分を返す挙動を検証する。
+	h, _, _, _ := newTestHandler(t)
+	insp := &stubQueueInspector{
+		queues: []string{"deliver", "push"},
+		info: map[string]*apiadmin.QueueInfoResult{
+			"deliver": {Queue: "deliver", Size: 5, Pending: 3, Active: 1},
+			"push":    {Queue: "push"},
+		},
+	}
+	h.SetQueueInspector(insp)
+	rec := doPost(h.QueueQueueStats, `{"queue":"deliver"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "deliver", got["name"])
+	counts, ok := got["counts"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 1, counts["active"])
 }
 
 func TestQueueDeliverDelayed_CombinesScheduledAndRetry(t *testing.T) {
