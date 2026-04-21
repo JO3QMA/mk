@@ -96,7 +96,7 @@ func (h *Handler) FeaturedNotes(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	result := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	result := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	return c.JSON(http.StatusOK, result)
 }
 
@@ -122,6 +122,7 @@ func (h *Handler) SearchByUsernameAndHost(c echo.Context) error {
 	for _, u := range users {
 		lite := entity.PackUserLite(u)
 		resolver.FillUserLite(&lite)
+		h.populateUserEmojis(u, &lite)
 		result = append(result, lite)
 	}
 	return c.JSON(http.StatusOK, result)

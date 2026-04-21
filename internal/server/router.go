@@ -189,12 +189,15 @@ func (s *Server) setupRoutes() {
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
 
 	// Timeline services (Redis-backed fanout)
-	fanoutTimelineService := coretimeline.NewFanoutTimelineService(s.redis.Timelines, idGen)
+	// keyPrefix で TS 本家と同じ `<host>:list:*` 名前空間に揃える (#362)。
+	fanoutTimelineService := coretimeline.NewFanoutTimelineService(
+		s.redis.Timelines, idGen, s.config.RedisForTimelines.KeyPrefix())
 	timelineService := coretimeline.NewService(fanoutTimelineService, noteRepo, followingRepo)
 	timelineFanoutHook := coretimeline.NewFanoutHook(fanoutTimelineService, followingRepo)
 	// Phase DB-compat (#51): meta から timeline cache cap を動的に読む。
 	// 4 つのカラム (perLocal / perRemote / perHome / perList) が反映される。
 	timelineFanoutHook.SetCacheLimitsProvider(coretimeline.NewMetaRepoCacheLimits(metaRepo))
+	timelineFanoutHook.SetUserListRepo(userListRepo)
 	noteCreateService.SetFanoutHook(timelineFanoutHook)
 
 	// Channels (Phase 4.2)
@@ -237,7 +240,8 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Notifications (Redis Streams)
-	notificationService := corenotification.NewService(s.redis.Default, idGen)
+	// keyPrefix で TS 本家と同じ `<host>:notificationTimeline:*` 等に揃える (#362)。
+	notificationService := corenotification.NewService(s.redis.Default, idGen, s.config.Redis.KeyPrefix())
 	notificationService.SetNoteUnreadRepo(noteUnreadRepo)
 	notificationHook := corenotification.NewHook(notificationService, userRepo)
 	notificationHook.SetNoteUnreadRepo(noteUnreadRepo)
@@ -394,6 +398,7 @@ func (s *Server) setupRoutes() {
 	publickeyRepo := repository.NewUserPublickeyRepository(s.db)
 	federationResolver.SetPublickeyRepo(publickeyRepo)
 	federationResolver.SetPollRepo(pollRepo)
+	federationResolver.SetEmojiRepo(emojiRepo)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 	federationProcessor.SetLocalBaseURL(s.config.URL)
 
@@ -625,7 +630,7 @@ func (s *Server) setupRoutes() {
 		if previewMeta.URLPreviewSummaryProxyURL != nil {
 			previewCfg.SummaryProxyURL = *previewMeta.URLPreviewSummaryProxyURL
 		}
-		urlPreviewFetcher := coreurlpreview.NewFetcher(previewCfg, s.redis.Default)
+		urlPreviewFetcher := coreurlpreview.NewFetcher(previewCfg, s.redis.Default, s.config.Redis.KeyPrefix())
 		urlHandler := apiurl.NewHandler(urlPreviewFetcher)
 		s.echo.GET("/url", urlHandler.Preview)
 	}
@@ -818,8 +823,10 @@ func (s *Server) setupRoutes() {
 	notesHandler.SetChannelRepo(channelRepo)
 	notesHandler.SetChannelMutingRepo(channelMutingRepo)
 	notesHandler.SetInstanceRepo(instanceRepo)
+	notesHandler.SetEmojiRepo(emojiRepo)
 	notesHandler.SetDriveFolderRepo(driveFolderRepo)
 	notesHandler.SetUserRepo(userRepo)
+	notesHandler.SetUserListRepo(userListRepo)
 	if m, err := metaRepo.Fetch(); err == nil {
 		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
 		if m.DeeplAuthKey != nil && *m.DeeplAuthKey != "" {
@@ -878,6 +885,7 @@ func (s *Server) setupRoutes() {
 	usersHandler.SetRenoteMutingRepo(renoteMutingRepo)
 	usersHandler.SetFollowRequestRepo(followRequestRepo)
 	usersHandler.SetInstanceRepo(instanceRepo)
+	usersHandler.SetEmojiRepo(emojiRepo)
 	usersHandler.SetClipRepo(clipRepo)
 	usersHandler.SetFlashRepo(flashRepo)
 	usersHandler.SetGalleryRepo(repository.NewGalleryRepository(s.db))
@@ -970,6 +978,7 @@ func (s *Server) setupRoutes() {
 	iHandler.SetNoteRepo(noteRepo)
 	iHandler.SetPageRepo(pageRepo)
 	iHandler.SetInstanceRepo(instanceRepo)
+	iHandler.SetEmojiRepo(emojiRepo)
 	// announcementRepoは後続で構築されるため SetupAdditional() 相当の順序依存があるが、
 	// 現状 announcementRepo := ... の行がここより後にあるため下で wire する。
 
@@ -1103,6 +1112,7 @@ func (s *Server) setupRoutes() {
 	driveHandler.SetRepos(driveFileRepo, driveFolderRepo, noteRepo)
 	driveHandler.SetUserRepo(userRepo)
 	driveHandler.SetInstanceRepo(instanceRepo)
+	driveHandler.SetEmojiRepo(emojiRepo)
 	api.POST("/drive", driveHandler.Usage, middleware.RequireAuth())
 	api.POST("/drive/files", driveHandler.FilesList, middleware.RequireAuth())
 	api.POST("/drive/files/create", driveHandler.FilesCreate, middleware.RequireAuth())
@@ -1213,10 +1223,12 @@ func (s *Server) setupRoutes() {
 	api.POST("/channels/search", channelsHandler.Search)
 	api.POST("/channels/timeline", channelsHandler.Timeline)
 	channelsHandler.SetInstanceRepo(instanceRepo)
+	channelsHandler.SetEmojiRepo(emojiRepo)
 
 	// Antennas endpoints (Phase 4.3)
 	antennasHandler := antennas.NewHandler(antennaService, noteRepo, idGen)
 	antennasHandler.SetInstanceRepo(instanceRepo)
+	antennasHandler.SetEmojiRepo(emojiRepo)
 	api.POST("/antennas/create", antennasHandler.Create, middleware.RequireAuth())
 	api.POST("/antennas/show", antennasHandler.Show, middleware.RequireAuth())
 	api.POST("/antennas/update", antennasHandler.Update, middleware.RequireAuth())
@@ -1228,6 +1240,7 @@ func (s *Server) setupRoutes() {
 	clipsHandler := clips.NewHandler(clipService, idGen)
 	clipsHandler.SetFavoriteRepo(clipFavoriteRepo)
 	clipsHandler.SetInstanceRepo(instanceRepo)
+	clipsHandler.SetEmojiRepo(emojiRepo)
 	api.POST("/clips/create", clipsHandler.Create, middleware.RequireAuth())
 	api.POST("/clips/show", clipsHandler.Show)
 	api.POST("/clips/update", clipsHandler.Update, middleware.RequireAuth())
@@ -1291,6 +1304,7 @@ func (s *Server) setupRoutes() {
 	// readNotificationメッセージをnotificationServiceに橋渡しする
 	streamManager.SetNotificationReader(&notifReaderAdapter{svc: notificationService})
 	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
+	notePublisher.SetEmojiLookup(emojiRepo)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	notificationPublisher.SetRepos(userRepo, noteRepo, idGen)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)
@@ -1338,6 +1352,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
 	federationProcessor.SetRelayMarker(relaySvc)
 	federationProcessor.SetChatService(chatService)
+	federationProcessor.SetFanoutHook(timelineFanoutHook)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)
@@ -1388,6 +1403,7 @@ func (s *Server) setupRoutes() {
 	rolesHandler := apiroles.NewHandler(roleService, idGen)
 	rolesHandler.SetNotesQuery(repository.NewRoleNotesQuery(s.db))
 	rolesHandler.SetInstanceRepo(instanceRepo)
+	rolesHandler.SetEmojiRepo(emojiRepo)
 	api.POST("/roles/list", rolesHandler.List)
 	api.POST("/roles/show", rolesHandler.Show)
 	api.POST("/roles/users", rolesHandler.Users)

@@ -13,6 +13,7 @@ import (
 
 	"log/slog"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/activitypub/mfm"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
@@ -81,13 +82,14 @@ type Resolver struct {
 	urls            *activitypub.URLBuilder
 	fetcher         HTTPFetcher
 	idGen           id.Generator
-	keys            map[string]publicKeyEntry // userID → publicKey + fetchedAt
-	clock           func() time.Time          // テストで差し替える時計
-	actorTTL        time.Duration             // アクター情報の最大寿命
-	instanceTracker InstanceTracker           // optional: ホスト発見を通知
-	chartHook       ChartHook                 // optional: 新規 remote user の集計
-	publickeyRepo   PublickeyStore            // optional: 公開鍵の永続化
-	pollRepo        repository.PollRepository // optional: Question(投票)のPoll作成
+	keys            map[string]publicKeyEntry  // userID → publicKey + fetchedAt
+	clock           func() time.Time           // テストで差し替える時計
+	actorTTL        time.Duration              // アクター情報の最大寿命
+	instanceTracker InstanceTracker            // optional: ホスト発見を通知
+	chartHook       ChartHook                  // optional: 新規 remote user の集計
+	publickeyRepo   PublickeyStore             // optional: 公開鍵の永続化
+	pollRepo        repository.PollRepository  // optional: Question(投票)のPoll作成
+	emojiRepo       repository.EmojiRepository // optional: リモート絵文字の永続化
 }
 
 // NewResolver constructs a Resolver.
@@ -149,6 +151,12 @@ func (r *Resolver) SetPublickeyRepo(repo PublickeyStore) {
 // SetPollRepo attaches a PollRepository for ingesting Question (poll) objects.
 func (r *Resolver) SetPollRepo(repo repository.PollRepository) {
 	r.pollRepo = repo
+}
+
+// SetEmojiRepo attaches an EmojiRepository for extracting and upserting
+// remote custom emoji from AP Person/Note Tag arrays (#330).
+func (r *Resolver) SetEmojiRepo(repo repository.EmojiRepository) {
+	r.emojiRepo = repo
 }
 
 // PublicKeyForActor returns the cached public key PEM for an actor ID.
@@ -241,6 +249,8 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 		bannerURL := actor.Image.URL
 		user.BannerURL = &bannerURL
 	}
+	// AP Person Tag配列からカスタム絵文字を抽出してDBにupsert
+	user.Emojis = r.upsertEmojis(extractEmojiTags(actor.Tag), host)
 	if err := r.userRepo.Create(user); err != nil {
 		return nil, err
 	}
@@ -345,8 +355,14 @@ func (r *Resolver) refreshActor(existing *model.User, uri string) {
 		fields["bannerUrl"] = &bannerURL
 		existing.BannerURL = &bannerURL
 	}
+	// AP Person Tag配列からカスタム絵文字を抽出してDBにupsert
+	if existing.Host != nil {
+		emojis := r.upsertEmojis(extractEmojiTags(actor.Tag), *existing.Host)
+		fields["emojis"] = emojis
+		existing.Emojis = emojis
+	}
 	existing.LastFetchedAt = &now
-	// UpdateUser エラーはベストエフォートで無視 (次回再試行される)
+	// UpdateUserエラーはベストエフォートで無視 (次回再試行される)
 	_ = r.userRepo.UpdateUser(existing.ID, fields)
 	r.cachePublicKey(existing.ID, actor.PublicKey.ID, actor.PublicKey.PublicKeyPEM)
 	if existing.Host != nil {
@@ -511,6 +527,10 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	if note.Text != nil {
 		note.Mentions = corenote.ExtractMentions(*note.Text)
 	}
+	// AP Note Tag配列からカスタム絵文字を抽出してDBにupsert
+	if actor.Host != nil {
+		note.Emojis = r.upsertEmojis(extractEmojiTags(apNote.Tag), *actor.Host)
+	}
 	// Question（投票）の場合はhasPollフラグをCreate前に設定
 	if len(apNote.OneOf) > 0 || len(apNote.AnyOf) > 0 {
 		note.HasPoll = true
@@ -627,6 +647,15 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 		fields["cw"] = &empty
 		existing.CW = &empty
 	}
+	// AP Note Tag配列からカスタム絵文字を抽出してDBにupsert
+	// 既存値と比較して変化があった場合のみfieldsに含める
+	if existing.UserHost != nil {
+		emojis := r.upsertEmojis(extractEmojiTags(apNote.Tag), *existing.UserHost)
+		if !slices.Equal([]string(existing.Emojis), []string(emojis)) {
+			fields["emojis"] = emojis
+			existing.Emojis = emojis
+		}
+	}
 	if len(fields) == 0 {
 		return existing, nil
 	}
@@ -669,6 +698,133 @@ func (r *Resolver) extractLocalNoteID(uri string) string {
 		rest = rest[:i]
 	}
 	return rest
+}
+
+// extractEmojiTags parses the Tag array of a Person or Note and returns
+// any elements with type "Emoji". Tag配列はJSON unmarshal後に []any
+// (各要素が map[string]any) として届くため、型アサーションで抽出する。
+func extractEmojiTags(tags []any) []activitypub.EmojiTag {
+	if len(tags) == 0 {
+		return nil
+	}
+	var out []activitypub.EmojiTag
+	for _, tag := range tags {
+		m, ok := tag.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := m["type"].(string)
+		if typ != "Emoji" {
+			continue
+		}
+		name, _ := m["name"].(string)
+		if name == "" {
+			continue
+		}
+		var iconURL string
+		if icon, ok := m["icon"].(map[string]any); ok {
+			iconURL, _ = icon["url"].(string)
+		}
+		if iconURL == "" {
+			continue
+		}
+		id, _ := m["id"].(string)
+		updated, _ := m["updated"].(string)
+		out = append(out, activitypub.EmojiTag{
+			Type:    "Emoji",
+			Name:    name,
+			Icon:    activitypub.Image{Type: "Image", URL: iconURL},
+			ID:      id,
+			Updated: updated,
+		})
+	}
+	return out
+}
+
+// upsertEmojis persists remote emoji from AP tags and returns the list of
+// short names (without colons). 同一hostに対して FindManyByNamesAndHost で
+// バッチ取得し、その結果を元にcreate/updateを判定することでN+1を回避する。
+// Create/UpdateFieldsが失敗した場合はその名前を結果から除外し、後段で
+// 「名前は載っているが行が存在しない」状態を防ぐ。emojiRepoが未設定なら
+// 空配列を返す。
+func (r *Resolver) upsertEmojis(tags []activitypub.EmojiTag, host string) pq.StringArray {
+	if r.emojiRepo == nil || len(tags) == 0 {
+		return pq.StringArray{}
+	}
+	// 同名タグが重複して来るケースに備えて重複排除しつつ name → tag を保持
+	tagByName := make(map[string]activitypub.EmojiTag, len(tags))
+	order := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		name := strings.Trim(tag.Name, ":")
+		if name == "" {
+			continue
+		}
+		if _, ok := tagByName[name]; ok {
+			continue
+		}
+		tagByName[name] = tag
+		order = append(order, name)
+	}
+	if len(order) == 0 {
+		return pq.StringArray{}
+	}
+
+	existingRows, err := r.emojiRepo.FindManyByNamesAndHost(order, &host)
+	if err != nil {
+		return pq.StringArray{}
+	}
+	existingByName := make(map[string]*model.Emoji, len(existingRows))
+	for _, e := range existingRows {
+		existingByName[e.Name] = e
+	}
+
+	names := make(pq.StringArray, 0, len(order))
+	for _, name := range order {
+		tag := tagByName[name]
+		if existing, ok := existingByName[name]; ok {
+			// 既存絵文字: URL/URIが変わっていればまとめてupdate
+			updates := map[string]any{}
+			if existing.OriginalURL != tag.Icon.URL {
+				updates["originalUrl"] = tag.Icon.URL
+				updates["publicUrl"] = tag.Icon.URL
+			}
+			if tag.ID != "" && (existing.URI == nil || *existing.URI != tag.ID) {
+				updates["uri"] = &tag.ID
+			}
+			if len(updates) > 0 {
+				if err := r.emojiRepo.UpdateFields(existing.ID, updates); err != nil {
+					// updateに失敗してもrow自体は存在するので名前は返してよい
+					slog.Warn("upsertEmojis: update failed",
+						"name", name, "host", host, "err", err)
+				}
+			}
+			names = append(names, name)
+			continue
+		}
+		// 新規絵文字: create
+		now := r.clock()
+		uri := tag.ID
+		emoji := &model.Emoji{
+			ID:          r.idGen.Generate(now),
+			Name:        name,
+			Host:        &host,
+			OriginalURL: tag.Icon.URL,
+			PublicURL:   tag.Icon.URL,
+		}
+		if uri != "" {
+			emoji.URI = &uri
+		}
+		if err := r.emojiRepo.Create(emoji); err != nil {
+			// createに失敗した場合、行が存在しないままになる可能性があるため
+			// 結果から除外する。EmojiResolverは欠損nameを単に解決しないだけで
+			// クライアント側のフォールバック表示が利く。
+			slog.Warn("upsertEmojis: create failed",
+				"name", name, "host", host, "err", err)
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // deriveVisibility maps an AS to/cc audience pair to a Misskey visibility.

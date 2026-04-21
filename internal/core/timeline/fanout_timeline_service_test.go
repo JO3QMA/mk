@@ -40,7 +40,7 @@ func TestMain(m *testing.M) {
 func newTestService(t *testing.T) *FanoutTimelineService {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
-	svc := NewFanoutTimelineService(testRedis.Client, idGen)
+	svc := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	// テストでは確率トリムをoffにする (常にtrimしない)
 	svc.randFn = func() float64 { return 1.0 }
 	return svc
@@ -215,7 +215,7 @@ func closedClient(t *testing.T) *redis.Client {
 
 func TestFanoutTimelineService_RedisErrors(t *testing.T) {
 	c := closedClient(t)
-	svc := NewFanoutTimelineService(c, idGen)
+	svc := NewFanoutTimelineService(c, idGen, "")
 	svc.randFn = func() float64 { return 1.0 }
 
 	ctx := context.Background()
@@ -241,6 +241,53 @@ func TestFanoutTimelineService_RedisErrors(t *testing.T) {
 	// Purge fails on Del
 	err = svc.Purge(ctx, LocalTimeline)
 	assert.Error(t, err)
+}
+
+// TestFanoutTimelineService_KeyPrefix は #362 drop-in 互換の回帰テスト。
+// TS 本家と同じ `<host>:list:...` 名前空間にキーが置かれることを確認する。
+func TestFanoutTimelineService_KeyPrefix(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	const host = "example.test"
+	svc := NewFanoutTimelineService(testRedis.Client, idGen, host+":")
+	svc.randFn = func() float64 { return 1.0 }
+	ctx := context.Background()
+
+	noteID := idGen.Generate(time.Now())
+	require.NoError(t, svc.Push(ctx, LocalTimeline, noteID, 100))
+
+	// prefix 付きキーには値が入っていること
+	prefixedKey := host + ":list:" + string(LocalTimeline)
+	n, err := testRedis.Client.LLen(ctx, prefixedKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "prefixed key should contain the pushed note")
+
+	// 旧 prefix 無しキーには何も入っていないこと
+	bareKey := "list:" + string(LocalTimeline)
+	n, err = testRedis.Client.LLen(ctx, bareKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "bare key should remain untouched")
+
+	// Get 経由で読めること
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out)
+}
+
+// TestFanoutTimelineService_KeyPrefixEmpty はprefix空文字列時に従来挙動
+// (prefix 無しキー) のままであることを確認する。
+func TestFanoutTimelineService_KeyPrefixEmpty(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	svc := NewFanoutTimelineService(testRedis.Client, idGen, "")
+	svc.randFn = func() float64 { return 1.0 }
+	ctx := context.Background()
+
+	noteID := idGen.Generate(time.Now())
+	require.NoError(t, svc.Push(ctx, LocalTimeline, noteID, 100))
+
+	bareKey := "list:" + string(LocalTimeline)
+	n, err := testRedis.Client.LLen(ctx, bareKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "bare key receives value when prefix is empty")
 }
 
 func TestFanoutTimelineService_GetMultiEmpty(t *testing.T) {

@@ -62,9 +62,11 @@ func makeTestJPEGWithExif(w, h int) []byte {
 	// APP1: FF E1 <length:2> "Exif\0\0" <dummy>
 	exifHeader := []byte{
 		0xFF, 0xE1, // APP1 marker
-		0x00, 0x10, // length (16 bytes including length field)
+		0x00, 0x16, // length (22 bytes including length field)
 		0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0"
-		0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08, // TIFF header (big endian)
+		0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08, // TIFF header (big endian, IFD at offset 8)
+		0x00, 0x00, // IFD entry count = 0
+		0x00, 0x00, 0x00, 0x00, // next IFD offset = 0 (no more IFDs)
 	}
 	result := make([]byte, 0, len(base)+len(exifHeader))
 	result = append(result, base[:2]...) // SOI

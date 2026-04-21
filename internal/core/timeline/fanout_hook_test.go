@@ -14,7 +14,7 @@ import (
 func newTestHook(t *testing.T) (*FanoutHook, *FanoutTimelineService, *testutil.MockFollowingRepository) {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := testutil.NewMockFollowingRepository()
 	return NewFanoutHook(fanout, following), fanout, following
@@ -134,7 +134,7 @@ func (assertError) Error() string { return "boom" }
 
 func TestFanoutHook_ListFollowersError(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := &failingFollowingRepo{MockFollowingRepository: testutil.NewMockFollowingRepository()}
 	h := NewFanoutHook(fanout, following)
@@ -147,7 +147,7 @@ func TestFanoutHook_ListFollowersError(t *testing.T) {
 
 func TestFanoutHook_FanoutsAcrossPages(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := testutil.NewMockFollowingRepository()
 	// 201人のフォロワーを用意してページ境界を踏ませる
@@ -170,7 +170,7 @@ func TestFanoutHook_FanoutsAcrossPages(t *testing.T) {
 func TestFanoutHook_PushErrorIsLogged(t *testing.T) {
 	// closed clientへのpushでエラーを発生させる. ログ出力されるだけで例外なし.
 	following := testutil.NewMockFollowingRepository()
-	fanout := NewFanoutTimelineService(closedClient(t), idGen)
+	fanout := NewFanoutTimelineService(closedClient(t), idGen, "")
 	h := NewFanoutHook(fanout, following)
 	noteID := idGen.Generate(time.Now())
 	h.OnNoteCreated(&model.Note{ID: noteID, UserID: "u", Visibility: model.NoteVisibilityPublic}, &model.User{ID: "u"})
@@ -178,7 +178,7 @@ func TestFanoutHook_PushErrorIsLogged(t *testing.T) {
 
 func TestFanoutHook_NilFollowingRepo(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	h := NewFanoutHook(fanout, nil)
 	noteID := idGen.Generate(time.Now())
@@ -262,7 +262,7 @@ func TestFanoutHook_StreamingFanoutErrorPath(t *testing.T) {
 	// failingFollowingRepo は ListFollowers でエラーを返す → fanoutStreamingToFollowers
 	// は早期 return する
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := &failingFollowingRepo{MockFollowingRepository: testutil.NewMockFollowingRepository()}
 	h := NewFanoutHook(fanout, following)
@@ -278,7 +278,7 @@ func TestFanoutHook_StreamingFanoutErrorPath(t *testing.T) {
 
 func TestFanoutHook_StreamingFanoutAcrossPages(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	following := testutil.NewMockFollowingRepository()
 	for i := range 201 {
@@ -302,7 +302,7 @@ func TestFanoutHook_StreamingFanoutAcrossPages(t *testing.T) {
 
 func TestFanoutHook_StreamingPublisherNilFollowingRepo(t *testing.T) {
 	testRedis.FlushAll(context.Background())
-	fanout := NewFanoutTimelineService(testRedis.Client, idGen)
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
 	h := NewFanoutHook(fanout, nil)
 	pub := &stubStreamingPublisher{}
@@ -310,4 +310,111 @@ func TestFanoutHook_StreamingPublisherNilFollowingRepo(t *testing.T) {
 	// followingRepo nil でも publish 自体は走る (followers パートだけスキップ)
 	noteID := idGen.Generate(time.Now())
 	h.OnNoteCreated(&model.Note{ID: noteID, UserID: "u", Visibility: model.NoteVisibilityPublic}, &model.User{ID: "u"})
+}
+
+// --- UserList Timeline Fanout ---
+
+// stubUserListLookup implements UserListMemberLookup for testing.
+type stubUserListLookup struct {
+	// memberToLists maps userID -> list IDs containing that user.
+	memberToLists map[string][]string
+}
+
+func (s *stubUserListLookup) ListIDsByMember(userID string) ([]string, error) {
+	return s.memberToLists[userID], nil
+}
+
+func TestFanoutHook_FanoutToUserLists(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	lookup := &stubUserListLookup{memberToLists: map[string][]string{
+		"author": {"list1", "list2"},
+	}}
+	h.SetUserListRepo(lookup)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// ユーザーリストタイムラインにノートが配信されること
+	for _, listID := range []string{"list1", "list2"} {
+		out, err := fanout.Get(ctx, UserListTimelineName(listID), "", "", 10)
+		require.NoError(t, err)
+		assert.Equal(t, []string{noteID}, out, "userListTimeline:%s should contain note", listID)
+	}
+}
+
+func TestFanoutHook_FanoutToUserLists_StreamingPublish(t *testing.T) {
+	h, _, _ := newTestHook(t)
+
+	lookup := &stubUserListLookup{memberToLists: map[string][]string{
+		"author": {"list1"},
+	}}
+	h.SetUserListRepo(lookup)
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// ストリーミングにuserListTimeline:list1が配信されること
+	assert.Contains(t, pub.topics, "userListTimeline:list1")
+}
+
+func TestFanoutHook_FanoutToUserLists_SpecifiedVisibilitySkipped(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	lookup := &stubUserListLookup{memberToLists: map[string][]string{
+		"author": {"list1"},
+	}}
+	h.SetUserListRepo(lookup)
+
+	noteID := idGen.Generate(time.Now())
+	// specified visibilityはフォロワー配信対象外 → ユーザーリストにも配信されない
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilitySpecified}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+func TestFanoutHook_FanoutToUserLists_NilLookup(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	// userListRepoがnilの場合はユーザーリストへの配信をスキップ
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+// failingUserListLookup always returns an error.
+type failingUserListLookup struct{}
+
+func (f *failingUserListLookup) ListIDsByMember(_ string) ([]string, error) {
+	return nil, assertError{}
+}
+
+func TestFanoutHook_FanoutToUserLists_LookupError(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	h.SetUserListRepo(&failingUserListLookup{})
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	// エラーがあっても上位に伝搬しない（ログ出力のみ）
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out)
 }

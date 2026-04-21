@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 func newTestHandler(t *testing.T) (*Handler, *notification.Service) {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
-	svc := notification.NewService(testRedis.Client, idGen)
+	svc := notification.NewService(testRedis.Client, idGen, "")
 	return NewHandler(svc, idGen), svc
 }
 
@@ -108,7 +108,7 @@ func TestShow_InvalidJSON(t *testing.T) {
 func TestShow_RedisError(t *testing.T) {
 	closed := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	_ = closed.Close()
-	svc := notification.NewService(closed, idGen)
+	svc := notification.NewService(closed, idGen, "")
 	h := NewHandler(svc, idGen)
 
 	c, rec := newJSONRequest(t, "/api/i/notifications", `{}`)
@@ -133,7 +133,7 @@ func TestMarkAllAsRead_OK(t *testing.T) {
 func TestMarkAllAsRead_RedisError(t *testing.T) {
 	closed := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	_ = closed.Close()
-	svc := notification.NewService(closed, idGen)
+	svc := notification.NewService(closed, idGen, "")
 	h := NewHandler(svc, idGen)
 
 	c, rec := newJSONRequest(t, "/api/notifications/mark-all-as-read", `{}`)
@@ -183,7 +183,7 @@ func TestFlush_NilService(t *testing.T) {
 func TestFlush_RedisError(t *testing.T) {
 	closed := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	_ = closed.Close()
-	svc := notification.NewService(closed, idGen)
+	svc := notification.NewService(closed, idGen, "")
 	h := NewHandler(svc, idGen)
 
 	c, rec := newJSONRequest(t, "/api/notifications/flush", `{}`)

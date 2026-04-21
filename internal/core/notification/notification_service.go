@@ -38,13 +38,14 @@ const (
 const MaxPerUser = 300
 
 // streamKey returns the Redis Stream key for a user's notification timeline.
-func streamKey(userID string) string {
-	return "notificationTimeline:" + userID
+// TS drop-in互換のため keyPrefix (通常 `<host>:`) を前置する。
+func (s *Service) streamKey(userID string) string {
+	return s.keyPrefix + "notificationTimeline:" + userID
 }
 
 // readKey returns the Redis key that stores the latest read notification id.
-func readKey(userID string) string {
-	return "latestReadNotification:" + userID
+func (s *Service) readKey(userID string) string {
+	return s.keyPrefix + "latestReadNotification:" + userID
 }
 
 // Notification is the payload stored in Redis.
@@ -106,6 +107,7 @@ type Packer interface {
 type Service struct {
 	client              *redis.Client
 	idGen               id.Generator
+	keyPrefix           string // TS drop-in互換用 `<host>:` prefix
 	publisher           StreamingPublisher
 	mainStreamPublisher MainStreamPublisher
 	packer              Packer
@@ -113,8 +115,12 @@ type Service struct {
 }
 
 // NewService constructs a new NotificationService.
-func NewService(client *redis.Client, idGen id.Generator) *Service {
-	return &Service{client: client, idGen: idGen}
+//
+// keyPrefix (通常は `cfg.Redis.KeyPrefix()` = `<host>:`) は TS 本家と同じキー
+// 名前空間 (`<host>:notificationTimeline:*`, `<host>:latestReadNotification:*`)
+// を使うために全 Redis キーの前に付与される。空文字列ならprefix無し。
+func NewService(client *redis.Client, idGen id.Generator, keyPrefix string) *Service {
+	return &Service{client: client, idGen: idGen, keyPrefix: keyPrefix}
 }
 
 // SetStreamingPublisher attaches a StreamingPublisher invoked best-effort
@@ -181,7 +187,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 	// MAXLEN ~ で古い通知を確率的にtrim、IDフィールドはGorm IDを利用する
 	streamID := toXAddID(n.ID, now)
 	if err := s.client.XAdd(ctx, &redis.XAddArgs{
-		Stream: streamKey(in.NotifieeID),
+		Stream: s.streamKey(in.NotifieeID),
 		MaxLen: MaxPerUser,
 		Approx: true,
 		ID:     streamID,
@@ -224,7 +230,7 @@ func (s *Service) List(ctx context.Context, userID string, limit int) ([]*Notifi
 	if limit > 100 {
 		limit = 100
 	}
-	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", "-", int64(limit)).Result()
+	res, err := s.client.XRevRangeN(ctx, s.streamKey(userID), "+", "-", int64(limit)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +256,7 @@ func (s *Service) List(ctx context.Context, userID string, limit int) ([]*Notifi
 // (hasUnreadSpecifiedNotes / hasUnreadMentionsをfalseに戻すため)。
 // Redis SET失敗時はnote_unreadを温存する (整合性維持)。
 func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
-	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", "-", 1).Result()
+	res, err := s.client.XRevRangeN(ctx, s.streamKey(userID), "+", "-", 1).Result()
 	if err != nil {
 		return err
 	}
@@ -264,7 +270,7 @@ func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 		}
 		return nil
 	}
-	if err := s.client.Set(ctx, readKey(userID), res[0].ID, 0).Err(); err != nil {
+	if err := s.client.Set(ctx, s.readKey(userID), res[0].ID, 0).Err(); err != nil {
 		return err
 	}
 	// Redis SET成功後にnote_unreadを消す (SET失敗時は温存して次回retryで
@@ -292,7 +298,7 @@ func (s *Service) clearNoteUnread(userID string) {
 // LatestReadID returns the most recently read notification id for the user.
 // 未読履歴がなければ空文字を返す。
 func (s *Service) LatestReadID(ctx context.Context, userID string) (string, error) {
-	val, err := s.client.Get(ctx, readKey(userID)).Result()
+	val, err := s.client.Get(ctx, s.readKey(userID)).Result()
 	if err == redis.Nil {
 		return "", nil
 	}
@@ -314,7 +320,7 @@ func (s *Service) UnreadCount(ctx context.Context, userID string) (int64, error)
 	// Redis Streams は ID 単調増加。XLen で全件数を取り、readID 以前の
 	// 件数を差し引く方が O(1) でシンプルだが、readID より古いエントリが
 	// MAXLEN で削除されている場合があるので XRevRange で直接数える。
-	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	res, err := s.client.XRevRangeN(ctx, s.streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -350,7 +356,7 @@ func (s *Service) UnreadSummary(ctx context.Context, userID string, mentionTypes
 	if err != nil {
 		return summary, err
 	}
-	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	res, err := s.client.XRevRangeN(ctx, s.streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
 	if err != nil {
 		return summary, err
 	}
@@ -417,7 +423,7 @@ func (s *Service) HasUnreadOfTypes(ctx context.Context, userID string, types []T
 	if err != nil {
 		return false, err
 	}
-	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	res, err := s.client.XRevRangeN(ctx, s.streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
 	if err != nil {
 		return false, err
 	}
@@ -456,7 +462,7 @@ func (s *Service) HasUnreadSpecifiedNotes(ctx context.Context, userID string) (b
 	if err != nil {
 		return false, err
 	}
-	res, err := s.client.XRevRangeN(ctx, streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
+	res, err := s.client.XRevRangeN(ctx, s.streamKey(userID), "+", exclusive(readID), MaxPerUser).Result()
 	if err != nil {
 		return false, err
 	}
@@ -490,10 +496,10 @@ func exclusive(readID string) string {
 // and account deletion). Emits `notificationFlushed` to the user's main stream
 // on success. note_unread repoが注入されていれば同時にclearする。
 func (s *Service) Flush(ctx context.Context, userID string) error {
-	if err := s.client.Del(ctx, streamKey(userID)).Err(); err != nil {
+	if err := s.client.Del(ctx, s.streamKey(userID)).Err(); err != nil {
 		return err
 	}
-	if err := s.client.Del(ctx, readKey(userID)).Err(); err != nil {
+	if err := s.client.Del(ctx, s.readKey(userID)).Err(); err != nil {
 		return err
 	}
 	s.clearNoteUnread(userID)

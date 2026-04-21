@@ -21,6 +21,7 @@ type Handler struct {
 	idGen        id.Generator
 	favoriteRepo ClipFavoriteRepository
 	instanceRepo repository.InstanceRepository
+	emojiRepo    repository.EmojiRepository
 }
 
 // SetInstanceRepo attaches an InstanceRepository so clips/notes populates
@@ -34,6 +35,19 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 		return nil
 	}
 	return h.instanceRepo
+}
+
+// SetEmojiRepo attaches an EmojiRepository so custom emoji shortcodes in
+// note text and user displayNames get resolved to URLs.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // NewHandler creates a new clips Handler.
@@ -264,7 +278,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup())
+	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
 		out = append(out, pn)

@@ -39,7 +39,7 @@ type NoteEntity struct {
 	Files              []any             `json:"files"`
 	Tags               []string          `json:"tags,omitempty"`
 	Poll               *PollEntity       `json:"poll,omitempty"`
-	Emojis             map[string]string `json:"emojis,omitempty"`
+	Emojis             map[string]string `json:"emojis"`
 	ChannelID          *string           `json:"channelId,omitempty"`
 	Channel            *ChannelLite      `json:"channel,omitempty"`
 	VisibleUserIDs     []string          `json:"visibleUserIds"`
@@ -137,14 +137,17 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 //
 // CollectNoteAuthors で top-level note の User のみ集約してから resolver を
 // 作る (reply/renote の User は NoteEntity で別埋めする運用のため集約対象外)。
-func PackNotes(notes []*model.Note, idGen id.Generator, lookup InstanceLookup) []NoteEntity {
-	resolver := NewInstanceResolver(lookup, CollectNoteAuthors(notes)...)
+func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) []NoteEntity {
+	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(notes)...)
+	emojiResolver := NewEmojiResolver(emojiLookup, notes)
 	out := make([]NoteEntity, 0, len(notes))
 	for _, n := range notes {
 		packed := PackNote(n, idGen)
-		resolver.FillUserLite(&packed.User)
-		// reply / renote は PackNote 呼び出し側が別途 populate する運用のため
-		// ここでは top-level note のみ埋める。
+		instResolver.FillUserLite(&packed.User)
+		emojiResolver.PopulateNoteEmojis(n, &packed)
+		if n.User != nil {
+			emojiResolver.PopulateUserEmojis(n.User, &packed.User)
+		}
 		out = append(out, packed)
 	}
 	return out
@@ -155,10 +158,16 @@ func PackNotes(notes []*model.Note, idGen id.Generator, lookup InstanceLookup) [
 // **Single-note only.** Each call spins up a fresh InstanceResolver (1 DB
 // query via lookup.FindManyByHosts). For a slice of notes, call `PackNotes`
 // instead — calling this in a loop produces N+1 queries.
-func PackNoteWithInstance(n *model.Note, idGen id.Generator, lookup InstanceLookup) NoteEntity {
+func PackNoteWithInstance(n *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) NoteEntity {
 	packed := PackNote(n, idGen)
-	resolver := NewInstanceResolver(lookup, CollectNoteAuthors([]*model.Note{n})...)
-	resolver.FillUserLite(&packed.User)
+	notes := []*model.Note{n}
+	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(notes)...)
+	instResolver.FillUserLite(&packed.User)
+	emojiResolver := NewEmojiResolver(emojiLookup, notes)
+	emojiResolver.PopulateNoteEmojis(n, &packed)
+	if n.User != nil {
+		emojiResolver.PopulateUserEmojis(n.User, &packed.User)
+	}
 	return packed
 }
 

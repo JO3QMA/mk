@@ -73,6 +73,9 @@ type NoteRepository interface {
 	// drive the loop themselves so that cancellation checkpoints and sleep
 	// pacing live in the processor (see DeleteAccountProcessor).
 	DeleteByUserBatch(userID string, batchSize int) (int64, error)
+	// ListByUserList returns notes authored by members of the given user list,
+	// ordered by id DESC with keyset pagination. Channel notes are excluded.
+	ListByUserList(listID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	// CountReplyTargets returns the users that userID most frequently replies
 	// to, ordered by reply count descending. Used by
 	// users/get-frequently-replied-users.
@@ -529,6 +532,30 @@ func (r *noteRepository) DeleteByUserBatch(userID string, batchSize int) (int64,
 		return 0, res.Error
 	}
 	return res.RowsAffected, nil
+}
+
+// ListByUserList returns notes authored by members of the given user list,
+// ordered by id DESC with keyset pagination. user_list_membership テーブルと
+// INNER JOIN してメンバーのノートだけを返す。channel ノートは除外する (TS互換)。
+func (r *noteRepository) ListByUserList(listID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := r.db.Preload("User").
+		Joins(`INNER JOIN "user_list_membership" m ON m."userId" = "note"."userId" AND m."userListId" = ?`, listID).
+		Where(`"note"."channelId" IS NULL`).
+		Where(`"note"."visibility" IN ('public','home','followers')`)
+	if sinceID != "" {
+		q = q.Where(`"note"."id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"note"."id" < ?`, untilID)
+	}
+	var notes []*model.Note
+	if err := q.Order(`"note"."id" DESC`).Limit(limit).Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	return notes, nil
 }
 
 func (r *noteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {

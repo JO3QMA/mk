@@ -804,3 +804,23 @@ func TestLoad_EnablePprof_DefaultFalse(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, cfg.EnablePprof)
 }
+
+// TestRedisOptions_KeyPrefix は #362 drop-in 互換の回帰テスト。
+// TS 本家の ioredis keyPrefix (`<host>:`) と同じ形式の prefix を返すことを確認する。
+func TestRedisOptions_KeyPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   string
+	}{
+		{name: "empty prefix returns empty string", prefix: "", want: ""},
+		{name: "hostname prefix gets trailing colon", prefix: "example.com", want: "example.com:"},
+		{name: "custom prefix gets trailing colon", prefix: "my-instance", want: "my-instance:"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RedisOptions{Prefix: tt.prefix}
+			assert.Equal(t, tt.want, opts.KeyPrefix())
+		})
+	}
+}
