@@ -42,7 +42,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # third_party/misskey/packages/backend は engines.node で
+          # ^22.15.0 || ^24.10.0 を要求するため 22 系を使う。
+          node-version: "22"
 
       - name: Install third_party/misskey node_modules
         working-directory: third_party/misskey
