@@ -165,7 +165,8 @@ Meilisearch未設定時はSQL ILIKE検索にフォールバック。
 | `MISSKEY_FRONTEND_DIST_DIR` | ビルド済みフロントエンドディレクトリ |
 | `MISSKEY_TWEMOJI_DIR` | Twemojiアセットディレクトリ |
 | `MISSKEY_CLIENT_ASSETS_DIR` | クライアントアセットディレクトリ |
-| `MISSKEY_STATIC_DIR` | 静的ファイルディレクトリ |
+| `MISSKEY_STATIC_DIR` | 静的ファイルディレクトリ (backend/assets: favicon等) |
+| `MISSKEY_REPO_ASSETS_DIR` | リポジトリ直下アセット (ai.png, banner等) |
 
 ## テスト用環境変数
 
