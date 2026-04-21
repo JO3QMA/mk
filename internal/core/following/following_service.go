@@ -416,17 +416,25 @@ func (s *Service) CancelRequest(followerID, followeeID string) error {
 	if err := s.followRequestRepo.Delete(req); err != nil {
 		return err
 	}
-	// federation hook と streaming publish で followee を再利用する。
-	// federation hook は shouldDeliverFollow でローカル → リモート条件を
-	// 判定するので、ローカル followee の場合は自動的に no-op。
-	follower, ferr := s.userRepo.FindByID(followerID)
+	// Unfollow と同じ guard: hooks / publisher のいずれもが未配線なら DB
+	// lookup 自体を省く。テスト時に userRepo が minimal でも影響しない。
+	if s.federationHook == nil && s.mainStreamPublisher == nil {
+		return nil
+	}
 	followee, eerr := s.userRepo.FindByID(followeeID)
-	if ferr == nil && eerr == nil {
-		if s.federationHook != nil {
+	if eerr != nil {
+		return nil
+	}
+	// federationHook.OnLocalUnfollowed は shouldDeliverFollow でローカル →
+	// リモート条件を判定するので、ローカル followee の場合は自動的に no-op。
+	// 呼ぶには follower も必要なので follower の lookup もここで行う
+	// (失敗時は federation hook だけスキップして streaming publish は続行)。
+	if s.federationHook != nil {
+		if follower, ferr := s.userRepo.FindByID(followerID); ferr == nil {
 			s.federationHook.OnLocalUnfollowed(follower, followee)
 		}
-		s.publishFollowRequestResolved(followerID, followee)
 	}
+	s.publishFollowRequestResolved(followerID, followee)
 	return nil
 }
 
