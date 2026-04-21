@@ -3,11 +3,14 @@ package id
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
 	"math/big"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 )
 
 // time2000 is the epoch used by AID/AIDX (2000-01-01T00:00:00Z in milliseconds).
@@ -170,76 +173,38 @@ func (g *objectIDGen) ParseTime(id string) (time.Time, error) {
 
 // --- ULID ---
 
+// ulidGen wraps oklog/ulid/v2 which implements the ULID spec including
+// monotonic entropy. 自前の5bit truncation実装だと下位5bitがオーバー
+// フローした瞬間に単調性が破れる (issue #388) ため、仕様準拠の80bit
+// monotonic entropyを使う実装に置き換えている。
 type ulidGen struct {
-	mu      sync.Mutex
-	entropy *monotonic
+	entropy io.Reader
 }
 
 func newULID() *ulidGen {
-	return &ulidGen{entropy: newMonotonic()}
+	// ulid.Monotonic は同一 ms 内で返す entropy を単調増加させる。
+	// 内部で mutex を持つので外側での排他制御は不要。inc=0 を渡すと
+	// default (uint32範囲でのrandom increment) を使う。
+	return &ulidGen{
+		entropy: ulid.Monotonic(rand.Reader, 0),
+	}
 }
 
-// Crockford's Base32
-const crockfordBase32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
 func (g *ulidGen) Generate(t time.Time) string {
-	ms := uint64(t.UnixMilli())
-
-	// Encode timestamp (10 chars)
-	var ts [10]byte
-	for i := 9; i >= 0; i-- {
-		ts[i] = crockfordBase32[ms&0x1F]
-		ms >>= 5
-	}
-
-	// Encode randomness (16 chars)
-	g.mu.Lock()
-	rnd := g.entropy.next()
-	g.mu.Unlock()
-
-	var rs [16]byte
-	for i := 15; i >= 0; i-- {
-		rs[i] = crockfordBase32[rnd[i%len(rnd)]&0x1F]
-	}
-
-	return string(ts[:]) + string(rs[:])
+	// MustNewはentropyオーバーフロー時にpanicするが、80bit entropyが
+	// 同一ms内で使い切られるのは実用上起こらないので許容する。
+	return ulid.MustNew(ulid.Timestamp(t), g.entropy).String()
 }
 
 func (g *ulidGen) ParseTime(id string) (time.Time, error) {
-	if len(id) < 10 {
-		return time.Time{}, fmt.Errorf("invalid ulid: %s", id)
+	// ParseStrictはCrockford base32の厳格validationを行う。Parseだと
+	// 不正な文字が silentにmapされてしまい TestParseTime_InvalidChars の
+	// 意図 (不正ID は error を返す) に反するため使わない。
+	u, err := ulid.ParseStrict(id)
+	if err != nil {
+		return time.Time{}, err
 	}
-	var ms uint64
-	for i := 0; i < 10; i++ {
-		idx := strings.IndexByte(crockfordBase32, id[i])
-		if idx < 0 {
-			return time.Time{}, fmt.Errorf("invalid ulid character: %c", id[i])
-		}
-		ms = ms*32 + uint64(idx)
-	}
-	return time.UnixMilli(int64(ms)), nil
-}
-
-// monotonic provides monotonically increasing random bytes for ULID.
-type monotonic struct {
-	last [10]byte
-}
-
-func newMonotonic() *monotonic {
-	m := &monotonic{}
-	_, _ = rand.Read(m.last[:])
-	return m
-}
-
-func (m *monotonic) next() [10]byte {
-	// Increment the random part
-	for i := len(m.last) - 1; i >= 0; i-- {
-		m.last[i]++
-		if m.last[i] != 0 {
-			break
-		}
-	}
-	return m.last
+	return ulid.Time(u.Time()), nil
 }
 
 // --- Helpers ---
