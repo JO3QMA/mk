@@ -122,17 +122,23 @@ func (s *FetchMetadataService) Fetch(host string) error {
 
 	// nodeinfoはicon/faviconを含まないため、リモートトップページHTMLから
 	// 抽出する。取得失敗は致命ではない (nodeinfo 情報のpersistは継続する)。
-	if iconURL, faviconURL := s.fetchIcons(host); iconURL != "" || faviconURL != "" {
-		if iconURL != "" {
-			fields["iconUrl"] = &iconURL
-		}
-		if faviconURL != "" {
-			fields["faviconUrl"] = &faviconURL
-		}
+	// DB側 varchar(256) 制約に引っかかるとUPDATE全体が失敗してnodeinfoまで
+	// 失うため長さチェックを必ずかける (攻撃者制御の長いCDN URLを想定)。
+	iconURL, faviconURL := s.fetchIcons(host)
+	if iconURL != "" && len(iconURL) <= maxInstanceURLLen {
+		fields["iconUrl"] = &iconURL
+	}
+	if faviconURL != "" && len(faviconURL) <= maxInstanceURLLen {
+		fields["faviconUrl"] = &faviconURL
 	}
 
 	return s.repo.UpdateFields(host, fields)
 }
+
+// maxInstanceURLLen は instance.iconUrl / faviconUrl カラムの varchar(256)
+// 制約と一致させる。これを超えるURLは無視する (DB エラーで他 field まで
+// 失わないため)。
+const maxInstanceURLLen = 256
 
 // fetchIcons attempts to extract iconUrl (from <link rel="icon">) and set
 // faviconUrl to the conventional /favicon.ico path. 本家Misskey の

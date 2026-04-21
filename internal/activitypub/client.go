@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/shiroha-a/mk/internal/safehttp"
 )
@@ -136,6 +137,16 @@ func (c *Client) FetchHTML(url string) ([]byte, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, errors.New("unexpected status: " + resp.Status)
+	}
+	// Content-Type が明示的に text/html(または xhtml)以外なら 5 MiB まで
+	// 読み込まず早期 error。相手が JSON / binaryを返すケースで帯域と
+	// メモリを無駄にしない (Devin #4 指摘)。Content-Type 未設定は許容する
+	// (一部の古いサーバーが含めないため)。
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		lower := strings.ToLower(ct)
+		if !strings.Contains(lower, "text/html") && !strings.Contains(lower, "application/xhtml") {
+			return nil, errors.New("unexpected content-type: " + ct)
+		}
 	}
 	return safehttp.ReadAllLimit(resp.Body, MaxHTMLBodyBytes)
 }

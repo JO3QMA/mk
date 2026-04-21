@@ -207,9 +207,25 @@ func TestClient_FetchHTML_BadURL(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestClient_FetchHTML_NonHTMLContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(nil, "")
+	_, err := c.FetchHTML(srv.URL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected content-type")
+}
+
 func TestClient_FetchHTML_ResponseTooLarge(t *testing.T) {
 	oversized := make([]byte, int(MaxHTMLBodyBytes)+10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// body sniffingで application/octet-stream に推定されてContent-Type
+		// checkに引っかからないよう明示的にtext/htmlをセットする。
+		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(oversized)
 	}))
 	defer srv.Close()

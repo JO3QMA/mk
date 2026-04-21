@@ -2,6 +2,7 @@ package instance_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,6 +227,30 @@ func TestFetch_IconFromHTML_NoLinkTag(t *testing.T) {
 	// faviconUrl は HTML取得成功時でもconventionalな /favicon.ico で上書きされる。
 	require.NotNil(t, got.FaviconURL)
 	assert.Equal(t, "https://remote.example/favicon.ico", *got.FaviconURL)
+}
+
+func TestFetch_IconURLExceedsColumnLimit(t *testing.T) {
+	// 256文字制約を超えるCDN URL。この場合iconUrlは書き込まずに
+	// nodeinfo だけ UpdateFields できるはず (Devin BUG 指摘の回帰防止)。
+	longPath := strings.Repeat("a", 300)
+	htmlBody := `<html><head><link rel="icon" href="https://cdn.example/` + longPath + `.png"></head></html>`
+	repo := testutil.NewMockInstanceRepository()
+	repo.Instances["remote.example"] = &model.Instance{ID: "i1", Host: "remote.example"}
+	fetcher := &scriptedFetcher{
+		bodies:   [][]byte{[]byte(discoveryBody), []byte(documentBody)},
+		htmlBody: []byte(htmlBody),
+	}
+	svc := instance.NewFetchMetadataService(repo, fetcher)
+	require.NoError(t, svc.Fetch("remote.example"))
+
+	got := repo.Instances["remote.example"]
+	// 長すぎるicon URLは保存されない
+	assert.Nil(t, got.IconURL)
+	// favicon (https://remote.example/favicon.ico = 34文字) は保存される
+	require.NotNil(t, got.FaviconURL)
+	// nodeinfo fields は失われない
+	require.NotNil(t, got.SoftwareName)
+	assert.Equal(t, "misskey", *got.SoftwareName)
 }
 
 func TestFetch_IconHTMLFetchError(t *testing.T) {
