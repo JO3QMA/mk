@@ -45,35 +45,44 @@ type DeleteAccountEnqueuer interface {
 	EnqueueDeleteAccount(payload queue.DeleteAccountPayload) error
 }
 
+// InstanceMetadataFetcher refreshes remote instance metadata (nodeinfo +
+// iconUrl/faviconUrl) for the given host. Narrow interface that matches
+// coreinstance.FetchMetadataService.Fetch so admin handler tests don't
+// have to pull in the full federation stack.
+type InstanceMetadataFetcher interface {
+	Fetch(host string) error
+}
+
 // Handler handles admin API endpoints.
 type Handler struct {
-	signupService         *signup.Service
-	roleService           *role.Service
-	metaRepo              repository.MetaRepository
-	userRepo              repository.UserRepository
-	abuseRepo             repository.AbuseReportRepository
-	modLogRepo            repository.ModerationLogRepository
-	emojiRepo             repository.EmojiRepository
-	driveFileRepo         repository.DriveFileRepository
-	adminDB               *gorm.DB
-	userIPRepo            repository.UserIPRepository
-	queueInspector        QueueInspector
-	emojiEnqueuer         EmojiImportEnqueuer
-	relayService          RelayService
-	abuseForwarder        AbuseForwarder
-	deleteAccountEnqueuer DeleteAccountEnqueuer
-	systemWebhookRepo     repository.SystemWebhookRepository
-	recipientRepo         repository.AbuseReportNotificationRecipientRepository
-	adRepo                repository.AdRepository
-	avatarDecoRepo        repository.AvatarDecorationRepository
-	inviteRepo            repository.RegistrationTicketRepository
-	promoNoteRepo         repository.PromoNoteRepository
-	noteFinder            NoteFinder
-	resetReqRepo          repository.PasswordResetRequestRepository
-	emailSender           EmailSender
-	serverURL             string
-	idGen                 id.Generator
-	configSetupPassword   string
+	signupService           *signup.Service
+	roleService             *role.Service
+	metaRepo                repository.MetaRepository
+	userRepo                repository.UserRepository
+	abuseRepo               repository.AbuseReportRepository
+	modLogRepo              repository.ModerationLogRepository
+	emojiRepo               repository.EmojiRepository
+	driveFileRepo           repository.DriveFileRepository
+	adminDB                 *gorm.DB
+	userIPRepo              repository.UserIPRepository
+	queueInspector          QueueInspector
+	emojiEnqueuer           EmojiImportEnqueuer
+	relayService            RelayService
+	abuseForwarder          AbuseForwarder
+	deleteAccountEnqueuer   DeleteAccountEnqueuer
+	systemWebhookRepo       repository.SystemWebhookRepository
+	recipientRepo           repository.AbuseReportNotificationRecipientRepository
+	adRepo                  repository.AdRepository
+	avatarDecoRepo          repository.AvatarDecorationRepository
+	inviteRepo              repository.RegistrationTicketRepository
+	promoNoteRepo           repository.PromoNoteRepository
+	noteFinder              NoteFinder
+	resetReqRepo            repository.PasswordResetRequestRepository
+	emailSender             EmailSender
+	serverURL               string
+	idGen                   id.Generator
+	configSetupPassword     string
+	instanceMetadataFetcher InstanceMetadataFetcher
 }
 
 // EmailSender sends a plain-text email (to, subject, body). Same signature
@@ -97,6 +106,13 @@ func (h *Handler) SetConfigSetupPassword(pw string) {
 // SetSystemWebhookRepo attaches a SystemWebhookRepository for admin/system-webhook/*.
 func (h *Handler) SetSystemWebhookRepo(r repository.SystemWebhookRepository) {
 	h.systemWebhookRepo = r
+}
+
+// SetInstanceMetadataFetcher attaches the fetcher used by
+// admin/federation/refresh-remote-instance-metadata to re-fetch nodeinfo +
+// icon for a specific host on demand.
+func (h *Handler) SetInstanceMetadataFetcher(f InstanceMetadataFetcher) {
+	h.instanceMetadataFetcher = f
 }
 
 // SetRecipientRepo attaches an AbuseReportNotificationRecipientRepository for

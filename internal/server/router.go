@@ -419,8 +419,11 @@ func (s *Server) setupRoutes() {
 	// Instance management (Phase 3 Step H)
 	instanceService := coreinstance.NewService(instanceRepo, metaRepo, idGen)
 	federationResolver.SetInstanceTracker(instanceService)
-	// 新規 instance row 発見時に nodeinfo を取得して metadata を更新する
-	instanceService.SetMetadataFetcher(coreinstance.NewFetchMetadataService(instanceRepo, apFetcher))
+	// 新規 instance row 発見時に nodeinfo を取得して metadata を更新する。
+	// admin/federation/refresh-remote-instance-metadata でも同じ fetcher を
+	// 再利用して on-demand で再取得する (#351 フォロー)。
+	metadataFetcher := coreinstance.NewFetchMetadataService(instanceRepo, apFetcher)
+	instanceService.SetMetadataFetcher(metadataFetcher)
 
 	// AP delivery: DeliverService + フック登録 + asynq processor 登録
 	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
@@ -1479,6 +1482,7 @@ func (s *Server) setupRoutes() {
 	if s.queueInspector != nil {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
 	}
+	adminHandler.SetInstanceMetadataFetcher(metadataFetcher)
 	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
 	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))
