@@ -1,6 +1,7 @@
 package userlists
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -86,6 +87,11 @@ func (h *Handler) Push(c echo.Context) error {
 		UserID:     req.UserID,
 	}
 	if err := h.repo.AddMember(m); err != nil {
+		// 既 member への push は TS 互換の ALREADY_ADDED (HTTP 400) で
+		// 返す (#396)。UUID は misskey/.../users/lists/push.ts と一致。
+		if errors.Is(err, repository.ErrUserListDuplicateMember) {
+			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_ADDED", "That user has already been added to that list.", "1de7c884-1595-49e9-857e-61f12f4d4fc5"))
+		}
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
