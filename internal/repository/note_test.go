@@ -1006,9 +1006,11 @@ func TestNoteRepository_ListGlobalTimeline(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// #384: sinceID単独指定時は ASC 反転する (本家 QueryService.makePaginationQuery
-// 互換)。6関数全てで同じヘルパを使っているので代表的な3関数で確認し、
-// helper 自体は paginationOrder_test.go で unit testする。
+// TestNoteRepository_SinceIDFlipsOrderASC verifies that sinceID-only
+// pagination queries return rows in ASC order, matching upstream Misskey's
+// QueryService.makePaginationQuery. Two representative note functions are
+// exercised; the helper itself has unit coverage in pagination_test.go.
+// Regression guard for #384.
 func TestNoteRepository_SinceIDFlipsOrderASC(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	user := insertTestUser(t, "asc_u", "ascuser")

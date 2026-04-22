@@ -163,7 +163,7 @@ func (r *noteRepository) IncrementReaction(noteID, reaction string, delta int) e
 			gorm.Expr(expr, reaction, delta, pathArr, reaction, delta, reaction)).Error
 }
 
-// ListByUserID returns the user's notes ordered by id DESC, optionally
+// ListByUserID returns the user's notes ordered by id, optionally
 // constrained by sinceID/untilID for keyset pagination.
 func (r *noteRepository) ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
@@ -174,13 +174,13 @@ func (r *noteRepository) ListByUserID(userID string, untilID, sinceID string, li
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
-	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil
 }
 
-// ListByChannelID returns notes posted to the channel ordered by id DESC.
+// ListByChannelID returns notes posted to the channel.
 func (r *noteRepository) ListByChannelID(channelID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
 	q := r.db.Preload("User").Where("\"channelId\" = ?", channelID)
@@ -193,13 +193,13 @@ func (r *noteRepository) ListByChannelID(channelID string, untilID, sinceID stri
 	if limit <= 0 {
 		limit = 30
 	}
-	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil
 }
 
-// ListRenotesOf returns notes whose renoteId equals noteID, ordered by id DESC.
+// ListRenotesOf returns notes whose renoteId equals noteID.
 // テキストやファイルを伴わない pure renote だけでなく quote renote も含む。
 func (r *noteRepository) ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
@@ -210,13 +210,13 @@ func (r *noteRepository) ListRenotesOf(noteID string, untilID, sinceID string, l
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
-	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil
 }
 
-// ListRepliesOf returns notes whose replyId equals noteID, ordered by id DESC.
+// ListRepliesOf returns notes whose replyId equals noteID.
 // すべてのユーザーからの返信を返す(ミュート判定はServiceで行う)。
 func (r *noteRepository) ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
@@ -227,7 +227,7 @@ func (r *noteRepository) ListRepliesOf(noteID string, untilID, sinceID string, l
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
-	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil
@@ -245,7 +245,7 @@ func (r *noteRepository) ListChildrenOf(noteID string, untilID, sinceID string, 
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
-	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil
@@ -286,7 +286,7 @@ func (r *noteRepository) SearchByFilter(f model.NoteSearchFilter) ([]*model.Note
 	if limit <= 0 {
 		limit = 10
 	}
-	if err := q.Order("id DESC").Limit(limit).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(f.SinceID, f.UntilID, "id")).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil
