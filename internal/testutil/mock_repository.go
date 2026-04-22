@@ -750,42 +750,32 @@ func (m *MockNoteRepository) FindRenoteByUser(userID, renoteID string) (*model.N
 	return nil, ErrNotFound
 }
 
-func (m *MockNoteRepository) ListMentions(userID string, limit int, _, _ string) ([]*model.Note, error) {
-	var result []*model.Note
-	for _, n := range m.Notes {
+func (m *MockNoteRepository) ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	return m.listFiltered(func(n *model.Note) bool {
 		for _, mention := range n.Mentions {
 			if mention == userID {
-				result = append(result, n)
-				break
+				return true
 			}
 		}
-	}
-	if limit <= 0 {
-		limit = 10
-	}
-	if len(result) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+		return false
+	}, untilID, sinceID, limit), nil
 }
 
-func (m *MockNoteRepository) SearchByTag(tag string, limit int, _, _ string) ([]*model.Note, error) {
-	var result []*model.Note
-	for _, n := range m.Notes {
-		for _, t := range n.Tags {
-			if t == tag {
-				result = append(result, n)
-				break
-			}
-		}
-	}
+func (m *MockNoteRepository) SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	if len(result) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return m.listFiltered(func(n *model.Note) bool {
+		for _, t := range n.Tags {
+			if t == tag {
+				return true
+			}
+		}
+		return false
+	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
