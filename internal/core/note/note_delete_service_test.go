@@ -160,3 +160,31 @@ func TestDeleteService_ChartHookInvoked(t *testing.T) {
 	require.NotNil(t, hook.deleted)
 	assert.Equal(t, "n1", hook.deleted.ID)
 }
+
+// recordingDeleteTimelineHook captures timeline-purge hook calls (#379)。
+type recordingDeleteTimelineHook struct {
+	called bool
+	note   *model.Note
+	author *model.User
+}
+
+func (h *recordingDeleteTimelineHook) OnNoteDeleted(n *model.Note, author *model.User) {
+	h.called = true
+	h.note = n
+	h.author = author
+}
+
+func TestDeleteService_TimelineHookInvoked(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "user1"}
+	svc := note.NewDeleteService(noteRepo)
+	hook := &recordingDeleteTimelineHook{}
+	svc.SetTimelineHook(hook)
+
+	require.NoError(t, svc.Delete(&model.User{ID: "user1"}, "n1"))
+	assert.True(t, hook.called)
+	require.NotNil(t, hook.note)
+	assert.Equal(t, "n1", hook.note.ID)
+	require.NotNil(t, hook.author)
+	assert.Equal(t, "user1", hook.author.ID)
+}

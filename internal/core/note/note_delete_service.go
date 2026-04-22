@@ -29,12 +29,22 @@ type DeleteChartHook interface {
 	OnNoteDeleted(note *model.Note)
 }
 
+// DeleteTimelineHook is invoked after a note is deleted so Redis fanout
+// timelines (home/local/global/user/userList) can have the note ID
+// purged via LREM (#379)。inbound Delete activity 経由でも local
+// `notes/delete` 経由でも同じ DeleteService を通るので、ここに hook を
+// 1 つ生やせば両方の経路で timeline 残留を防げる。実装は core/timeline。
+type DeleteTimelineHook interface {
+	OnNoteDeleted(note *model.Note, author *model.User)
+}
+
 // DeleteService provides note deletion logic.
 type DeleteService struct {
 	noteRepo       repository.NoteRepository
 	federationHook DeleteFederationHook
 	indexHook      IndexHook
 	chartHook      DeleteChartHook
+	timelineHook   DeleteTimelineHook
 }
 
 // NewDeleteService creates a new DeleteService.
@@ -57,6 +67,12 @@ func (s *DeleteService) SetIndexHook(h IndexHook) {
 // deleted so the chart subsystem can decrement the relevant counters.
 func (s *DeleteService) SetChartHook(h DeleteChartHook) {
 	s.chartHook = h
+}
+
+// SetTimelineHook attaches a DeleteTimelineHook invoked after Delete so
+// Redis fanout timelines can be purged of the note ID (#379)。
+func (s *DeleteService) SetTimelineHook(h DeleteTimelineHook) {
+	s.timelineHook = h
 }
 
 // Delete removes a note authored by the given user. It returns
@@ -96,6 +112,10 @@ func (s *DeleteService) Delete(user *model.User, noteID string) error {
 	// チャート集計もベストエフォート。
 	if s.chartHook != nil {
 		s.chartHook.OnNoteDeleted(note)
+	}
+	// Redis fanout timeline 残留を防ぐ (#379)。ベストエフォート。
+	if s.timelineHook != nil {
+		s.timelineHook.OnNoteDeleted(note, user)
 	}
 	return nil
 }
