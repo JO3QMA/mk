@@ -781,16 +781,26 @@ func (m *MockNoteRepository) SearchByTag(tag string, limit int, sinceID, untilID
 func (m *MockNoteRepository) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
 func (m *MockNoteRepository) IncrementUserNotesCount(_ string, _ int) error { return nil }
 
-func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
-	return m.listPublic(limit)
+// timeline系はmock上ではfilter条件 (fanout / muted channel / follows) を
+// 完全再現せず「publicなnote全件」で代用する。sinceID/untilID だけは
+// listFiltered に委譲して production と同じ ASC-flip / cursor 絞り込みに
+// 揃える (#405 Devin指摘)。
+func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return string(n.Visibility) == "public"
+	}, untilID, sinceID, limit), nil
 }
 
-func (m *MockNoteRepository) ListLocalTimeline(limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
-	return m.listPublic(limit)
+func (m *MockNoteRepository) ListLocalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return string(n.Visibility) == "public"
+	}, untilID, sinceID, limit), nil
 }
 
-func (m *MockNoteRepository) ListGlobalTimeline(limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
-	return m.listPublic(limit)
+func (m *MockNoteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return string(n.Visibility) == "public"
+	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) DeleteExpiredRemoteNotes(_, _ int) (int64, error) {
@@ -841,19 +851,6 @@ func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]mode
 		rows = rows[:limit]
 	}
 	return rows, nil
-}
-
-func (m *MockNoteRepository) listPublic(limit int) ([]*model.Note, error) {
-	var result []*model.Note
-	for _, n := range m.Notes {
-		if n.Visibility == "public" || n.Visibility == "home" {
-			result = append(result, n)
-		}
-	}
-	if limit > 0 && len(result) > limit {
-		result = result[:limit]
-	}
-	return result, nil
 }
 
 // MockNoteFavoriteRepository is a test double for repository.NoteFavoriteRepository.
