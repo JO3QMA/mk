@@ -199,6 +199,9 @@ func (s *Server) setupRoutes() {
 	timelineFanoutHook.SetCacheLimitsProvider(coretimeline.NewMetaRepoCacheLimits(metaRepo))
 	timelineFanoutHook.SetUserListRepo(userListRepo)
 	noteCreateService.SetFanoutHook(timelineFanoutHook)
+	// #379: Delete (inbound activity / local notes/delete どちらも) で
+	// Redis fanout timelines から note ID を LREM するための hook。
+	noteDeleteService.SetTimelineHook(timelineFanoutHook)
 
 	// Channels (Phase 4.2)
 	channelService := corechannel.NewService(channelRepo, channelFollowingRepo, noteRepo, idGen)
