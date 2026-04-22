@@ -661,8 +661,10 @@ func (m *MockNoteRepository) SearchByFilter(f model.NoteSearchFilter) ([]*model.
 	}, f.UntilID, f.SinceID, limit), nil
 }
 
-// listFiltered iterates the in-memory notes, applies filter, sorts by id desc,
-// and returns up to `limit` entries.
+// listFiltered iterates the in-memory notes, applies filter, sorts with the
+// paginationOrder semantics (ASC when only sinceID is supplied, DESC otherwise),
+// and returns up to `limit` entries. #384 対応: mock も production 側の
+// ASC-flip 挙動に合わせる。
 func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID, sinceID string, limit int) []*model.Note {
 	var out []*model.Note
 	for _, n := range m.Notes {
@@ -677,10 +679,17 @@ func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID
 		}
 		out = append(out, n)
 	}
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(out); i++ {
 		for j := i + 1; j < len(out); j++ {
-			if out[i].ID < out[j].ID {
-				out[i], out[j] = out[j], out[i]
+			if asc {
+				if out[i].ID > out[j].ID {
+					out[i], out[j] = out[j], out[i]
+				}
+			} else {
+				if out[i].ID < out[j].ID {
+					out[i], out[j] = out[j], out[i]
+				}
 			}
 		}
 	}
