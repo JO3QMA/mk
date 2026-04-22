@@ -699,7 +699,8 @@ func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID
 	return out
 }
 
-// ListByChannelID returns notes posted to the given channel sorted by id desc.
+// ListByChannelID returns notes posted to the given channel using the
+// shared listFiltered helper (paginationOrder: ASC when sinceID-only, DESC otherwise).
 func (m *MockNoteRepository) ListByChannelID(channelID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
 		return n.ChannelID != nil && *n.ChannelID == channelID
@@ -781,33 +782,25 @@ func (m *MockNoteRepository) SearchByTag(tag string, limit int, sinceID, untilID
 func (m *MockNoteRepository) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
 func (m *MockNoteRepository) IncrementUserNotesCount(_ string, _ int) error { return nil }
 
-// timeline系はmock上ではfilter条件 (fanout / muted channel / follows) を
-// 完全再現せず「publicなnote全件」で代用する。sinceID/untilID だけは
-// listFiltered に委譲して production と同じ ASC-flip / cursor 絞り込みに
-// 揃える (#405 Devin指摘)。
+// ListHomeTimeline / ListLocalTimeline / ListGlobalTimeline return public or
+// home-visibility notes via the shared listFiltered helper. The mock does not
+// reproduce the production timeline filter semantics (follows / userHost /
+// muted channels / etc.); only the pagination cursor and sinceID ASC flip
+// match production behaviour.
 func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
-		// mock は timeline の厳密な filter (follows / userHost / channel)
-		// までは再現せず、旧 listPublic と同じく public + home 可視性
-		// だけ拾う簡略実装。cursor / ASC-flip のみ production 同期。
 		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
 	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) ListLocalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
-		// mock は timeline の厳密な filter (follows / userHost / channel)
-		// までは再現せず、旧 listPublic と同じく public + home 可視性
-		// だけ拾う簡略実装。cursor / ASC-flip のみ production 同期。
 		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
 	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
-		// mock は timeline の厳密な filter (follows / userHost / channel)
-		// までは再現せず、旧 listPublic と同じく public + home 可視性
-		// だけ拾う簡略実装。cursor / ASC-flip のみ production 同期。
 		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
 	}, untilID, sinceID, limit), nil
 }
