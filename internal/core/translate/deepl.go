@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -84,7 +85,10 @@ func (c *DeepLClient) Translate(ctx context.Context, text, targetLang string) (*
 	// message に出ず debug が難しくなるため (#404 Devin 指摘)。
 	if resp.StatusCode != http.StatusOK {
 		// error body は full に読まず 8 KiB snippet だけ引いてメッセージに含める。
-		snippet, _ := safehttp.ReadAllLimit(resp.Body, 8*1024)
+		// io.LimitReader は cap 超過時に error を返さずに切り詰めるので、
+		// 8 KiB 超のbodyでも先頭snippetが確実に取れる (ReadAllLimitだと
+		// 超過時に nil を返してしまう、Devin指摘)。
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 		return nil, fmt.Errorf("%w: status %d: %s", ErrRequestFailed, resp.StatusCode, string(snippet))
 	}
 

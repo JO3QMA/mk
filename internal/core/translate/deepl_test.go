@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -98,4 +99,23 @@ func TestDeepL_Translate_ResponseTooLarge(t *testing.T) {
 	c := NewDeepLWithClient("key", srv.URL, srv.Client())
 	_, err := c.Translate(context.Background(), "text", "en")
 	assert.ErrorIs(t, err, ErrRequestFailed)
+}
+
+// #404 Devin指摘: non-200 で error body が 8 KiB 超の場合も snippet が
+// error message に含まれること (io.LimitReader で cap せず先頭を取り込む)。
+func TestDeepL_Translate_NonOKLargeBody_IncludesSnippet(t *testing.T) {
+	// 10 KiB の repeating marker — 先頭 8 KiB が snippet に入る想定。
+	body := strings.Repeat("x", 10*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := NewDeepLWithClient("key", srv.URL, srv.Client())
+	_, err := c.Translate(context.Background(), "text", "en")
+	require.ErrorIs(t, err, ErrRequestFailed)
+	// "x" がerror messageに多数含まれているはず (snippetとして)
+	assert.Contains(t, err.Error(), "status 400")
+	assert.Contains(t, err.Error(), strings.Repeat("x", 100))
 }
