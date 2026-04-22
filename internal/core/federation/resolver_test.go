@@ -2004,6 +2004,15 @@ func TestExtractAttachments(t *testing.T) {
 			raw:      nil,
 			expected: 0,
 		},
+		{
+			name: "non-map entries skipped",
+			raw: []any{
+				"https://r/string-not-object.png",
+				42,
+				map[string]any{"type": "Document", "url": "https://r/ok.png"},
+			},
+			expected: 1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2113,4 +2122,110 @@ func TestUpsertAttachments(t *testing.T) {
 		)
 		assert.Empty(t, ids)
 	})
+
+	t.Run("Create error skips attachment but keeps processing", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := &createErrDriveRepo{
+			MockDriveFileRepository: testutil.NewMockDriveFileRepository(),
+			err:                     errors.New("db down"),
+		}
+		r.SetDriveFileRepo(drive)
+
+		userID := "u1"
+		host := "remote.example"
+		ids := r.UpsertAttachments(
+			[]activitypub.Document{{Type: "Document", URL: "https://r/err.png"}},
+			&userID, &host,
+		)
+		// Create が失敗した attachment は ID リストに含まれない
+		assert.Empty(t, ids)
+	})
+}
+
+// createErrDriveRepo wraps the mock and forces Create to error so the
+// upsertAttachments error branch can be exercised.
+type createErrDriveRepo struct {
+	*testutil.MockDriveFileRepository
+	err error
+}
+
+func (c *createErrDriveRepo) Create(_ *model.DriveFile) error { return c.err }
+
+func TestCollectAttachedFileTypes(t *testing.T) {
+	t.Run("nil driveFileRepo returns empty", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		assert.Empty(t, r.CollectAttachedFileTypes([]string{"f1"}))
+	})
+
+	t.Run("empty fileIDs returns empty", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+		assert.Empty(t, r.CollectAttachedFileTypes(nil))
+	})
+
+	t.Run("returns MIME types in input order", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+		drive.Files["a"] = &model.DriveFile{ID: "a", Type: "image/png"}
+		drive.Files["b"] = &model.DriveFile{ID: "b", Type: "image/jpeg"}
+		drive.Files["c"] = &model.DriveFile{ID: "c", Type: "video/mp4"}
+
+		got := r.CollectAttachedFileTypes([]string{"c", "a", "b"})
+		assert.Equal(t, []string{"video/mp4", "image/png", "image/jpeg"}, got)
+	})
+
+	t.Run("missing IDs are skipped", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+		drive.Files["a"] = &model.DriveFile{ID: "a", Type: "image/png"}
+
+		got := r.CollectAttachedFileTypes([]string{"a", "missing"})
+		assert.Equal(t, []string{"image/png"}, got)
+	})
+
+	t.Run("FindByIDs error returns empty", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		r.SetDriveFileRepo(&findIDsErrDriveRepo{
+			MockDriveFileRepository: testutil.NewMockDriveFileRepository(),
+			err:                     errors.New("db down"),
+		})
+		assert.Empty(t, r.CollectAttachedFileTypes([]string{"a"}))
+	})
+}
+
+// findIDsErrDriveRepo forces FindByIDs to error.
+type findIDsErrDriveRepo struct {
+	*testutil.MockDriveFileRepository
+	err error
+}
+
+func (f *findIDsErrDriveRepo) FindByIDs(_ []string) ([]*model.DriveFile, error) {
+	return nil, f.err
 }

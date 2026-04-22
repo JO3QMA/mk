@@ -17,3 +17,8 @@ var ExtractAttachments = extractAttachments
 func (r *Resolver) UpsertAttachments(docs []activitypub.Document, userID, host *string) []string {
 	return r.upsertAttachments(docs, userID, host)
 }
+
+// CollectAttachedFileTypes exposes the unexported collectAttachedFileTypes for external tests.
+func (r *Resolver) CollectAttachedFileTypes(fileIDs []string) []string {
+	return r.collectAttachedFileTypes(fileIDs)
+}
