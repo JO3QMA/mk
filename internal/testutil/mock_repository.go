@@ -1755,6 +1755,46 @@ func (m *MockInstanceRepository) IncrementCount(host, column string, delta int) 
 	return nil
 }
 
+// ListForRefresh returns live instances whose metadata is stale (#393).
+func (m *MockInstanceRepository) ListForRefresh(staleBefore time.Time, limit int) ([]*model.Instance, error) {
+	var rows []*model.Instance
+	for _, inst := range m.Instances {
+		// production の DB column default は 'none' だがGo構造体の zero value
+		// は "" なので両方 live 扱いにする (テスト初期化時に明示セット不要)。
+		if inst.SuspensionState != "" && inst.SuspensionState != model.SuspensionStateNone {
+			continue
+		}
+		if inst.IsNotResponding {
+			continue
+		}
+		if inst.InfoUpdatedAt != nil && !inst.InfoUpdatedAt.Before(staleBefore) {
+			continue
+		}
+		rows = append(rows, inst)
+	}
+	// infoUpdatedAt ASC NULLS FIRST を模倣
+	sort.Slice(rows, func(i, j int) bool {
+		ai, bj := rows[i].InfoUpdatedAt, rows[j].InfoUpdatedAt
+		if ai == nil && bj == nil {
+			return rows[i].Host < rows[j].Host
+		}
+		if ai == nil {
+			return true
+		}
+		if bj == nil {
+			return false
+		}
+		return ai.Before(*bj)
+	})
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
 // List returns all stored instances filtered by the most common predicates.
 // 並び順は host 昇順 (テストの安定性のため)。
 func (m *MockInstanceRepository) List(filter model.InstanceListFilter) ([]*model.Instance, error) {

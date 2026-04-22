@@ -573,6 +573,12 @@ func (s *Server) setupRoutes() {
 	s.queueServer.Handle(queue.TaskTypeChartResync, chartProcessor.HandleResync)
 	s.queueServer.Handle(queue.TaskTypeChartClean, chartProcessor.HandleClean)
 
+	// Periodic remote-instance metadata refresh (#393)。
+	// `metadataFetcher` は instance service 初期化時に作成済の
+	// coreinstance.FetchMetadataService を流用する。
+	instanceRefreshProc := processors.NewInstanceRefreshProcessor(instanceRepo, metadataFetcher, processors.InstanceRefreshConfig{})
+	s.queueServer.Handle(queue.TaskTypeInstanceRefresh, instanceRefreshProc.Handle)
+
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})

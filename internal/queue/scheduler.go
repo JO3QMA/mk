@@ -61,6 +61,19 @@ func (s *Scheduler) RegisterChartJobs() error {
 	return nil
 }
 
+// RegisterInstanceRefreshJob registers the daily remote-instance metadata
+// refresh cron (#393) at 03:00 UTC. The actual walk + fetch is implemented
+// by processors.InstanceRefreshProcessor.
+func (s *Scheduler) RegisterInstanceRefreshJob() error {
+	task := asynq.NewTask(TaskTypeInstanceRefresh, nil)
+	_, err := s.inner.Register("0 3 * * *", task,
+		asynq.Queue(MaintenanceQueueName),
+		asynq.MaxRetry(0),
+		asynq.Unique(24*time.Hour),
+	)
+	return err
+}
+
 // Start launches the scheduler in the background. Returns immediately.
 func (s *Scheduler) Start() error {
 	return s.inner.Start()
