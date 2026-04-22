@@ -149,6 +149,9 @@ func (r *noteRepository) UpdateFields(noteID string, fields map[string]any) erro
 // including replies. nodeinfo `usage.localPosts` は本家 Misskey / Mastodon
 // と同じ「local post の総数」定義なので replies も含めて数える。
 // localComments (reply subset) との重複は仕様どおり。
+// また soft-delete された user 由来の note も含む (userHost IS NULL だけで判定)。
+// 本家 Misskey の countNotes も同じ挙動で、orphan note を除外するには
+// 別途 JOIN が要るが nodeinfo の用途では不要コスト。
 func (r *noteRepository) CountLocalNotes() (int64, error) {
 	var count int64
 	err := r.db.Model(&model.Note{}).
