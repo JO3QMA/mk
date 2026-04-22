@@ -130,8 +130,12 @@ func (s *Server) Start() error {
 	if s.queueScheduler != nil {
 		if err := s.queueScheduler.RegisterChartJobs(); err != nil {
 			slog.Warn("chart scheduler register failed", "err", err)
-		} else if err := s.queueScheduler.Start(); err != nil {
-			slog.Warn("chart scheduler start failed", "err", err)
+		}
+		if err := s.queueScheduler.RegisterInstanceRefreshJob(); err != nil {
+			slog.Warn("instance refresh scheduler register failed", "err", err)
+		}
+		if err := s.queueScheduler.Start(); err != nil {
+			slog.Warn("scheduler start failed", "err", err)
 		}
 	}
 	if s.chartMgmt != nil {

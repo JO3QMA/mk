@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
@@ -16,6 +18,13 @@ type InstanceRepository interface {
 	UpdateFields(host string, fields map[string]any) error
 	IncrementCount(host, column string, delta int) error
 	List(filter model.InstanceListFilter) ([]*model.Instance, error)
+	// ListForRefresh returns instances whose metadata should be refreshed by
+	// the periodic instance-refresh job (#393). Only live instances
+	// (suspensionState = 'none' AND isNotResponding = false) whose
+	// infoUpdatedAt is older than staleBefore (NULL counts as stale) are
+	// returned. Ordered by infoUpdatedAt ASC NULLS FIRST so the oldest data
+	// is refreshed first.
+	ListForRefresh(staleBefore time.Time, limit int) ([]*model.Instance, error)
 }
 
 type instanceRepository struct {
@@ -65,6 +74,28 @@ func (r *instanceRepository) IncrementCount(host, column string, delta int) erro
 	return r.db.Model(&model.Instance{}).
 		Where("host = ?", host).
 		UpdateColumn(column, gorm.Expr("\""+column+"\" + ?", delta)).Error
+}
+
+// ListForRefresh implements the periodic metadata refresh query (#393).
+func (r *instanceRepository) ListForRefresh(staleBefore time.Time, limit int) ([]*model.Instance, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	var rows []*model.Instance
+	err := r.db.
+		Where(`"suspensionState" = ?`, string(model.SuspensionStateNone)).
+		Where(`"isNotResponding" = ?`, false).
+		Where(`"infoUpdatedAt" IS NULL OR "infoUpdatedAt" < ?`, staleBefore).
+		Order(`"infoUpdatedAt" ASC NULLS FIRST`).
+		Limit(limit).
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // List returns instances matching the filter, ordered by the requested sort.

@@ -54,6 +54,12 @@ const TaskTypeChartClean = "chart:clean"
 // graph entries etc.). Mirrors upstream `deleteAccount` queue job.
 const TaskTypeDeleteAccount = "maintenance:deleteAccount"
 
+// TaskTypeInstanceRefresh is the asynq task type for the periodic
+// remote-instance metadata refresh (#393). Registered by
+// `Scheduler.RegisterInstanceRefreshJob` at `0 3 * * *` UTC and handled by
+// `processors.InstanceRefreshProcessor`.
+const TaskTypeInstanceRefresh = "maintenance:instanceRefresh"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {
