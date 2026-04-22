@@ -145,7 +145,10 @@ func (r *noteRepository) UpdateFields(noteID string, fields map[string]any) erro
 	return r.db.Model(&model.Note{}).Where("id = ?", noteID).Updates(fields).Error
 }
 
-// CountLocalNotes returns the number of notes authored by local users.
+// CountLocalNotes returns the total number of notes authored by local users,
+// including replies. nodeinfo `usage.localPosts` は本家 Misskey / Mastodon
+// と同じ「local post の総数」定義なので replies も含めて数える。
+// localComments (reply subset) との重複は仕様どおり。
 func (r *noteRepository) CountLocalNotes() (int64, error) {
 	var count int64
 	err := r.db.Model(&model.Note{}).

@@ -570,12 +570,12 @@ func TestUserRepository_CountLocalUsersActiveSince(t *testing.T) {
 	now := time.Now()
 	active := insertTestUser(t, "ucntact1", "cntact1")
 	recent := now.Add(-5 * time.Minute)
-	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", active.ID).Update(`"lastActiveDate"`, &recent).Error)
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", active.ID).UpdateColumn("lastActiveDate", &recent).Error)
 	defer cleanupUser(t, active.ID)
 
 	stale := insertTestUser(t, "ucntstl1", "cntstl1")
 	old := now.Add(-200 * 24 * time.Hour) // 200日前
-	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", stale.ID).Update(`"lastActiveDate"`, &old).Error)
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", stale.ID).UpdateColumn("lastActiveDate", &old).Error)
 	defer cleanupUser(t, stale.ID)
 
 	// 1ヶ月以内の active user が含まれる。

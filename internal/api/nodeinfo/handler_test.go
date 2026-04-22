@@ -135,6 +135,54 @@ func TestVersion2_1_UsageStatsFromRepos(t *testing.T) {
 	assert.Equal(t, float64(2), usage["localComments"])
 }
 
+// repo のerror path を通して slog.Warn 分岐を cover する。
+type failingUserRepoForCount struct {
+	testutil.MockUserRepository
+}
+
+func (f *failingUserRepoForCount) CountLocalUsers() (int64, error) {
+	return 0, errForTest
+}
+
+func (f *failingUserRepoForCount) CountLocalUsersActiveSince(time.Time) (int64, error) {
+	return 0, errForTest
+}
+
+type failingNoteRepoForCount struct {
+	testutil.MockNoteRepository
+}
+
+func (f *failingNoteRepoForCount) CountLocalNotes() (int64, error)    { return 0, errForTest }
+func (f *failingNoteRepoForCount) CountLocalComments() (int64, error) { return 0, errForTest }
+
+var errForTest = errTest{}
+
+type errTest struct{}
+
+func (errTest) Error() string { return "test error" }
+
+func TestVersion2_1_UsageStatsCountErrorsFallbackToZero(t *testing.T) {
+	h := NewHandler(&config.Config{Version: "0.0.0", Host: "example.com"})
+	h.SetUsageRepos(&failingUserRepoForCount{}, &failingNoteRepoForCount{})
+	h.SetClock(func() time.Time { return time.Unix(0, 0) })
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/nodeinfo/2.1", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Version2_1(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	usage := resp["usage"].(map[string]any)
+	users := usage["users"].(map[string]any)
+	assert.Equal(t, float64(0), users["total"])
+	assert.Equal(t, float64(0), users["activeMonth"])
+	assert.Equal(t, float64(0), users["activeHalfyear"])
+	assert.Equal(t, float64(0), usage["localPosts"])
+	assert.Equal(t, float64(0), usage["localComments"])
+}
+
 // 未配線時は 0 埋め
 func TestVersion2_1_UsageStatsZeroWhenReposMissing(t *testing.T) {
 	h := NewHandler(&config.Config{Version: "0.0.0", Host: "example.com"})
