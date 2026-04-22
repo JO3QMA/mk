@@ -1496,6 +1496,18 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 			if s, ok := v.(string); ok {
 				m.Meta.TurnstileSecretKey = &s
 			}
+		case "termsOfServiceUrl":
+			if s, ok := v.(string); ok {
+				m.Meta.TermsOfServiceURL = &s
+			}
+		case "swPublicKey":
+			if s, ok := v.(string); ok {
+				m.Meta.SwPublicKey = &s
+			}
+		case "name":
+			if s, ok := v.(string); ok {
+				m.Meta.Name = &s
+			}
 		}
 	}
 	return nil

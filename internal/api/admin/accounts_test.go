@@ -1,6 +1,7 @@
 package admin_test
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -31,50 +32,57 @@ func TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles(t *testing.T) {
 
 // --- UpdateProxyAccount ------------------------------------------------------
 
-func TestUpdateProxyAccount_SetsProxyAccountID(t *testing.T) {
-	h, userRepo, metaRepo, _ := newTestHandler(t)
-	u := &model.User{ID: "u-proxy", Username: "proxybot", UsernameLower: "proxybot"}
-	require.NoError(t, userRepo.Create(u))
-
-	rec := doPost(h.UpdateProxyAccount, `{"username":"proxybot"}`, adminUser)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	require.NotNil(t, metaRepo.Meta.ProxyAccountID)
-	assert.Equal(t, "u-proxy", *metaRepo.Meta.ProxyAccountID)
+// stubSystemAccountFetcher is a minimal SystemAccountFetcher returning a
+// pre-configured user for any kind.
+type stubSystemAccountFetcher struct {
+	user *model.User
+	err  error
 }
 
-func TestUpdateProxyAccount_ClearWithNilUsername(t *testing.T) {
-	h, _, metaRepo, _ := newTestHandler(t)
-	existing := "old-proxy"
-	metaRepo.Meta.ProxyAccountID = &existing
-
-	rec := doPost(h.UpdateProxyAccount, `{"username":null}`, adminUser)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Nil(t, metaRepo.Meta.ProxyAccountID)
+func (s *stubSystemAccountFetcher) Fetch(_ string) (*model.User, error) {
+	return s.user, s.err
 }
 
-func TestUpdateProxyAccount_ClearWithEmptyString(t *testing.T) {
-	h, _, metaRepo, _ := newTestHandler(t)
-	existing := "old-proxy"
-	metaRepo.Meta.ProxyAccountID = &existing
+func TestUpdateProxyAccount_UpdatesDescription(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	proxy := &model.User{ID: "u-proxy", Username: "proxy.actor", UsernameLower: "proxy.actor"}
+	require.NoError(t, userRepo.Create(proxy))
+	require.NoError(t, userRepo.CreateProfile(&model.UserProfile{UserID: proxy.ID}))
+	h.SetSystemAccountFetcher(&stubSystemAccountFetcher{user: proxy})
 
-	rec := doPost(h.UpdateProxyAccount, `{"username":""}`, adminUser)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Nil(t, metaRepo.Meta.ProxyAccountID)
+	rec := doPost(h.UpdateProxyAccount, `{"description":"hello"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	prof, err := userRepo.FindProfileByUserID(proxy.ID)
+	require.NoError(t, err)
+	require.NotNil(t, prof.Description)
+	assert.Equal(t, "hello", *prof.Description)
 }
 
-func TestUpdateProxyAccount_UnknownUsernameReturns404(t *testing.T) {
+func TestUpdateProxyAccount_NoFetcherIsNoOp(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	rec := doPost(h.UpdateProxyAccount, `{"username":"ghost"}`, adminUser)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	rec := doPost(h.UpdateProxyAccount, `{"description":"x"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
-func TestUpdateProxyAccount_UsernameIsLowercased(t *testing.T) {
-	h, userRepo, metaRepo, _ := newTestHandler(t)
-	u := &model.User{ID: "u-case", Username: "MixedCase", UsernameLower: "mixedcase"}
-	require.NoError(t, userRepo.Create(u))
+func TestUpdateProxyAccount_FetcherErrorReturnsInternal(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetSystemAccountFetcher(&stubSystemAccountFetcher{err: errors.New("boom")})
+	rec := doPost(h.UpdateProxyAccount, `{"description":"x"}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
 
-	rec := doPost(h.UpdateProxyAccount, `{"username":"MixedCase"}`, adminUser)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	require.NotNil(t, metaRepo.Meta.ProxyAccountID)
-	assert.Equal(t, "u-case", *metaRepo.Meta.ProxyAccountID)
+// description が undefined (null/省略) のときは profile を更新しないが、
+// systemAccountFetcher 経由で取得した user は返す。
+func TestUpdateProxyAccount_NoDescriptionDoesNotUpdateProfile(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	proxy := &model.User{ID: "u-noop", Username: "proxy.actor", UsernameLower: "proxy.actor"}
+	require.NoError(t, userRepo.Create(proxy))
+	require.NoError(t, userRepo.CreateProfile(&model.UserProfile{UserID: proxy.ID}))
+	h.SetSystemAccountFetcher(&stubSystemAccountFetcher{user: proxy})
+
+	rec := doPost(h.UpdateProxyAccount, `{}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	prof, err := userRepo.FindProfileByUserID(proxy.ID)
+	require.NoError(t, err)
+	assert.Nil(t, prof.Description)
 }

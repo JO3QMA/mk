@@ -360,36 +360,33 @@ func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
 
 // UpdateProxyAccount handles POST /api/admin/update-proxy-account.
 //
-// username (local) を解決してその user.id を meta.proxyAccountId に保存する。
-// 空 / null を渡した場合は proxyAccountId を NULL に戻して proxy を無効化する。
+// 本家 update-proxy-account.ts と同じく proxy system user の profile.description
+// を更新する handler (旧 stub は誤って meta.proxyAccountId を書き換えていた、#348)。
+// frontend admin/settings 画面の proxyAccountForm が `{ description }` 形式で
+// 呼び出すのでこれに合わせる。Response は UserDetailed (mk-go では UserLite +
+// description で代替)。
 func (h *Handler) UpdateProxyAccount(c echo.Context) error {
 	var req struct {
-		Username *string `json:"username"`
+		Description *string `json:"description"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
 	}
-	if h.metaRepo == nil {
+	if h.systemAccountFetcher == nil || h.userRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	// 明示的な空文字 / null → 解除
-	if req.Username == nil || *req.Username == "" {
-		if err := h.metaRepo.Update(map[string]any{"proxyAccountId": nil}); err != nil {
-			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
-		}
-		return c.NoContent(http.StatusNoContent)
-	}
-	if h.userRepo == nil {
-		return c.NoContent(http.StatusNoContent)
-	}
-	user, err := h.userRepo.FindByUsernameLower(strings.ToLower(*req.Username), nil)
-	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "00000000-0000-0000-0000-000000000000"))
-	}
-	if err := h.metaRepo.Update(map[string]any{"proxyAccountId": user.ID}); err != nil {
+	proxy, err := h.systemAccountFetcher.Fetch("proxy")
+	if err != nil || proxy == nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
-	return c.NoContent(http.StatusNoContent)
+	if req.Description != nil {
+		if err := h.userRepo.UpdateProfile(proxy.ID, map[string]any{"description": req.Description}); err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		}
+	}
+	// 更新後 profile を再取得して UserDetailed を返す。
+	profile, _ := h.userRepo.FindProfileByUserID(proxy.ID)
+	return c.JSON(http.StatusOK, entity.PackUserDetailed(proxy, profile))
 }
 
 // UpdateUserNote handles POST /api/admin/update-user-note.

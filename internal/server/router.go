@@ -1188,6 +1188,7 @@ func (s *Server) setupRoutes() {
 	s.echo.GET("/.well-known/oauth-authorization-server", wellknownHandler.OAuthAuthorizationServer)
 
 	nodeinfoHandler := nodeinfo.NewHandler(s.config)
+	nodeinfoHandler.SetMetaRepo(metaRepo)
 	s.echo.GET("/nodeinfo/2.1", nodeinfoHandler.Version2_1)
 
 	// Inbox endpoints
@@ -1484,6 +1485,7 @@ func (s *Server) setupRoutes() {
 		adminHandler.SetQueueInspector(&queueInspectorAdapter{inner: s.queueInspector})
 	}
 	adminHandler.SetInstanceMetadataFetcher(metadataFetcher)
+	adminHandler.SetSystemAccountFetcher(sysAcctSvc)
 	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
 	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))

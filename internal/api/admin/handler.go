@@ -53,6 +53,13 @@ type InstanceMetadataFetcher interface {
 	Fetch(host string) error
 }
 
+// SystemAccountFetcher returns (and lazily creates) the built-in proxy /
+// relay / instance actor users. Narrow interface matching
+// coresystemaccount.Service.Fetch so admin handler tests stay decoupled.
+type SystemAccountFetcher interface {
+	Fetch(kind string) (*model.User, error)
+}
+
 // Handler handles admin API endpoints.
 type Handler struct {
 	signupService           *signup.Service
@@ -83,6 +90,7 @@ type Handler struct {
 	idGen                   id.Generator
 	configSetupPassword     string
 	instanceMetadataFetcher InstanceMetadataFetcher
+	systemAccountFetcher    SystemAccountFetcher
 }
 
 // EmailSender sends a plain-text email (to, subject, body). Same signature
@@ -113,6 +121,13 @@ func (h *Handler) SetSystemWebhookRepo(r repository.SystemWebhookRepository) {
 // icon for a specific host on demand.
 func (h *Handler) SetInstanceMetadataFetcher(f InstanceMetadataFetcher) {
 	h.instanceMetadataFetcher = f
+}
+
+// SetSystemAccountFetcher attaches the system account service used by
+// admin/meta and admin/update-proxy-account to materialize the built-in
+// proxy account.
+func (h *Handler) SetSystemAccountFetcher(f SystemAccountFetcher) {
+	h.systemAccountFetcher = f
 }
 
 // SetRecipientRepo attaches an AbuseReportNotificationRecipientRepository for
@@ -612,6 +627,21 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// fetchProxyAccountID returns the proxy system user ID for inclusion in the
+// admin/meta response. fetcher 未配線 / 取得失敗時は nil を返すが、その場合
+// frontend settings.vue の `users/show` 呼び出しが400で落ちて画面が真っ白
+// になるため production では必ず wire しておくこと。
+func (h *Handler) fetchProxyAccountID() any {
+	if h.systemAccountFetcher == nil {
+		return nil
+	}
+	user, err := h.systemAccountFetcher.Fetch("proxy")
+	if err != nil || user == nil {
+		return nil
+	}
+	return user.ID
+}
+
 // AdminMeta handles POST /api/admin/meta.
 func (h *Handler) AdminMeta(c echo.Context) error {
 	m, err := h.metaRepo.Fetch()
@@ -712,7 +742,11 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 		"prohibitedWordsForNameOfUser": m.ProhibitedWordsForNameOfUser,
 		"deliverSuspendedSoftware":     []string{},
 		"verifymailAuthKey":            m.VerifymailAuthKey, "truemailAuthKey": m.TruemailAuthKey, "truemailInstance": m.TruemailInstance,
-		"proxyAccountId": nil,
+		// proxyAccountId は frontend admin/settings 画面が読み込み時に
+		// users/show でこの ID を引くため、必ず非空でなければ画面が
+		// 真っ白になる (#348)。本家 SystemAccountService.fetch('proxy')
+		// と同じく lazy 作成して埋める。
+		"proxyAccountId": h.fetchProxyAccountID(),
 		// URL Preview
 		"urlPreviewEnabled":              true,
 		"urlPreviewTimeout":              10000,
@@ -744,11 +778,34 @@ func (h *Handler) UpdateMeta(c echo.Context) error {
 	}
 	// "i" フィールドを除外 (auth token)
 	delete(fields, "i")
+	// frontend が送る API 名 → DB カラム名の差異を吸収する (#348)。API は
+	// 本家互換の camelCase alias (tosUrl 等) を使うが、DB 側は
+	// packages/backend/src/models/Meta.ts と同じ正規名で保持している。
+	// alias が frontend から来たら DB カラム名に translate して渡す。
+	renameUpdateMetaFields(fields)
 
 	if err := h.metaRepo.Update(fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// updateMetaFieldAliases maps frontend API names to DB column names for
+// update-meta. 本家 Misskey の admin/meta.ts / update-meta.ts は一部
+// field で alias を使っており、mk-go の AdminMeta も同じ alias で公開
+// しているため、save path にも逆向きの translate を入れる必要がある。
+var updateMetaFieldAliases = map[string]string{
+	"tosUrl":      "termsOfServiceUrl", // 本家: update-meta.ts の termsOfServiceUrl が admin/meta では tosUrl で出る
+	"swPublickey": "swPublicKey",
+}
+
+func renameUpdateMetaFields(fields map[string]any) {
+	for alias, canonical := range updateMetaFieldAliases {
+		if v, ok := fields[alias]; ok {
+			fields[canonical] = v
+			delete(fields, alias)
+		}
+	}
 }
 
 // --- Role endpoints ---

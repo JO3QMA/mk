@@ -239,10 +239,49 @@ func TestAdminMeta_FetchError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
+// fetcher 配線済なら proxyAccountId が proxy system user の ID で埋まる。
+// frontend admin/settings 画面が users/show でこれを引くため必須 (#348)。
+func TestAdminMeta_ProxyAccountIDFromSystemAccount(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	proxy := &model.User{ID: "u-proxy-meta", Username: "proxy.actor", UsernameLower: "proxy.actor"}
+	h.SetSystemAccountFetcher(&stubSystemAccountFetcher{user: proxy})
+	rec := doPost(h.AdminMeta, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"proxyAccountId":"u-proxy-meta"`)
+}
+
+// fetcher 未配線なら proxyAccountId は null (フォロー実装まで safety fallback)。
+func TestAdminMeta_ProxyAccountIDNullWhenFetcherMissing(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.AdminMeta, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"proxyAccountId":null`)
+}
+
 func TestUpdateMeta_Success(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	rec := doPost(h.UpdateMeta, `{"name":"My Instance"}`, nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// frontend が送る `tosUrl` alias は DB column `termsOfServiceUrl` に
+// translate されて update される (#348)。
+func TestUpdateMeta_TosUrlAliasIsTranslated(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	rec := doPost(h.UpdateMeta, `{"tosUrl":"https://example.test/tos"}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	// mock は update 直後の値を Meta struct に反映するので
+	// TermsOfServiceURL が埋まっていれば translate 成功。
+	require.NotNil(t, metaRepo.Meta.TermsOfServiceURL)
+	assert.Equal(t, "https://example.test/tos", *metaRepo.Meta.TermsOfServiceURL)
+}
+
+func TestUpdateMeta_SwPublickeyAliasIsTranslated(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	rec := doPost(h.UpdateMeta, `{"swPublickey":"KEY"}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, metaRepo.Meta.SwPublicKey)
+	assert.Equal(t, "KEY", *metaRepo.Meta.SwPublicKey)
 }
 
 func TestAccountsCreate_EmptyUsername(t *testing.T) {
