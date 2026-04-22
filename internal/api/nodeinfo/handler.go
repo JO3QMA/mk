@@ -2,6 +2,7 @@
 package nodeinfo
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -83,27 +84,39 @@ func (h *Handler) Version2_1(c echo.Context) error {
 			"email": maintainerEmail,
 		},
 	}
-	// 統計値は repo 経由で集計。未配線なら 0 (#403)。
+	// 統計値は repo 経由で集計。未配線なら 0 (#403)。DB error は nodeinfo を
+	// 丸ごと failさせるより partial 値で返す方が federation crawler に優しい
+	// ので slog.Warn でログだけ残して 0 fallback する。
 	var (
 		usersTotal, usersMonth, usersHalf, localPosts, localComments int64
 	)
 	if h.userRepo != nil {
 		now := h.clock()
-		if v, err := h.userRepo.CountLocalUsers(); err == nil {
+		if v, err := h.userRepo.CountLocalUsers(); err != nil {
+			slog.Warn("nodeinfo: CountLocalUsers failed", "err", err)
+		} else {
 			usersTotal = v
 		}
-		if v, err := h.userRepo.CountLocalUsersActiveSince(now.AddDate(0, -1, 0)); err == nil {
+		if v, err := h.userRepo.CountLocalUsersActiveSince(now.AddDate(0, -1, 0)); err != nil {
+			slog.Warn("nodeinfo: CountLocalUsersActiveSince(month) failed", "err", err)
+		} else {
 			usersMonth = v
 		}
-		if v, err := h.userRepo.CountLocalUsersActiveSince(now.AddDate(0, -6, 0)); err == nil {
+		if v, err := h.userRepo.CountLocalUsersActiveSince(now.AddDate(0, -6, 0)); err != nil {
+			slog.Warn("nodeinfo: CountLocalUsersActiveSince(halfyear) failed", "err", err)
+		} else {
 			usersHalf = v
 		}
 	}
 	if h.noteRepo != nil {
-		if v, err := h.noteRepo.CountLocalNotes(); err == nil {
+		if v, err := h.noteRepo.CountLocalNotes(); err != nil {
+			slog.Warn("nodeinfo: CountLocalNotes failed", "err", err)
+		} else {
 			localPosts = v
 		}
-		if v, err := h.noteRepo.CountLocalComments(); err == nil {
+		if v, err := h.noteRepo.CountLocalComments(); err != nil {
+			slog.Warn("nodeinfo: CountLocalComments failed", "err", err)
+		} else {
 			localComments = v
 		}
 	}

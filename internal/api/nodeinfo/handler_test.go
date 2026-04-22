@@ -91,7 +91,7 @@ func TestVersion2_1_UsageStatsFromRepos(t *testing.T) {
 	userRepo := testutil.NewMockUserRepository()
 	noteRepo := testutil.NewMockNoteRepository()
 
-	// Local users: 3人 (active 月内2, 半年内3)
+	// Local users 計4人: active 月内2 / 半年内3 / それ以外1。
 	within1Month := now.AddDate(0, 0, -10)
 	within6Month := now.AddDate(0, -3, 0)
 	beyond6Month := now.AddDate(0, -7, 0)
