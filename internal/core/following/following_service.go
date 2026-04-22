@@ -408,18 +408,24 @@ func (s *Service) RejectRequest(followeeID, followerID string) error {
 	if s.notificationHook != nil {
 		s.notificationHook.OnFollowRejected(req.FollowerID, req.FolloweeID)
 	}
-	// publisher 未配線なら DB lookup を省く (RejectRequest は federation
-	// hook を呼ばないので CancelRequest と違い mainStreamPublisher だけ
-	// チェックすれば十分)。
-	// 拒否された側 (follower) の frontend MkFollowButton がリロード
-	// なしで「フォロー」表示に戻るよう unfollow main stream event を
-	// publish する経路。
-	if s.mainStreamPublisher == nil {
+	// federation / main publish 両方が未配線なら DB lookup を省く。
+	if s.federationHook == nil && s.mainStreamPublisher == nil {
 		return nil
 	}
-	if followee, ferr := s.userRepo.FindByID(followeeID); ferr == nil {
-		s.publishFollowRequestResolved(followerID, followee)
+	followee, eerr := s.userRepo.FindByID(followeeID)
+	if eerr != nil {
+		return nil
 	}
+	// リモート follower からの pending request を reject したときに Reject(Follow)
+	// を配信して相手側の following を解消する (本家
+	// UserFollowingService.rejectFollowRequest 相当)。OnLocalUnfollowed は
+	// follower=remote / followee=local 時に Reject を送る分岐を持っている。
+	if s.federationHook != nil {
+		if follower, ferr := s.userRepo.FindByID(followerID); ferr == nil {
+			s.federationHook.OnLocalUnfollowed(follower, followee)
+		}
+	}
+	s.publishFollowRequestResolved(followerID, followee)
 	return nil
 }
 

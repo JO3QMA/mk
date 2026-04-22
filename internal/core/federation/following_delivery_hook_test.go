@@ -108,6 +108,46 @@ func TestFollowingHook_OnLocalUnfollowed_LocalSkipped(t *testing.T) {
 	assert.Empty(t, enq.calls)
 }
 
+// local followeeがremote followerを剥がす (/following/invalidate もしくは
+// RejectRequest) ケースでは Reject(Follow) を followee 名義で送ること。
+func TestFollowingHook_OnLocalUnfollowed_RemoveRemoteFollower_SendsReject(t *testing.T) {
+	hook, enq, userRepo, keypairRepo := newFollowingHook(t)
+	follower := makeRemote("bob", "remote.example", "https://remote.example/users/bob", "https://remote.example/users/bob/inbox")
+	followee := makeLocal("alice")
+	userRepo.Users["alice"] = followee
+	keypairRepo.Keypairs["alice"] = &model.UserKeypair{UserID: "alice", PrivateKey: "PEM"}
+
+	hook.OnLocalUnfollowed(follower, followee)
+	require.Len(t, enq.calls, 1)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(enq.calls[0].Body, &got))
+	assert.Equal(t, "Reject", got["type"])
+	inner, ok := got["object"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Follow", inner["type"])
+	// actor は local followee (alice) のURI、object.actor は remote follower (bob)
+	assert.Contains(t, got["actor"], "alice")
+	assert.Equal(t, "https://remote.example/users/bob", inner["actor"])
+}
+
+func TestFollowingHook_OnLocalUnfollowed_RemoveRemoteFollower_NilURIs(t *testing.T) {
+	hook, enq, _, _ := newFollowingHook(t)
+	// URI 欠落の remote user は配信不可、no-op。
+	host := "remote.example"
+	follower := &model.User{ID: "bob", Username: "bob", Host: &host}
+	followee := makeLocal("alice")
+	hook.OnLocalUnfollowed(follower, followee)
+	assert.Empty(t, enq.calls)
+}
+
+func TestFollowingHook_OnLocalUnfollowed_NilArgs(t *testing.T) {
+	hook, enq, _, _ := newFollowingHook(t)
+	hook.OnLocalUnfollowed(nil, makeLocal("a"))
+	hook.OnLocalUnfollowed(makeLocal("a"), nil)
+	assert.Empty(t, enq.calls)
+}
+
 func TestFollowingHook_OnLocalFollowAccepted_Remote(t *testing.T) {
 	hook, enq, userRepo, keypairRepo := newFollowingHook(t)
 	// follower がリモート、followee (=accept する側) がローカル

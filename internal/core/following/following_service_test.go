@@ -579,6 +579,24 @@ func TestCancelRequest_PublishesUnfollowEvent(t *testing.T) {
 	assertFollowStreamBody(t, pub.calls[0].body, "bob", false, false)
 }
 
+// リモートfollowerからのリクエストをrejectしたときにfederation hookの
+// OnLocalUnfollowedが呼ばれてReject(Follow)配信がトリガーされること (#349 PR コメント対応)。
+func TestRejectRequest_InvokesFederationHookForRemoteFollower(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", true)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+	fhook := &recordingFederationHook{}
+	svc.SetFederationHook(fhook)
+
+	require.NoError(t, svc.RejectRequest("bob", "alice"))
+	// OnLocalUnfollowed が alice(follower) / bob(followee) で1回呼ばれる。
+	// 配信自体は federation hook 実装側で shouldDeliverFollow / 受動側
+	// follower=remote の分岐で制御される (別testで検証済み)。
+	assert.Equal(t, []string{"alice->bob"}, fhook.unfollows)
+}
+
 func TestRejectRequest_PublishesUnfollowEvent(t *testing.T) {
 	// 拒否された follower (alice) の frontend が「承認待ち」→「フォロー」
 	// にリロードなしで戻るよう、main channel に unfollow event を publish する。
