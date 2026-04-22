@@ -968,11 +968,19 @@ func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID strin
 		}
 		rows = append(rows, r)
 	}
-	// id降順
+	// production の paginationOrder と同じく sinceID単独指定時のみ ASC、
+	// それ以外は DESC (#405 Devin指摘)。
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
-				rows[i], rows[j] = rows[j], rows[i]
+			if asc {
+				if rows[i].ID > rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
+			} else {
+				if rows[i].ID < rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
 			}
 		}
 	}
@@ -2054,10 +2062,18 @@ func (m *MockClipNoteRepository) ListByClip(clipID string, untilID, sinceID stri
 		}
 		rows = append(rows, cn)
 	}
+	// production の paginationOrder と同じ ASC-flip (#405 Devin指摘)。
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
-				rows[i], rows[j] = rows[j], rows[i]
+			if asc {
+				if rows[i].ID > rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
+			} else {
+				if rows[i].ID < rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
 			}
 		}
 	}
@@ -4080,10 +4096,17 @@ func (m *MockSigninRepository) ListByUserID(userID string, limit int, untilID, s
 		}
 		rows = append(rows, s)
 	}
-	// 最新順（IDの降順）にするため逆順にする
-	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-		rows[i], rows[j] = rows[j], rows[i]
-	}
+	// production の paginationOrder と同じく sinceID単独指定時のみ ASC、
+	// それ以外は DESC。旧実装は map iteration 順の逆転に依存して
+	// いたが map 順序は保証されないため sort.Slice で明示的にソート
+	// (#405 Devin指摘)。
+	asc := sinceID != "" && untilID == ""
+	sort.Slice(rows, func(i, j int) bool {
+		if asc {
+			return rows[i].ID < rows[j].ID
+		}
+		return rows[i].ID > rows[j].ID
+	})
 	if len(rows) > limit {
 		rows = rows[:limit]
 	}
