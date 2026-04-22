@@ -241,6 +241,10 @@ func TestFanoutTimelineService_RedisErrors(t *testing.T) {
 	// Purge fails on Del
 	err = svc.Purge(ctx, LocalTimeline)
 	assert.Error(t, err)
+
+	// Remove fails on LRem (#379)
+	err = svc.Remove(ctx, LocalTimeline, noteID)
+	assert.Error(t, err)
 }
 
 // TestFanoutTimelineService_KeyPrefix は #362 drop-in 互換の回帰テスト。
@@ -335,6 +339,35 @@ func TestFanoutTimelineService_Purge(t *testing.T) {
 	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
 	require.NoError(t, err)
 	assert.Empty(t, out)
+}
+
+// TestFanoutTimelineService_Remove は #379 の delete propagation 用 LREM。
+// 該当 ID だけを消し、他の ID は残ること、不在 ID 渡しでもエラーにならない
+// ことを確認する。
+func TestFanoutTimelineService_Remove(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	id1 := idGen.Generate(time.Now().Add(-2 * time.Minute))
+	id2 := idGen.Generate(time.Now().Add(-1 * time.Minute))
+	id3 := idGen.Generate(time.Now())
+
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id1, 100))
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id2, 100))
+	require.NoError(t, svc.Push(ctx, LocalTimeline, id3, 100))
+
+	// 中間の id2 だけ削除
+	require.NoError(t, svc.Remove(ctx, LocalTimeline, id2))
+
+	out, err := svc.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{id3, id1}, out)
+
+	// 不在 ID の削除は no-op (エラーにならない)
+	require.NoError(t, svc.Remove(ctx, LocalTimeline, "nonexistent"))
+
+	// 空 list への Remove も no-op
+	require.NoError(t, svc.Remove(ctx, GlobalTimeline, id1))
 }
 
 // TestFanoutTimelineService_PushOldNoteCorruptedTail_isFollowedByErr asserts

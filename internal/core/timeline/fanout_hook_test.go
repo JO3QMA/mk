@@ -418,3 +418,165 @@ func TestFanoutHook_FanoutToUserLists_LookupError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, out)
 }
+
+// --- OnNoteDeleted (#379) ---
+
+func TestFanoutHook_OnNoteDeleted_Nil(t *testing.T) {
+	h, _, _ := newTestHook(t)
+	h.OnNoteDeleted(nil, &model.User{ID: "u"})
+	h.OnNoteDeleted(&model.Note{ID: "n"}, nil)
+}
+
+func TestFanoutHook_OnNoteDeleted_PurgesAllTimelines(t *testing.T) {
+	h, fanout, following := newTestHook(t)
+	ctx := context.Background()
+	following.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "follower1", FolloweeID: "author"}
+	following.Followings["f2"] = &model.Following{ID: "f2", FollowerID: "follower2", FolloweeID: "author"}
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	author := &model.User{ID: "author"}
+	h.OnNoteCreated(n, author)
+
+	// 配信された 5 つの timeline すべてに入っていることを前提として確認
+	for _, name := range []Name{
+		HomeTimelineName("author"),
+		HomeTimelineName("follower1"),
+		HomeTimelineName("follower2"),
+		UserTimelineName("author"),
+		LocalTimeline,
+		GlobalTimeline,
+	} {
+		out, err := fanout.Get(ctx, name, "", "", 10)
+		require.NoError(t, err)
+		assert.Equal(t, []string{noteID}, out, "precondition: %q should contain note", name)
+	}
+
+	// 削除すると全部から消える
+	h.OnNoteDeleted(n, author)
+	for _, name := range []Name{
+		HomeTimelineName("author"),
+		HomeTimelineName("follower1"),
+		HomeTimelineName("follower2"),
+		UserTimelineName("author"),
+		LocalTimeline,
+		GlobalTimeline,
+	} {
+		out, err := fanout.Get(ctx, name, "", "", 10)
+		require.NoError(t, err)
+		assert.Empty(t, out, "after delete: %q should be empty", name)
+	}
+}
+
+func TestFanoutHook_OnNoteDeleted_RemoteAuthorSkipsLocal(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	host := "remote.example"
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "ra", UserHost: &host, Visibility: model.NoteVisibilityPublic}
+	author := &model.User{ID: "ra", Host: &host}
+
+	// LocalTimeline に直接 LPUSH しておいて、OnNoteDeleted で消えないことを確認
+	require.NoError(t, fanout.client.LPush(ctx, fanout.key(LocalTimeline), noteID).Err())
+
+	h.OnNoteDeleted(n, author)
+
+	out, err := fanout.Get(ctx, LocalTimeline, "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out, "remote author の delete は LocalTimeline を触らない")
+}
+
+func TestFanoutHook_OnNoteDeleted_FollowersListError(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
+	fanout.randFn = func() float64 { return 1.0 }
+	following := &failingFollowingRepo{MockFollowingRepository: testutil.NewMockFollowingRepository()}
+	h := NewFanoutHook(fanout, following)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	// エラーがあっても上位に伝搬しない
+	h.OnNoteDeleted(n, &model.User{ID: "author"})
+}
+
+func TestFanoutHook_OnNoteDeleted_FollowersAcrossPages(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
+	fanout.randFn = func() float64 { return 1.0 }
+	following := testutil.NewMockFollowingRepository()
+	for i := range 201 {
+		fid := "f-" + idGen.Generate(time.Now().Add(time.Duration(i)*time.Microsecond))
+		following.Followings[fid] = &model.Following{
+			ID:         fid,
+			FollowerID: "follower-" + fid,
+			FolloweeID: "author",
+		}
+	}
+	h := NewFanoutHook(fanout, following)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteDeleted(n, &model.User{ID: "author"})
+}
+
+func TestFanoutHook_OnNoteDeleted_RemoveErrorIsLogged(t *testing.T) {
+	following := testutil.NewMockFollowingRepository()
+	fanout := NewFanoutTimelineService(closedClient(t), idGen, "")
+	h := NewFanoutHook(fanout, following)
+	noteID := idGen.Generate(time.Now())
+	h.OnNoteDeleted(
+		&model.Note{ID: noteID, UserID: "u", Visibility: model.NoteVisibilityPublic},
+		&model.User{ID: "u"},
+	)
+}
+
+func TestFanoutHook_OnNoteDeleted_SpecifiedSkipsFollowers(t *testing.T) {
+	h, fanout, following := newTestHook(t)
+	ctx := context.Background()
+	following.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "follower1", FolloweeID: "author"}
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilitySpecified}
+	author := &model.User{ID: "author"}
+
+	// follower の home に直接入れておいて、specified delete では消されないことを確認
+	require.NoError(t, fanout.client.LPush(ctx, fanout.key(HomeTimelineName("follower1")), noteID).Err())
+
+	h.OnNoteDeleted(n, author)
+
+	out, err := fanout.Get(ctx, HomeTimelineName("follower1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out, "specified delete は follower home を触らない")
+}
+
+func TestFanoutHook_OnNoteDeleted_UserListPurge(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	lookup := &stubUserListLookup{memberToLists: map[string][]string{
+		"author": {"list1", "list2"},
+	}}
+	h.SetUserListRepo(lookup)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	author := &model.User{ID: "author"}
+	h.OnNoteCreated(n, author)
+	h.OnNoteDeleted(n, author)
+
+	for _, listID := range []string{"list1", "list2"} {
+		out, err := fanout.Get(ctx, UserListTimelineName(listID), "", "", 10)
+		require.NoError(t, err)
+		assert.Empty(t, out, "userListTimeline:%s should be purged", listID)
+	}
+}
+
+func TestFanoutHook_OnNoteDeleted_UserListLookupError(t *testing.T) {
+	h, _, _ := newTestHook(t)
+	h.SetUserListRepo(&failingUserListLookup{})
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteDeleted(n, &model.User{ID: "author"})
+}

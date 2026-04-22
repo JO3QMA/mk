@@ -171,6 +171,17 @@ func (s *FanoutTimelineService) Purge(ctx context.Context, name Name) error {
 	return s.client.Del(ctx, s.key(name)).Err()
 }
 
+// Remove drops every occurrence of noteID from the named timeline list (#379)。
+// Misskey TS の `RedisTimelineService.removeFromTimeline` 相当。Delete activity
+// 受信時 / ローカル削除時に各 fanout 先 (home/local/global/user/userList) から
+// 該当 ID を消すために使う。
+//
+// LREM count=0 は全 occurrence を削除する。空 list / 不在 ID でもエラーには
+// ならず削除件数 0 が返るだけなので呼び出し側で気にする必要はない。
+func (s *FanoutTimelineService) Remove(ctx context.Context, name Name, noteID string) error {
+	return s.client.LRem(ctx, s.key(name), 0, noteID).Err()
+}
+
 // filterAndSort applies the since/until filter to a slice of IDs and returns
 // them sorted in id-descending order, capped to limit if positive.
 func filterAndSort(ids []string, untilID, sinceID string, limit int) []string {

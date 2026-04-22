@@ -280,3 +280,83 @@ func (h *FanoutHook) pushWithLimit(ctx context.Context, name Name, id string, ma
 		slog.Warn("timeline push failed", "name", string(name), "id", id, "err", err)
 	}
 }
+
+// OnNoteDeleted purges the deleted note ID from every Redis timeline list
+// it could have been pushed to by OnNoteCreated (#379)。inbound Delete も
+// ローカル削除も同じ経路を通って届くので、ここ 1 か所で fan-out 先全てを
+// 掃除する。失敗はベストエフォート (DB は既に消えているので部分残留しても
+// 後段の note hydrate で missing として落ちる)。
+func (h *FanoutHook) OnNoteDeleted(n *model.Note, author *model.User) {
+	if n == nil || author == nil {
+		return
+	}
+	ctx := context.Background()
+
+	// 1. ユーザータイムライン
+	h.removeBestEffort(ctx, UserTimelineName(author.ID), n.ID)
+
+	// 2. ホームタイムライン: 投稿者本人 + フォロワー全員
+	h.removeBestEffort(ctx, HomeTimelineName(author.ID), n.ID)
+	if h.followingRepo != nil && shouldFanoutToFollowers(n) {
+		h.removeFromFollowerHomes(ctx, author.ID, n.ID)
+	}
+
+	// 3. ローカルタイムライン
+	if author.Host == nil && n.Visibility == model.NoteVisibilityPublic {
+		h.removeBestEffort(ctx, LocalTimeline, n.ID)
+	}
+
+	// 4. グローバルタイムライン
+	if n.Visibility == model.NoteVisibilityPublic {
+		h.removeBestEffort(ctx, GlobalTimeline, n.ID)
+	}
+
+	// 5. ユーザーリストタイムライン
+	if h.userListRepo != nil && shouldFanoutToFollowers(n) {
+		h.removeFromUserLists(ctx, author.ID, n.ID)
+	}
+}
+
+// removeBestEffort wraps Remove with error logging.
+func (h *FanoutHook) removeBestEffort(ctx context.Context, name Name, noteID string) {
+	if err := h.fanout.Remove(ctx, name, noteID); err != nil {
+		slog.Warn("timeline remove failed", "name", string(name), "id", noteID, "err", err)
+	}
+}
+
+// removeFromFollowerHomes mirrors fanoutToFollowers: page through followers and
+// LREM the note ID from each follower's home timeline list.
+func (h *FanoutHook) removeFromFollowerHomes(ctx context.Context, authorID, noteID string) {
+	const pageSize = 200
+	offset := 0
+	for {
+		rows, err := h.followingRepo.ListFollowers(authorID, pageSize, offset)
+		if err != nil {
+			slog.Warn("removeFromFollowerHomes: list followers failed", "err", err, "author", authorID)
+			return
+		}
+		if len(rows) == 0 {
+			return
+		}
+		for _, f := range rows {
+			h.removeBestEffort(ctx, HomeTimelineName(f.FollowerID), noteID)
+		}
+		if len(rows) < pageSize {
+			return
+		}
+		offset += pageSize
+	}
+}
+
+// removeFromUserLists mirrors fanoutToUserLists: query the lists that contain
+// the author at delete time and LREM the note ID from each.
+func (h *FanoutHook) removeFromUserLists(ctx context.Context, authorID, noteID string) {
+	listIDs, err := h.userListRepo.ListIDsByMember(authorID)
+	if err != nil {
+		slog.Warn("removeFromUserLists: list lookup failed", "err", err, "author", authorID)
+		return
+	}
+	for _, listID := range listIDs {
+		h.removeBestEffort(ctx, UserListTimelineName(listID), noteID)
+	}
+}
