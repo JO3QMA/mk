@@ -97,7 +97,7 @@ mkq.Process(DeliverQueue, func(ctx context.Context, job *mkq.Job[DeliverPayload]
 
 ```go
 mkq.Schedule(DeliverQueue, DeliverPayload{...},
-    mkq.WithCron("0 * * * *"),         // 毎時 0 分
+    mkq.WithCron("0 0 * * *"),         // 毎日 00:00 UTC
     mkq.WithJobID("daily-digest"),     // unique ID で重複 enqueue 抑止
 )
 ```
@@ -250,11 +250,17 @@ router.go で driver を 1 箇所で生成して wire。同じ binary で両 dri
 
 ### 7.3 Migration path
 
-- **Phase 1 (今)**: driver 抽象化、既存 asynq は `AsynqDriver` へ移行
-- **Phase 2**: mkq library alpha 開発 (別リポ、mk-go には触らない)
-- **Phase 3**: `MkqDriver` を mk-go に追加、CI で両方テスト
-- **Phase 4**: `mkq` を default に、`asynq` driver は legacy として残す
-- **Phase 5 (数ヶ月後)**: `asynq` driver を deprecate & 削除
+Section 8 の Phase 番号と一致。Migration path 側は mk-go 視点で圧縮した
+view (Section 8 の各 Phase を mk-go 側で見た変化に絞ったもの):
+
+- **Phase 1**: driver 抽象化、既存 asynq は `AsynqDriver` へ移行 (Section 8 Phase 1)
+- **Phase 3**: mkq library alpha 開発 (別リポ、mk-go には触らない) (Section 8 Phase 3)
+- **Phase 5**: `MkqDriver` を mk-go に追加、CI で両方テスト (Section 8 Phase 5)
+- **Phase 6**: `mkq` を default に、`asynq` driver は legacy として残す (Section 8 Phase 6)
+- **Phase 7 (数ヶ月後)**: `asynq` driver を deprecate & 削除 (Section 8 Phase 7)
+
+(Section 8 の Phase 2 (本 doc) / Phase 4 (mkq β) は mk-go 側に変化
+無しのため Migration path view では省略)
 
 ## 8. Phase / Roadmap
 
