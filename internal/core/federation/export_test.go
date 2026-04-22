@@ -1,6 +1,9 @@
 package federation
 
-import "github.com/shiroha-a/mk/internal/activitypub"
+import (
+	"github.com/shiroha-a/mk/internal/activitypub"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
+)
 
 // ExtractEmojiTags exposes the unexported extractEmojiTags for external tests.
 var ExtractEmojiTags = extractEmojiTags
@@ -32,4 +35,9 @@ var MergeMentionIDs = mergeMentionIDs
 // ResolveMentionedUserIDs exposes the unexported resolveMentionedUserIDs for external tests.
 func (r *Resolver) ResolveMentionedUserIDs(hrefs []string) []string {
 	return r.resolveMentionedUserIDs(hrefs)
+}
+
+// ResolveTextMentionUserIDs exposes the unexported resolveTextMentionUserIDs for external tests.
+func (r *Resolver) ResolveTextMentionUserIDs(mentions []corenote.Mention) []string {
+	return r.resolveTextMentionUserIDs(mentions)
 }

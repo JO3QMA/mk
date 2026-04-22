@@ -532,11 +532,11 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	}
 	// メンション抽出は本文と AP `tag` 配列の Mention 両方から行う。本文だけだと
 	// specified DM (本文に @ が無いケース) で受信者を取りこぼす (#397)。
-	// Mention href は actor URI なので、ローカル / 既知リモートのみ user ID へ
-	// 解決し、テキスト由来 mention と merge して dedup する。
+	// 本文 @username / tag href のいずれも最終的に user ID へ解決して保存する
+	// (mentions 列はローカル create 経路と同じ user ID の配列にする)。
 	var textMentions []string
 	if note.Text != nil {
-		textMentions = corenote.ExtractMentions(*note.Text)
+		textMentions = r.resolveTextMentionUserIDs(corenote.ExtractMentionStructs(*note.Text))
 	}
 	tagMentions := r.resolveMentionedUserIDs(extractMentionTags(apNote.Tag))
 	note.Mentions = mergeMentionIDs(textMentions, tagMentions)
@@ -662,12 +662,14 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 		existing.Text = &newText
 	}
 	// text が変わらなくても tag 配列の Mention は AP Update で変化しうる (#397)。
-	// IngestNote と同じく本文と tag 両方から mention を集めて dedup する。
-	textMentions := []string{}
-	if newText != "" {
-		textMentions = corenote.ExtractMentions(newText)
-	} else if existing.Text != nil {
-		textMentions = corenote.ExtractMentions(*existing.Text)
+	// IngestNote と同じく本文と tag 両方から mention を集めて user ID 配列に
+	// 統一する (mentions 列の意味論を local create 経路と揃えるため)。
+	var textMentions []string
+	switch {
+	case newText != "":
+		textMentions = r.resolveTextMentionUserIDs(corenote.ExtractMentionStructs(newText))
+	case existing.Text != nil:
+		textMentions = r.resolveTextMentionUserIDs(corenote.ExtractMentionStructs(*existing.Text))
 	}
 	tagMentions := r.resolveMentionedUserIDs(extractMentionTags(apNote.Tag))
 	mentions := mergeMentionIDs(textMentions, tagMentions)
@@ -835,6 +837,32 @@ func (r *Resolver) resolveMentionedUserIDs(hrefs []string) []string {
 		}
 		seen[id] = struct{}{}
 		out = append(out, id)
+	}
+	return out
+}
+
+// resolveTextMentionUserIDs maps text-derived `@username[@host]` mentions to
+// local model.User IDs. mentions 列の意味論を local create 経路 (user ID 配列)
+// と揃えるため、リモート受信 Note でも username → ID 解決を必ず通す (#397)。
+// userRepo 未設定 / 未知ユーザーは skip する (NotificationService 等の
+// 既存後段は skip でも username fallback で動くが、mentions 列の query は
+// ID 完全一致なので残しても無駄)。
+func (r *Resolver) resolveTextMentionUserIDs(mentions []corenote.Mention) []string {
+	if r.userRepo == nil || len(mentions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(mentions))
+	for _, m := range mentions {
+		var host *string
+		if m.Host != "" {
+			h := m.Host
+			host = &h
+		}
+		u, err := r.userRepo.FindByUsernameLower(m.Username, host)
+		if err != nil || u == nil {
+			continue
+		}
+		out = append(out, u.ID)
 	}
 	return out
 }

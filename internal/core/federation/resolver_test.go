@@ -10,6 +10,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -2371,6 +2372,37 @@ func TestResolveMentionedUserIDs(t *testing.T) {
 	})
 }
 
+func TestResolveTextMentionUserIDs(t *testing.T) {
+	mkResolver := func() (*federation.Resolver, *testutil.MockUserRepository) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		return federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen), repo
+	}
+	t.Run("ローカル / リモート 両方を ID へ解決", func(t *testing.T) {
+		r, repo := mkResolver()
+		repo.Users["local-id"] = &model.User{ID: "local-id", Username: "alice", UsernameLower: "alice"}
+		host := "remote.example"
+		repo.Users["remote-id"] = &model.User{ID: "remote-id", Username: "bob", UsernameLower: "bob", Host: &host}
+
+		ids := r.ResolveTextMentionUserIDs([]corenote.Mention{
+			{Username: "alice"},
+			{Username: "bob", Host: "remote.example"},
+		})
+		assert.Equal(t, []string{"local-id", "remote-id"}, ids)
+	})
+	t.Run("未知ユーザーは skip", func(t *testing.T) {
+		r, _ := mkResolver()
+		ids := r.ResolveTextMentionUserIDs([]corenote.Mention{{Username: "ghost"}})
+		assert.Empty(t, ids)
+	})
+	t.Run("空入力", func(t *testing.T) {
+		r, _ := mkResolver()
+		assert.Nil(t, r.ResolveTextMentionUserIDs(nil))
+	})
+}
+
 // TestIngestNote_SpecifiedDMPopulatesMentionsAndVisibleUserIDs covers the
 // #397 fix end-to-end: a specified DM whose body has no @mention but whose
 // AP `tag` array has a Mention to alice should still end up with alice in
@@ -2432,12 +2464,19 @@ func TestIngestNote_NonSpecifiedSkipsVisibleUserIDs(t *testing.T) {
 
 func TestIngestNote_TagMentionsMergedWithTextMentions(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
+	// ローカル bob を MockUserRepository に登録 (FindByUsernameLower 解決用)。
+	// MockUserRepository は usernameLower で lookup する。
+	repo.Users["bob-local-id"] = &model.User{
+		ID:            "bob-local-id",
+		Username:      "bob",
+		UsernameLower: "bob",
+	}
 	noteRepo := testutil.NewMockNoteRepository()
 	urls := activitypub.NewURLBuilder("https://example.com")
 	idGen, _ := id.NewGenerator("aidx")
 	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
 
-	// 本文に @bob、tag に alice。両方が mentions に入ること。
+	// 本文 "@bob" → bob-local-id、tag → alice。両方が mentions に入ること。
 	body := []byte(`{
 		"id": "https://remote.example/notes/merge1",
 		"type": "Note",
@@ -2453,7 +2492,7 @@ func TestIngestNote_TagMentionsMergedWithTextMentions(t *testing.T) {
 	require.NoError(t, err)
 	mentions := []string(got.Mentions)
 	assert.Contains(t, mentions, "alice")
-	assert.Contains(t, mentions, "bob")
+	assert.Contains(t, mentions, "bob-local-id", "本文の @bob は user ID へ resolve される")
 }
 
 // TestUpdateRemoteNote_MentionsRecomputed confirms tag-derived mentions are
