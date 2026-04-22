@@ -139,24 +139,29 @@ BullMQ と wire compatible。既存の bull-board / Misskey admin UI / 他言語
 ### 5.1 Key naming
 
 ```
-{prefix}:{queue}:id          INCR で job id 発行
-{prefix}:{queue}:wait        ZSET (score=priority*2^40+age、member=job id)  ← BullMQ v5+ 互換
-{prefix}:{queue}:prioritized  ZSET (wait のpriority付き実体、BullMQ v5+ 命名)
-{prefix}:{queue}:active      LIST (currently processing)
-{prefix}:{queue}:delayed     ZSET (score=unix epoch ms, member=job id)
-{prefix}:{queue}:completed   ZSET (score=finishedOn, LRU via ZREMRANGEBYRANK)
-{prefix}:{queue}:failed      ZSET (score=finishedOn)
-{prefix}:{queue}:paused      ZSET (paused時の waiting の退避先、ZSET形式で順序保持)
-{prefix}:{queue}:meta        HASH (lock / paused / limiter state)
-{prefix}:{queue}:repeat      ZSET (repeat jobs)
-{prefix}:{queue}:repeat:{hash}:{ts}  Job (repeat インスタンス)
-{prefix}:{queue}:{jobId}     HASH (data / opts / progress / returnvalue / stacktrace / ...)
-{prefix}:{queue}:stalled-check  ZSET (stalled detection用、score=lastHeartbeat)
-{prefix}:{queue}:limiter     HASH (rate limiter state: tokens / refill timestamp)
-{prefix}:{queue}:events      Redis Stream (BullMQ QueueEvents 互換のpubsub)
+{prefix}:{queue}:id           INCR でjob id発行
+{prefix}:{queue}:wait          LIST (FIFO順のjob id)  ← 通常のwait queue
+{prefix}:{queue}:prioritized   ZSET (score=priority*2^40+age、BullMQ v5+の優先度付きwait)
+{prefix}:{queue}:active        LIST (currently processing)
+{prefix}:{queue}:delayed       ZSET (score=unix epoch ms)
+{prefix}:{queue}:completed     ZSET (score=finishedOn, LRU via ZREMRANGEBYRANK)
+{prefix}:{queue}:failed        ZSET (score=finishedOn)
+{prefix}:{queue}:stalled       SET (stalled detection用のjob id集合)
+{prefix}:{queue}:meta          HASH (paused flag / limiter / opts等のqueue-global state)
+{prefix}:{queue}:repeat        ZSET (repeat jobs)
+{prefix}:{queue}:repeat:{hash}:{ts}  Job (repeatインスタンス)
+{prefix}:{queue}:{jobId}       HASH (data/opts/progress/returnvalue/stacktrace/...)
+{prefix}:{queue}:{jobId}:logs  LIST (job単位のlogline)
+{prefix}:{queue}:{jobId}:lock  STRING (lock token, TTL付き。失効でstalled判定)
+{prefix}:{queue}:events        Redis Stream (BullMQ QueueEvents互換のpubsub)
+{prefix}:{queue}:limiter       HASH (rate limiterのtoken bucket state)
 ```
 
-**BullMQ v5+ への追随**: `wait` は旧版の LIST から ZSET (priority + age) に変更されている。mkq は v5+ 仕様を採用して bull-board / 最新 BullMQ client と wire 互換を保つ。
+**BullMQ v5+準拠のポイント**:
+
+- `wait` はpriorityなしjobのFIFO LIST。priority付きjobは `prioritized` ZSET に入る。Worker dequeue時は priority を先に、次に wait を見る。(旧spec で「waitがZSET」と記述したのは誤り)
+- **pause は `meta.paused` flag**: 別のpaused keyに退避するのではなく、meta HASHのフラグ立てで実現。worker dequeue時にflagをcheckしてblock。移動コスト無しで pause/resume が即反映 (BullMQ v5+ 実装)
+- **Stalled detection は SET + lock token**: 各jobは `{jobId}:lock` に TTL 付きlock tokenを書く。worker が heartbeat (lock renewal) を怠るとTTL 失効→stalled判定→`stalled` SET 経由で wait に差し戻し+attempts++
 
 ### 5.2 Lua scripts
 
@@ -164,14 +169,14 @@ BullMQ は 30+ の Lua scripts を使う。mkq も「条件分岐 + 書き戻し
 
 初期ターゲットの **8 本の Lua script**:
 
-1. `addJob`: id 発行 + Job HASH 保存 + wait ZSET or delayed ZSET へ enqueue。paused ならそちらへ
-2. `moveToActive`: wait → active + lock + stalled-check 登録。paused check 込み
-3. `moveToFinished`: active → completed/failed + stalled-check 削除 + retention (ZREMRANGEBYRANK) + returnvalue/stacktrace 書き込み
-4. `retryJob`: failed → delayed に retry backoff 込みで再 enqueue
-5. `promoteJob`: delayed → wait への移動 (scheduler tick)
-6. `pause` / `resume`: wait ↔ paused 間の bulk 移動 (LMOVE 相当)
+1. `addJob`: id発行 + Job HASH 保存 + wait LIST or prioritized ZSET or delayed ZSET のいずれかにenqueue (priority/delay判定はここで branch)
+2. `moveToActive`: (prioritized ZPOPMIN or wait RPOP) → active + lock token 発行 + stalled SET 登録。meta.paused が真なら no-op で early return
+3. `moveToFinished`: active → completed/failed + stalled SET 削除 + lock削除 + retention (ZREMRANGEBYRANK) + returnvalue/stacktrace 書き込み
+4. `retryJob`: failed → delayed に retry backoff 込みで再 enqueue (attempts++ も atomic)
+5. `promoteJob`: delayed → wait/prioritized への移動 (scheduler tick)
+6. `renewLock`: worker の heartbeat。lock TTL を延長 + active に留まっていることを確認
 7. `rateLimiterCheck`: token bucket 判定 + 減算を atomic に
-8. `stalledCheck`: heartbeat が切れた active job を wait に戻す + attempts ++
+8. `moveStalledToWait`: lockが失効したactive jobをwait/prioritizedに戻す + attempts++。lockTTLを超えたjobを stalled SET に登録しつつfail相当の処理をする
 
 残りの「単純な read / write」は Go 側で `MULTI/EXEC` or `WATCH/CAS`。例: job status 照会、queue size 集計、admin API の list 系。
 
