@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/lib/pq"
@@ -1003,4 +1004,49 @@ func TestNoteRepository_ListGlobalTimeline(t *testing.T) {
 	require.NoError(t, err)
 	_, err = repo.ListGlobalTimeline(50, "", "nonexistent", filter)
 	require.NoError(t, err)
+}
+
+// #384: sinceID単独指定時は ASC 反転する (本家 QueryService.makePaginationQuery
+// 互換)。6関数全てで同じヘルパを使っているので代表的な3関数で確認し、
+// helper 自体は paginationOrder_test.go で unit testする。
+func TestNoteRepository_SinceIDFlipsOrderASC(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "asc_u", "ascuser")
+	defer cleanupUser(t, user.ID)
+
+	// IDの lexicographic 順に作成: a < b < c
+	for _, id := range []string{"asc_n_a", "asc_n_b", "asc_n_c"} {
+		n := &model.Note{ID: id, UserID: user.ID, Visibility: "public", Tags: []string{"ascflip"}}
+		require.NoError(t, testDB.Create(n).Error)
+		defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, id)
+	}
+
+	// sinceID単独指定: ASC順 (古い→新しい)。asc_n_a より大なので b, c が返る想定。
+	notes, err := repo.SearchByTag("ascflip", 10, "asc_n_a", "")
+	require.NoError(t, err)
+	require.Len(t, notes, 2)
+	assert.Equal(t, "asc_n_b", notes[0].ID)
+	assert.Equal(t, "asc_n_c", notes[1].ID)
+
+	// untilID単独指定: DESC順 (既存挙動)。asc_n_c より小なので b, a が返る。
+	notes, err = repo.SearchByTag("ascflip", 10, "", "asc_n_c")
+	require.NoError(t, err)
+	require.Len(t, notes, 2)
+	assert.Equal(t, "asc_n_b", notes[0].ID)
+	assert.Equal(t, "asc_n_a", notes[1].ID)
+
+	// ListLocalTimeline も同様 (timelineFilter経路)。
+	filter := model.TimelineDBFilter{ViewerID: user.ID}
+	notes, err = repo.ListLocalTimeline(10, "asc_n_a", "", filter)
+	require.NoError(t, err)
+	// 関係する3件の中で b, c が order ASC で返ること (他ユーザーのpublicノートも混ざる可能性あり)
+	ownOnly := make([]*model.Note, 0, 2)
+	for _, n := range notes {
+		if strings.HasPrefix(n.ID, "asc_n_") {
+			ownOnly = append(ownOnly, n)
+		}
+	}
+	require.Len(t, ownOnly, 2)
+	assert.Equal(t, "asc_n_b", ownOnly[0].ID)
+	assert.Equal(t, "asc_n_c", ownOnly[1].ID)
 }

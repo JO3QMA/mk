@@ -349,7 +349,7 @@ func (r *noteRepository) ListMentions(userID string, limit int, sinceID, untilID
 	}
 	q := r.db.Preload("User").
 		Where("mentions @> ARRAY[?]::varchar[]", userID).
-		Order("id DESC").Limit(limit)
+		Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
@@ -369,7 +369,7 @@ func (r *noteRepository) SearchByTag(tag string, limit int, sinceID, untilID str
 	}
 	q := r.db.Preload("User").
 		Where("tags @> ARRAY[?]::varchar[]", tag).
-		Order("id DESC").Limit(limit)
+		Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
@@ -436,7 +436,7 @@ func applyTimelineFilter(q *gorm.DB, f model.TimelineDBFilter) *gorm.DB {
 func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error) {
 	q := r.db.Preload("User").
 		Where(`("userId" = ? OR "userId" IN (SELECT "followeeId" FROM "following" WHERE "followerId" = ?)) AND "visibility" IN ('public','home','followers')`, userID, userID).
-		Order(`"id" DESC`).Limit(limit)
+		Order(paginationOrder(sinceID, untilID, `"id"`)).Limit(limit)
 	if sinceID != "" {
 		q = q.Where(`"id" > ?`, sinceID)
 	}
@@ -455,7 +455,7 @@ func (r *noteRepository) ListHomeTimeline(userID string, limit int, sinceID, unt
 func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error) {
 	q := r.db.Preload("User").
 		Where(`"userHost" IS NULL AND "visibility" = 'public' AND "channelId" IS NULL`).
-		Order(`"id" DESC`).Limit(limit)
+		Order(paginationOrder(sinceID, untilID, `"id"`)).Limit(limit)
 	if sinceID != "" {
 		q = q.Where(`"id" > ?`, sinceID)
 	}
@@ -475,7 +475,7 @@ func (r *noteRepository) ListLocalTimeline(limit int, sinceID, untilID string, f
 func (r *noteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error) {
 	q := r.db.Preload("User").
 		Where(`"visibility" = 'public' AND "channelId" IS NULL`).
-		Order(`"id" DESC`).Limit(limit)
+		Order(paginationOrder(sinceID, untilID, `"id"`)).Limit(limit)
 	if sinceID != "" {
 		q = q.Where(`"id" > ?`, sinceID)
 	}
@@ -552,7 +552,7 @@ func (r *noteRepository) ListByUserList(listID string, limit int, sinceID, until
 		q = q.Where(`"note"."id" < ?`, untilID)
 	}
 	var notes []*model.Note
-	if err := q.Order(`"note"."id" DESC`).Limit(limit).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, `"note"."id"`)).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil

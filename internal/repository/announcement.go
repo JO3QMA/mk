@@ -50,22 +50,8 @@ func (r *announcementRepository) FindByID(id string) (*model.Announcement, error
 	return &a, nil
 }
 
-// announcementPaginationOrder returns the ORDER BY direction for announcement
-// pagination. When only sinceID is specified, it flips to ASC so that
-// cursor-based fetching in the newer direction keeps sequential ordering;
-// otherwise (both specified / untilID only / neither) it stays DESC. This
-// mirrors the upstream Misskey QueryService.makePaginationQuery behavior.
-func announcementPaginationOrder(sinceID, untilID string) string {
-	// sinceID単独指定でDESCのままだと、次ページ(新しい方向)要求時に
-	// カーソル計算が壊れるためASCに反転させる。
-	if sinceID != "" && untilID == "" {
-		return "id ASC"
-	}
-	return "id DESC"
-}
-
 func (r *announcementRepository) List(activeOnly bool, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error) {
-	q := r.db.Order(announcementPaginationOrder(sinceID, untilID))
+	q := r.db.Order(paginationOrder(sinceID, untilID, "id"))
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}
@@ -94,7 +80,7 @@ func (r *announcementRepository) List(activeOnly bool, limit, offset int, sinceI
 }
 
 func (r *announcementRepository) ListGlobal(activeOnly bool, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error) {
-	q := r.db.Where(`"userId" IS NULL`).Order(announcementPaginationOrder(sinceID, untilID))
+	q := r.db.Where(`"userId" IS NULL`).Order(paginationOrder(sinceID, untilID, "id"))
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}
@@ -125,7 +111,7 @@ func (r *announcementRepository) ListForUser(userID string, activeOnly bool, lim
 	// GORMは連続.WhereをANDで繋ぐがraw SQL側のORはデフォルトでは括弧で
 	// 囲まれないので、明示的に囲まないとAND側の他フィルタ(isActive等)を
 	// バイパスしてしまう(SQL優先順位: AND > OR)。note.go:423と同じ gotcha。
-	q := r.db.Where(`("userId" IS NULL OR "userId" = ?)`, userID).Order(announcementPaginationOrder(sinceID, untilID))
+	q := r.db.Where(`("userId" IS NULL OR "userId" = ?)`, userID).Order(paginationOrder(sinceID, untilID, "id"))
 	if activeOnly {
 		q = q.Where("\"isActive\" = true")
 	}
