@@ -707,31 +707,11 @@ func (m *MockNoteRepository) ListByChannelID(channelID string, untilID, sinceID 
 }
 
 func (m *MockNoteRepository) ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
-	var notes []*model.Note
-	for _, n := range m.Notes {
-		if n.UserID != userID {
-			continue
-		}
-		if untilID != "" && n.ID >= untilID {
-			continue
-		}
-		if sinceID != "" && n.ID <= sinceID {
-			continue
-		}
-		notes = append(notes, n)
-	}
-	// id降順でソート
-	for i := 0; i < len(notes); i++ {
-		for j := i + 1; j < len(notes); j++ {
-			if notes[i].ID < notes[j].ID {
-				notes[i], notes[j] = notes[j], notes[i]
-			}
-		}
-	}
-	if limit > 0 && len(notes) > limit {
-		notes = notes[:limit]
-	}
-	return notes, nil
+	// listFiltered に委譲して他の List系と同じくASC-flip 挙動を継承する
+	// (#405 Devin指摘)。
+	return m.listFiltered(func(n *model.Note) bool {
+		return n.UserID == userID
+	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note, error) {
