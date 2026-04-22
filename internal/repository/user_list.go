@@ -1,9 +1,17 @@
 package repository
 
 import (
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
+
+// ErrUserListDuplicateMember is returned by UserListRepository.AddMember when
+// the (userListId, userId) pair already exists. Misskey TS の `ALREADY_ADDED`
+// error と対応する (#396)。
+var ErrUserListDuplicateMember = errors.New("user is already a member of this list")
 
 // UserListRepository provides data access for user lists.
 type UserListRepository interface {
@@ -57,7 +65,16 @@ func (r *userListRepository) Delete(id string) error {
 }
 
 func (r *userListRepository) AddMember(m *model.UserListMembership) error {
-	return r.db.Create(m).Error
+	if err := r.db.Create(m).Error; err != nil {
+		// (userListId, userId) 一意制約違反 (23505) を ErrUserListDuplicateMember
+		// に変換して、API 層で TS 互換の ALREADY_ADDED に翻訳する (#396)。
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrUserListDuplicateMember
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *userListRepository) RemoveMember(listID, userID string) error {

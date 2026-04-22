@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
@@ -77,4 +78,26 @@ func TestUserListRepository_ListMembers_Error(t *testing.T) {
 	repo := NewUserListRepository(testDB.WithContext(ctx))
 	_, err := repo.ListMembers("x")
 	assert.Error(t, err)
+}
+
+// TestUserListRepository_AddMember_Duplicate verifies the (userListId, userId)
+// unique-constraint violation is mapped to ErrUserListDuplicateMember (#396),
+// so the API layer can return the TS-compat ALREADY_ADDED error.
+func TestUserListRepository_AddMember_Duplicate(t *testing.T) {
+	repo := NewUserListRepository(testDB)
+	createTestUser(t, "ul_o3")
+	createTestUser(t, "ul_m3")
+
+	list := &model.UserList{ID: "ul_3", UserID: "ul_o3", Name: "Dup"}
+	require.NoError(t, repo.Create(list))
+	defer cleanupUserList(t, list.ID)
+
+	first := &model.UserListMembership{ID: "ulm_3a", UserListID: list.ID, UserID: "ul_m3"}
+	require.NoError(t, repo.AddMember(first))
+
+	dup := &model.UserListMembership{ID: "ulm_3b", UserListID: list.ID, UserID: "ul_m3"}
+	err := repo.AddMember(dup)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrUserListDuplicateMember),
+		"既 member の AddMember は ErrUserListDuplicateMember を返すこと, got: %v", err)
 }

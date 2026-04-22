@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/userlists"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -164,6 +165,29 @@ func TestPush_Error(t *testing.T) {
 	h := userlists.NewHandler(repo, idGen)
 	rec := doPost(h.Push, `{"listId":"l1","userId":"u2"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// duplicateAddMemberRepo always returns the duplicate sentinel from AddMember
+// so we can verify the handler translates it to ALREADY_ADDED (#396).
+type duplicateAddMemberRepo struct {
+	*testutil.MockUserListRepository
+}
+
+func (d *duplicateAddMemberRepo) AddMember(_ *model.UserListMembership) error {
+	return repository.ErrUserListDuplicateMember
+}
+
+func TestPush_AlreadyAdded(t *testing.T) {
+	repo := &duplicateAddMemberRepo{testutil.NewMockUserListRepository()}
+	repo.Lists["l1"] = &model.UserList{ID: "l1"}
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(repo, idGen)
+	rec := doPost(h.Push, `{"listId":"l1","userId":"u2"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, `"code":"ALREADY_ADDED"`)
+	assert.Contains(t, body, `1de7c884-1595-49e9-857e-61f12f4d4fc5`,
+		"TS 互換 error UUID を返すこと")
 }
 
 type failingRemoveMemberRepo struct {
