@@ -96,14 +96,12 @@ func (h *Handler) UpdateFollowAll(c echo.Context) error {
 func (h *Handler) RequestsSent(c echo.Context) error {
 	me := middleware.GetUser(c)
 	var req struct {
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	_ = c.Bind(&req)
-	if req.Limit <= 0 || req.Limit > 100 {
-		req.Limit = 30
-	}
-	rows, err := h.followingService.ListSentRequests(me.ID, req.Limit, req.Offset)
+	rows, err := h.followingService.ListSentRequests(me.ID, req.Limit, req.SinceID, req.UntilID)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}

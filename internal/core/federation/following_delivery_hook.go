@@ -40,27 +40,55 @@ func (h *FollowingDeliveryHook) OnLocalFollowed(follower, followee *model.User) 
 	}
 }
 
-// OnLocalUnfollowed sends an Undo Follow activity to a remote followee.
+// OnLocalUnfollowed sends an Undo Follow (local→remote unfollow) or Reject
+// Follow (local user removing a remote follower via /following/invalidate)
+// activity so that the remote server clears its side of the relationship.
+//
+// 本家 UserFollowingService.unfollow / decrementFollowing と同じ分岐:
+//   - follower local  / followee remote: Undo(Follow)
+//   - follower remote / followee local : Reject(Follow)
+//   - それ以外 (両方ローカル等) は no-op
 func (h *FollowingDeliveryHook) OnLocalUnfollowed(follower, followee *model.User) {
-	if !shouldDeliverFollow(follower, followee) {
+	if follower == nil || followee == nil {
 		return
 	}
-	follow := h.renderer.RenderFollow(follower.ID, *followee.URI)
-	undo := &activitypub.Undo{
-		Activity: activitypub.Activity{
-			Object: activitypub.Object{
-				Type: "Undo",
-				ID:   follow.ID + "/undo",
+	switch {
+	case shouldDeliverFollow(follower, followee):
+		// 標準的な local→remote unfollow。Undo(Follow) を follower 名義で送る。
+		follow := h.renderer.RenderFollow(follower.ID, *followee.URI)
+		undo := &activitypub.Undo{
+			Activity: activitypub.Activity{
+				Object: activitypub.Object{
+					Type: "Undo",
+					ID:   follow.ID + "/undo",
+				},
+				Actor: follow.Actor,
 			},
-			Actor: follow.Actor,
-		},
-		Object: follow,
-	}
-	activitypub.AddContext(undo)
-	body, _ := json.Marshal(undo)
-	if err := h.deliver.DeliverToUser(follower.ID, followee, body); err != nil {
-		slog.Warn("following delivery: unfollow failed",
-			"follower", follower.ID, "followee", followee.ID, "err", err)
+			Object: follow,
+		}
+		activitypub.AddContext(undo)
+		body, _ := json.Marshal(undo)
+		if err := h.deliver.DeliverToUser(follower.ID, followee, body); err != nil {
+			slog.Warn("following delivery: unfollow failed",
+				"follower", follower.ID, "followee", followee.ID, "err", err)
+		}
+	case !follower.IsLocal() && followee.IsLocal() && follower.URI != nil && *follower.URI != "":
+		// local followee が remote follower を剥がす (/following/invalidate)
+		// 場合は Reject(Follow) を followee 名義で送って相手側の Following
+		// 関係を解消させる (本家 decrementFollowing 相当)。
+		follow := &activitypub.Follow{
+			Activity: activitypub.Activity{
+				Object: activitypub.Object{Type: "Follow"},
+				Actor:  *follower.URI,
+			},
+			Object: h.urls.UserURI(followee.ID),
+		}
+		reject := h.renderer.RenderReject(followee.ID, follow)
+		body, _ := json.Marshal(reject)
+		if err := h.deliver.DeliverToUser(followee.ID, follower, body); err != nil {
+			slog.Warn("following delivery: reject (remove follower) failed",
+				"follower", follower.ID, "followee", followee.ID, "err", err)
+		}
 	}
 }
 

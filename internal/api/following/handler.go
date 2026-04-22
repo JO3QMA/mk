@@ -163,8 +163,14 @@ type ListRequestsResponseItem struct {
 // ListRequests handles POST /api/following/requests/list.
 func (h *Handler) ListRequests(c echo.Context) error {
 	me := middleware.GetUser(c)
+	var req struct {
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+	}
+	_ = c.Bind(&req)
 
-	requests, err := h.followingService.ListReceivedRequests(me.ID, 100, 0)
+	requests, err := h.followingService.ListReceivedRequests(me.ID, req.Limit, req.SinceID, req.UntilID)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}

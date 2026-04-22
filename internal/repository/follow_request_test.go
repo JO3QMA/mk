@@ -89,10 +89,10 @@ func TestFollowRequestRepository_QueryErrors(t *testing.T) {
 	_, err := repo.Exists("a", "b")
 	assert.Error(t, err)
 
-	_, err = repo.ListReceived("a", 10, 0)
+	_, err = repo.ListReceived("a", 10, "", "")
 	assert.Error(t, err)
 
-	_, err = repo.ListSent("a", 10, 0)
+	_, err = repo.ListSent("a", 10, "", "")
 	assert.Error(t, err)
 }
 
@@ -112,11 +112,11 @@ func TestFollowRequestRepository_ListReceived_ListSent(t *testing.T) {
 	insertFollowRequest(t, "fr_6", a.ID, c.ID)
 	defer testDB.Exec(`DELETE FROM "follow_request" WHERE id = ?`, "fr_6")
 
-	received, err := repo.ListReceived(b.ID, 10, 0)
+	received, err := repo.ListReceived(b.ID, 10, "", "")
 	require.NoError(t, err)
 	assert.Len(t, received, 2)
 
-	sent, err := repo.ListSent(a.ID, 10, 0)
+	sent, err := repo.ListSent(a.ID, 10, "", "")
 	require.NoError(t, err)
 	assert.Len(t, sent, 2)
 }

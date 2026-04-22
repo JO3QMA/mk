@@ -1014,6 +1014,7 @@ func (s *Server) setupRoutes() {
 	// Notifications endpoints
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)
 	notificationsHandler.SetRepos(userRepo, noteRepo)
+	notificationsHandler.SetFollowRequestRepo(followRequestRepo)
 	api.POST("/i/notifications", notificationsHandler.Show, middleware.RequireAuth())
 	api.POST("/i/notifications-grouped", notificationsHandler.Show, middleware.RequireAuth())
 	api.POST("/notifications/mark-all-as-read", notificationsHandler.MarkAllAsRead, middleware.RequireAuth())

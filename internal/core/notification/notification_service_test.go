@@ -95,6 +95,44 @@ func TestService_Create_SelfNotificationRejected(t *testing.T) {
 	require.ErrorIs(t, err, ErrSelfNotification)
 }
 
+func TestService_DeleteByTypeAndNotifier(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+
+	// alice の stream に bob からの receiveFollowRequest, carol からの同種、
+	// bob からの follow の計 3 件を積む。
+	for _, tc := range []struct {
+		notifier string
+		typ      Type
+	}{
+		{"bob", TypeReceiveFollowReq},
+		{"carol", TypeReceiveFollowReq},
+		{"bob", TypeFollow},
+	} {
+		_, err := svc.Create(ctx, CreateInput{NotifieeID: "alice", NotifierID: tc.notifier, Type: tc.typ})
+		require.NoError(t, err)
+	}
+
+	// bob からの receiveFollowRequest のみ消す。
+	require.NoError(t, svc.DeleteByTypeAndNotifier(ctx, "alice", TypeReceiveFollowReq, "bob"))
+
+	out, err := svc.List(ctx, "alice", 10)
+	require.NoError(t, err)
+	require.Len(t, out, 2) // carol の receiveFollowRequest + bob の follow が残る
+	for _, n := range out {
+		if n.Type == TypeReceiveFollowReq {
+			assert.Equal(t, "carol", n.NotifierID)
+		}
+	}
+}
+
+func TestService_DeleteByTypeAndNotifier_EmptyArgs(t *testing.T) {
+	svc := newTestSvc(t)
+	// 空の notifieeID / notifierID は no-op。
+	require.NoError(t, svc.DeleteByTypeAndNotifier(context.Background(), "", TypeReceiveFollowReq, "bob"))
+	require.NoError(t, svc.DeleteByTypeAndNotifier(context.Background(), "alice", TypeReceiveFollowReq, ""))
+}
+
 func TestService_CreateAndList(t *testing.T) {
 	svc := newTestSvc(t)
 	ctx := context.Background()

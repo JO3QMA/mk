@@ -3321,24 +3321,24 @@ func (m *MockFollowRequestRepository) Exists(followerID, followeeID string) (boo
 	return true, nil
 }
 
-func (m *MockFollowRequestRepository) ListReceived(userID string, limit, offset int) ([]*model.FollowRequest, error) {
+func (m *MockFollowRequestRepository) ListReceived(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
 	var rows []*model.FollowRequest
 	for _, r := range m.Requests {
 		if r.FolloweeID == userID {
 			rows = append(rows, r)
 		}
 	}
-	return paginateRequests(rows, limit, offset), nil
+	return paginateRequestsCursor(rows, limit, sinceID, untilID), nil
 }
 
-func (m *MockFollowRequestRepository) ListSent(userID string, limit, offset int) ([]*model.FollowRequest, error) {
+func (m *MockFollowRequestRepository) ListSent(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
 	var rows []*model.FollowRequest
 	for _, r := range m.Requests {
 		if r.FollowerID == userID {
 			rows = append(rows, r)
 		}
 	}
-	return paginateRequests(rows, limit, offset), nil
+	return paginateRequestsCursor(rows, limit, sinceID, untilID), nil
 }
 
 // CountReceived returns the number of pending requests addressed to userID.
@@ -3360,12 +3360,33 @@ func paginate(rows []*model.Following, limit, offset int) []*model.Following {
 	return rows[offset:end]
 }
 
-func paginateRequests(rows []*model.FollowRequest, limit, offset int) []*model.FollowRequest {
-	if offset >= len(rows) {
-		return nil
+// paginateRequestsCursor は sinceID / untilID 指定時のカーソル絞り込みと
+// Misskey本家の ASC/DESC 反転 (sinceID単独→ASC) を mockで再現する。
+func paginateRequestsCursor(rows []*model.FollowRequest, limit int, sinceID, untilID string) []*model.FollowRequest {
+	filtered := make([]*model.FollowRequest, 0, len(rows))
+	for _, r := range rows {
+		if sinceID != "" && r.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && r.ID >= untilID {
+			continue
+		}
+		filtered = append(filtered, r)
 	}
-	end := min(offset+limit, len(rows))
-	return rows[offset:end]
+	asc := sinceID != "" && untilID == ""
+	sort.Slice(filtered, func(i, j int) bool {
+		if asc {
+			return filtered[i].ID < filtered[j].ID
+		}
+		return filtered[i].ID > filtered[j].ID
+	})
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered
 }
 
 // ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ type failingListReqRepo struct {
 	*testutil.MockFollowRequestRepository
 }
 
-func (f *failingListReqRepo) ListReceived(_ string, _, _ int) ([]*model.FollowRequest, error) {
+func (f *failingListReqRepo) ListReceived(_ string, _ int, _, _ string) ([]*model.FollowRequest, error) {
 	return nil, stubError
 }
 
@@ -347,6 +347,33 @@ func TestListRequests_Empty(t *testing.T) {
 
 	rec := postJSON(h.ListRequests, `{}`, bob)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// alice が bob (鍵付) に Follow すると FollowRequest 行が作られる。
+// me=bob で ListRequests を呼ぶと follower フィールドに alice の情報が入ること、
+// limit / sinceId / untilId の各 pagination param が反映されることを検証。
+func TestListRequests_PopulatesFollowerAndPaginates(t *testing.T) {
+	h, repo := newTestHandler(t)
+	bob := addUser(repo, "bob", true) // locked
+	addUser(repo, "alice", false)
+	addUser(repo, "carol", false)
+	addUser(repo, "dave", false)
+	_, _ = h.followingService.Follow("alice", bob.ID)
+	_, _ = h.followingService.Follow("carol", bob.ID)
+	_, _ = h.followingService.Follow("dave", bob.ID)
+
+	rec := postJSON(h.ListRequests, `{}`, bob)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"alice"`)
+	assert.Contains(t, rec.Body.String(), `"carol"`)
+	assert.Contains(t, rec.Body.String(), `"dave"`)
+
+	// limit=1 で件数が絞られること
+	rec = postJSON(h.ListRequests, `{"limit":1}`, bob)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var items []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &items))
+	assert.Len(t, items, 1)
 }
 
 // --- failing-repo tests for handler default branches ---

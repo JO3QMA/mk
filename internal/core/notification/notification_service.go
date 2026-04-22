@@ -249,6 +249,43 @@ func (s *Service) List(ctx context.Context, userID string, limit int) ([]*Notifi
 	return out, nil
 }
 
+// DeleteByTypeAndNotifier removes all notifications of the given type sent by
+// notifierID from notifieeID's stream. follow request の accept / reject 直後に
+// 古い `receiveFollowRequest` 通知を掃除するために使う (#349 コメント)。
+// stream 消費後に再度同じ notifier からリクエストが来たときに、以前の
+// 解決済み通知まで復活するのを防ぐ。
+func (s *Service) DeleteByTypeAndNotifier(ctx context.Context, notifieeID string, typ Type, notifierID string) error {
+	if notifieeID == "" || notifierID == "" {
+		return nil
+	}
+	// 全 stream entry を走査 (MaxPerUser=300 cap なので上限は常識的)。
+	res, err := s.client.XRange(ctx, s.streamKey(notifieeID), "-", "+").Result()
+	if err != nil {
+		return err
+	}
+	var toDelete []string
+	for _, msg := range res {
+		raw, ok := msg.Values["data"].(string)
+		if !ok {
+			continue
+		}
+		var n Notification
+		if err := json.Unmarshal([]byte(raw), &n); err != nil {
+			continue
+		}
+		if n.Type == typ && n.NotifierID == notifierID {
+			toDelete = append(toDelete, msg.ID)
+		}
+	}
+	if len(toDelete) == 0 {
+		return nil
+	}
+	if err := s.client.XDel(ctx, s.streamKey(notifieeID), toDelete...).Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // MarkAllAsRead records the latest notification id as read for the user.
 // 既読位置を更新するだけで、ストリーム自体は変更しない。成功時に
 // `readAllNotifications` を main stream に publish する。

@@ -575,6 +575,27 @@ func (r *Renderer) RenderAccept(actorID string, inner any) *Accept {
 	return a
 }
 
+// RenderReject returns a Reject activity wrapping the given inner object
+// (typically a Follow). Used for:
+//   - local user rejecting an inbound Follow request
+//   - local user removing an existing remote follower (invalidate)
+//
+// 本家 UserFollowingService と同じく actor=rejecting user、object=original Follow。
+func (r *Renderer) RenderReject(actorID string, inner any) *Reject {
+	a := &Reject{
+		Activity: Activity{
+			Object: Object{
+				ID:   r.urls.baseURL + "/" + uuid.NewString(),
+				Type: "Reject",
+			},
+			Actor: r.urls.UserURI(actorID),
+		},
+		Object: inner,
+	}
+	AddContext(a)
+	return a
+}
+
 // RenderLike returns a Like activity for the given reaction.
 // targetURI は対象ノートの canonical URI (リモートなら note.URI、ローカルなら
 // urls.NoteURI(note.ID))。
