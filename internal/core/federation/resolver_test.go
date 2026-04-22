@@ -2241,7 +2241,7 @@ func TestExtractMentionTags(t *testing.T) {
 		expected []string
 	}{
 		{
-			name: "Mention href が拾える",
+			name: "Mention href is extracted",
 			raw: []any{
 				map[string]any{"type": "Mention", "href": "https://a/users/alice"},
 				map[string]any{"type": "Mention", "href": "https://b/users/bob", "name": "@bob@b"},
@@ -2249,7 +2249,7 @@ func TestExtractMentionTags(t *testing.T) {
 			expected: []string{"https://a/users/alice", "https://b/users/bob"},
 		},
 		{
-			name: "他種別 (Emoji / Hashtag) はスキップ",
+			name: "non-Mention types (Emoji/Hashtag) are skipped",
 			raw: []any{
 				map[string]any{"type": "Emoji", "href": "https://x/e"},
 				map[string]any{"type": "Hashtag", "href": "https://x/t"},
@@ -2258,7 +2258,7 @@ func TestExtractMentionTags(t *testing.T) {
 			expected: []string{"https://a/users/alice"},
 		},
 		{
-			name: "href 空 / 非 map はスキップ",
+			name: "empty href and non-map entries are skipped",
 			raw: []any{
 				map[string]any{"type": "Mention"},
 				map[string]any{"type": "Mention", "href": ""},
@@ -2269,7 +2269,7 @@ func TestExtractMentionTags(t *testing.T) {
 			expected: []string{"https://a/users/alice"},
 		},
 		{
-			name:     "空入力",
+			name:     "empty input",
 			raw:      nil,
 			expected: nil,
 		},
@@ -2283,20 +2283,20 @@ func TestExtractMentionTags(t *testing.T) {
 }
 
 func TestMergeMentionIDs(t *testing.T) {
-	t.Run("dedup 入力順保持", func(t *testing.T) {
+	t.Run("dedup preserves input order", func(t *testing.T) {
 		got := federation.MergeMentionIDs([]string{"a", "b"}, []string{"b", "c"})
 		assert.Equal(t, []string{"a", "b", "c"}, []string(got))
 	})
-	t.Run("空文字列スキップ", func(t *testing.T) {
+	t.Run("empty strings skipped", func(t *testing.T) {
 		got := federation.MergeMentionIDs([]string{"", "a", ""}, []string{"", "b"})
 		assert.Equal(t, []string{"a", "b"}, []string(got))
 	})
-	t.Run("両方空でも非 nil", func(t *testing.T) {
+	t.Run("both empty still returns non-nil", func(t *testing.T) {
 		got := federation.MergeMentionIDs(nil, nil)
 		require.NotNil(t, got)
 		assert.Empty(t, got)
 	})
-	t.Run("片方が他方の dedup を奪わない", func(t *testing.T) {
+	t.Run("dedup within single side", func(t *testing.T) {
 		// a, b, a, b → a, b
 		got := federation.MergeMentionIDs([]string{"a", "b", "a"}, []string{"b", "a"})
 		assert.Equal(t, []string{"a", "b"}, []string(got))
@@ -2304,7 +2304,7 @@ func TestMergeMentionIDs(t *testing.T) {
 }
 
 func TestResolveMentionedUserIDs(t *testing.T) {
-	t.Run("ローカル URI は ExtractLocalUserID 経由", func(t *testing.T) {
+	t.Run("local URI resolved via ExtractLocalUserID", func(t *testing.T) {
 		repo := testutil.NewMockUserRepository()
 		noteRepo := testutil.NewMockNoteRepository()
 		urls := activitypub.NewURLBuilder("https://example.com")
@@ -2318,7 +2318,7 @@ func TestResolveMentionedUserIDs(t *testing.T) {
 		assert.Equal(t, []string{"alice", "bob"}, ids)
 	})
 
-	t.Run("既知リモート URI は userRepo.FindByURI 経由", func(t *testing.T) {
+	t.Run("known remote URI resolved via userRepo.FindByURI", func(t *testing.T) {
 		repo := testutil.NewMockUserRepository()
 		host := "remote.example"
 		uri := "https://remote.example/users/charlie"
@@ -2336,7 +2336,7 @@ func TestResolveMentionedUserIDs(t *testing.T) {
 		assert.Equal(t, []string{"remote-charlie"}, ids)
 	})
 
-	t.Run("未知リモート URI はスキップ (fetch しない)", func(t *testing.T) {
+	t.Run("unknown remote URI skipped without fetch", func(t *testing.T) {
 		repo := testutil.NewMockUserRepository()
 		noteRepo := testutil.NewMockNoteRepository()
 		urls := activitypub.NewURLBuilder("https://example.com")
@@ -2361,7 +2361,7 @@ func TestResolveMentionedUserIDs(t *testing.T) {
 		assert.Equal(t, []string{"alice"}, ids)
 	})
 
-	t.Run("空入力", func(t *testing.T) {
+	t.Run("empty input", func(t *testing.T) {
 		repo := testutil.NewMockUserRepository()
 		noteRepo := testutil.NewMockNoteRepository()
 		urls := activitypub.NewURLBuilder("https://example.com")
@@ -2380,7 +2380,7 @@ func TestResolveTextMentionUserIDs(t *testing.T) {
 		idGen, _ := id.NewGenerator("aidx")
 		return federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen), repo
 	}
-	t.Run("ローカル / リモート 両方を ID へ解決", func(t *testing.T) {
+	t.Run("resolves both local and remote to IDs", func(t *testing.T) {
 		r, repo := mkResolver()
 		repo.Users["local-id"] = &model.User{ID: "local-id", Username: "alice", UsernameLower: "alice"}
 		host := "remote.example"
@@ -2392,12 +2392,12 @@ func TestResolveTextMentionUserIDs(t *testing.T) {
 		})
 		assert.Equal(t, []string{"local-id", "remote-id"}, ids)
 	})
-	t.Run("未知ユーザーは skip", func(t *testing.T) {
+	t.Run("unknown user is skipped", func(t *testing.T) {
 		r, _ := mkResolver()
 		ids := r.ResolveTextMentionUserIDs([]corenote.Mention{{Username: "ghost"}})
 		assert.Empty(t, ids)
 	})
-	t.Run("空入力", func(t *testing.T) {
+	t.Run("empty input", func(t *testing.T) {
 		r, _ := mkResolver()
 		assert.Nil(t, r.ResolveTextMentionUserIDs(nil))
 	})
