@@ -540,3 +540,52 @@ func TestUserRepository_ListUserRecommendations_LimitCap(t *testing.T) {
 	_, err = repo.ListUserRecommendations("nobody", time.Now(), 0, 0)
 	require.NoError(t, err)
 }
+
+// #403: nodeinfo usage 統計の DB 層を実 PostgreSQL で検証する。
+func TestUserRepository_CountLocalUsers(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	// fixture: local 2 (うち1 deleted), remote 1
+	localAlive := insertTestUser(t, "u_cnt_la", "cnt_la")
+	defer cleanupUser(t, localAlive.ID)
+	localDeleted := insertTestUser(t, "u_cnt_ld", "cnt_ld")
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", localDeleted.ID).Update("isDeleted", true).Error)
+	defer cleanupUser(t, localDeleted.ID)
+	remote := insertRemoteTestUser(t, "u_cnt_rem", "cnt_rem", "remote.example")
+	defer cleanupUser(t, remote.ID)
+
+	// testcontainers の共有 DB で他テスト fixture 残存がありうるので、
+	// 正確な count ではなく「少なくとも追加した localAlive 1人が含まれる」
+	// ことだけ assert する。
+	got, err := repo.CountLocalUsers()
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, got, int64(1))
+}
+
+func TestUserRepository_CountLocalUsersActiveSince(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	now := time.Now()
+	active := insertTestUser(t, "ucntact1", "cntact1")
+	recent := now.Add(-5 * time.Minute)
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", active.ID).UpdateColumn("lastActiveDate", &recent).Error)
+	defer cleanupUser(t, active.ID)
+
+	stale := insertTestUser(t, "ucntstl1", "cntstl1")
+	old := now.Add(-200 * 24 * time.Hour) // 200日前
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", stale.ID).UpdateColumn("lastActiveDate", &old).Error)
+	defer cleanupUser(t, stale.ID)
+
+	// 1ヶ月以内の active user が含まれる。
+	cnt, err := repo.CountLocalUsersActiveSince(now.AddDate(0, -1, 0))
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, cnt, int64(1))
+}
+
+func TestUserRepository_CountLocalUsers_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	_, err := repo.CountLocalUsers()
+	assert.Error(t, err)
+	_, err = repo.CountLocalUsersActiveSince(time.Now())
+	assert.Error(t, err)
+}

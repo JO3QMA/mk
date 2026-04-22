@@ -81,6 +81,12 @@ type NoteRepository interface {
 	// to, ordered by reply count descending. Used by
 	// users/get-frequently-replied-users.
 	CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error)
+	// CountLocalNotes returns the number of notes authored by local users
+	// (userHost IS NULL). nodeinfo `usage.localPosts` 相当 (#403)。
+	CountLocalNotes() (int64, error)
+	// CountLocalComments returns the number of reply notes from local users.
+	// nodeinfo `usage.localComments` 相当 (#403)。
+	CountLocalComments() (int64, error)
 }
 
 type noteRepository struct {
@@ -137,6 +143,31 @@ func (r *noteRepository) UpdateFields(noteID string, fields map[string]any) erro
 		return nil
 	}
 	return r.db.Model(&model.Note{}).Where("id = ?", noteID).Updates(fields).Error
+}
+
+// CountLocalNotes returns the total number of notes authored by local users,
+// including replies. nodeinfo `usage.localPosts` は本家 Misskey / Mastodon
+// と同じ「local post の総数」定義なので replies も含めて数える。
+// localComments (reply subset) との重複は仕様どおり。
+// また soft-delete された user 由来の note も含む (userHost IS NULL だけで判定)。
+// 本家 Misskey の countNotes も同じ挙動で、orphan note を除外するには
+// 別途 JOIN が要るが nodeinfo の用途では不要コスト。
+func (r *noteRepository) CountLocalNotes() (int64, error) {
+	var count int64
+	err := r.db.Model(&model.Note{}).
+		Where(`"userHost" IS NULL`).
+		Count(&count).Error
+	return count, err
+}
+
+// CountLocalComments returns the number of reply notes by local users.
+func (r *noteRepository) CountLocalComments() (int64, error) {
+	var count int64
+	err := r.db.Model(&model.Note{}).
+		Where(`"userHost" IS NULL`).
+		Where(`"replyId" IS NOT NULL`).
+		Count(&count).Error
+	return count, err
 }
 
 // IncrementCount adjusts a counter column on the note row by delta.

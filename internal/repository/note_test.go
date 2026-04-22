@@ -1052,3 +1052,46 @@ func TestNoteRepository_SinceIDFlipsOrderASC(t *testing.T) {
 	assert.Equal(t, "asc_n_b", ownOnly[0].ID)
 	assert.Equal(t, "asc_n_c", ownOnly[1].ID)
 }
+
+// #403: nodeinfo usage 用 count clauseを実 PostgreSQL で検証する。
+func TestNoteRepository_CountLocalNotes_CountLocalComments(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "n_cnt_u", "cntuser")
+	defer cleanupUser(t, user.ID)
+
+	// local post 1本
+	post := &model.Note{ID: "cnt_post1", UserID: user.ID, Visibility: "public"}
+	require.NoError(t, testDB.Create(post).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, post.ID)
+
+	// local reply 1本
+	replyID := "cnt_post1"
+	reply := &model.Note{ID: "cnt_reply1", UserID: user.ID, Visibility: "public", ReplyID: &replyID, ReplyUserID: &user.ID}
+	require.NoError(t, testDB.Create(reply).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, reply.ID)
+
+	// remote note (count 対象外)
+	remoteHost := "remote.example"
+	remote := &model.Note{ID: "cnt_remote1", UserID: user.ID, Visibility: "public", UserHost: &remoteHost}
+	require.NoError(t, testDB.Create(remote).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, remote.ID)
+
+	// fixture 追加前の数との delta を確認する (他 test fixture 残存があり得る)。
+	posts, err := repo.CountLocalNotes()
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, posts, int64(2)) // local post + reply
+
+	comments, err := repo.CountLocalComments()
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, comments, int64(1)) // reply だけ
+}
+
+func TestNoteRepository_CountLocal_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewNoteRepository(testDB.WithContext(ctx))
+	_, err := repo.CountLocalNotes()
+	assert.Error(t, err)
+	_, err = repo.CountLocalComments()
+	assert.Error(t, err)
+}

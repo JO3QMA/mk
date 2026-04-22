@@ -1199,6 +1199,7 @@ func (s *Server) setupRoutes() {
 
 	nodeinfoHandler := nodeinfo.NewHandler(s.config)
 	nodeinfoHandler.SetMetaRepo(metaRepo)
+	nodeinfoHandler.SetUsageRepos(userRepo, noteRepo)
 	s.echo.GET("/nodeinfo/2.1", nodeinfoHandler.Version2_1)
 
 	// Inbox endpoints

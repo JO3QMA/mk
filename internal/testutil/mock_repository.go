@@ -215,6 +215,35 @@ func (m *MockUserRepository) CountOnlineUsers() (int64, error) {
 	return 0, nil
 }
 
+// CountLocalUsers counts non-deleted local users in the mock store.
+func (m *MockUserRepository) CountLocalUsers() (int64, error) {
+	var n int64
+	for _, u := range m.Users {
+		if u.Host == nil && !u.IsDeleted {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountLocalUsersActiveSince counts local users with lastActiveDate >= since.
+func (m *MockUserRepository) CountLocalUsersActiveSince(since time.Time) (int64, error) {
+	var n int64
+	for _, u := range m.Users {
+		if u.Host != nil || u.IsDeleted {
+			continue
+		}
+		if u.LastActiveDate == nil {
+			continue
+		}
+		if u.LastActiveDate.Before(since) {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 // Followings はテスト側で MockUserRepository.Followings[viewerID] に followeeID
 // のリストを入れておくと、ListUserRecommendations から除外される。
 func (m *MockUserRepository) ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
@@ -853,6 +882,28 @@ func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]mode
 		rows = rows[:limit]
 	}
 	return rows, nil
+}
+
+// CountLocalNotes counts notes whose author is local (UserHost nil).
+func (m *MockNoteRepository) CountLocalNotes() (int64, error) {
+	var n int64
+	for _, note := range m.Notes {
+		if note.UserHost == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountLocalComments counts local notes that are replies.
+func (m *MockNoteRepository) CountLocalComments() (int64, error) {
+	var n int64
+	for _, note := range m.Notes {
+		if note.UserHost == nil && note.ReplyID != nil {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // MockNoteFavoriteRepository is a test double for repository.NoteFavoriteRepository.
