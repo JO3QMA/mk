@@ -553,13 +553,9 @@ func TestUserRepository_CountLocalUsers(t *testing.T) {
 	remote := insertRemoteTestUser(t, "u_cnt_rem", "cnt_rem", "remote.example")
 	defer cleanupUser(t, remote.ID)
 
-	// fixture が加わる前の既存 local/live user 数を取得し、delta で assert する。
-	before, err := repo.CountLocalUsers()
-	require.NoError(t, err)
-	// このテスト単独で fresh DB ならばAssertで良いが、testcontainers の共有DBで
-	// 他テストfixture残存がありうるので、少なくとも追加 +1 (localAlive) していること
-	// だけを検証する。
-	_ = before
+	// testcontainers の共有 DB で他テスト fixture 残存がありうるので、
+	// 正確な count ではなく「少なくとも追加した localAlive 1人が含まれる」
+	// ことだけ assert する。
 	got, err := repo.CountLocalUsers()
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, got, int64(1))
