@@ -50,6 +50,9 @@ type NotificationHook interface {
 	OnFollowed(followerID, followeeID string)
 	OnFollowRequested(followerID, followeeID string)
 	OnFollowAccepted(followerID, followeeID string)
+	// OnFollowRejected is called after a follow request is rejected so the
+	// corresponding `receiveFollowRequest` notification can be purged.
+	OnFollowRejected(followerID, followeeID string)
 }
 
 // FederationHook is invoked after follow/unfollow/accept events involving a
@@ -355,7 +358,13 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 		return err
 	}
 	if s.notificationHook != nil {
+		// follower側には「follow request accepted」、followee側には通常の
+		// follow と同じく「follow」通知を作る (TS本家 insertFollowingDoc が
+		// acceptFollowRequest 経由でも同じ通知を発火するため、本家互換)。
+		// これを呼ばないとfollowee の通知欄に「リクエストが来ました」しか
+		// 残らず「フォローされました」が出ない (#349 コメント)。
 		s.notificationHook.OnFollowAccepted(req.FollowerID, req.FolloweeID)
+		s.notificationHook.OnFollowed(req.FollowerID, req.FolloweeID)
 	}
 	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil || s.mainStreamPublisher != nil {
 		follower, ferr := s.userRepo.FindByID(req.FollowerID)
@@ -392,6 +401,12 @@ func (s *Service) RejectRequest(followeeID, followerID string) error {
 	}
 	if err := s.followRequestRepo.Delete(req); err != nil {
 		return err
+	}
+	// followee 側に残る `receiveFollowRequest` 通知を掃除する (#349 コメント)。
+	// そうしないと、同じユーザーから後で再リクエストが来たときに過去の解決済
+	// 通知まで一覧に復活する。
+	if s.notificationHook != nil {
+		s.notificationHook.OnFollowRejected(req.FollowerID, req.FolloweeID)
 	}
 	// publisher 未配線なら DB lookup を省く (RejectRequest は federation
 	// hook を呼ばないので CancelRequest と違い mainStreamPublisher だけ
@@ -464,14 +479,15 @@ func (s *Service) publishFollowRequestResolved(followerID string, followee *mode
 	s.mainStreamPublisher.PublishMainEvent(followerID, "unfollow", entity.PackUserForFollowStreamEvent(followee, false, false))
 }
 
-// ListReceivedRequests returns follow requests received by userID.
-func (s *Service) ListReceivedRequests(userID string, limit, offset int) ([]*model.FollowRequest, error) {
-	return s.followRequestRepo.ListReceived(userID, limit, offset)
+// ListReceivedRequests returns follow requests received by userID. sinceID /
+// untilID はMisskey本家の pagination cursor (空文字で無指定扱い)。
+func (s *Service) ListReceivedRequests(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
+	return s.followRequestRepo.ListReceived(userID, limit, sinceID, untilID)
 }
 
 // ListSentRequests returns follow requests sent by userID.
-func (s *Service) ListSentRequests(userID string, limit, offset int) ([]*model.FollowRequest, error) {
-	return s.followRequestRepo.ListSent(userID, limit, offset)
+func (s *Service) ListSentRequests(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
+	return s.followRequestRepo.ListSent(userID, limit, sinceID, untilID)
 }
 
 // ListReceivedFollowing returns followings where userID is the followee.

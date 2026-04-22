@@ -16,10 +16,11 @@ import (
 
 // Handler handles notifications-related API endpoints.
 type Handler struct {
-	svc      *notification.Service
-	idGen    id.Generator
-	userRepo repository.UserRepository
-	noteRepo repository.NoteRepository
+	svc           *notification.Service
+	idGen         id.Generator
+	userRepo      repository.UserRepository
+	noteRepo      repository.NoteRepository
+	followReqRepo repository.FollowRequestRepository
 }
 
 // NewHandler creates a new notifications Handler.
@@ -31,6 +32,14 @@ func NewHandler(svc *notification.Service, idGen id.Generator) *Handler {
 func (h *Handler) SetRepos(userRepo repository.UserRepository, noteRepo repository.NoteRepository) {
 	h.userRepo = userRepo
 	h.noteRepo = noteRepo
+}
+
+// SetFollowRequestRepo attaches a FollowRequestRepository. 受信済み
+// receiveFollowRequest 通知について対応する follow_request 行が無ければ
+// (承認/拒否により消えた) 通知一覧から除外する用途 (本家
+// NotificationEntityService と同じ挙動)。
+func (h *Handler) SetFollowRequestRepo(r repository.FollowRequestRepository) {
+	h.followReqRepo = r
 }
 
 // ListRequest is the request body for notifications.
@@ -81,6 +90,14 @@ func (h *Handler) Show(c echo.Context) error {
 		}
 		if excludeSet[string(n.Type)] {
 			continue
+		}
+		// 既に解決された follow request (accept / reject で消えた) に対応する
+		// receiveFollowRequest 通知はユーザー視点で既に古く「残り続ける」ので
+		// 除外する (#349 コメント対応、本家 NotificationEntityService 互換)。
+		if n.Type == notification.TypeReceiveFollowReq && h.followReqRepo != nil && n.NotifierID != "" {
+			if exists, err := h.followReqRepo.Exists(n.NotifierID, user.ID); err == nil && !exists {
+				continue
+			}
 		}
 		// WebSocket 経由の packing と一貫性を保つため entity.PackNotification
 		// にdelegateする(Devin #315 指摘)。user/note 取得は handler 側で

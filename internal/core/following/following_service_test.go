@@ -605,7 +605,7 @@ func TestListReceivedRequests(t *testing.T) {
 	_, _ = svc.Follow("alice", "bob")
 	_, _ = svc.Follow("carol", "bob")
 
-	rows, err := svc.ListReceivedRequests("bob", 100, 0)
+	rows, err := svc.ListReceivedRequests("bob", 100, "", "")
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }
@@ -644,7 +644,7 @@ func TestListSentRequests(t *testing.T) {
 	_, _ = svc.Follow("alice", "bob")
 	_, _ = svc.Follow("alice", "dave")
 
-	rows, err := svc.ListSentRequests("alice", 100, 0)
+	rows, err := svc.ListSentRequests("alice", 100, "", "")
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }
@@ -825,6 +825,7 @@ type recordingHook struct {
 	follows  []string
 	requests []string
 	accepts  []string
+	rejects  []string
 }
 
 func (h *recordingHook) OnFollowed(followerID, followeeID string) {
@@ -835,6 +836,9 @@ func (h *recordingHook) OnFollowRequested(followerID, followeeID string) {
 }
 func (h *recordingHook) OnFollowAccepted(followerID, followeeID string) {
 	h.accepts = append(h.accepts, followerID+"->"+followeeID)
+}
+func (h *recordingHook) OnFollowRejected(followerID, followeeID string) {
+	h.rejects = append(h.rejects, followerID+"->"+followeeID)
 }
 
 func TestService_NotificationHook_OnFollow(t *testing.T) {
@@ -934,7 +938,24 @@ func TestService_NotificationHook_OnAccept(t *testing.T) {
 	svc.SetNotificationHook(hook)
 
 	require.NoError(t, svc.AcceptRequest("alice", "bob"))
+	// follower (bob) に「follow request accepted」通知
 	assert.Equal(t, []string{"bob->alice"}, hook.accepts)
+	// followee (alice) に「follow」通知 (#349 コメント対応、本家 insertFollowingDoc 互換)
+	assert.Equal(t, []string{"bob->alice"}, hook.follows)
+}
+
+func TestService_NotificationHook_OnReject(t *testing.T) {
+	svc, ur, _, frRepo := newSvc(t)
+	addUser(t, ur, "alice", true)
+	addUser(t, ur, "bob", false)
+	frRepo.Requests["req"] = &model.FollowRequest{ID: "req", FollowerID: "bob", FolloweeID: "alice"}
+	hook := &recordingHook{}
+	svc.SetNotificationHook(hook)
+
+	require.NoError(t, svc.RejectRequest("alice", "bob"))
+	// reject後、followee (alice) 側の receiveFollowRequest 通知を purge するため
+	// OnFollowRejected が呼ばれる。
+	assert.Equal(t, []string{"bob->alice"}, hook.rejects)
 }
 
 // recordingFederationHook captures federation hook invocations for assertion.

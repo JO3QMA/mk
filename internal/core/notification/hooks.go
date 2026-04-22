@@ -194,12 +194,26 @@ func (h *Hook) OnFollowRequested(followerID, followeeID string) {
 }
 
 // OnFollowAccepted records a notification on the requester's side.
+// 同時に followee 側に残っている `receiveFollowRequest` 通知を削除する。
+// 残したままだと、後で同じユーザーから再度リクエストが来た時に過去分まで
+// 一覧に復活する (#349 コメント)。
 func (h *Hook) OnFollowAccepted(followerID, followeeID string) {
 	h.notifyLocalUser(context.Background(), followerID, CreateInput{
 		NotifieeID: followerID,
 		NotifierID: followeeID,
 		Type:       TypeFollowRequestAccept,
 	})
+	if h.svc != nil {
+		_ = h.svc.DeleteByTypeAndNotifier(context.Background(), followeeID, TypeReceiveFollowReq, followerID)
+	}
+}
+
+// OnFollowRejected removes the receiveFollowRequest notification on the
+// rejecting user's side (follower 側へのrejected通知は本家に無いので作らない)。
+func (h *Hook) OnFollowRejected(followerID, followeeID string) {
+	if h.svc != nil {
+		_ = h.svc.DeleteByTypeAndNotifier(context.Background(), followeeID, TypeReceiveFollowReq, followerID)
+	}
 }
 
 // OnReactionCreated records a reaction notification on the note author's stream.

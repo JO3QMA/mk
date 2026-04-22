@@ -11,8 +11,11 @@ type FollowRequestRepository interface {
 	Delete(r *model.FollowRequest) error
 	FindByPair(followerID, followeeID string) (*model.FollowRequest, error)
 	Exists(followerID, followeeID string) (bool, error)
-	ListReceived(userID string, limit, offset int) ([]*model.FollowRequest, error)
-	ListSent(userID string, limit, offset int) ([]*model.FollowRequest, error)
+	// ListReceived returns follow requests where userID is the followee.
+	// sinceID / untilID はMisskey本家の pagination cursor。空文字で無指定扱い。
+	ListReceived(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error)
+	// ListSent returns follow requests where userID is the follower.
+	ListSent(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error)
 	// CountReceived returns the number of pending follow requests received by
 	// userID. Used by /api/i to compute hasPendingReceivedFollowRequest.
 	CountReceived(userID string) (int64, error)
@@ -53,16 +56,8 @@ func (r *followRequestRepository) Exists(followerID, followeeID string) (bool, e
 	return count > 0, nil
 }
 
-func (r *followRequestRepository) ListReceived(userID string, limit, offset int) ([]*model.FollowRequest, error) {
-	var rows []*model.FollowRequest
-	if err := r.db.Where("\"followeeId\" = ?", userID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	return rows, nil
+func (r *followRequestRepository) ListReceived(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
+	return r.listByColumn("\"followeeId\"", userID, limit, sinceID, untilID)
 }
 
 func (r *followRequestRepository) CountReceived(userID string) (int64, error) {
@@ -75,13 +70,30 @@ func (r *followRequestRepository) CountReceived(userID string) (int64, error) {
 	return count, nil
 }
 
-func (r *followRequestRepository) ListSent(userID string, limit, offset int) ([]*model.FollowRequest, error) {
+func (r *followRequestRepository) ListSent(userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
+	return r.listByColumn("\"followerId\"", userID, limit, sinceID, untilID)
+}
+
+// listByColumn is the shared query builder for ListReceived / ListSent. Misskey
+// 本家 QueryService.makePaginationQuery 相当で sinceID 単独指定時は ASC に反転する
+// (それ以外は DESC 維持)。
+func (r *followRequestRepository) listByColumn(col, userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
+	order := "id DESC"
+	if sinceID != "" && untilID == "" {
+		order = "id ASC"
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	q := r.db.Where(col+" = ?", userID).Order(order).Limit(limit)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
 	var rows []*model.FollowRequest
-	if err := r.db.Where("\"followerId\" = ?", userID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
