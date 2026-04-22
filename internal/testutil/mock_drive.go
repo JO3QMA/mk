@@ -53,6 +53,18 @@ func (m *MockDriveFileRepository) FindByMD5(userID, md5 string) (*model.DriveFil
 	return match, nil
 }
 
+func (m *MockDriveFileRepository) FindByURI(uri string) (*model.DriveFile, error) {
+	if uri == "" {
+		return nil, ErrNotFound
+	}
+	for _, f := range m.Files {
+		if f.URI != nil && *f.URI == uri {
+			return f, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (m *MockDriveFileRepository) Update(id string, fields map[string]any) error {
 	f, ok := m.Files[id]
 	if !ok {

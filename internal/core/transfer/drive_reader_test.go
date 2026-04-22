@@ -59,6 +59,9 @@ func (f *fakeDriveFileRepo) FindByIDs(ids []string) ([]*model.DriveFile, error) 
 func (f *fakeDriveFileRepo) FindByMD5(_, _ string) (*model.DriveFile, error) {
 	return nil, errors.New("not found")
 }
+func (f *fakeDriveFileRepo) FindByURI(_ string) (*model.DriveFile, error) {
+	return nil, errors.New("not found")
+}
 func (f *fakeDriveFileRepo) Create(file *model.DriveFile) error {
 	f.files[file.ID] = file
 	return nil
