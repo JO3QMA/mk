@@ -22,3 +22,14 @@ func (r *Resolver) UpsertAttachments(docs []activitypub.Document, userID, host *
 func (r *Resolver) CollectAttachedFileTypes(fileIDs []string) []string {
 	return r.collectAttachedFileTypes(fileIDs)
 }
+
+// ExtractMentionTags exposes the unexported extractMentionTags for external tests (#397).
+var ExtractMentionTags = extractMentionTags
+
+// MergeMentionIDs exposes the unexported mergeMentionIDs for external tests (#397).
+var MergeMentionIDs = mergeMentionIDs
+
+// ResolveMentionedUserIDs exposes the unexported resolveMentionedUserIDs for external tests.
+func (r *Resolver) ResolveMentionedUserIDs(hrefs []string) []string {
+	return r.resolveMentionedUserIDs(hrefs)
+}

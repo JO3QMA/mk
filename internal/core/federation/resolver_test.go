@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -2228,4 +2229,265 @@ type findIDsErrDriveRepo struct {
 
 func (f *findIDsErrDriveRepo) FindByIDs(_ []string) ([]*model.DriveFile, error) {
 	return nil, f.err
+}
+
+// --- #397 mention extraction / resolution / merge ---
+
+func TestExtractMentionTags(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      []any
+		expected []string
+	}{
+		{
+			name: "Mention href が拾える",
+			raw: []any{
+				map[string]any{"type": "Mention", "href": "https://a/users/alice"},
+				map[string]any{"type": "Mention", "href": "https://b/users/bob", "name": "@bob@b"},
+			},
+			expected: []string{"https://a/users/alice", "https://b/users/bob"},
+		},
+		{
+			name: "他種別 (Emoji / Hashtag) はスキップ",
+			raw: []any{
+				map[string]any{"type": "Emoji", "href": "https://x/e"},
+				map[string]any{"type": "Hashtag", "href": "https://x/t"},
+				map[string]any{"type": "Mention", "href": "https://a/users/alice"},
+			},
+			expected: []string{"https://a/users/alice"},
+		},
+		{
+			name: "href 空 / 非 map はスキップ",
+			raw: []any{
+				map[string]any{"type": "Mention"},
+				map[string]any{"type": "Mention", "href": ""},
+				"not-an-object",
+				42,
+				map[string]any{"type": "Mention", "href": "https://a/users/alice"},
+			},
+			expected: []string{"https://a/users/alice"},
+		},
+		{
+			name:     "空入力",
+			raw:      nil,
+			expected: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := federation.ExtractMentionTags(tt.raw)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestMergeMentionIDs(t *testing.T) {
+	t.Run("dedup 入力順保持", func(t *testing.T) {
+		got := federation.MergeMentionIDs([]string{"a", "b"}, []string{"b", "c"})
+		assert.Equal(t, []string{"a", "b", "c"}, []string(got))
+	})
+	t.Run("空文字列スキップ", func(t *testing.T) {
+		got := federation.MergeMentionIDs([]string{"", "a", ""}, []string{"", "b"})
+		assert.Equal(t, []string{"a", "b"}, []string(got))
+	})
+	t.Run("両方空でも非 nil", func(t *testing.T) {
+		got := federation.MergeMentionIDs(nil, nil)
+		require.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+	t.Run("片方が他方の dedup を奪わない", func(t *testing.T) {
+		// a, b, a, b → a, b
+		got := federation.MergeMentionIDs([]string{"a", "b", "a"}, []string{"b", "a"})
+		assert.Equal(t, []string{"a", "b"}, []string(got))
+	})
+}
+
+func TestResolveMentionedUserIDs(t *testing.T) {
+	t.Run("ローカル URI は ExtractLocalUserID 経由", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+		ids := r.ResolveMentionedUserIDs([]string{
+			"https://example.com/users/alice",
+			"https://example.com/users/bob/inbox", // 末尾サフィックス付き
+		})
+		assert.Equal(t, []string{"alice", "bob"}, ids)
+	})
+
+	t.Run("既知リモート URI は userRepo.FindByURI 経由", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		host := "remote.example"
+		uri := "https://remote.example/users/charlie"
+		repo.Users["remote-charlie"] = &model.User{
+			ID:   "remote-charlie",
+			Host: &host,
+			URI:  &uri,
+		}
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+		ids := r.ResolveMentionedUserIDs([]string{uri})
+		assert.Equal(t, []string{"remote-charlie"}, ids)
+	})
+
+	t.Run("未知リモート URI はスキップ (fetch しない)", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+		ids := r.ResolveMentionedUserIDs([]string{"https://unknown.example/users/x"})
+		assert.Empty(t, ids)
+	})
+
+	t.Run("dedup", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+		ids := r.ResolveMentionedUserIDs([]string{
+			"https://example.com/users/alice",
+			"https://example.com/users/alice",
+		})
+		assert.Equal(t, []string{"alice"}, ids)
+	})
+
+	t.Run("空入力", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+		assert.Empty(t, r.ResolveMentionedUserIDs(nil))
+	})
+}
+
+// TestIngestNote_SpecifiedDMPopulatesMentionsAndVisibleUserIDs covers the
+// #397 fix end-to-end: a specified DM whose body has no @mention but whose
+// AP `tag` array has a Mention to alice should still end up with alice in
+// note.Mentions and note.VisibleUserIDs so /api/notes/mentions returns it
+// and CanView lets alice read it.
+func TestIngestNote_SpecifiedDMPopulatesMentionsAndVisibleUserIDs(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	// alice はローカル mk-A のユーザー (URI = https://example.com/users/alice)
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/dm1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "secret hello",
+		"to": ["https://example.com/users/alice"],
+		"cc": [],
+		"tag": [
+			{"type": "Mention", "href": "https://example.com/users/alice", "name": "@alice"}
+		]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilitySpecified, got.Visibility)
+	assert.Equal(t, []string{"alice"}, []string(got.Mentions),
+		"AP tag Mention 由来でも mentions が埋まる")
+	assert.Equal(t, []string{"alice"}, []string(got.VisibleUserIDs),
+		"specified では VisibleUserIDs が AP to から埋まる")
+}
+
+func TestIngestNote_NonSpecifiedSkipsVisibleUserIDs(t *testing.T) {
+	// public visibility なら VisibleUserIDs は埋めない (空のまま)。
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/pub1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "hello world",
+		"to": ["https://www.w3.org/ns/activitystreams#Public"],
+		"cc": [],
+		"tag": [
+			{"type": "Mention", "href": "https://example.com/users/alice", "name": "@alice"}
+		]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, got.Visibility)
+	assert.Equal(t, []string{"alice"}, []string(got.Mentions))
+	assert.Empty(t, []string(got.VisibleUserIDs))
+}
+
+func TestIngestNote_TagMentionsMergedWithTextMentions(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	// 本文に @bob、tag に alice。両方が mentions に入ること。
+	body := []byte(`{
+		"id": "https://remote.example/notes/merge1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "hi @bob",
+		"to": ["https://example.com/users/alice"],
+		"cc": [],
+		"tag": [
+			{"type": "Mention", "href": "https://example.com/users/alice", "name": "@alice"}
+		]
+	}`)
+	got, err := r.IngestNote(body)
+	require.NoError(t, err)
+	mentions := []string(got.Mentions)
+	assert.Contains(t, mentions, "alice")
+	assert.Contains(t, mentions, "bob")
+}
+
+// TestUpdateRemoteNote_MentionsRecomputed confirms tag-derived mentions are
+// recomputed on inbound Update even if text is unchanged (#397)。
+func TestUpdateRemoteNote_MentionsRecomputed(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	// 既存リモートノート (mentions 空)
+	host := "remote.example"
+	uri := "https://remote.example/notes/edit1"
+	existing := &model.Note{
+		ID:       "n-edit1",
+		UserID:   "remote-alice",
+		UserHost: &host,
+		URI:      &uri,
+		Mentions: pq.StringArray{},
+	}
+	noteRepo.Notes[existing.ID] = existing
+
+	body := []byte(`{
+		"id": "https://remote.example/notes/edit1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "edited content",
+		"tag": [
+			{"type": "Mention", "href": "https://example.com/users/alice", "name": "@alice"}
+		]
+	}`)
+	got, err := r.UpdateRemoteNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, []string{"alice"}, []string(got.Mentions))
 }
