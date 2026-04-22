@@ -72,7 +72,8 @@ func (r *noteReactionRepository) FindByUserAndNoteIDs(userID string, noteIDs []s
 }
 
 // ListByNoteID returns reactions for the given noteID, optionally filtered by
-// reaction string. Ordered by id DESC for keyset pagination.
+// reaction string. Uses keyset pagination with paginationOrder (DESC by
+// default; ASC when only sinceID is supplied, upstream parity).
 func (r *noteReactionRepository) ListByNoteID(noteID string, untilID, sinceID string, limit int, reactions []string) ([]*model.NoteReaction, error) {
 	var rows []*model.NoteReaction
 	q := r.db.Preload("User").Where("\"noteId\" = ?", noteID)

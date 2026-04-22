@@ -1018,7 +1018,7 @@ func TestNoteRepository_SinceIDFlipsOrderASC(t *testing.T) {
 
 	// IDの lexicographic 順に作成: a < b < c
 	for _, id := range []string{"asc_n_a", "asc_n_b", "asc_n_c"} {
-		n := &model.Note{ID: id, UserID: user.ID, Visibility: "public", Tags: []string{"ascflip"}}
+		n := &model.Note{ID: id, UserID: user.ID, Visibility: "public", Tags: []string{"ascflip"}, Reactions: datatypes.JSON([]byte("{}"))}
 		require.NoError(t, testDB.Create(n).Error)
 		defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, id)
 	}
