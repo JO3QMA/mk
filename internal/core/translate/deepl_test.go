@@ -85,3 +85,17 @@ func TestNewDeepL_FreeEndpoint(t *testing.T) {
 	c := NewDeepL("key", false)
 	assert.Equal(t, deeplFreeURL, c.apiURL)
 }
+
+// #340: DeepL fetcher が過大 response を safehttp.ReadAllLimit で弾くこと。
+// 1 MiB cap を超える body を返す stub server に対して ErrRequestFailed を返す。
+func TestDeepL_Translate_ResponseTooLarge(t *testing.T) {
+	oversized := make([]byte, 2<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(oversized)
+	}))
+	defer srv.Close()
+
+	c := NewDeepLWithClient("key", srv.URL, srv.Client())
+	_, err := c.Translate(context.Background(), "text", "en")
+	assert.ErrorIs(t, err, ErrRequestFailed)
+}

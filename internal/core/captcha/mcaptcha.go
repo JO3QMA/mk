@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 type mcaptchaVerifier struct {
@@ -78,7 +79,7 @@ func (v *mcaptchaVerifier) Verify(ctx context.Context, token string) error {
 		return fmt.Errorf("%w: status %d", ErrVerificationFail, resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := safehttp.ReadAllLimit(resp.Body, safehttp.DefaultThirdPartyAPILimit)
 	if err != nil {
 		return fmt.Errorf("%w: read body: %v", ErrRequestFailed, err)
 	}

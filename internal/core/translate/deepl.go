@@ -7,10 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 var (
@@ -78,7 +79,7 @@ func (c *DeepLClient) Translate(ctx context.Context, text, targetLang string) (*
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := safehttp.ReadAllLimit(resp.Body, safehttp.DefaultThirdPartyAPILimit)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read body: %v", ErrRequestFailed, err)
 	}

@@ -15,6 +15,17 @@ var ErrResponseTooLarge = errors.New("safehttp: response body exceeds size limit
 // exhaustion を防ぎつつ典型的な AP/JRD payload には十分なサイズ。
 const DefaultAPBodyLimit int64 = 1 << 20
 
+// DefaultThirdPartyAPILimit caps first-party third-party API responses
+// (captcha verify, email verify, DeepL translate etc.). これらは
+// 設定済み信頼済みサービスとの通信なので攻撃者制御リスクは低いが、
+// defense-in-depth のため #340 で統一 cap を当てる。
+//
+// 大半の captcha/email verify は数 KiB 以内の JSON、DeepL は翻訳長に
+// 依存するがドキュメント上限 5,000 文字 × JSON overhead = 数百 KiB 程度。
+// 1 MiB あれば実用上十分で、misconfiguration / 攻撃的巨大 response の
+// memory exhaustion を防げる。
+const DefaultThirdPartyAPILimit int64 = 1 << 20
+
 // ReadAllLimit reads r up to max bytes. If r contains more than max bytes,
 // ErrResponseTooLarge is returned. max <= 0 disables the cap (matches
 // io.ReadAll). max >= math.MaxInt64 is treated as unlimited to avoid

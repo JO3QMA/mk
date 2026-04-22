@@ -278,3 +278,27 @@ func TestDomainOf(t *testing.T) {
 	assert.Equal(t, "sub.domain.org", domainOf("a@sub.domain.org"))
 	assert.Equal(t, "", domainOf("noatsign"))
 }
+
+// #340: verifymail / truemail fetcher が過大 response を safehttp.ReadAllLimit
+// で弾くこと。1 MiB cap を超えるbodyを返す stub server に対して error が
+// 伝播することを検証する。
+func TestVerifymail_ResponseTooLarge(t *testing.T) {
+	oversized := make([]byte, 2<<20)
+	c := verifymailWithStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(oversized)
+	})
+	err := c.verify(context.Background(), "a@example.com")
+	assert.Error(t, err)
+}
+
+func TestTruemail_ResponseTooLarge(t *testing.T) {
+	oversized := make([]byte, 2<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(oversized)
+	}))
+	defer srv.Close()
+
+	c := &truemailClient{instanceURL: srv.URL, authKey: "key", client: srv.Client()}
+	err := c.verify(context.Background(), "a@example.com")
+	assert.Error(t, err)
+}
