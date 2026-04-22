@@ -32,7 +32,7 @@ func (r *signinRepository) ListByUserID(userID string, limit int, untilID, since
 	if sinceID != "" {
 		q = q.Where(`"id" > ?`, sinceID)
 	}
-	q = q.Order(`"id" DESC`).Limit(limit)
+	q = q.Order(paginationOrder(sinceID, untilID, `"id"`)).Limit(limit)
 
 	var rows []*model.Signin
 	if err := q.Find(&rows).Error; err != nil {
