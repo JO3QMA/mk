@@ -140,28 +140,42 @@ BullMQ と wire compatible。既存の bull-board / Misskey admin UI / 他言語
 
 ```
 {prefix}:{queue}:id          INCR で job id 発行
-{prefix}:{queue}:wait        LIST (waiting jobs, LPUSH / RPOP)
+{prefix}:{queue}:wait        ZSET (score=priority*2^40+age、member=job id)  ← BullMQ v5+ 互換
+{prefix}:{queue}:prioritized  ZSET (wait のpriority付き実体、BullMQ v5+ 命名)
 {prefix}:{queue}:active      LIST (currently processing)
 {prefix}:{queue}:delayed     ZSET (score=unix epoch ms, member=job id)
 {prefix}:{queue}:completed   ZSET (score=finishedOn, LRU via ZREMRANGEBYRANK)
 {prefix}:{queue}:failed      ZSET (score=finishedOn)
-{prefix}:{queue}:paused      LIST (paused時の waiting の退避先)
+{prefix}:{queue}:paused      ZSET (paused時の waiting の退避先、ZSET形式で順序保持)
 {prefix}:{queue}:meta        HASH (lock / paused / limiter state)
 {prefix}:{queue}:repeat      ZSET (repeat jobs)
 {prefix}:{queue}:repeat:{hash}:{ts}  Job (repeat インスタンス)
 {prefix}:{queue}:{jobId}     HASH (data / opts / progress / returnvalue / stacktrace / ...)
-{prefix}:{queue}:stalled-check  (stalled detection用 sorted set)
+{prefix}:{queue}:stalled-check  ZSET (stalled detection用、score=lastHeartbeat)
+{prefix}:{queue}:limiter     HASH (rate limiter state: tokens / refill timestamp)
+{prefix}:{queue}:events      Redis Stream (BullMQ QueueEvents 互換のpubsub)
 ```
 
-### 5.2 Lua scripts (最小限)
+**BullMQ v5+ への追随**: `wait` は旧版の LIST から ZSET (priority + age) に変更されている。mkq は v5+ 仕様を採用して bull-board / 最新 BullMQ client と wire 互換を保つ。
 
-BullMQ は 30以上の Lua scripts を使うが、mkq は **以下の 3本** に最小化:
+### 5.2 Lua scripts
 
-1. **moveToActive**: wait → active + lock 取得 (atomicity 要)
-2. **moveToFinished**: active → completed/failed + stalled-check 削除 + retention
-3. **addJob**: id 発行 + Job HASH 保存 + wait/delayed への enqueue
+BullMQ は 30+ の Lua scripts を使う。mkq も「条件分岐 + 書き戻し」が atomic でないと破綻する操作は Lua で書く必要がある (MULTI/EXEC は all-or-nothing だが intermediate result で branch できないので rate limiter / stalled / pause には不十分)。
 
-他は Go 側で MULTI/EXEC or WATCH/CAS で実装。Lua は Redis server で parse cache されるので startup に数十 KB の Lua を roundtrip する不利益を避ける。
+初期ターゲットの **8 本の Lua script**:
+
+1. `addJob`: id 発行 + Job HASH 保存 + wait ZSET or delayed ZSET へ enqueue。paused ならそちらへ
+2. `moveToActive`: wait → active + lock + stalled-check 登録。paused check 込み
+3. `moveToFinished`: active → completed/failed + stalled-check 削除 + retention (ZREMRANGEBYRANK) + returnvalue/stacktrace 書き込み
+4. `retryJob`: failed → delayed に retry backoff 込みで再 enqueue
+5. `promoteJob`: delayed → wait への移動 (scheduler tick)
+6. `pause` / `resume`: wait ↔ paused 間の bulk 移動 (LMOVE 相当)
+7. `rateLimiterCheck`: token bucket 判定 + 減算を atomic に
+8. `stalledCheck`: heartbeat が切れた active job を wait に戻す + attempts ++
+
+残りの「単純な read / write」は Go 側で `MULTI/EXEC` or `WATCH/CAS`。例: job status 照会、queue size 集計、admin API の list 系。
+
+Lua は Redis server で parse cache されるので、startup 後は SHA 呼び出しのみ。client 側はロード処理を initialization 時に1回やるだけ。
 
 ### 5.3 Protocol 互換性
 
@@ -255,7 +269,7 @@ router.go で driver を 1 箇所で生成して wire。同じ binary で両 dri
 
 - **Stalled detection interval**: BullMQ default は 30s。mkq も同じで OK?
 - **Rate limiter semantics**: sliding window vs leaky bucket。Redis script で実装するか、Go 側で実装するか
-- **Priority queue support**: 現行 asynq は priority 付き、BullMQ も priority 有り。mkq は ZSET score にマップ (要検証)
+- **Priority queue support**: BullMQ v5+ の `prioritized` ZSET (score=priority*2^40+age) を採用する方針。spec 先行採用、実装フェーズで performance 検証 (Section 5.1 参照)
 - **Sharding**: 大規模 instance (数百 worker) で 1 Redis がボトルネックになったら horizontal shard が要るが、Phase 1-5 では out of scope
 - **Persistence**: Redis AOF 前提で良いか、S3 backup 等の仕組みが要るか → mk-go 側の責任として out of scope
 
