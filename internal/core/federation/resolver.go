@@ -530,10 +530,21 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 			note.ReplyUserHost = reply.UserHost
 		}
 	}
-	// メンション抽出は変換後のテキストから行う (HTML→MFM変換後は@mention形式に
-	// なっているため ExtractMentions がそのまま動作する)。
+	// メンション抽出は本文と AP `tag` 配列の Mention 両方から行う。本文だけだと
+	// specified DM (本文に @ が無いケース) で受信者を取りこぼす (#397)。
+	// 本文 @username / tag href のいずれも最終的に user ID へ解決して保存する
+	// (mentions 列はローカル create 経路と同じ user ID の配列にする)。
+	var textMentions []string
 	if note.Text != nil {
-		note.Mentions = corenote.ExtractMentions(*note.Text)
+		textMentions = r.resolveTextMentionUserIDs(corenote.ExtractMentionStructs(*note.Text))
+	}
+	tagMentions := r.resolveMentionedUserIDs(extractMentionTags(apNote.Tag))
+	note.Mentions = mergeMentionIDs(textMentions, tagMentions)
+	// specified visibility では AP `to` 配列が宛先 actor URI 列。CanView の
+	// VisibleUserIDs チェック (core/note/visibility.go) で受信者が note を
+	// 参照できるよう、ここで ID へ解決して埋める (#397)。
+	if note.Visibility == model.NoteVisibilitySpecified {
+		note.VisibleUserIDs = pq.StringArray(r.resolveMentionedUserIDs(apNote.To))
 	}
 	// AP Note Tag配列からカスタム絵文字を抽出してDBにupsert
 	if actor.Host != nil {
@@ -649,8 +660,22 @@ func (r *Resolver) UpdateRemoteNote(body []byte) (*model.Note, error) {
 	if newText != "" {
 		fields["text"] = &newText
 		existing.Text = &newText
-		fields["mentions"] = corenote.ExtractMentions(newText)
-		existing.Mentions = corenote.ExtractMentions(newText)
+	}
+	// text が変わらなくても tag 配列の Mention は AP Update で変化しうる (#397)。
+	// IngestNote と同じく本文と tag 両方から mention を集めて user ID 配列に
+	// 統一する (mentions 列の意味論を local create 経路と揃えるため)。
+	var textMentions []string
+	switch {
+	case newText != "":
+		textMentions = r.resolveTextMentionUserIDs(corenote.ExtractMentionStructs(newText))
+	case existing.Text != nil:
+		textMentions = r.resolveTextMentionUserIDs(corenote.ExtractMentionStructs(*existing.Text))
+	}
+	tagMentions := r.resolveMentionedUserIDs(extractMentionTags(apNote.Tag))
+	mentions := mergeMentionIDs(textMentions, tagMentions)
+	if !slices.Equal([]string(existing.Mentions), []string(mentions)) {
+		fields["mentions"] = mentions
+		existing.Mentions = mentions
 	}
 	if apNote.Summary != "" {
 		summary := apNote.Summary
@@ -726,6 +751,120 @@ func (r *Resolver) extractLocalNoteID(uri string) string {
 		rest = rest[:i]
 	}
 	return rest
+}
+
+// mergeMentionIDs merges two ordered ID slices preserving order and removing
+// duplicates. text 由来 mention と AP `tag` Mention 由来 mention を合算する
+// (#397) ために使う。両方空なら nil ではなく非 nil 空 (pq の '{}' 既定値と
+// 整合) を返す。
+func mergeMentionIDs(a, b []string) pq.StringArray {
+	out := make(pq.StringArray, 0, len(a)+len(b))
+	seen := make(map[string]struct{}, len(a)+len(b))
+	for _, id := range a {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range b {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// extractMentionTags parses the Tag array of a Note and returns the `href`
+// of every Mention entry (type="Mention"). AP では宛先 actor URI が tag 配列
+// の Mention に乗ってくるため、本文 @mention 抽出だけでは specified DM の
+// 受信者を取りこぼす (#397)。href が空のものはスキップ。
+func extractMentionTags(tags []any) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		m, ok := tag.(map[string]any)
+		if !ok {
+			continue
+		}
+		if typ, _ := m["type"].(string); typ != "Mention" {
+			continue
+		}
+		href, _ := m["href"].(string)
+		if href == "" {
+			continue
+		}
+		out = append(out, href)
+	}
+	return out
+}
+
+// resolveMentionedUserIDs maps actor URIs (typically from AP Mention tags or
+// the `to` array) to local model.User IDs. ローカル URI は ExtractLocalUserID
+// で安価に変換し、リモート URI は既知 (DB に取り込み済) のものだけ
+// userRepo.FindByURI でルックアップする。未知リモート URI は federation fetch
+// すると inbox 処理が重くなるため skip。返り値は入力順を保ち重複排除する。
+func (r *Resolver) resolveMentionedUserIDs(hrefs []string) []string {
+	if len(hrefs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(hrefs))
+	out := make([]string, 0, len(hrefs))
+	for _, href := range hrefs {
+		var id string
+		if local := r.ExtractLocalUserID(href); local != "" {
+			id = local
+		} else if r.userRepo != nil {
+			if u, err := r.userRepo.FindByURI(href); err == nil && u != nil {
+				id = u.ID
+			}
+		}
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// resolveTextMentionUserIDs maps text-derived `@username[@host]` mentions to
+// local model.User IDs. mentions 列の意味論を local create 経路 (user ID 配列)
+// と揃えるため、リモート受信 Note でも username → ID 解決を必ず通す (#397)。
+// userRepo 未設定 / 未知ユーザーは skip する (NotificationService 等の
+// 既存後段は skip でも username fallback で動くが、mentions 列の query は
+// ID 完全一致なので残しても無駄)。
+func (r *Resolver) resolveTextMentionUserIDs(mentions []corenote.Mention) []string {
+	if r.userRepo == nil || len(mentions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(mentions))
+	for _, m := range mentions {
+		var host *string
+		if m.Host != "" {
+			h := m.Host
+			host = &h
+		}
+		u, err := r.userRepo.FindByUsernameLower(m.Username, host)
+		if err != nil || u == nil {
+			continue
+		}
+		out = append(out, u.ID)
+	}
+	return out
 }
 
 // extractEmojiTags parses the Tag array of a Person or Note and returns
