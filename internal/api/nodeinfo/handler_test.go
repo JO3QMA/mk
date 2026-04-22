@@ -135,9 +135,11 @@ func TestVersion2_1_UsageStatsFromRepos(t *testing.T) {
 	assert.Equal(t, float64(2), usage["localComments"])
 }
 
-// repo のerror path を通して slog.Warn 分岐を cover する。
+// repo のerror path を通して slog.Warn 分岐を cover する。他の test
+// file と同じく pointer embedding で mock を埋め込んで method promotion を
+// 正しく働かせる。
 type failingUserRepoForCount struct {
-	testutil.MockUserRepository
+	*testutil.MockUserRepository
 }
 
 func (f *failingUserRepoForCount) CountLocalUsers() (int64, error) {
@@ -149,7 +151,7 @@ func (f *failingUserRepoForCount) CountLocalUsersActiveSince(time.Time) (int64, 
 }
 
 type failingNoteRepoForCount struct {
-	testutil.MockNoteRepository
+	*testutil.MockNoteRepository
 }
 
 func (f *failingNoteRepoForCount) CountLocalNotes() (int64, error)    { return 0, errForTest }
@@ -163,7 +165,10 @@ func (errTest) Error() string { return "test error" }
 
 func TestVersion2_1_UsageStatsCountErrorsFallbackToZero(t *testing.T) {
 	h := NewHandler(&config.Config{Version: "0.0.0", Host: "example.com"})
-	h.SetUsageRepos(&failingUserRepoForCount{}, &failingNoteRepoForCount{})
+	h.SetUsageRepos(
+		&failingUserRepoForCount{MockUserRepository: testutil.NewMockUserRepository()},
+		&failingNoteRepoForCount{MockNoteRepository: testutil.NewMockNoteRepository()},
+	)
 	h.SetClock(func() time.Time { return time.Unix(0, 0) })
 
 	e := echo.New()
