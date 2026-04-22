@@ -15,6 +15,17 @@ var ErrResponseTooLarge = errors.New("safehttp: response body exceeds size limit
 // exhaustion を防ぎつつ典型的な AP/JRD payload には十分なサイズ。
 const DefaultAPBodyLimit int64 = 1 << 20
 
+// DefaultThirdPartyAPILimit caps responses from third-party APIs called by
+// mk-go itself (captcha / email verify / translate etc.). Calls target
+// admin-configured trusted services, so the attacker-control surface is
+// small, but this cap still guards against misconfiguration or malicious
+// responses that could otherwise exhaust memory.
+//
+// Sized at 1 MiB: captcha / email-verify responses are a few KiB of JSON,
+// and DeepL translations stay well under 1 MiB for the 5,000-character
+// document limit.
+const DefaultThirdPartyAPILimit int64 = 1 << 20
+
 // ReadAllLimit reads r up to max bytes. If r contains more than max bytes,
 // ErrResponseTooLarge is returned. max <= 0 disables the cap (matches
 // io.ReadAll). max >= math.MaxInt64 is treated as unlimited to avoid

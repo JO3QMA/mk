@@ -265,3 +265,32 @@ func TestMcaptcha_InvalidJSON(t *testing.T) {
 	err := v.Verify(context.Background(), "token")
 	assert.ErrorIs(t, err, captcha.ErrRequestFailed)
 }
+
+// #340: captcha fetcher が safehttp.ReadAllLimit (1 MiB cap) で過大 response
+// を弾くこと。1 MiB 超を返すサーバをsimulate して ErrRequestFailed が返る
+// ことを検証する。
+func TestMcaptcha_ResponseTooLarge(t *testing.T) {
+	oversized := make([]byte, 2<<20) // 2 MiB > 1 MiB cap
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(oversized)
+	}))
+	defer srv.Close()
+
+	v := captcha.NewMcaptchaWithClient(srv.URL, "site", "sec", srv.Client())
+	err := v.Verify(context.Background(), "token")
+	assert.ErrorIs(t, err, captcha.ErrRequestFailed)
+}
+
+func TestTurnstile_ResponseTooLarge(t *testing.T) {
+	oversized := make([]byte, 2<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(oversized)
+	}))
+	defer srv.Close()
+
+	v := captcha.NewTurnstileWithURL("sec", srv.URL, srv.Client())
+	err := v.Verify(context.Background(), "token")
+	// Mcaptcha と同じく ErrRequestFailed が返ることを明示 (TestMcaptcha_ResponseTooLarge
+	// と揃える、Devin #404 指摘)。
+	assert.ErrorIs(t, err, captcha.ErrRequestFailed)
+}

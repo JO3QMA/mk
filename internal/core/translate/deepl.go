@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 var (
@@ -78,13 +80,21 @@ func (c *DeepLClient) Translate(ctx context.Context, text, targetLang string) (*
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("%w: read body: %v", ErrRequestFailed, err)
+	// status check を body 読込より先に行う。non-200 で body が巨大だと
+	// ReadAllLimit が ErrResponseTooLarge を返して status 情報が error
+	// message に出ず debug が難しくなるため (#404 Devin 指摘)。
+	if resp.StatusCode != http.StatusOK {
+		// error body は full に読まず 8 KiB snippet だけ引いてメッセージに含める。
+		// io.LimitReader は cap 超過時に error を返さずに切り詰めるので、
+		// 8 KiB 超のbodyでも先頭snippetが確実に取れる (ReadAllLimitだと
+		// 超過時に nil を返してしまう、Devin指摘)。
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+		return nil, fmt.Errorf("%w: status %d: %s", ErrRequestFailed, resp.StatusCode, string(snippet))
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: status %d: %s", ErrRequestFailed, resp.StatusCode, string(data))
+	data, err := safehttp.ReadAllLimit(resp.Body, safehttp.DefaultThirdPartyAPILimit)
+	if err != nil {
+		return nil, fmt.Errorf("%w: read body: %v", ErrRequestFailed, err)
 	}
 
 	var result deeplResponse

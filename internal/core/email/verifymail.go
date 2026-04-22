@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 type verifymailClient struct {
@@ -40,7 +41,7 @@ func (c *verifymailClient) verify(ctx context.Context, email string) error {
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := safehttp.ReadAllLimit(resp.Body, safehttp.DefaultThirdPartyAPILimit)
 	if err != nil {
 		return fmt.Errorf("%w: read body: %v", ErrNetwork, err)
 	}

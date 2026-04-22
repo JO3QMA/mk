@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 type truemailClient struct {
@@ -53,7 +54,7 @@ func (c *truemailClient) verify(ctx context.Context, emailAddr string) error {
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := safehttp.ReadAllLimit(resp.Body, safehttp.DefaultThirdPartyAPILimit)
 	if err != nil {
 		return fmt.Errorf("%w: read body: %v", ErrNetwork, err)
 	}
