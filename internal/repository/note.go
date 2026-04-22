@@ -73,8 +73,9 @@ type NoteRepository interface {
 	// drive the loop themselves so that cancellation checkpoints and sleep
 	// pacing live in the processor (see DeleteAccountProcessor).
 	DeleteByUserBatch(userID string, batchSize int) (int64, error)
-	// ListByUserList returns notes authored by members of the given user list,
-	// ordered by id DESC with keyset pagination. Channel notes are excluded.
+	// ListByUserList returns notes authored by members of the given user list
+	// with keyset pagination via paginationOrder (DESC by default; ASC when
+	// only sinceID is supplied). Channel notes are excluded.
 	ListByUserList(listID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	// CountReplyTargets returns the users that userID most frequently replies
 	// to, ordered by reply count descending. Used by
@@ -534,8 +535,8 @@ func (r *noteRepository) DeleteByUserBatch(userID string, batchSize int) (int64,
 	return res.RowsAffected, nil
 }
 
-// ListByUserList returns notes authored by members of the given user list,
-// ordered by id DESC with keyset pagination. user_list_membership テーブルと
+// ListByUserList returns notes authored by members of the given user list
+// with keyset pagination via paginationOrder. user_list_membership テーブルと
 // INNER JOIN してメンバーのノートだけを返す。channel ノートは除外する (TS互換)。
 func (r *noteRepository) ListByUserList(listID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
 	if limit <= 0 {
