@@ -661,8 +661,10 @@ func (m *MockNoteRepository) SearchByFilter(f model.NoteSearchFilter) ([]*model.
 	}, f.UntilID, f.SinceID, limit), nil
 }
 
-// listFiltered iterates the in-memory notes, applies filter, sorts by id desc,
-// and returns up to `limit` entries.
+// listFiltered iterates the in-memory notes, applies filter, sorts with the
+// paginationOrder semantics (ASC when only sinceID is supplied, DESC otherwise),
+// and returns up to `limit` entries. #384 対応: mock も production 側の
+// ASC-flip 挙動に合わせる。
 func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID, sinceID string, limit int) []*model.Note {
 	var out []*model.Note
 	for _, n := range m.Notes {
@@ -677,10 +679,17 @@ func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID
 		}
 		out = append(out, n)
 	}
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(out); i++ {
 		for j := i + 1; j < len(out); j++ {
-			if out[i].ID < out[j].ID {
-				out[i], out[j] = out[j], out[i]
+			if asc {
+				if out[i].ID > out[j].ID {
+					out[i], out[j] = out[j], out[i]
+				}
+			} else {
+				if out[i].ID < out[j].ID {
+					out[i], out[j] = out[j], out[i]
+				}
 			}
 		}
 	}
@@ -690,7 +699,8 @@ func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID
 	return out
 }
 
-// ListByChannelID returns notes posted to the given channel sorted by id desc.
+// ListByChannelID returns notes posted to the given channel using the
+// shared listFiltered helper (paginationOrder: ASC when sinceID-only, DESC otherwise).
 func (m *MockNoteRepository) ListByChannelID(channelID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
 		return n.ChannelID != nil && *n.ChannelID == channelID
@@ -698,31 +708,11 @@ func (m *MockNoteRepository) ListByChannelID(channelID string, untilID, sinceID 
 }
 
 func (m *MockNoteRepository) ListByUserID(userID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
-	var notes []*model.Note
-	for _, n := range m.Notes {
-		if n.UserID != userID {
-			continue
-		}
-		if untilID != "" && n.ID >= untilID {
-			continue
-		}
-		if sinceID != "" && n.ID <= sinceID {
-			continue
-		}
-		notes = append(notes, n)
-	}
-	// id降順でソート
-	for i := 0; i < len(notes); i++ {
-		for j := i + 1; j < len(notes); j++ {
-			if notes[i].ID < notes[j].ID {
-				notes[i], notes[j] = notes[j], notes[i]
-			}
-		}
-	}
-	if limit > 0 && len(notes) > limit {
-		notes = notes[:limit]
-	}
-	return notes, nil
+	// listFiltered に委譲して他の List系と同じくASC-flip 挙動を継承する
+	// (#405 Devin指摘)。
+	return m.listFiltered(func(n *model.Note) bool {
+		return n.UserID == userID
+	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note, error) {
@@ -761,57 +751,58 @@ func (m *MockNoteRepository) FindRenoteByUser(userID, renoteID string) (*model.N
 	return nil, ErrNotFound
 }
 
-func (m *MockNoteRepository) ListMentions(userID string, limit int, _, _ string) ([]*model.Note, error) {
-	var result []*model.Note
-	for _, n := range m.Notes {
+func (m *MockNoteRepository) ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	return m.listFiltered(func(n *model.Note) bool {
 		for _, mention := range n.Mentions {
 			if mention == userID {
-				result = append(result, n)
-				break
+				return true
 			}
 		}
-	}
-	if limit <= 0 {
-		limit = 10
-	}
-	if len(result) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+		return false
+	}, untilID, sinceID, limit), nil
 }
 
-func (m *MockNoteRepository) SearchByTag(tag string, limit int, _, _ string) ([]*model.Note, error) {
-	var result []*model.Note
-	for _, n := range m.Notes {
-		for _, t := range n.Tags {
-			if t == tag {
-				result = append(result, n)
-				break
-			}
-		}
-	}
+func (m *MockNoteRepository) SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	if len(result) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return m.listFiltered(func(n *model.Note) bool {
+		for _, t := range n.Tags {
+			if t == tag {
+				return true
+			}
+		}
+		return false
+	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
 func (m *MockNoteRepository) IncrementUserNotesCount(_ string, _ int) error { return nil }
 
-func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
-	return m.listPublic(limit)
+// ListHomeTimeline / ListLocalTimeline / ListGlobalTimeline return public or
+// home-visibility notes via the shared listFiltered helper. The mock does not
+// reproduce the production timeline filter semantics (follows / userHost /
+// muted channels / etc.); only the pagination cursor and sinceID ASC flip
+// match production behaviour.
+func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
+	}, untilID, sinceID, limit), nil
 }
 
-func (m *MockNoteRepository) ListLocalTimeline(limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
-	return m.listPublic(limit)
+func (m *MockNoteRepository) ListLocalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
+	}, untilID, sinceID, limit), nil
 }
 
-func (m *MockNoteRepository) ListGlobalTimeline(limit int, _, _ string, _ model.TimelineDBFilter) ([]*model.Note, error) {
-	return m.listPublic(limit)
+func (m *MockNoteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
+	return m.listFiltered(func(n *model.Note) bool {
+		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
+	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) DeleteExpiredRemoteNotes(_, _ int) (int64, error) {
@@ -862,19 +853,6 @@ func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]mode
 		rows = rows[:limit]
 	}
 	return rows, nil
-}
-
-func (m *MockNoteRepository) listPublic(limit int) ([]*model.Note, error) {
-	var result []*model.Note
-	for _, n := range m.Notes {
-		if n.Visibility == "public" || n.Visibility == "home" {
-			result = append(result, n)
-		}
-	}
-	if limit > 0 && len(result) > limit {
-		result = result[:limit]
-	}
-	return result, nil
 }
 
 // MockNoteFavoriteRepository is a test double for repository.NoteFavoriteRepository.
@@ -983,11 +961,19 @@ func (m *MockNoteReactionRepository) ListByNoteID(noteID, untilID, sinceID strin
 		}
 		rows = append(rows, r)
 	}
-	// id降順
+	// production の paginationOrder と同じく sinceID単独指定時のみ ASC、
+	// それ以外は DESC (#405 Devin指摘)。
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
-				rows[i], rows[j] = rows[j], rows[i]
+			if asc {
+				if rows[i].ID > rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
+			} else {
+				if rows[i].ID < rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
 			}
 		}
 	}
@@ -2069,10 +2055,18 @@ func (m *MockClipNoteRepository) ListByClip(clipID string, untilID, sinceID stri
 		}
 		rows = append(rows, cn)
 	}
+	// production の paginationOrder と同じ ASC-flip (#405 Devin指摘)。
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
-				rows[i], rows[j] = rows[j], rows[i]
+			if asc {
+				if rows[i].ID > rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
+			} else {
+				if rows[i].ID < rows[j].ID {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
 			}
 		}
 	}
@@ -4095,10 +4089,17 @@ func (m *MockSigninRepository) ListByUserID(userID string, limit int, untilID, s
 		}
 		rows = append(rows, s)
 	}
-	// 最新順（IDの降順）にするため逆順にする
-	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-		rows[i], rows[j] = rows[j], rows[i]
-	}
+	// production の paginationOrder と同じく sinceID単独指定時のみ ASC、
+	// それ以外は DESC。旧実装は map iteration 順の逆転に依存して
+	// いたが map 順序は保証されないため sort.Slice で明示的にソート
+	// (#405 Devin指摘)。
+	asc := sinceID != "" && untilID == ""
+	sort.Slice(rows, func(i, j int) bool {
+		if asc {
+			return rows[i].ID < rows[j].ID
+		}
+		return rows[i].ID > rows[j].ID
+	})
 	if len(rows) > limit {
 		rows = rows[:limit]
 	}

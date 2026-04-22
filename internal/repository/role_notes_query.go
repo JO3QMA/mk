@@ -22,7 +22,7 @@ func (q *RoleNotesQuery) ListByRole(roleID string, limit int, sinceID, untilID s
 		Where(`"role_assignment"."roleId" = ?`, roleID).
 		Where(`"note"."visibility" = 'public'`).
 		Preload("User").
-		Order(`"note"."id" DESC`).
+		Order(paginationOrder(sinceID, untilID, `"note"."id"`)).
 		Limit(limit)
 
 	if sinceID != "" {

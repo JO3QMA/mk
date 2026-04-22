@@ -38,8 +38,9 @@ func (r *clipNoteRepository) FindByPair(clipID, noteID string) (*model.ClipNote,
 	return &cn, nil
 }
 
-// ListByClip returns the entries for a clip ordered by id desc, with
-// since/until pagination on the clip_note id.
+// ListByClip returns the entries for a clip with since/until pagination on
+// the clip_note id. Order flips to ASC when only sinceID is supplied,
+// matching paginationOrder (upstream QueryService.makePaginationQuery parity).
 func (r *clipNoteRepository) ListByClip(clipID string, untilID, sinceID string, limit int) ([]*model.ClipNote, error) {
 	if limit <= 0 {
 		limit = 30
@@ -55,7 +56,7 @@ func (r *clipNoteRepository) ListByClip(clipID string, untilID, sinceID string, 
 		q = q.Where("id > ?", sinceID)
 	}
 	var rows []*model.ClipNote
-	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

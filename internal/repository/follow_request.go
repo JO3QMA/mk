@@ -74,18 +74,12 @@ func (r *followRequestRepository) ListSent(userID string, limit int, sinceID, un
 	return r.listByColumn("\"followerId\"", userID, limit, sinceID, untilID)
 }
 
-// listByColumn is the shared query builder for ListReceived / ListSent. Misskey
-// 本家 QueryService.makePaginationQuery 相当で sinceID 単独指定時は ASC に反転する
-// (それ以外は DESC 維持)。
+// listByColumn is the shared query builder for ListReceived / ListSent.
 func (r *followRequestRepository) listByColumn(col, userID string, limit int, sinceID, untilID string) ([]*model.FollowRequest, error) {
-	order := "id DESC"
-	if sinceID != "" && untilID == "" {
-		order = "id ASC"
-	}
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
-	q := r.db.Where(col+" = ?", userID).Order(order).Limit(limit)
+	q := r.db.Where(col+" = ?", userID).Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}

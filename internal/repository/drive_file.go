@@ -118,7 +118,7 @@ func (r *driveFileRepository) ListByUser(userID string, folderID *string, untilI
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
-	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -197,7 +197,7 @@ func (r *driveFileRepository) ListForAdmin(origin, host, fileType, untilID, sinc
 		limit = 100
 	}
 	var rows []*model.DriveFile
-	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
