@@ -787,19 +787,28 @@ func (m *MockNoteRepository) IncrementUserNotesCount(_ string, _ int) error { re
 // 揃える (#405 Devin指摘)。
 func (m *MockNoteRepository) ListHomeTimeline(_ string, limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
-		return string(n.Visibility) == "public"
+		// mock は timeline の厳密な filter (follows / userHost / channel)
+		// までは再現せず、旧 listPublic と同じく public + home 可視性
+		// だけ拾う簡略実装。cursor / ASC-flip のみ production 同期。
+		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
 	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) ListLocalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
-		return string(n.Visibility) == "public"
+		// mock は timeline の厳密な filter (follows / userHost / channel)
+		// までは再現せず、旧 listPublic と同じく public + home 可視性
+		// だけ拾う簡略実装。cursor / ASC-flip のみ production 同期。
+		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
 	}, untilID, sinceID, limit), nil
 }
 
 func (m *MockNoteRepository) ListGlobalTimeline(limit int, sinceID, untilID string, _ model.TimelineDBFilter) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
-		return string(n.Visibility) == "public"
+		// mock は timeline の厳密な filter (follows / userHost / channel)
+		// までは再現せず、旧 listPublic と同じく public + home 可視性
+		// だけ拾う簡略実装。cursor / ASC-flip のみ production 同期。
+		return string(n.Visibility) == "public" || string(n.Visibility) == "home"
 	}, untilID, sinceID, limit), nil
 }
 
