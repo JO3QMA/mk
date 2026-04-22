@@ -290,5 +290,7 @@ func TestTurnstile_ResponseTooLarge(t *testing.T) {
 
 	v := captcha.NewTurnstileWithURL("sec", srv.URL, srv.Client())
 	err := v.Verify(context.Background(), "token")
-	assert.Error(t, err)
+	// Mcaptcha と同じく ErrRequestFailed が返ることを明示 (TestMcaptcha_ResponseTooLarge
+	// と揃える、Devin #404 指摘)。
+	assert.ErrorIs(t, err, captcha.ErrRequestFailed)
 }
