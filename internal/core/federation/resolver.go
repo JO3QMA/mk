@@ -938,9 +938,9 @@ func extractAttachments(rawAttachments []any) []activitypub.Document {
 // in original order. URI による dedup を行うので、同じ remote attachment が
 // 複数の note に紐付いても drive_file は 1 行のみ。
 //
-// driveFileRepo が未設定なら nil を返す (旧挙動)。userID はリモート user の
-// ID (note.UserID 相当)、host はリモート host (nil = ローカル、
-// attachment 文脈ではほぼ常に non-nil)。
+// driveFileRepo が未設定なら空 (pq.StringArray{}) を返す (旧挙動)。userID は
+// リモート user の ID (note.UserID 相当)、host はリモート host (nil =
+// ローカル、attachment 文脈ではほぼ常に non-nil)。
 func (r *Resolver) upsertAttachments(docs []activitypub.Document, userID, host *string) pq.StringArray {
 	if r.driveFileRepo == nil || len(docs) == 0 {
 		return pq.StringArray{}
