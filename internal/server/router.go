@@ -1321,6 +1321,7 @@ func (s *Server) setupRoutes() {
 	streamManager.SetNotificationReader(&notifReaderAdapter{svc: notificationService})
 	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
 	notePublisher.SetEmojiLookup(emojiRepo)
+	notePublisher.SetInstanceLookup(instanceRepo)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	notificationPublisher.SetRepos(userRepo, noteRepo, idGen)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)

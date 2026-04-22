@@ -55,6 +55,44 @@ func TestResolveFiles_Populates(t *testing.T) {
 	require.Len(notes[1].Files, 1)
 }
 
+// Renote / Reply の embed にも Files が埋まる (#416)。
+func TestResolveFiles_EmbeddedRenoteAndReply(t *testing.T) {
+	h, _ := newTestHandler(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	alice := "alice"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &alice, Name: "outer.png", Type: "image/png", URL: "https://example.com/f1"}
+	fileRepo.Files["f2"] = &model.DriveFile{ID: "f2", UserID: &alice, Name: "renote.png", Type: "image/png", URL: "https://example.com/f2"}
+	fileRepo.Files["f3"] = &model.DriveFile{ID: "f3", UserID: &alice, Name: "reply.png", Type: "image/png", URL: "https://example.com/f3"}
+	h.SetDriveFileRepo(fileRepo)
+
+	notes := []entity.NoteEntity{{
+		FileIDs: pq.StringArray{"f1"},
+		Renote:  &entity.NoteEntity{FileIDs: pq.StringArray{"f2"}},
+		Reply:   &entity.NoteEntity{FileIDs: pq.StringArray{"f3"}},
+	}}
+	h.resolveFiles(notes)
+
+	assert.Len(t, notes[0].Files, 1)
+	assert.Len(t, notes[0].Renote.Files, 1)
+	assert.Len(t, notes[0].Reply.Files, 1)
+}
+
+// Renote のみ、Reply のみでも問題なく動く。nil entity は populateNoteFiles で
+// 早期 return される。
+func TestResolveFiles_EmbeddedRenoteOnly(t *testing.T) {
+	h, _ := newTestHandler(t)
+	fileRepo := testutil.NewMockDriveFileRepository()
+	alice := "alice"
+	fileRepo.Files["f2"] = &model.DriveFile{ID: "f2", UserID: &alice, Name: "renote.png", Type: "image/png", URL: "https://example.com/f2"}
+	h.SetDriveFileRepo(fileRepo)
+
+	notes := []entity.NoteEntity{{
+		Renote: &entity.NoteEntity{FileIDs: pq.StringArray{"f2"}},
+	}}
+	h.resolveFiles(notes)
+	assert.Len(t, notes[0].Renote.Files, 1)
+}
+
 // 未知の fileID が含まれる場合は無視される (map lookup miss 経路)。
 func TestResolveFiles_UnknownFileIDsIgnored(t *testing.T) {
 	h, _ := newTestHandler(t)

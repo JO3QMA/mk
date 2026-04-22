@@ -534,7 +534,24 @@ func (m *MockNoteRepository) FindByID(id string) (*model.Note, error) {
 }
 
 func (m *MockNoteRepository) FindByIDWithUser(id string) (*model.Note, error) {
-	return m.FindByID(id)
+	n, err := m.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	// 本家 preloadNoteRelations と同等の挙動: RenoteID / ReplyID が立って
+	// いれば map から target note を引いて埋める (#416)。Note は pointer
+	// なので元の map エントリも連鎖的に更新されることに注意。
+	if n.Renote == nil && n.RenoteID != nil {
+		if target, ok := m.Notes[*n.RenoteID]; ok {
+			n.Renote = target
+		}
+	}
+	if n.Reply == nil && n.ReplyID != nil {
+		if target, ok := m.Notes[*n.ReplyID]; ok {
+			n.Reply = target
+		}
+	}
+	return n, nil
 }
 
 func (m *MockNoteRepository) FindByURI(uri string) (*model.Note, error) {

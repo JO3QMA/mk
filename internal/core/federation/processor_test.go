@@ -1212,10 +1212,11 @@ type fakeFanoutHook struct {
 type fakeFanoutCall struct {
 	noteID   string
 	authorID string
+	note     *model.Note
 }
 
 func (f *fakeFanoutHook) OnNoteCreated(note *model.Note, author *model.User) {
-	f.calls = append(f.calls, fakeFanoutCall{noteID: note.ID, authorID: author.ID})
+	f.calls = append(f.calls, fakeFanoutCall{noteID: note.ID, authorID: author.ID, note: note})
 }
 
 func TestProcess_CreateCallsFanoutHook(t *testing.T) {
@@ -1270,6 +1271,11 @@ func TestProcess_AnnounceCallsFanoutHook(t *testing.T) {
 	require.Len(t, hook.calls, 1)
 	// Announce で作成された renote の ID が渡される
 	assert.NotEqual(t, "local1", hook.calls[0].noteID)
+	// hydrateNoteForFanout により Renote relation が preload された状態で
+	// 渡される (#416: streaming payload で renote が null にならない保証)。
+	require.NotNil(t, hook.calls[0].note)
+	require.NotNil(t, hook.calls[0].note.Renote, "Renote relation must be hydrated before fanout")
+	assert.Equal(t, "local1", hook.calls[0].note.Renote.ID)
 }
 
 func TestProcess_CreateWithoutFanoutHook(t *testing.T) {

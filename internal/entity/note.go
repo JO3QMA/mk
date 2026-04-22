@@ -127,6 +127,19 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 		entity.User = PackUserLite(n.User)
 	}
 
+	// Renote / Reply の target は repository 層で Preload("Renote.User") /
+	// Preload("Reply.User") されている前提で 1 段だけ展開する。preload が
+	// 無ければ n.Renote == nil になり、フロントエンドはこれを「削除された投稿」
+	// として描画する (renoteId だけが入ってる状態と区別するため #416)。
+	if n.Renote != nil {
+		r := PackNote(n.Renote, idGen)
+		entity.Renote = &r
+	}
+	if n.Reply != nil {
+		r := PackNote(n.Reply, idGen)
+		entity.Reply = &r
+	}
+
 	return entity
 }
 
@@ -135,19 +148,18 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 // nil (convenient for handlers not yet wired or for contexts where instance
 // embed is unnecessary).
 //
-// CollectNoteAuthors で top-level note の User のみ集約してから resolver を
-// 作る (reply/renote の User は NoteEntity で別埋めする運用のため集約対象外)。
+// flattenNotesPlusRelations で top-level + Renote/Reply の target note を
+// 1 まとめにしてから resolver を作る。CollectNoteAuthors も flatten 済みの
+// スライスから author を拾うので、埋め込み note の remote user にも Instance /
+// emoji が正しく載る。
 func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) []NoteEntity {
-	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(notes)...)
-	emojiResolver := NewEmojiResolver(emojiLookup, notes)
+	flat := flattenNotesPlusRelations(notes)
+	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(flat)...)
+	emojiResolver := NewEmojiResolver(emojiLookup, flat)
 	out := make([]NoteEntity, 0, len(notes))
 	for _, n := range notes {
 		packed := PackNote(n, idGen)
-		instResolver.FillUserLite(&packed.User)
-		emojiResolver.PopulateNoteEmojis(n, &packed)
-		if n.User != nil {
-			emojiResolver.PopulateUserEmojis(n.User, &packed.User)
-		}
+		applyNoteResolvers(n, &packed, instResolver, emojiResolver)
 		out = append(out, packed)
 	}
 	return out
@@ -160,23 +172,57 @@ func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLooku
 // instead — calling this in a loop produces N+1 queries.
 func PackNoteWithInstance(n *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) NoteEntity {
 	packed := PackNote(n, idGen)
-	notes := []*model.Note{n}
-	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(notes)...)
-	instResolver.FillUserLite(&packed.User)
-	emojiResolver := NewEmojiResolver(emojiLookup, notes)
-	emojiResolver.PopulateNoteEmojis(n, &packed)
-	if n.User != nil {
-		emojiResolver.PopulateUserEmojis(n.User, &packed.User)
-	}
+	flat := flattenNotesPlusRelations([]*model.Note{n})
+	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(flat)...)
+	emojiResolver := NewEmojiResolver(emojiLookup, flat)
+	applyNoteResolvers(n, &packed, instResolver, emojiResolver)
 	return packed
+}
+
+// applyNoteResolvers fills Instance + emojis on the packed entity and its
+// embedded renote/reply children. Preload は 1 段だけなので Renote.Renote や
+// Reply.Reply は常に nil で、深い再帰には成らない。
+func applyNoteResolvers(n *model.Note, e *NoteEntity, instResolver *InstanceResolver, emojiResolver *EmojiResolver) {
+	instResolver.FillUserLite(&e.User)
+	emojiResolver.PopulateNoteEmojis(n, e)
+	if n.User != nil {
+		emojiResolver.PopulateUserEmojis(n.User, &e.User)
+	}
+	if n.Renote != nil && e.Renote != nil {
+		applyNoteResolvers(n.Renote, e.Renote, instResolver, emojiResolver)
+	}
+	if n.Reply != nil && e.Reply != nil {
+		applyNoteResolvers(n.Reply, e.Reply, instResolver, emojiResolver)
+	}
+}
+
+// flattenNotesPlusRelations returns notes plus any preloaded Renote/Reply
+// targets (1 level deep, since GORM only preloads the relations we ask for).
+// resolver 構築時に embed 先 note の author / emoji も拾うために使う。
+func flattenNotesPlusRelations(notes []*model.Note) []*model.Note {
+	flat := make([]*model.Note, 0, len(notes)*2)
+	for _, n := range notes {
+		if n == nil {
+			continue
+		}
+		flat = append(flat, n)
+		if n.Renote != nil {
+			flat = append(flat, n.Renote)
+		}
+		if n.Reply != nil {
+			flat = append(flat, n.Reply)
+		}
+	}
+	return flat
 }
 
 // CollectNoteAuthors returns the author `User` pointer of each note that has
 // one preloaded. Used by packers and handlers when building an
 // InstanceResolver over a pre-fetched slice of notes.
 //
-// 現状は note.User のみ (reply/renote の User は NoteEntity で別埋めする運用
-// のため集約対象外)。
+// note.User のみを拾う。reply/renote の author も含めたい場合は呼び出し側で
+// flattenNotesPlusRelations を事前適用してから渡すこと (PackNotes はそうして
+// いる)。
 func CollectNoteAuthors(notes []*model.Note) []*model.User {
 	users := make([]*model.User, 0, len(notes))
 	for _, n := range notes {

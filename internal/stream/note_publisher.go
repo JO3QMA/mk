@@ -26,9 +26,10 @@ type PubSubPublisher interface {
 // フォロワーfanout時に同じノートが複数topicにpublishされるため、直前の
 // ノートIDに対する serialized JSON をキャッシュして DB クエリを 1 回に抑える。
 type NotePublisher struct {
-	pub         PubSubPublisher
-	idGen       id.Generator
-	emojiLookup entity.EmojiLookup
+	pub            PubSubPublisher
+	idGen          id.Generator
+	emojiLookup    entity.EmojiLookup
+	instanceLookup entity.InstanceLookup
 
 	mu         sync.Mutex
 	cachedID   string
@@ -44,6 +45,15 @@ func NewNotePublisher(pub PubSubPublisher, idGen id.Generator) *NotePublisher {
 // custom emoji shortcodes resolved to URLs (#330).
 func (p *NotePublisher) SetEmojiLookup(lookup entity.EmojiLookup) {
 	p.emojiLookup = lookup
+}
+
+// SetInstanceLookup attaches an InstanceLookup so that UserLite.Instance
+// (used by frontend InstanceTicker for theme color / software name) is
+// populated on streaming payloads (#416). Without this the REST response
+// carries the instance info but the pubsub payload does not, causing a
+// visual flicker on page reload.
+func (p *NotePublisher) SetInstanceLookup(lookup entity.InstanceLookup) {
+	p.instanceLookup = lookup
 }
 
 // PublishNote implements core/timeline.StreamingPublisher.
@@ -64,7 +74,11 @@ func (p *NotePublisher) PublishNote(topic string, n *model.Note, author *model.U
 
 // packNote returns the serialized JSON for the note. フォロワーfanout時に
 // 同じノートが繰返しpublishされるため、直前のノートIDが一致する場合は
-// キャッシュを再利用して絵文字解決のDBクエリを1回に抑える。
+// キャッシュを再利用して絵文字 / インスタンス解決の DB クエリを 1 回に抑える。
+//
+// author を n.User に差し戻してから entity.PackNoteWithInstance に渡すことで、
+// Instance / emoji の解決が embed (Renote / Reply) にまで波及する。shallow
+// copy なので元の model.Note は変更されない (Renote 等のポインタは共有)。
 func (p *NotePublisher) packNote(n *model.Note, author *model.User) []byte {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -73,12 +87,11 @@ func (p *NotePublisher) packNote(n *model.Note, author *model.User) []byte {
 		return p.cachedBody
 	}
 
-	pn := entity.PackNote(n, p.idGen)
-	pn.User = entity.PackUserLite(author)
-	notes := []*model.Note{{Emojis: n.Emojis, UserHost: n.UserHost, User: author}}
-	emojiResolver := entity.NewEmojiResolver(p.emojiLookup, notes)
-	emojiResolver.PopulateNoteEmojis(n, &pn)
-	emojiResolver.PopulateUserEmojis(author, &pn.User)
+	noteForPack := *n
+	noteForPack.User = author
+
+	pn := entity.PackNoteWithInstance(&noteForPack, p.idGen, p.instanceLookup, p.emojiLookup)
+
 	body, err := json.Marshal(pn)
 	if err != nil {
 		slog.Warn("note publisher: marshal failed", "err", err)
