@@ -875,6 +875,8 @@ func (f *failingNoteRepo) CountReplyTargets(_ string, _ int) ([]model.ReplyTarge
 func (f *failingNoteRepo) ListByUserList(_ string, _ int, _, _ string) ([]*model.Note, error) {
 	return nil, nil
 }
+func (f *failingNoteRepo) CountLocalNotes() (int64, error)    { return 0, nil }
+func (f *failingNoteRepo) CountLocalComments() (int64, error) { return 0, nil }
 
 // findFailNoteRepo creates successfully but FindByIDWithUser always fails.
 type findFailNoteRepo struct {

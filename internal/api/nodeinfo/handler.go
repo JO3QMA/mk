@@ -3,6 +3,7 @@ package nodeinfo
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/config"
@@ -13,11 +14,14 @@ import (
 type Handler struct {
 	cfg      *config.Config
 	metaRepo repository.MetaRepository
+	userRepo repository.UserRepository
+	noteRepo repository.NoteRepository
+	clock    func() time.Time
 }
 
 // NewHandler constructs a Handler.
 func NewHandler(cfg *config.Config) *Handler {
-	return &Handler{cfg: cfg}
+	return &Handler{cfg: cfg, clock: time.Now}
 }
 
 // SetMetaRepo injects a MetaRepository so that the nodeName / nodeDescription
@@ -25,6 +29,21 @@ func NewHandler(cfg *config.Config) *Handler {
 // 未配線のまま呼ばれると cfg.Host fallback になる (#348)。
 func (h *Handler) SetMetaRepo(r repository.MetaRepository) {
 	h.metaRepo = r
+}
+
+// SetUsageRepos injects repositories used to populate the usage statistics
+// (users.total / activeMonth / activeHalfyear / localPosts / localComments).
+// 未配線のまま呼ばれると対応 field は 0 のままになる (#403)。
+func (h *Handler) SetUsageRepos(userRepo repository.UserRepository, noteRepo repository.NoteRepository) {
+	h.userRepo = userRepo
+	h.noteRepo = noteRepo
+}
+
+// SetClock overrides the clock source. Intended for tests.
+func (h *Handler) SetClock(now func() time.Time) {
+	if now != nil {
+		h.clock = now
+	}
 }
 
 // nodeinfoVersion builds the version string for NodeInfo.
@@ -64,6 +83,31 @@ func (h *Handler) Version2_1(c echo.Context) error {
 			"email": maintainerEmail,
 		},
 	}
+	// 統計値は repo 経由で集計。未配線なら 0 (#403)。
+	var (
+		usersTotal, usersMonth, usersHalf, localPosts, localComments int64
+	)
+	if h.userRepo != nil {
+		now := h.clock()
+		if v, err := h.userRepo.CountLocalUsers(); err == nil {
+			usersTotal = v
+		}
+		if v, err := h.userRepo.CountLocalUsersActiveSince(now.AddDate(0, -1, 0)); err == nil {
+			usersMonth = v
+		}
+		if v, err := h.userRepo.CountLocalUsersActiveSince(now.AddDate(0, -6, 0)); err == nil {
+			usersHalf = v
+		}
+	}
+	if h.noteRepo != nil {
+		if v, err := h.noteRepo.CountLocalNotes(); err == nil {
+			localPosts = v
+		}
+		if v, err := h.noteRepo.CountLocalComments(); err == nil {
+			localComments = v
+		}
+	}
+
 	resp := map[string]any{
 		"version": "2.1",
 		"software": map[string]any{
@@ -79,12 +123,12 @@ func (h *Handler) Version2_1(c echo.Context) error {
 		"openRegistrations": openRegistrations,
 		"usage": map[string]any{
 			"users": map[string]any{
-				"total":          0,
-				"activeMonth":    0,
-				"activeHalfyear": 0,
+				"total":          usersTotal,
+				"activeMonth":    usersMonth,
+				"activeHalfyear": usersHalf,
 			},
-			"localPosts":    0,
-			"localComments": 0,
+			"localPosts":    localPosts,
+			"localComments": localComments,
 		},
 		"metadata": metadata,
 	}

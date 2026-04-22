@@ -26,6 +26,13 @@ type UserRepository interface {
 	FindProfileByVerifyCode(code string) (*model.UserProfile, error)
 	FindProfileByEmail(email string) (*model.UserProfile, error)
 	CountOnlineUsers() (int64, error)
+	// CountLocalUsers returns the number of non-deleted local users, used by
+	// nodeinfo `usage.users.total` (#403).
+	CountLocalUsers() (int64, error)
+	// CountLocalUsersActiveSince returns the number of local users whose
+	// lastActiveDate falls on or after `since`. Used by nodeinfo
+	// `usage.users.activeMonth / activeHalfyear` (#403).
+	CountLocalUsersActiveSince(since time.Time) (int64, error)
 	// ListUserRecommendations returns locally-active explorable users the
 	// viewer does not already follow, ordered by followersCount descending.
 	// viewerID is excluded from results. Used by users/recommendation.
@@ -267,6 +274,28 @@ func (r *userRepository) CountOnlineUsers() (int64, error) {
 	err := r.db.Model(&model.User{}).
 		Where("host IS NULL").
 		Where(`"lastActiveDate" > ?`, threshold).
+		Count(&count).Error
+	return count, err
+}
+
+// CountLocalUsers returns the number of non-deleted local users.
+func (r *userRepository) CountLocalUsers() (int64, error) {
+	var count int64
+	err := r.db.Model(&model.User{}).
+		Where("host IS NULL").
+		Where(`"isDeleted" = false`).
+		Count(&count).Error
+	return count, err
+}
+
+// CountLocalUsersActiveSince returns the number of local users whose
+// lastActiveDate >= since. nodeinfo's activeMonth / activeHalfyear metrics.
+func (r *userRepository) CountLocalUsersActiveSince(since time.Time) (int64, error) {
+	var count int64
+	err := r.db.Model(&model.User{}).
+		Where("host IS NULL").
+		Where(`"isDeleted" = false`).
+		Where(`"lastActiveDate" >= ?`, since).
 		Count(&count).Error
 	return count, err
 }
