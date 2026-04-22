@@ -399,6 +399,7 @@ func (s *Server) setupRoutes() {
 	federationResolver.SetPublickeyRepo(publickeyRepo)
 	federationResolver.SetPollRepo(pollRepo)
 	federationResolver.SetEmojiRepo(emojiRepo)
+	federationResolver.SetDriveFileRepo(driveFileRepo)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 	federationProcessor.SetLocalBaseURL(s.config.URL)
 

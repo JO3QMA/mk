@@ -1,0 +1,15 @@
+-- #378 (PR #400) AP attachment ingest 用の dedup index。
+--
+-- internal/core/federation/resolver.go の upsertAttachments は
+-- リモートから受信した各 attachment について driveFileRepo.FindByURI(url)
+-- を呼んで既存 drive_file 行を再利用する。drive_file テーブルは federation
+-- 量に比例して数百万行に膨らむため、uri カラムを未 index のまま seq scan
+-- させると inbound Note 1 件 (画像 4 枚) で 4 回フルスキャンが走り
+-- federation worker のスループットを直撃する。
+--
+-- 実 query は WHERE uri = $1 のみで NULL を引かないので部分 index
+-- (WHERE uri IS NOT NULL) にしてローカル file (uri NULL) を除外し index
+-- を小さく保つ。Misskey TS 側にはこの index は無いが、TS は AP attachment
+-- を fetch して MD5 で dedup する設計のため uri 検索パスを持たない。
+-- mk-go は link 形式 (isLink=true、未 fetch) で持つので URI dedup が必須。
+CREATE INDEX IF NOT EXISTS "IDX_drive_file_uri" ON "drive_file" ("uri") WHERE "uri" IS NOT NULL;

@@ -1952,3 +1952,280 @@ func TestUpdateRemoteNote_EmojiTagExtraction_ExistingEmoji(t *testing.T) {
 
 // strPtr is a helper that returns a pointer to its argument.
 func strPtr(s string) *string { return &s }
+
+// --- #378 attachment ingest --------------------------------------------------
+
+func TestExtractAttachments(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      []any
+		expected int
+	}{
+		{
+			name: "Document image is extracted",
+			raw: []any{
+				map[string]any{
+					"type":      "Document",
+					"mediaType": "image/png",
+					"url":       "https://remote.example/files/cat.png",
+					"name":      "cute cat",
+					"sensitive": false,
+				},
+			},
+			expected: 1,
+		},
+		{
+			name: "Image / Audio / Video types accepted",
+			raw: []any{
+				map[string]any{"type": "Image", "url": "https://r/i.jpg"},
+				map[string]any{"type": "Audio", "url": "https://r/a.mp3"},
+				map[string]any{"type": "Video", "url": "https://r/v.mp4"},
+			},
+			expected: 3,
+		},
+		{
+			name: "Unknown types skipped",
+			raw: []any{
+				map[string]any{"type": "Note", "url": "https://r/n"},
+				map[string]any{"type": "Document", "url": "https://r/ok.png"},
+			},
+			expected: 1,
+		},
+		{
+			name: "missing url skipped",
+			raw: []any{
+				map[string]any{"type": "Document"},
+				map[string]any{"type": "Document", "url": ""},
+			},
+			expected: 0,
+		},
+		{
+			name:     "empty input",
+			raw:      nil,
+			expected: 0,
+		},
+		{
+			name: "non-map entries skipped",
+			raw: []any{
+				"https://r/string-not-object.png",
+				42,
+				map[string]any{"type": "Document", "url": "https://r/ok.png"},
+			},
+			expected: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := federation.ExtractAttachments(tt.raw)
+			assert.Len(t, got, tt.expected)
+		})
+	}
+}
+
+func TestUpsertAttachments(t *testing.T) {
+	t.Run("creates new drive_file as link", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+
+		userID := "u1"
+		host := "remote.example"
+		docs := []activitypub.Document{
+			{Type: "Document", MediaType: "image/png", URL: "https://r/cat.png", Name: "cat", Sensitive: false},
+			{Type: "Image", MediaType: "image/jpeg", URL: "https://r/dog.jpg", Sensitive: true},
+		}
+		ids := r.UpsertAttachments(docs, &userID, &host)
+		require.Len(t, ids, 2)
+
+		// 各 drive_file を引いて期待値を確認
+		f1, err := drive.FindByURI("https://r/cat.png")
+		require.NoError(t, err)
+		assert.True(t, f1.IsLink, "remote attachment は link 形式")
+		assert.Equal(t, "image/png", f1.Type)
+		assert.Equal(t, "cat", f1.Name)
+		require.NotNil(t, f1.Comment)
+		assert.Equal(t, "cat", *f1.Comment)
+		require.NotNil(t, f1.UserHost)
+		assert.Equal(t, "remote.example", *f1.UserHost)
+		assert.Equal(t, "https://r/cat.png", f1.URL)
+
+		f2, err := drive.FindByURI("https://r/dog.jpg")
+		require.NoError(t, err)
+		assert.True(t, f2.IsSensitive)
+	})
+
+	t.Run("dedup by URI: 既存 row を再利用する", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+
+		uri := "https://r/dup.png"
+		drive.Files["pre-existing"] = &model.DriveFile{
+			ID: "pre-existing", URI: &uri, URL: uri, Type: "image/png", Name: "dup",
+		}
+
+		userID := "u1"
+		host := "remote.example"
+		ids := r.UpsertAttachments(
+			[]activitypub.Document{{Type: "Document", URL: uri, Name: "dup"}},
+			&userID, &host,
+		)
+		require.Len(t, ids, 1)
+		assert.Equal(t, "pre-existing", ids[0], "既存 row の ID が返る")
+		// drive_file が新規追加されていない
+		assert.Len(t, drive.Files, 1)
+	})
+
+	t.Run("missing mediaType / name fallbacks", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+
+		userID := "u1"
+		host := "remote.example"
+		ids := r.UpsertAttachments(
+			[]activitypub.Document{{Type: "Document", URL: "https://r/no-meta.bin"}},
+			&userID, &host,
+		)
+		require.Len(t, ids, 1)
+		f, err := drive.FindByURI("https://r/no-meta.bin")
+		require.NoError(t, err)
+		assert.Equal(t, "application/octet-stream", f.Type)
+		assert.Equal(t, "file", f.Name)
+		assert.Nil(t, f.Comment, "AP name 空のとき comment は nil")
+	})
+
+	t.Run("nil driveFileRepo returns empty", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+
+		userID := "u1"
+		host := "remote.example"
+		ids := r.UpsertAttachments(
+			[]activitypub.Document{{Type: "Document", URL: "https://r/x.png"}},
+			&userID, &host,
+		)
+		assert.Empty(t, ids)
+	})
+
+	t.Run("Create error skips attachment but keeps processing", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := &createErrDriveRepo{
+			MockDriveFileRepository: testutil.NewMockDriveFileRepository(),
+			err:                     errors.New("db down"),
+		}
+		r.SetDriveFileRepo(drive)
+
+		userID := "u1"
+		host := "remote.example"
+		ids := r.UpsertAttachments(
+			[]activitypub.Document{{Type: "Document", URL: "https://r/err.png"}},
+			&userID, &host,
+		)
+		// Create が失敗した attachment は ID リストに含まれない
+		assert.Empty(t, ids)
+	})
+}
+
+// createErrDriveRepo wraps the mock and forces Create to error so the
+// upsertAttachments error branch can be exercised.
+type createErrDriveRepo struct {
+	*testutil.MockDriveFileRepository
+	err error
+}
+
+func (c *createErrDriveRepo) Create(_ *model.DriveFile) error { return c.err }
+
+func TestCollectAttachedFileTypes(t *testing.T) {
+	t.Run("nil driveFileRepo returns empty", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		assert.Empty(t, r.CollectAttachedFileTypes([]string{"f1"}))
+	})
+
+	t.Run("empty fileIDs returns empty", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+		assert.Empty(t, r.CollectAttachedFileTypes(nil))
+	})
+
+	t.Run("returns MIME types in input order", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+		drive.Files["a"] = &model.DriveFile{ID: "a", Type: "image/png"}
+		drive.Files["b"] = &model.DriveFile{ID: "b", Type: "image/jpeg"}
+		drive.Files["c"] = &model.DriveFile{ID: "c", Type: "video/mp4"}
+
+		got := r.CollectAttachedFileTypes([]string{"c", "a", "b"})
+		assert.Equal(t, []string{"video/mp4", "image/png", "image/jpeg"}, got)
+	})
+
+	t.Run("missing IDs are skipped", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+		drive.Files["a"] = &model.DriveFile{ID: "a", Type: "image/png"}
+
+		got := r.CollectAttachedFileTypes([]string{"a", "missing"})
+		assert.Equal(t, []string{"image/png"}, got)
+	})
+
+	t.Run("FindByIDs error returns empty", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		r.SetDriveFileRepo(&findIDsErrDriveRepo{
+			MockDriveFileRepository: testutil.NewMockDriveFileRepository(),
+			err:                     errors.New("db down"),
+		})
+		assert.Empty(t, r.CollectAttachedFileTypes([]string{"a"}))
+	})
+}
+
+// findIDsErrDriveRepo forces FindByIDs to error.
+type findIDsErrDriveRepo struct {
+	*testutil.MockDriveFileRepository
+	err error
+}
+
+func (f *findIDsErrDriveRepo) FindByIDs(_ []string) ([]*model.DriveFile, error) {
+	return nil, f.err
+}

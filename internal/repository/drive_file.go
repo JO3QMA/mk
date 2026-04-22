@@ -11,6 +11,9 @@ type DriveFileRepository interface {
 	FindByID(id string) (*model.DriveFile, error)
 	FindByIDs(ids []string) ([]*model.DriveFile, error)
 	FindByMD5(userID, md5 string) (*model.DriveFile, error)
+	// FindByURI looks up a drive_file by its AP `uri` field. Used for
+	// deduping remote attachments on inbound Note ingest (#378).
+	FindByURI(uri string) (*model.DriveFile, error)
 	Update(id string, fields map[string]any) error
 	Delete(f *model.DriveFile) error
 	ListByUser(userID string, folderID *string, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
@@ -72,6 +75,17 @@ func (r *driveFileRepository) FindByMD5(userID, md5 string) (*model.DriveFile, e
 		Where("\"userId\" = ? AND md5 = ?", userID, md5).
 		Order("id DESC").
 		First(&f).Error; err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (r *driveFileRepository) FindByURI(uri string) (*model.DriveFile, error) {
+	if uri == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var f model.DriveFile
+	if err := r.db.Where("uri = ?", uri).First(&f).Error; err != nil {
 		return nil, err
 	}
 	return &f, nil
