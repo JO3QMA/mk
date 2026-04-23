@@ -21,6 +21,8 @@ type Handler struct {
 	userRepo      repository.UserRepository
 	noteRepo      repository.NoteRepository
 	followReqRepo repository.FollowRequestRepository
+	instanceRepo  repository.InstanceRepository
+	emojiRepo     repository.EmojiRepository
 }
 
 // NewHandler creates a new notifications Handler.
@@ -32,6 +34,37 @@ func NewHandler(svc *notification.Service, idGen id.Generator) *Handler {
 func (h *Handler) SetRepos(userRepo repository.UserRepository, noteRepo repository.NoteRepository) {
 	h.userRepo = userRepo
 	h.noteRepo = noteRepo
+}
+
+// SetInstanceRepo attaches an InstanceRepository so user.instance (used by
+// frontend InstanceTicker for theme color / software name) is populated on
+// notification payloads (#415 follow-up).
+func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
+	h.instanceRepo = r
+}
+
+// SetEmojiRepo attaches an EmojiRepository so custom emoji shortcodes in
+// user.name / note.text resolve to URLs in notification payloads.
+func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
+	h.emojiRepo = r
+}
+
+// instanceLookup returns an InstanceLookup adapter (nil-safe when the
+// repository hasn't been wired).
+func (h *Handler) instanceLookup() entity.InstanceLookup {
+	if h.instanceRepo == nil {
+		return nil
+	}
+	return h.instanceRepo
+}
+
+// emojiLookup returns an EmojiLookup adapter (nil-safe when the repository
+// hasn't been wired).
+func (h *Handler) emojiLookup() entity.EmojiLookup {
+	if h.emojiRepo == nil {
+		return nil
+	}
+	return h.emojiRepo
 }
 
 // SetFollowRequestRepo attaches a FollowRequestRepository. 受信済み
@@ -115,7 +148,7 @@ func (h *Handler) Show(c echo.Context) error {
 				note = nn
 			}
 		}
-		out = append(out, entity.PackNotification(n, notifier, note, h.idGen))
+		out = append(out, entity.PackNotification(n, notifier, note, h.idGen, h.instanceLookup(), h.emojiLookup()))
 	}
 	return c.JSON(http.StatusOK, out)
 }

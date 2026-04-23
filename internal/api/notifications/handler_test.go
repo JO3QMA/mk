@@ -226,6 +226,46 @@ func TestShow_WithUserAndNoteResolution(t *testing.T) {
 	assert.NotNil(t, resp[0]["note"])
 }
 
+// InstanceRepo / EmojiRepo 配線時にリモート notifier の user.instance が
+// streaming / REST payload に入ることを確認する (#415 InstanceTicker 欠落の
+// follow-up)。
+func TestShow_WithInstanceAndEmojiResolution(t *testing.T) {
+	h, svc := newTestHandler(t)
+	userRepo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	instanceRepo := testutil.NewMockInstanceRepository()
+	emojiRepo := testutil.NewMockEmojiRepository()
+
+	remoteHost := "remote.example"
+	themeColor := "#ff7799"
+	instanceRepo.Instances[remoteHost] = &model.Instance{Host: remoteHost, ThemeColor: &themeColor}
+	userRepo.Users["remoteU"] = &model.User{ID: "remoteU", Username: "remotee", Host: &remoteHost}
+
+	h.SetRepos(userRepo, noteRepo)
+	h.SetInstanceRepo(instanceRepo)
+	h.SetEmojiRepo(emojiRepo)
+
+	ctx := context.Background()
+	_, err := svc.Create(ctx, notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "remoteU", Type: notification.TypeFollow,
+	})
+	require.NoError(t, err)
+
+	c, rec := newJSONRequest(t, "/api/i/notifications", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	user, ok := resp[0]["user"].(map[string]any)
+	require.True(t, ok)
+	inst, ok := user["instance"].(map[string]any)
+	require.True(t, ok, "user.instance must be set on remote notifier")
+	assert.Equal(t, themeColor, inst["themeColor"])
+}
+
 func TestShow_IncludeTypesFilter(t *testing.T) {
 	h, svc := newTestHandler(t)
 	ctx := context.Background()

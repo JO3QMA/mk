@@ -1025,6 +1025,8 @@ func (s *Server) setupRoutes() {
 	notificationsHandler := notifications.NewHandler(notificationService, idGen)
 	notificationsHandler.SetRepos(userRepo, noteRepo)
 	notificationsHandler.SetFollowRequestRepo(followRequestRepo)
+	notificationsHandler.SetInstanceRepo(instanceRepo)
+	notificationsHandler.SetEmojiRepo(emojiRepo)
 	api.POST("/i/notifications", notificationsHandler.Show, middleware.RequireAuth())
 	api.POST("/i/notifications-grouped", notificationsHandler.Show, middleware.RequireAuth())
 	api.POST("/notifications/mark-all-as-read", notificationsHandler.MarkAllAsRead, middleware.RequireAuth())
@@ -1324,6 +1326,8 @@ func (s *Server) setupRoutes() {
 	notePublisher.SetInstanceLookup(instanceRepo)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	notificationPublisher.SetRepos(userRepo, noteRepo, idGen)
+	notificationPublisher.SetInstanceLookup(instanceRepo)
+	notificationPublisher.SetEmojiLookup(emojiRepo)
 	drivePublisher := stream.NewDrivePublisher(streamPubSub)
 	reversiPublisher := stream.NewReversiGamePublisher(streamPubSub)
 	mainStreamPublisher := stream.NewMainStreamPublisher(streamPubSub)
@@ -1382,6 +1386,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetRelayMarker(relaySvc)
 	federationProcessor.SetChatService(chatService)
 	federationProcessor.SetFanoutHook(timelineFanoutHook)
+	federationProcessor.SetNotificationHook(notificationHook)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)

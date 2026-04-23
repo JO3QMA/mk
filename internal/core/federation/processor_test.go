@@ -1319,3 +1319,163 @@ func TestProcess_AnnounceWithoutFanoutHook(t *testing.T) {
 	}`)
 	require.NoError(t, p.Process(body))
 }
+
+// --- NotificationHook (#415) ---
+
+// fakeNotificationHook records OnNoteCreated calls.
+type fakeNotificationHook struct {
+	calls []fakeNotificationCall
+}
+
+type fakeNotificationCall struct {
+	noteID       string
+	authorID     string
+	replyTarget  *model.Note
+	renoteTarget *model.Note
+}
+
+func (f *fakeNotificationHook) OnNoteCreated(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
+	f.calls = append(f.calls, fakeNotificationCall{
+		noteID:       note.ID,
+		authorID:     author.ID,
+		replyTarget:  replyTarget,
+		renoteTarget: renoteTarget,
+	})
+}
+
+func TestProcess_AnnounceCallsNotificationHook(t *testing.T) {
+	// remote user が local note を renote すると元投稿者 (bob) への renote
+	// 通知が生成される経路を確認する (#415)。
+	p, repo, _, noteRepo := newProcessor(t, aliceActor)
+	hook := &fakeNotificationHook{}
+	p.SetNotificationHook(hook)
+
+	noteURI := "https://example.com/notes/local1"
+	noteRepo.Notes["local1"] = &model.Note{
+		ID:         "local1",
+		UserID:     "bob",
+		URI:        &noteURI,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/activities/announce-notify",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/local1"
+	}`)
+	require.NoError(t, p.Process(body))
+
+	require.Len(t, hook.calls, 1)
+	// renoteTarget に local note が渡る。hook 内部の notifyLocalUser が
+	// renoteTarget.UserID == "bob" を見て bob へ通知を送る。
+	require.NotNil(t, hook.calls[0].renoteTarget)
+	assert.Equal(t, "local1", hook.calls[0].renoteTarget.ID)
+	assert.Equal(t, "bob", hook.calls[0].renoteTarget.UserID)
+	assert.Nil(t, hook.calls[0].replyTarget, "Announce は reply ではない")
+}
+
+func TestProcess_CreateCallsNotificationHook(t *testing.T) {
+	// remote user の普通の Note 作成では notificationHook を通過させるが、
+	// reply / renote target が無いので hook 側で通知は発火しない。呼び出しが
+	// 発生することだけを確認する (reply target 検証は別途)。
+	p, _, _, noteRepo := newProcessor(t, aliceActor)
+	hook := &fakeNotificationHook{}
+	p.SetNotificationHook(hook)
+
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Note",
+			"id": "https://remote.example/notes/n-notify",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "Hello from remote",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"]
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+
+	assert.True(t, len(noteRepo.Notes) > 0)
+	require.Len(t, hook.calls, 1)
+	assert.Nil(t, hook.calls[0].replyTarget)
+	assert.Nil(t, hook.calls[0].renoteTarget)
+}
+
+func TestProcess_CreateReplyPassesReplyTarget(t *testing.T) {
+	// Remote reply to a local note → hook に replyTarget として local note が
+	// 渡る (#415 reply 通知経路)。
+	p, _, _, noteRepo := newProcessor(t, aliceActor)
+	hook := &fakeNotificationHook{}
+	p.SetNotificationHook(hook)
+
+	localURI := "https://example.com/notes/local-parent"
+	noteRepo.Notes["local-parent"] = &model.Note{
+		ID:         "local-parent",
+		UserID:     "bob",
+		URI:        &localURI,
+		Visibility: model.NoteVisibilityPublic,
+	}
+
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Note",
+			"id": "https://remote.example/notes/reply1",
+			"attributedTo": "https://remote.example/users/alice",
+			"inReplyTo": "https://example.com/notes/local-parent",
+			"content": "remote reply",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"]
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+
+	require.Len(t, hook.calls, 1)
+	require.NotNil(t, hook.calls[0].replyTarget, "replyTarget must be set for inReplyTo=local")
+	assert.Equal(t, "local-parent", hook.calls[0].replyTarget.ID)
+}
+
+func TestProcess_CreateWithoutNotificationHook(t *testing.T) {
+	// notificationHook が nil でも Create は panic しない。
+	p, _, _, noteRepo := newProcessor(t, aliceActor)
+
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Note",
+			"id": "https://remote.example/notes/no-notif",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "No notif",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"]
+		}
+	}`)
+	require.NoError(t, p.Process(body))
+	assert.True(t, len(noteRepo.Notes) > 0)
+}
+
+func TestProcess_AnnounceWithoutNotificationHook(t *testing.T) {
+	// notificationHook が nil でも Announce は panic しない。
+	p, repo, _, noteRepo := newProcessor(t, aliceActor)
+
+	noteURI := "https://example.com/notes/local3"
+	noteRepo.Notes["local3"] = &model.Note{
+		ID:         "local3",
+		UserID:     "bob",
+		URI:        &noteURI,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/activities/announce3",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/local3"
+	}`)
+	require.NoError(t, p.Process(body))
+}
