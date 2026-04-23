@@ -89,15 +89,20 @@ func (h *Handler) Favorites(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	// 複数の favorite note について remote user の instance を 1 回の batch
-	// fetch で resolve する。
+	// PackNotes 経由で renote / reply の embed まで含めて Instance / emoji
+	// 解決を一括適用する。favorite を NoteEntity と対応づけるために note ID
+	// → index の map を作り、後段の favorite イテレートで参照する (#416)。
 	notes := make([]*model.Note, 0, len(favs))
 	for _, f := range favs {
 		if f.Note != nil {
 			notes = append(notes, f.Note)
 		}
 	}
-	resolver := entity.NewInstanceResolver(h.instanceLookup(), entity.CollectNoteAuthors(notes)...)
+	packed := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	byID := make(map[string]*entity.NoteEntity, len(packed))
+	for i := range packed {
+		byID[packed[i].ID] = &packed[i]
+	}
 
 	result := make([]map[string]any, 0, len(favs))
 	for _, f := range favs {
@@ -106,9 +111,9 @@ func (h *Handler) Favorites(c echo.Context) error {
 			"noteId": f.NoteID,
 		}
 		if f.Note != nil {
-			pn := entity.PackNote(f.Note, h.idGen)
-			resolver.FillUserLite(&pn.User)
-			item["note"] = pn
+			if pn, ok := byID[f.Note.ID]; ok {
+				item["note"] = *pn
+			}
 		}
 		result = append(result, item)
 	}

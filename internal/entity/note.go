@@ -72,8 +72,20 @@ type PollChoice struct {
 	IsVoted bool   `json:"isVoted"`
 }
 
-// PackNote converts a model.Note to a NoteEntity.
+// maxNoteEmbedDepth caps how many levels of Renote / Reply are expanded when
+// packing. repository 側の preloadNoteRelations は 1 段しか preload しない
+// ので通常 1 で十分だが、テストや将来の preload 変更で n.Renote.Renote などが
+// 意図せず非 nil になった場合でも応答を bounded に保つためのガード (#416
+// Devin review)。
+const maxNoteEmbedDepth = 1
+
+// PackNote converts a model.Note to a NoteEntity. Renote / Reply の embed は
+// maxNoteEmbedDepth で制限する。
 func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
+	return packNoteAtDepth(n, idGen, 0)
+}
+
+func packNoteAtDepth(n *model.Note, idGen id.Generator, depth int) NoteEntity {
 	createdAt := ""
 	if t, err := idGen.ParseTime(n.ID); err == nil {
 		createdAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
@@ -131,13 +143,15 @@ func PackNote(n *model.Note, idGen id.Generator) NoteEntity {
 	// Preload("Reply.User") されている前提で 1 段だけ展開する。preload が
 	// 無ければ n.Renote == nil になり、フロントエンドはこれを「削除された投稿」
 	// として描画する (renoteId だけが入ってる状態と区別するため #416)。
-	if n.Renote != nil {
-		r := PackNote(n.Renote, idGen)
-		entity.Renote = &r
-	}
-	if n.Reply != nil {
-		r := PackNote(n.Reply, idGen)
-		entity.Reply = &r
+	if depth < maxNoteEmbedDepth {
+		if n.Renote != nil {
+			r := packNoteAtDepth(n.Renote, idGen, depth+1)
+			entity.Renote = &r
+		}
+		if n.Reply != nil {
+			r := packNoteAtDepth(n.Reply, idGen, depth+1)
+			entity.Reply = &r
+		}
 	}
 
 	return entity
@@ -200,7 +214,10 @@ func applyNoteResolvers(n *model.Note, e *NoteEntity, instResolver *InstanceReso
 // targets (1 level deep, since GORM only preloads the relations we ask for).
 // resolver 構築時に embed 先 note の author / emoji も拾うために使う。
 func flattenNotesPlusRelations(notes []*model.Note) []*model.Note {
-	flat := make([]*model.Note, 0, len(notes)*2)
+	// 最悪ケース (全 note が Renote + Reply 両方を持つ) で *3 要素になるので
+	// 容量もそれに合わせる。多くの note は片方以下なので余剰確保だが、
+	// timeline fetch 30 件 × 2 の再アロケートよりは安上がり。
+	flat := make([]*model.Note, 0, len(notes)*3)
 	for _, n := range notes {
 		if n == nil {
 			continue
