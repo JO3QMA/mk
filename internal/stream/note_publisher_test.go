@@ -54,6 +54,89 @@ func TestNotePublisher_PublishesPackedNote(t *testing.T) {
 	assert.Equal(t, "homeTimeline:u1", pub.topics[0])
 }
 
+// stubInstanceLookup implements entity.InstanceLookup for tests.
+type stubInstanceLookup struct {
+	byHost map[string]*model.Instance
+}
+
+func (s *stubInstanceLookup) FindManyByHosts(hosts []string) ([]*model.Instance, error) {
+	out := make([]*model.Instance, 0, len(hosts))
+	for _, h := range hosts {
+		if inst, ok := s.byHost[h]; ok {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
+}
+
+// InstanceLookup が配線されていれば author の Instance が streaming payload
+// に乗る (#416 InstanceTicker テーマカラー反映)。
+func TestNotePublisher_PopulatesAuthorInstance(t *testing.T) {
+	pub := &stubPublisher{}
+	idGen, _ := id.NewGenerator("aidx")
+	np := NewNotePublisher(pub, idGen)
+	themeColor := "#deadbe"
+	host := "remote.example"
+	np.SetInstanceLookup(&stubInstanceLookup{byHost: map[string]*model.Instance{
+		host: {Host: host, ThemeColor: &themeColor},
+	}})
+
+	n := &model.Note{
+		ID:         idGen.Generate(time.Now()),
+		UserID:     "u_remote",
+		UserHost:   &host,
+		Visibility: model.NoteVisibilityPublic,
+	}
+	author := &model.User{ID: "u_remote", Username: "remote", Host: &host}
+	np.PublishNote("globalTimeline", n, author)
+
+	require.Len(t, pub.payloads, 1)
+	raw := pub.payloads[0].(json.RawMessage)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+	user := body["user"].(map[string]any)
+	inst, ok := user["instance"].(map[string]any)
+	require.True(t, ok, "user.instance must be present on streaming payload")
+	assert.Equal(t, themeColor, inst["themeColor"])
+}
+
+// n.Renote が preload 済みならストリーミング payload に renote オブジェクトが
+// 乗ることを確認する (#416)。
+func TestNotePublisher_PublishesEmbeddedRenote(t *testing.T) {
+	pub := &stubPublisher{}
+	idGen, _ := id.NewGenerator("aidx")
+	np := NewNotePublisher(pub, idGen)
+
+	renoteID := idGen.Generate(time.Now())
+	noteID := idGen.Generate(time.Now())
+	renoteText := "original"
+	n := &model.Note{
+		ID:         noteID,
+		UserID:     "u1",
+		RenoteID:   &renoteID,
+		Visibility: model.NoteVisibilityPublic,
+		Renote: &model.Note{
+			ID:         renoteID,
+			UserID:     "u2",
+			Text:       &renoteText,
+			Visibility: model.NoteVisibilityPublic,
+			User:       &model.User{ID: "u2", Username: "author2"},
+		},
+	}
+	np.PublishNote("homeTimeline:u1", n, &model.User{ID: "u1", Username: "alice"})
+
+	require.Len(t, pub.payloads, 1)
+	raw, ok := pub.payloads[0].(json.RawMessage)
+	require.True(t, ok)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+
+	renote, ok := body["renote"].(map[string]any)
+	require.True(t, ok, "renote must be embedded in streaming payload")
+	assert.Equal(t, renoteID, renote["id"])
+	assert.Equal(t, renoteText, renote["text"])
+}
+
 func TestNotePublisher_NilPubIsNoOp(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	np := NewNotePublisher(nil, idGen)
