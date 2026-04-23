@@ -346,13 +346,27 @@ func (h *Handler) sendJoinForAcceptedInvite(c echo.Context, accepter *model.User
 }
 
 // CancelMatch handles POST /api/reversi/cancel-match.
+// Service.CancelGame 経由で: Leave をリモート相手に配信 + canceled
+// イベントを WebSocket に publish + fedCache の session mapping も
+// 片付く。svc 未配線な旧テスト互換のため repo.Delete フォールバックも残す。
 func (h *Handler) CancelMatch(c echo.Context) error {
 	user := middleware.GetUser(c)
-	// 未開始のゲームを削除
+	ctx := c.Request().Context()
 	games, _ := h.repo.ListByUser(user.ID, 10)
 	for _, g := range games {
-		if !g.IsStarted && !g.IsEnded {
+		if g.IsStarted || g.IsEnded {
+			continue
+		}
+		if h.svc != nil {
+			_ = h.svc.CancelGame(ctx, g.ID, user.ID)
+		} else {
 			_ = h.repo.Delete(g.ID)
+		}
+		// 連合 session mapping もあれば明示的に掃除
+		if h.fedCache != nil {
+			if sessionID, ok := h.fedCache.GetSessionByGame(ctx, g.ID); ok {
+				h.fedCache.Delete(ctx, sessionID, g.ID)
+			}
 		}
 	}
 	return c.NoContent(http.StatusNoContent)

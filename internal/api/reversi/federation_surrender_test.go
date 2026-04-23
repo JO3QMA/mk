@@ -122,6 +122,50 @@ func TestMatch_AcceptsPendingRemoteInvitation_ReusesGameAndSendsJoin(t *testing.
 	assert.Equal(t, "gPending", resp["id"])
 }
 
+// CancelMatch は Service.CancelGame 経由で Leave をリモート相手に配信する
+// (#417 Devin review: 直接 repo.Delete をバイパスしていたのを修正)。
+func TestCancelMatch_DeliversLeaveToRemote(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	uri := "https://remote.example/users/u2"
+	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", Host: &host, URI: &uri}
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+
+	g := sampleGame()
+	// pre-start の federated pending game
+	g.IsStarted = false
+	g.IsEnded = false
+	repo.games["g1"] = g
+
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	fedCache.Set(ctx, "sess-cancel", "g1")
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+
+	svc := corereversi.NewService(repo, nil, apiReversiRedis.Client)
+	svc.SetFederationCache(fedCache)
+	svc.SetFederationDeliverer(d)
+	svc.SetUserRepo(userRepo)
+	svc.SetBaseURL("https://example.com")
+	h.SetService(svc)
+
+	rec := post(h.CancelMatch, `{}`, u1)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	// Leave が送られたこと
+	assert.Equal(t, 1, d.calls)
+	// game 行が消えたこと
+	_, exists := repo.games["g1"]
+	assert.False(t, exists)
+	// session mapping も消えていること
+	_, ok := fedCache.GetSessionByGame(ctx, "g1")
+	require.False(t, ok)
+}
+
 // /api/reversi/show-game で User2 が pending federated game を見たとき、
 // Join が自動で送られ、2回目以降は IsJoinSent でスキップされる (#417 P1)。
 func TestShowGame_AutoJoinDedup(t *testing.T) {
