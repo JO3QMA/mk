@@ -122,6 +122,110 @@ func TestMatch_AcceptsPendingRemoteInvitation_ReusesGameAndSendsJoin(t *testing.
 	assert.Equal(t, "gPending", resp["id"])
 }
 
+// /api/reversi/show-game で User2 が pending federated game を見たとき、
+// Join が自動で送られ、2回目以降は IsJoinSent でスキップされる (#417 P1)。
+func TestShowGame_AutoJoinDedup(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	uri := "https://remote.example/users/inviter"
+	userRepo.Users["inviter"] = &model.User{
+		ID: "inviter", Username: "alice", Host: &host, URI: &uri,
+	}
+
+	pending := &model.ReversiGame{
+		ID: "gAuto", User1ID: "inviter", User2ID: "u1",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "random",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+	}
+	repo.games["gAuto"] = pending
+
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	fedCache.Set(ctx, "sess-auto", "gAuto")
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+
+	// 1 回目の show-game で Join が送られる
+	rec := post(h.ShowGame, `{"gameId":"gAuto"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 1, d.calls)
+
+	// 2 回目は IsJoinSent フラグで skip される
+	rec2 := post(h.ShowGame, `{"gameId":"gAuto"}`, u1)
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	assert.Equal(t, 1, d.calls, "Join はセッションごとに 1 回だけ")
+}
+
+// inviter がまだ DB に取り込まれていないケース (remote user 未 fetch)。
+// sendJoinForAcceptedInvite は silent-skip する。
+func TestShowGame_AutoJoinSkipsWhenInviterMissing(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	// inviter 未登録
+
+	pending := &model.ReversiGame{
+		ID: "gMissing", User1ID: "ghost", User2ID: "u1",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "random",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+	}
+	repo.games["gMissing"] = pending
+
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	fedCache.Set(ctx, "sess-m", "gMissing")
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+
+	rec := post(h.ShowGame, `{"gameId":"gMissing"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 0, d.calls)
+}
+
+// Federation 未配線 (federation を SetFederation で wire しない) なら
+// sendJoinForAcceptedInvite は silent return。
+func TestShowGame_NoFederationWired(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.games["gNoFed"] = &model.ReversiGame{
+		ID: "gNoFed", User1ID: "someone", User2ID: "u1",
+	}
+	rec := post(h.ShowGame, `{"gameId":"gNoFed"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// session mapping が無い pending game (つまり local-only の pending) は
+// Join 送信しない。
+func TestShowGame_LocalOnlyPendingSkipsJoin(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	userRepo.Users["localalice"] = &model.User{ID: "localalice", Username: "alice"}
+
+	pending := &model.ReversiGame{
+		ID: "gLocal", User1ID: "localalice", User2ID: "u1",
+	}
+	repo.games["gLocal"] = pending
+
+	// fedCache は wire するが session を Set しない → GetSessionByGame が false
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+
+	rec := post(h.ShowGame, `{"gameId":"gLocal"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 0, d.calls)
+}
+
 // userRepo.FindByID が err を返すケース (リモート相手がまだ取り込まれていない)
 // では Leave 送信はスキップされる。
 func TestSurrender_FederatedGame_UserNotFound(t *testing.T) {
