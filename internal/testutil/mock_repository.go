@@ -539,19 +539,22 @@ func (m *MockNoteRepository) FindByIDWithUser(id string) (*model.Note, error) {
 		return nil, err
 	}
 	// 本家 preloadNoteRelations と同等の挙動: RenoteID / ReplyID が立って
-	// いれば map から target note を引いて埋める (#416)。Note は pointer
-	// なので元の map エントリも連鎖的に更新されることに注意。
-	if n.Renote == nil && n.RenoteID != nil {
-		if target, ok := m.Notes[*n.RenoteID]; ok {
-			n.Renote = target
+	// いれば map から target note を引いて埋める (#416)。shallow-copy した
+	// コピーに書き込むことで、プロダクションの GORM 挙動 (クエリ毎に fresh
+	// struct) と合わせ、同じ note を FindByID で取り直した時に relation が
+	// 連鎖的に残らないようにする。
+	out := *n
+	if out.Renote == nil && out.RenoteID != nil {
+		if target, ok := m.Notes[*out.RenoteID]; ok {
+			out.Renote = target
 		}
 	}
-	if n.Reply == nil && n.ReplyID != nil {
-		if target, ok := m.Notes[*n.ReplyID]; ok {
-			n.Reply = target
+	if out.Reply == nil && out.ReplyID != nil {
+		if target, ok := m.Notes[*out.ReplyID]; ok {
+			out.Reply = target
 		}
 	}
-	return n, nil
+	return &out, nil
 }
 
 func (m *MockNoteRepository) FindByURI(uri string) (*model.Note, error) {
