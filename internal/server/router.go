@@ -1382,6 +1382,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetRelayMarker(relaySvc)
 	federationProcessor.SetChatService(chatService)
 	federationProcessor.SetFanoutHook(timelineFanoutHook)
+	federationProcessor.SetNotificationHook(notificationHook)
 
 	// 5. /streaming エンドポイント配線
 	streamingHandler := streaming.NewHandler(streamManager)

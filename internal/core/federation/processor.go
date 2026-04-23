@@ -74,6 +74,11 @@ type Processor struct {
 	// handleAnnounce経由でDB直挿入されるためここで明示的にfanoutする。
 	fanoutHook TimelineFanoutHook
 
+	// Notification hook for inbound Create / Announce (#415)。fanoutHook と
+	// 同じ位置で呼び出して reply / renote / quote / mention 通知を生成する。
+	// 配線されていなければ no-op。
+	notificationHook NotificationHook
+
 	// localBaseURL はローカルユーザーのcanonical URI prefix
 	// (例: "https://go.k7a.org") を保持する。inboxで受信したactivityの
 	// object が "{localBaseURL}/users/{id}" 形式のとき、ローカルユーザーを
@@ -139,6 +144,15 @@ type ChatMessageReceiver interface {
 // 依存を避けるためinterfaceで受け取る (実装は core/timeline.FanoutHook)。
 type TimelineFanoutHook interface {
 	OnNoteCreated(note *model.Note, author *model.User)
+}
+
+// NotificationHook is invoked after an inbound Create / Announce so that
+// reply / renote / quote / mention 通知が local な被通知者に対して生成される。
+// ローカル作成と同じ interface を使う (実装は core/notification.Hook)。
+// notifyLocalUser 側で notifiee が local かどうかを判定するため、ここでは
+// 常に fire-and-forget で呼び出せばよい。
+type NotificationHook interface {
+	OnNoteCreated(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note)
 }
 
 // NewProcessor constructs a Processor. reactionService / noteDeleteSvc は省略
@@ -280,6 +294,15 @@ func (p *Processor) SetChatService(svc ChatMessageReceiver) {
 // subscribers (#330).
 func (p *Processor) SetFanoutHook(h TimelineFanoutHook) {
 	p.fanoutHook = h
+}
+
+// SetNotificationHook wires a NotificationHook so that inbound Create /
+// Announce activities generate reply / renote / quote / mention 通知 for
+// local notifiees (#415). Without it, remote users が local note を renote /
+// reply / mention しても通知が飛ばない (ローカル作成だけが note_create_service
+// 経由で通知を作る状態になる)。
+func (p *Processor) SetNotificationHook(h NotificationHook) {
+	p.notificationHook = h
 }
 
 // followRelayIDPattern extracts the relay id embedded in
@@ -522,14 +545,23 @@ func (p *Processor) handleCreate(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	if p.fanoutHook != nil && note != nil {
+	if note != nil {
 		// IngestNoteが既存ノートを返した場合 (重複) でもfanout自体は
 		// べき等なので呼んで問題ない。authorはnoteに紐付くUserを使うが、
 		// IngestNoteはUser fieldを設定しないためactorを使う。
 		// Renote/Reply relation は IngestNote 直後では未ロード (ID だけ) な
 		// ので、ストリーミング payload で renote 先が null にならないように
 		// preload 付きで再取得する (#416)。
-		p.fanoutHook.OnNoteCreated(hydrateNoteForFanout(p.noteRepo, note), actor)
+		hydrated := hydrateNoteForFanout(p.noteRepo, note)
+		if p.fanoutHook != nil {
+			p.fanoutHook.OnNoteCreated(hydrated, actor)
+		}
+		if p.notificationHook != nil {
+			// reply / quote / mention 通知を local notifiee に対して生成する。
+			// hydrated.Reply / hydrated.Renote は preload 済みなので、
+			// notification hook 側で UserID を取れる (#415)。
+			p.notificationHook.OnNoteCreated(hydrated, actor, hydrated.Reply, hydrated.Renote)
+		}
 	}
 	return nil
 }
@@ -626,8 +658,15 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 		return err
 	}
 	_ = p.noteRepo.IncrementCount(target.ID, "renoteCount", 1)
+	hydrated := hydrateNoteForFanout(p.noteRepo, renote)
 	if p.fanoutHook != nil {
-		p.fanoutHook.OnNoteCreated(hydrateNoteForFanout(p.noteRepo, renote), announcer)
+		p.fanoutHook.OnNoteCreated(hydrated, announcer)
+	}
+	if p.notificationHook != nil {
+		// remote user が local note を renote した時に元投稿者へ通知を出す
+		// (#415)。target が renoteTarget。reply 通知は Announce では発生
+		// しないので nil を渡す。
+		p.notificationHook.OnNoteCreated(hydrated, announcer, nil, target)
 	}
 	return nil
 }
