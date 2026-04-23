@@ -321,8 +321,16 @@ func (h *Handler) sendJoinForAcceptedInvite(c echo.Context, accepter *model.User
 	if err != nil || inviter == nil || inviter.Host == nil || inviter.URI == nil {
 		return
 	}
-	sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), game.ID)
+	ctx := c.Request().Context()
+	sessionID, ok := h.fedCache.GetSessionByGame(ctx, game.ID)
 	if !ok {
+		return
+	}
+	// show-game 経由で User2 が pending game を表示するたびに呼ばれる
+	// 経路があるため、session ごとに 1 回だけ送るよう guard する
+	// (#417 Devin review)。相手側 (CherryPick) でも zset idempotent なので
+	// 重複しても実害は無いが、無駄な deliver job を抑える。
+	if h.fedCache.IsJoinSent(ctx, sessionID) {
 		return
 	}
 	join := corereversi.RenderJoin(h.baseURL, sessionID,
@@ -331,7 +339,10 @@ func (h *Handler) sendJoinForAcceptedInvite(c echo.Context, accepter *model.User
 	if err != nil {
 		return
 	}
-	_ = h.deliverer.DeliverToUser(accepter.ID, inviter, body)
+	if err := h.deliverer.DeliverToUser(accepter.ID, inviter, body); err != nil {
+		return
+	}
+	h.fedCache.MarkJoinSent(ctx, sessionID)
 }
 
 // CancelMatch handles POST /api/reversi/cancel-match.
@@ -440,10 +451,18 @@ func (h *Handler) Verify(c echo.Context) error {
 	}
 	g := corereversi.NewGame(game.Map, opts)
 
+	// Log shape は EngineFromGame と同じ: misskey-reversi 形式
+	// [timeDelta, player, operation(0=put), pos]。旧 2 要素 [pos, color] は
+	// fallback (新旧両形式を読める)。以前の Verify は log[0] を pos と解釈
+	// していたが、新形式では timeDelta (兆オーダーのミリ秒) を PutStone に
+	// 渡すことになり盤面が崩壊していた (#417 P1 Devin review)。
 	var logs [][]int
 	_ = json.Unmarshal(game.Logs, &logs)
 	for _, log := range logs {
-		if len(log) >= 1 {
+		switch {
+		case len(log) >= 4 && log[2] == 0:
+			g.PutStone(log[3])
+		case len(log) == 2:
 			g.PutStone(log[0])
 		}
 	}

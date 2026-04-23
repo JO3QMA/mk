@@ -86,6 +86,31 @@ func (c *FederationIDCache) Delete(ctx context.Context, federationID, gameID str
 	}
 }
 
+// joinSentKey / IsJoinSent / MarkJoinSent は accept 時の Join が既に
+// 送信済みかを追跡する。/reversi/show-game で User2 が pending game を
+// 表示するたびに Join を再送してしまう問題の軽減 (#417 Devin review)。
+// delivery 自体は相手側で idempotent だが、無駄なネットワーク呼び出しと
+// log ノイズを減らす。
+func joinSentKey(federationID string) string { return "reversi:fed:join-sent:" + federationID }
+
+// IsJoinSent reports whether Join has already been delivered for the session.
+func (c *FederationIDCache) IsJoinSent(ctx context.Context, federationID string) bool {
+	if c.redis == nil || federationID == "" {
+		return false
+	}
+	n, err := c.redis.Exists(ctx, joinSentKey(federationID)).Result()
+	return err == nil && n > 0
+}
+
+// MarkJoinSent records that Join has been delivered. TTL は federation 本体
+// の mapping (24h) と合わせる。
+func (c *FederationIDCache) MarkJoinSent(ctx context.Context, federationID string) {
+	if c.redis == nil || federationID == "" {
+		return
+	}
+	c.redis.Set(ctx, joinSentKey(federationID), "1", FederationIDTTL)
+}
+
 // ValidUpdateKeys lists the keys that can be changed via federation Update.
 var ValidUpdateKeys = map[string]bool{
 	"map":                  true,
@@ -207,26 +232,22 @@ func (s *Service) SetBaseURL(u string) {
 // で effectively 入れているが、mk-go では Service 内部で判定して呼び出し元を
 // 軽くしている。
 func (s *Service) deliverStateToOpponent(ctx context.Context, game *model.ReversiGame, actorUserID string, state APGameState) {
+	// skip 経路はローカル対戦でも毎ターン踏むので log しない
+	// (#417 Devin review: Info だと busy instance でノイジー)。
 	if s.deliverer == nil || s.userRepo == nil || s.fedCache == nil || s.baseURL == "" {
-		slog.Info("reversi deliver: skipped (unwired)", "gameId", game.ID, "type", state.Type,
-			"deliverer", s.deliverer != nil, "userRepo", s.userRepo != nil, "fedCache", s.fedCache != nil, "baseURL", s.baseURL)
 		return
 	}
 	actor, err := s.userRepo.FindByID(actorUserID)
 	if err != nil || actor == nil || actor.Host != nil {
-		slog.Info("reversi deliver: skipped (actor issue)", "gameId", game.ID, "actorID", actorUserID, "err", err)
 		return
 	}
 	oppID := opponent(game, actorUserID)
 	opp, err := s.userRepo.FindByID(oppID)
 	if err != nil || opp == nil || opp.Host == nil || opp.URI == nil {
-		slog.Info("reversi deliver: skipped (opponent not remote)", "gameId", game.ID, "oppID", oppID,
-			"found", opp != nil, "host", opp != nil && opp.Host != nil, "uri", opp != nil && opp.URI != nil)
 		return
 	}
 	sessionID, ok := s.fedCache.GetSessionByGame(ctx, game.ID)
 	if !ok {
-		slog.Info("reversi deliver: skipped (no session)", "gameId", game.ID)
 		return
 	}
 	state.GameSessionID = sessionID

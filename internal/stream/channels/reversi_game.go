@@ -84,7 +84,6 @@ func (c *ReversiGameChannel) OnClientMessage(msgType string, body json.RawMessag
 	}
 	ctx := context.Background()
 	var err error
-	slog.Info("reversi channel: client message", "gameId", c.gameID, "user", user.ID, "type", msgType)
 	switch msgType {
 	case "ready":
 		var ready bool
