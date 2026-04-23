@@ -241,6 +241,151 @@ func TestPackNote_ReactionsKeyNormalized(t *testing.T) {
 	assert.Equal(t, 5, e.ReactionCount)
 }
 
+func TestPackNote_WithRenoteAndReply(t *testing.T) {
+	idGen := newTestIDGen(t)
+	renoteID := idGen.Generate(time.Now())
+	replyID := idGen.Generate(time.Now())
+	noteID := idGen.Generate(time.Now())
+
+	renoteText := "original"
+	replyText := "parent reply"
+	text := "quoting"
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Text:       &text,
+		RenoteID:   &renoteID,
+		ReplyID:    &replyID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		Renote: &model.Note{
+			ID:         renoteID,
+			UserID:     "user2",
+			Text:       &renoteText,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+			User: &model.User{
+				ID:                "user2",
+				Username:          "author2",
+				AvatarDecorations: datatypes.JSON([]byte("[]")),
+			},
+		},
+		Reply: &model.Note{
+			ID:         replyID,
+			UserID:     "user3",
+			Text:       &replyText,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		},
+	}
+
+	e := PackNote(note, idGen)
+
+	require.NotNil(t, e.Renote)
+	assert.Equal(t, renoteID, e.Renote.ID)
+	assert.Equal(t, &renoteText, e.Renote.Text)
+	assert.Equal(t, "author2", e.Renote.User.Username)
+
+	require.NotNil(t, e.Reply)
+	assert.Equal(t, replyID, e.Reply.ID)
+	assert.Equal(t, &replyText, e.Reply.Text)
+}
+
+func TestPackNotes_EmbeddedRenoteHasInstanceAndEmoji(t *testing.T) {
+	idGen := newTestIDGen(t)
+	renoteID := idGen.Generate(time.Now())
+	noteID := idGen.Generate(time.Now())
+	remoteHost := "remote.example"
+
+	renote := &model.Note{
+		ID:         renoteID,
+		UserID:     "user2",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		UserHost:   &remoteHost,
+		Emojis:     []string{"wave"},
+		User: &model.User{
+			ID:                "user2",
+			Username:          "remoteuser",
+			Host:              &remoteHost,
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+			Emojis:            []string{"wave"},
+		},
+	}
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		RenoteID:   &renoteID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User: &model.User{
+			ID:                "user1",
+			Username:          "localuser",
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		},
+		Renote: renote,
+	}
+
+	instLookup := &stubInstanceLookup{data: map[string]*model.Instance{
+		remoteHost: {Host: remoteHost, Name: strPtr("Remote")},
+	}}
+	emojiLookup := &stubEmojiLookup{data: map[string][]*model.Emoji{
+		remoteHost: {{Name: "wave", PublicURL: "https://remote.example/emoji/wave.png"}},
+	}}
+
+	out := PackNotes([]*model.Note{note}, idGen, instLookup, emojiLookup)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Renote)
+	require.NotNil(t, out[0].Renote.User.Instance)
+	assert.Equal(t, strPtr("Remote"), out[0].Renote.User.Instance.Name)
+	assert.Equal(t, "https://remote.example/emoji/wave.png", out[0].Renote.Emojis["wave"])
+	assert.Equal(t, "https://remote.example/emoji/wave.png", out[0].Renote.User.Emojis["wave"])
+}
+
+func TestPackNoteWithInstance_EmbeddedRenote(t *testing.T) {
+	idGen := newTestIDGen(t)
+	renoteID := idGen.Generate(time.Now())
+	noteID := idGen.Generate(time.Now())
+	remoteHost := "remote.example"
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		RenoteID:   &renoteID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		Renote: &model.Note{
+			ID:         renoteID,
+			UserID:     "user2",
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+			UserHost:   &remoteHost,
+			User: &model.User{
+				ID:                "user2",
+				Username:          "remoteuser",
+				Host:              &remoteHost,
+				AvatarDecorations: datatypes.JSON([]byte("[]")),
+			},
+		},
+	}
+
+	instLookup := &stubInstanceLookup{data: map[string]*model.Instance{
+		remoteHost: {Host: remoteHost, Name: strPtr("Remote")},
+	}}
+
+	out := PackNoteWithInstance(note, idGen, instLookup, nil)
+	require.NotNil(t, out.Renote)
+	require.NotNil(t, out.Renote.User.Instance)
+	assert.Equal(t, strPtr("Remote"), out.Renote.User.Instance.Name)
+}
+
+func TestFlattenNotesPlusRelations_NilSafe(t *testing.T) {
+	out := flattenNotesPlusRelations([]*model.Note{nil, {ID: "a"}})
+	require.Len(t, out, 1)
+	assert.Equal(t, "a", out[0].ID)
+}
+
 func TestPackNote_CreatedAtParsing(t *testing.T) {
 	idGen := newTestIDGen(t)
 	noteID := idGen.Generate(time.Now())

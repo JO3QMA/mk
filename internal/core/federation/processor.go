@@ -526,9 +526,27 @@ func (p *Processor) handleCreate(act genericActivity) error {
 		// IngestNoteが既存ノートを返した場合 (重複) でもfanout自体は
 		// べき等なので呼んで問題ない。authorはnoteに紐付くUserを使うが、
 		// IngestNoteはUser fieldを設定しないためactorを使う。
-		p.fanoutHook.OnNoteCreated(note, actor)
+		// Renote/Reply relation は IngestNote 直後では未ロード (ID だけ) な
+		// ので、ストリーミング payload で renote 先が null にならないように
+		// preload 付きで再取得する (#416)。
+		p.fanoutHook.OnNoteCreated(hydrateNoteForFanout(p.noteRepo, note), actor)
 	}
 	return nil
+}
+
+// hydrateNoteForFanout reloads a freshly-created note via FindByIDWithUser so
+// that Renote/Reply relations are preloaded before handing it to the fanout
+// hook. reload が失敗した場合は元の note をそのまま返す (best-effort)。
+func hydrateNoteForFanout(repo interface {
+	FindByIDWithUser(id string) (*model.Note, error)
+}, note *model.Note) *model.Note {
+	if repo == nil || note == nil {
+		return note
+	}
+	if loaded, err := repo.FindByIDWithUser(note.ID); err == nil && loaded != nil {
+		return loaded
+	}
+	return note
 }
 
 // handleLike attaches a reaction to a local note based on a Like activity.
@@ -609,7 +627,7 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 	}
 	_ = p.noteRepo.IncrementCount(target.ID, "renoteCount", 1)
 	if p.fanoutHook != nil {
-		p.fanoutHook.OnNoteCreated(renote, announcer)
+		p.fanoutHook.OnNoteCreated(hydrateNoteForFanout(p.noteRepo, renote), announcer)
 	}
 	return nil
 }

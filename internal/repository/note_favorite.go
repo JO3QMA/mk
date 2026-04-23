@@ -44,7 +44,11 @@ func (r *noteFavoriteRepository) ListByUser(userID string, limit, offset int) ([
 	if limit > 100 {
 		limit = 100
 	}
+	// お気に入り一覧は frontend で renote / reply 先も描画するので 1 段だけ
+	// preload する。深さは note 本体と同じ方針 (#416)。
 	q := r.db.Preload("Note").Preload("Note.User").
+		Preload("Note.Renote").Preload("Note.Renote.User").
+		Preload("Note.Reply").Preload("Note.Reply.User").
 		Where("\"userId\" = ?", userID).Order("id DESC").Limit(limit)
 	if offset > 0 {
 		q = q.Offset(offset)

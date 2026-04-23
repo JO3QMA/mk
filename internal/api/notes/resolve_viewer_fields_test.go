@@ -1,0 +1,75 @@
+package notes
+
+import (
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// resolveViewerFields の MyReaction 解決が Renote / Reply の embed にも
+// 波及することを確認する (#416)。
+func TestResolveViewerFields_MyReactionEmbedded(t *testing.T) {
+	h, _ := newTestHandler(t)
+	reactionRepo := testutil.NewMockNoteReactionRepository()
+	h.SetNoteReactionRepo(reactionRepo)
+
+	// 外側 / renote / reply それぞれに別の id を付け、全てにリアクションを登録
+	reactionRepo.Reactions["outer"] = &model.NoteReaction{ID: "outer", UserID: "v1", NoteID: "n1", Reaction: "👍"}
+	reactionRepo.Reactions["renote"] = &model.NoteReaction{ID: "renote", UserID: "v1", NoteID: "n2", Reaction: "❤"}
+	reactionRepo.Reactions["reply"] = &model.NoteReaction{ID: "reply", UserID: "v1", NoteID: "n3", Reaction: "🎉"}
+
+	notes := []entity.NoteEntity{{
+		ID:     "n1",
+		Renote: &entity.NoteEntity{ID: "n2"},
+		Reply:  &entity.NoteEntity{ID: "n3"},
+	}}
+	viewer := &model.User{ID: "v1"}
+
+	h.resolveViewerFields(notes, viewer)
+
+	require.NotNil(t, notes[0].MyReaction)
+	assert.Equal(t, "👍", *notes[0].MyReaction)
+	require.NotNil(t, notes[0].Renote.MyReaction)
+	assert.Equal(t, "❤", *notes[0].Renote.MyReaction)
+	require.NotNil(t, notes[0].Reply.MyReaction)
+	assert.Equal(t, "🎉", *notes[0].Reply.MyReaction)
+}
+
+// Channel 解決も Renote / Reply の embed に波及する。
+func TestResolveViewerFields_ChannelEmbedded(t *testing.T) {
+	h, _ := newTestHandler(t)
+	channelRepo := testutil.NewMockChannelRepository()
+	h.SetChannelRepo(channelRepo)
+	channelRepo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "outer-ch"}
+	channelRepo.Channels["ch2"] = &model.Channel{ID: "ch2", Name: "renote-ch"}
+
+	ch1 := "ch1"
+	ch2 := "ch2"
+	notes := []entity.NoteEntity{{
+		ID:        "n1",
+		ChannelID: &ch1,
+		Renote:    &entity.NoteEntity{ID: "n2", ChannelID: &ch2},
+	}}
+
+	h.resolveViewerFields(notes, nil)
+
+	require.NotNil(t, notes[0].Channel)
+	assert.Equal(t, "outer-ch", notes[0].Channel.Name)
+	require.NotNil(t, notes[0].Renote.Channel)
+	assert.Equal(t, "renote-ch", notes[0].Renote.Channel.Name)
+}
+
+// nil エンティティ / 空スライスでも panic しない。
+func TestResolveViewerFields_NilSafe(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.resolveViewerFields(nil, nil)
+	// helper function に直接 nil を渡す経路も確認
+	applyMyReaction(nil, map[string]*model.NoteReaction{})
+	applyChannel(nil, map[string]*model.Channel{})
+	assert.Equal(t, []string(nil), appendNoteIDs(nil, nil))
+	assert.Equal(t, []string(nil), appendNoteChannelIDs(nil, nil))
+}
