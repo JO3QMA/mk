@@ -131,20 +131,30 @@ func (h *Handler) resolveAcct(acct string) (string, error) {
 }
 
 // Games handles POST /api/reversi/games — list games.
+// CherryPick 本家互換で sinceId / untilId / my の keyset pagination を受ける。
+// my=true (要認証) は自分が User1 or User2 のゲーム、それ以外は isStarted=true
+// のゲームを返す。pagination を無視すると frontend の無限スクロールが同じ
+// ページを繰り返しロードするので必須 (#417 P1 UDS 検証で発覚)。
 func (h *Handler) Games(c echo.Context) error {
 	var req struct {
-		Limit int `json:"limit"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+		My      bool   `json:"my"`
 	}
 	_ = c.Bind(&req)
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
 	viewer := middleware.GetUser(c)
 	var games []*model.ReversiGame
-	if viewer != nil {
-		games, _ = h.repo.ListByUser(viewer.ID, req.Limit)
+	if req.My && viewer != nil {
+		games, _ = h.repo.ListByUserCursor(viewer.ID, req.SinceID, req.UntilID, req.Limit)
 	} else {
-		games, _ = h.repo.ListActive()
+		games, _ = h.repo.ListStartedCursor(req.SinceID, req.UntilID, req.Limit)
 	}
 	out := make([]map[string]any, len(games))
 	for i, g := range games {
@@ -154,19 +164,34 @@ func (h *Handler) Games(c echo.Context) error {
 }
 
 // Invitations handles POST /api/reversi/invitations — list pending invitations.
+// レスポンス shape は CherryPick 本家と同じ UserLite[] (招待者一覧)。Game[] を
+// 返すと Misskey フロントエンドの matching UI が期待値と食い違って無限 loading
+// になる (#417 P1 deploy で発覚)。viewer が User2 (招待される側) となっている
+// 未開始 / 未終了 game の User1 を UserLite として返す。
 func (h *Handler) Invitations(c echo.Context) error {
 	user := middleware.GetUser(c)
 	games, _ := h.repo.ListByUser(user.ID, 20)
-	var pending []map[string]any
+	inviters := make([]entity.UserLite, 0)
+	seen := make(map[string]struct{})
 	for _, g := range games {
-		if !g.IsStarted && !g.IsEnded {
-			pending = append(pending, packGame(g, h.idGen))
+		if g.IsStarted || g.IsEnded {
+			continue
 		}
+		// 招待を受けている側 (User2) のみ対象。自分が招待側 (User1) のゲームは
+		// invitations UI の文脈的に表示しない。
+		if g.User2ID != user.ID {
+			continue
+		}
+		if g.User1 == nil {
+			continue
+		}
+		if _, dup := seen[g.User1.ID]; dup {
+			continue
+		}
+		seen[g.User1.ID] = struct{}{}
+		inviters = append(inviters, entity.PackUserLite(g.User1))
 	}
-	if pending == nil {
-		pending = []map[string]any{}
-	}
-	return c.JSON(http.StatusOK, pending)
+	return c.JSON(http.StatusOK, inviters)
 }
 
 // ShowGame handles POST /api/reversi/show-game.
@@ -180,6 +205,15 @@ func (h *Handler) ShowGame(c echo.Context) error {
 	game, err := h.repo.FindByID(req.GameID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
+	}
+	// ユーザーが invitations UI からではなく「自分の対局」一覧などから
+	// pending game に直接入った場合、/match が呼ばれないままなので相手側が
+	// ゲームを作成できない (Join が飛ばない)。viewer が User2 (招待された
+	// 側) で game が pre-start、かつ User1 がリモートなら Join を自動配信
+	// する (#417 P1 UDS 検証で発覚)。deliver は idempotent。
+	viewer := middleware.GetUser(c)
+	if viewer != nil && !game.IsStarted && !game.IsEnded && game.User2ID == viewer.ID {
+		h.sendJoinForAcceptedInvite(c, viewer, game)
 	}
 	return c.JSON(http.StatusOK, packGame(game, h.idGen))
 }
@@ -203,6 +237,19 @@ func (h *Handler) Match(c echo.Context) error {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "6cc579cc-885d-43d8-95c2-b8c7fc963280"))
 		}
 		req.UserID = resolved
+	}
+
+	// 既に相手から招待を受けている pending game があれば、それを accept 扱いで
+	// 再利用する (#417 P1)。CherryPick 本家の matchSpecificUser と同じ動作:
+	// inbound Invite 経由で作成された reversi_game 行 (User1=相手, User2=自分)
+	// を流用し、相手に Join を返すだけにする。これをやらないと /match が毎回
+	// 新しいゲーム + 新しい session_id を作って二重招待になり、state 伝播が
+	// 噛み合わなくなる。
+	if req.UserID != "" {
+		if existing := h.findPendingInvitationFrom(user.ID, req.UserID); existing != nil {
+			h.sendJoinForAcceptedInvite(c, user, existing)
+			return c.JSON(http.StatusOK, packGame(existing, h.idGen))
+		}
 	}
 
 	now := time.Now()
@@ -240,6 +287,51 @@ func (h *Handler) Match(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, packGame(game, h.idGen))
+}
+
+// findPendingInvitationFrom scans viewer's recent reversi_game rows and
+// returns the pending game where User1=inviter, User2=viewer, not started / ended.
+// inbound Invite によって作られた受信待ち招待を「ゲーム成立」として消費する
+// ために使う。相手から複数回招待が来ていれば最新のものを選ぶ (ListByUser は
+// id DESC で返る)。
+func (h *Handler) findPendingInvitationFrom(viewerID, inviterID string) *model.ReversiGame {
+	games, err := h.repo.ListByUser(viewerID, 20)
+	if err != nil {
+		return nil
+	}
+	for _, g := range games {
+		if g.IsStarted || g.IsEnded {
+			continue
+		}
+		if g.User1ID == inviterID && g.User2ID == viewerID {
+			return g
+		}
+	}
+	return nil
+}
+
+// sendJoinForAcceptedInvite delivers a Join activity to the remote inviter so
+// both sides agree the match has started. local-only の招待の場合 (User1 が
+// ローカル) は federation 不要なので何もしない。
+func (h *Handler) sendJoinForAcceptedInvite(c echo.Context, accepter *model.User, game *model.ReversiGame) {
+	if h.userRepo == nil || h.deliverer == nil || h.fedCache == nil {
+		return
+	}
+	inviter, err := h.userRepo.FindByID(game.User1ID)
+	if err != nil || inviter == nil || inviter.Host == nil || inviter.URI == nil {
+		return
+	}
+	sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), game.ID)
+	if !ok {
+		return
+	}
+	join := corereversi.RenderJoin(h.baseURL, sessionID,
+		h.baseURL+"/users/"+accepter.ID, *inviter.URI, time.Now().UTC().Format(time.RFC3339))
+	body, err := json.Marshal(join)
+	if err != nil {
+		return
+	}
+	_ = h.deliverer.DeliverToUser(accepter.ID, inviter, body)
 }
 
 // CancelMatch handles POST /api/reversi/cancel-match.
@@ -300,16 +392,10 @@ func (h *Handler) Surrender(c echo.Context) error {
 		_ = h.repo.Update(game)
 	}
 
-	// リモート相手に Leave 送信。federation session は Redis 側にある。
-	if h.fedCache != nil && h.deliverer != nil && h.userRepo != nil {
+	// Leave の送信は Service.Surrender 側で済ませている (#417 P1)。
+	// ここではゲーム終了時に federation mapping を cleanup するだけ。
+	if h.fedCache != nil {
 		if sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), req.GameID); ok {
-			if remoteUser, err := h.userRepo.FindByID(winnerID); err == nil && remoteUser.Host != nil && remoteUser.URI != nil {
-				leave := corereversi.RenderLeave(h.baseURL+"/users/"+user.ID, *remoteUser.URI, sessionID)
-				if body, jerr := json.Marshal(leave); jerr == nil {
-					_ = h.deliverer.DeliverToUser(user.ID, remoteUser, body)
-				}
-			}
-			// ゲーム終了時に mapping を明示削除
 			h.fedCache.Delete(c.Request().Context(), sessionID, req.GameID)
 		}
 	}

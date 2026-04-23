@@ -45,13 +45,29 @@ func (p *Processor) handleReversiInvite(act genericActivity) error {
 	if toURI == "" {
 		return errors.New("reversi invite: missing recipient")
 	}
-	invitee, err := p.userRepo.FindByURI(toURI)
+	// ローカルユーザーの user.uri は DB 上 NULL なので FindByURI では解決
+	// できない。inbound Follow と同じ resolveTargetUser を使って
+	// `{localBaseURL}/users/{id}` 形式もローカル ID として解決する。
+	invitee, err := p.resolveTargetUser(toURI)
 	if err != nil {
 		return fmt.Errorf("reversi invite: recipient %s not found", toURI)
 	}
 	ctx := context.Background()
 	// 既にこの sessionID に対応する game が Redis に居れば二重処理を防ぐ。
 	if gid, gerr := p.reversiFedCache.Get(ctx, state.GameSessionID); gerr == nil && gid != "" {
+		return nil
+	}
+
+	// CherryPick は fresh session_id で Invite を 5 秒ごと再送するため、
+	// 同じ (inviter, invitee) の pending game があれば session mapping を
+	// 最新に差し替えて再利用する。これが無いと招待ごとに row が増殖する。
+	if existing := findPendingReversiGame(p.reversiRepo, invitee.ID, actor.ID); existing != nil {
+		if oldSession, ok := p.reversiFedCache.GetSessionByGame(ctx, existing.ID); ok && oldSession != state.GameSessionID {
+			p.reversiFedCache.Delete(ctx, oldSession, "")
+		}
+		p.reversiFedCache.Set(ctx, state.GameSessionID, existing.ID)
+		slog.Info("reversi federation: invite session refreshed",
+			"gameId", existing.ID, "session", state.GameSessionID, "inviter", actor.ID, "invitee", invitee.ID)
 		return nil
 	}
 
@@ -71,6 +87,27 @@ func (p *Processor) handleReversiInvite(act genericActivity) error {
 	p.reversiFedCache.Set(ctx, state.GameSessionID, game.ID)
 	slog.Info("reversi federation: accepted invite",
 		"gameId", game.ID, "session", state.GameSessionID, "inviter", actor.ID, "invitee", invitee.ID)
+	return nil
+}
+
+// findPendingReversiGame looks for a pending game (not started / ended)
+// where User1=inviter and User2=invitee. 使うのは handleReversiInvite の
+// 再送 dedup。最新の pending を採用する (ListByUser は id DESC 順)。
+func findPendingReversiGame(repo interface {
+	ListByUser(userID string, limit int) ([]*model.ReversiGame, error)
+}, inviteeID, inviterID string) *model.ReversiGame {
+	games, err := repo.ListByUser(inviteeID, 20)
+	if err != nil {
+		return nil
+	}
+	for _, g := range games {
+		if g.IsStarted || g.IsEnded {
+			continue
+		}
+		if g.User1ID == inviterID && g.User2ID == inviteeID {
+			return g
+		}
+	}
 	return nil
 }
 
@@ -150,6 +187,9 @@ func (p *Processor) handleReversiUpdate(act genericActivity) error {
 	if err != nil {
 		return fmt.Errorf("reversi update: game %s gone", gameID)
 	}
+	slog.Info("reversi inbox: update received",
+		"gameId", game.ID, "session", state.GameSessionID, "actorID", actor.ID, "subtype", state.Type,
+		"readyPtr", state.Ready != nil, "posPtr", state.Pos != nil, "key", state.Key)
 	switch strings.ToLower(state.Type) {
 	case "settings":
 		if state.Key == "" {

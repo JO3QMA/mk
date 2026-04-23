@@ -37,6 +37,12 @@ func (r *channelFakeRepo) Update(g *model.ReversiGame) error {
 func (r *channelFakeRepo) ListByUser(_ string, _ int) ([]*model.ReversiGame, error) {
 	return nil, nil
 }
+func (r *channelFakeRepo) ListByUserCursor(_, _, _ string, _ int) ([]*model.ReversiGame, error) {
+	return nil, nil
+}
+func (r *channelFakeRepo) ListStartedCursor(_, _ string, _ int) ([]*model.ReversiGame, error) {
+	return nil, nil
+}
 func (r *channelFakeRepo) ListActive() ([]*model.ReversiGame, error) { return nil, nil }
 func (r *channelFakeRepo) Delete(id string) error {
 	delete(r.games, id)

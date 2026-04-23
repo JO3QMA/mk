@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
@@ -131,6 +133,21 @@ type GamePublisher interface {
 	PublishGameEvent(gameID, eventType string, body any)
 }
 
+// FederationDeliverer is the minimal interface used by the Service to send AP
+// activities to a remote opponent when state changes (UpdateReady /
+// UpdateSettings / PutStone / CancelGame / Surrender)。循環依存を避けるため
+// interface で受ける (実装は core/federation.DeliverService)。
+type FederationDeliverer interface {
+	DeliverToUser(signerUserID string, recipient *model.User, body []byte) error
+}
+
+// UserLookup is the minimal interface used by the Service to resolve the
+// opposing player during federation delivery. repository.UserRepository が
+// そのまま満たすので実体実装の追加は不要。
+type UserLookup interface {
+	FindByID(id string) (*model.User, error)
+}
+
 // --- Core service ---
 
 // Service manages reversi game state transitions and publishes updates to
@@ -140,6 +157,11 @@ type Service struct {
 	publisher GamePublisher
 	redis     redis.Cmdable
 	fedCache  *FederationIDCache
+	// Federation delivery (#417)。未設定時は state 変化時の outbound を何も
+	// 送らない = ローカル同士の対戦や非連合セッションではそもそも deliver 不要。
+	deliverer FederationDeliverer
+	userRepo  UserLookup
+	baseURL   string
 }
 
 // NewService constructs a Service with the required dependencies.
@@ -155,6 +177,93 @@ func NewService(
 // Invite/Join/Leave messages can resolve the game id.
 func (s *Service) SetFederationCache(c *FederationIDCache) {
 	s.fedCache = c
+}
+
+// SetFederationDeliverer attaches a deliverer used to push reversi Update /
+// Leave activities to a remote opponent on state changes (#417 P1)。deliverer
+// が nil のときは連合外 Service として動作する (既存互換)。
+func (s *Service) SetFederationDeliverer(d FederationDeliverer) {
+	s.deliverer = d
+}
+
+// SetUserRepo attaches a user lookup used by federation delivery to resolve
+// actor / opponent Host / URI。
+func (s *Service) SetUserRepo(r UserLookup) {
+	s.userRepo = r
+}
+
+// SetBaseURL records the local instance base URL (https://<host>) used to
+// build actor URIs in outbound Reversi activities.
+func (s *Service) SetBaseURL(u string) {
+	s.baseURL = u
+}
+
+// deliverStateToOpponent renders an Update(Game) activity for the state change
+// and delivers it to the remote opponent when federation is wired and the
+// opponent is actually remote。
+//
+// actor が remote のとき (inbox 受信経由で Service を呼んだケース) は、相手に
+// echo back しないよう skip する。CherryPick は同じ guard を ApGameService 側
+// で effectively 入れているが、mk-go では Service 内部で判定して呼び出し元を
+// 軽くしている。
+func (s *Service) deliverStateToOpponent(ctx context.Context, game *model.ReversiGame, actorUserID string, state APGameState) {
+	if s.deliverer == nil || s.userRepo == nil || s.fedCache == nil || s.baseURL == "" {
+		slog.Info("reversi deliver: skipped (unwired)", "gameId", game.ID, "type", state.Type,
+			"deliverer", s.deliverer != nil, "userRepo", s.userRepo != nil, "fedCache", s.fedCache != nil, "baseURL", s.baseURL)
+		return
+	}
+	actor, err := s.userRepo.FindByID(actorUserID)
+	if err != nil || actor == nil || actor.Host != nil {
+		slog.Info("reversi deliver: skipped (actor issue)", "gameId", game.ID, "actorID", actorUserID, "err", err)
+		return
+	}
+	oppID := opponent(game, actorUserID)
+	opp, err := s.userRepo.FindByID(oppID)
+	if err != nil || opp == nil || opp.Host == nil || opp.URI == nil {
+		slog.Info("reversi deliver: skipped (opponent not remote)", "gameId", game.ID, "oppID", oppID,
+			"found", opp != nil, "host", opp != nil && opp.Host != nil, "uri", opp != nil && opp.URI != nil)
+		return
+	}
+	sessionID, ok := s.fedCache.GetSessionByGame(ctx, game.ID)
+	if !ok {
+		slog.Info("reversi deliver: skipped (no session)", "gameId", game.ID)
+		return
+	}
+	state.GameSessionID = sessionID
+	activity := RenderUpdate(s.baseURL, s.baseURL+"/users/"+actor.ID, *opp.URI, state)
+	body, err := json.Marshal(activity)
+	if err != nil {
+		return
+	}
+	slog.Info("reversi deliver: sending update", "gameId", game.ID, "type", state.Type, "session", sessionID, "to", oppID)
+	_ = s.deliverer.DeliverToUser(actor.ID, opp, body)
+}
+
+// deliverLeaveToOpponent renders a Leave(Game) activity and delivers it to
+// the remote opponent on Surrender / CancelGame by a local player。
+func (s *Service) deliverLeaveToOpponent(ctx context.Context, game *model.ReversiGame, actorUserID string) {
+	if s.deliverer == nil || s.userRepo == nil || s.fedCache == nil || s.baseURL == "" {
+		return
+	}
+	actor, err := s.userRepo.FindByID(actorUserID)
+	if err != nil || actor == nil || actor.Host != nil {
+		return
+	}
+	oppID := opponent(game, actorUserID)
+	opp, err := s.userRepo.FindByID(oppID)
+	if err != nil || opp == nil || opp.Host == nil || opp.URI == nil {
+		return
+	}
+	sessionID, ok := s.fedCache.GetSessionByGame(ctx, game.ID)
+	if !ok {
+		return
+	}
+	activity := RenderLeave(s.baseURL, s.baseURL+"/users/"+actor.ID, *opp.URI, sessionID)
+	body, err := json.Marshal(activity)
+	if err != nil {
+		return
+	}
+	_ = s.deliverer.DeliverToUser(actor.ID, opp, body)
 }
 
 // --- Queries ---
@@ -198,6 +307,12 @@ func (s *Service) UpdateReady(ctx context.Context, gameID, userID string, ready 
 		"user1": game.User1Ready,
 		"user2": game.User2Ready,
 	})
+	// 連合対戦の場合は ready_states Update を相手に配信 (#417 P1)。
+	readyVal := ready
+	s.deliverStateToOpponent(ctx, game, userID, APGameState{
+		Type:  "ready_states",
+		Ready: &readyVal,
+	})
 	if game.User1Ready && game.User2Ready {
 		return s.StartGame(ctx, game)
 	}
@@ -239,6 +354,12 @@ func (s *Service) UpdateSettings(ctx context.Context, gameID, userID, key string
 	s.publish(gameID, "changeReadyStates", map[string]any{
 		"user1": false, "user2": false,
 	})
+	// 連合対戦の場合は settings Update を相手に配信 (#417 P1)。
+	s.deliverStateToOpponent(ctx, game, userID, APGameState{
+		Type:  "settings",
+		Key:   key,
+		Value: valueAny,
+	})
 	return nil
 }
 
@@ -255,6 +376,9 @@ func (s *Service) CancelGame(ctx context.Context, gameID, userID string) error {
 	if !isPlayer(game, userID) {
 		return ErrNotPlayer
 	}
+	// Leave の配信は Delete 前に行う (Delete で fedCache も後段で cleanup
+	// されるため、配信に必要な session マッピングが残っているうちに送る)。
+	s.deliverLeaveToOpponent(ctx, game, userID)
 	if err := s.repo.Delete(gameID); err != nil {
 		return err
 	}
@@ -275,7 +399,15 @@ func (s *Service) StartGame(ctx context.Context, game *model.ReversiGame) error 
 		return ErrAlreadyEnded
 	}
 
-	black := pickBlack(game.BW)
+	// 連合対戦の場合は session id から決定論的に black を算出する
+	// (両サイドで同じ値になる必要がある)。CherryPick startGame と一致。
+	sessionID := ""
+	if s.fedCache != nil {
+		if sid, ok := s.fedCache.GetSessionByGame(ctx, game.ID); ok {
+			sessionID = sid
+		}
+	}
+	black := pickBlack(game.BW, sessionID)
 	game.Black = &black
 	game.IsStarted = true
 	now := time.Now()
@@ -324,16 +456,39 @@ func (s *Service) PutStone(ctx context.Context, gameID, userID string, pos int) 
 	}
 	engine.PutStone(pos)
 
-	// logs: [[pos, color], ...]
+	// logs format は misskey-reversi の SerializedLog と一致させる:
+	// [timeDelta, player(0|1), operation(0=put), pos]。フロントエンドの
+	// Reversi.Serializer.deserializeLogs がこの shape を要求するため、他の
+	// 形式だと restoreGame が空の engine を返し盤面が消える (#417 P1 UDS
+	// 検証で発覚)。player は Black=1 / White=0。operation は put のみ。
 	var logs [][]int
 	if len(game.Logs) > 0 {
 		_ = json.Unmarshal(game.Logs, &logs)
+	}
+	now := time.Now().UnixMilli()
+	var timeDelta int64
+	if len(logs) == 0 {
+		timeDelta = now
+	} else {
+		// CherryPick: timeDelta = log.time - logs[i-1].time。過去の
+		// timeDelta を全部積み上げれば前回 log の絶対時刻になる。
+		var prevTotal int64
+		for _, e := range logs {
+			if len(e) > 0 {
+				prevTotal += int64(e[0])
+			}
+		}
+		timeDelta = now - prevTotal
+	}
+	playerInt := 0
+	if myColor { // true == Black
+		playerInt = 1
 	}
 	colorInt := 1
 	if !myColor {
 		colorInt = 2
 	}
-	logs = append(logs, []int{pos, colorInt})
+	logs = append(logs, []int{int(timeDelta), playerInt, 0, pos})
 	raw, _ := json.Marshal(logs)
 	game.Logs = raw
 
@@ -362,6 +517,13 @@ func (s *Service) PutStone(ctx context.Context, gameID, userID string, pos int) 
 			"game":     packGame(game),
 		})
 	}
+	// 連合対戦の場合は putstone Update を相手に配信 (#417 P1)。ゲーム終了
+	// (engine.Turn == nil) でも相手側で同じ engine を回すため最後の手を送る。
+	posVal := pos
+	s.deliverStateToOpponent(ctx, game, userID, APGameState{
+		Type: "putstone",
+		Pos:  &posVal,
+	})
 	return nil
 }
 
@@ -396,6 +558,8 @@ func (s *Service) Surrender(ctx context.Context, gameID, userID string) error {
 		"reason":   "surrender",
 		"game":     packGame(game),
 	})
+	// 連合対戦の場合は Leave を相手に配信 (#417 P1)。
+	s.deliverLeaveToOpponent(ctx, game, userID)
 	return nil
 }
 
@@ -552,8 +716,11 @@ func colorFromBool(black bool) Color {
 	return White
 }
 
-// pickBlack returns 1 or 2 per the BW setting, defaulting to random.
-func pickBlack(bw string) int {
+// pickBlack returns 1 or 2 per the BW setting. For federated games
+// (sessionID != ""), bw == "random" を session id の先頭コードポイントから
+// 決定論的に導く (CherryPick startGame と一致させて両サイドで同じ bw を
+// 得るため)。ローカル対戦では従来通り rand.Intn を使う。
+func pickBlack(bw, sessionID string) int {
 	switch bw {
 	case "1":
 		return 1
@@ -561,6 +728,18 @@ func pickBlack(bw string) int {
 		return 2
 	}
 	// "random" など
+	if sessionID != "" {
+		// CherryPick: codePointAt(0) % 2 === 0 ? 1 : 2
+		var cp rune
+		for _, r := range sessionID {
+			cp = r
+			break
+		}
+		if cp%2 == 0 {
+			return 1
+		}
+		return 2
+	}
 	//nolint:gosec // G404 — UX randomness, non-cryptographic is fine
 	if rand.Intn(2) == 0 {
 		return 1
@@ -638,8 +817,13 @@ func EngineFromGame(game *model.ReversiGame) (*Game, error) {
 	if err := json.Unmarshal(game.Logs, &logs); err != nil {
 		return nil, fmt.Errorf("decode logs: %w", err)
 	}
+	// Log shape: [timeDelta, player, operation(0=put), pos]。過去の
+	// 2要素 [pos, color] 形式との互換も残す (旧データ移行中のフォールバック)。
 	for _, entry := range logs {
-		if len(entry) >= 1 {
+		switch {
+		case len(entry) >= 4 && entry[2] == 0: // put operation
+			engine.PutStone(entry[3])
+		case len(entry) == 2: // legacy [pos, color]
 			engine.PutStone(entry[0])
 		}
 	}
@@ -650,7 +834,7 @@ func EngineFromGame(game *model.ReversiGame) (*Game, error) {
 // は api ハンドラ側の packGame を使うため、ここでは stream 配信に必要な最小の
 // フィールドのみ含める。
 func packGame(game *model.ReversiGame) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id":                   game.ID,
 		"user1Id":              game.User1ID,
 		"user2Id":              game.User2ID,
@@ -673,4 +857,13 @@ func packGame(game *model.ReversiGame) map[string]any {
 		"startedAt":            game.StartedAt,
 		"endedAt":              game.EndedAt,
 	}
+	// user1 / user2 (UserLite) はフロントエンドの GameBoard が対戦相手の
+	// アバター描画などで必要とする。preload 済みなら埋め、nil ならキー省略。
+	if game.User1 != nil {
+		out["user1"] = entity.PackUserLite(game.User1)
+	}
+	if game.User2 != nil {
+		out["user2"] = entity.PackUserLite(game.User2)
+	}
+	return out
 }

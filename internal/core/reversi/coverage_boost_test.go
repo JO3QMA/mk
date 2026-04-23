@@ -272,7 +272,7 @@ func TestApplySetting_BadJSONPerKey(t *testing.T) {
 func TestPickBlack_RandomSamples(t *testing.T) {
 	seenOne, seenTwo := false, false
 	for range 1000 {
-		v := pickBlack("random")
+		v := pickBlack("random", "")
 		if v == 1 {
 			seenOne = true
 		} else if v == 2 {
