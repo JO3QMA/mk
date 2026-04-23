@@ -19,7 +19,11 @@ import (
 // output: id / createdAt / type / userId / user (PackUserLite) / note
 // (PackNote) / reaction / choice. Optional user/note arguments are only
 // embedded when non-nil so the caller can pre-fetch once and re-use.
-func PackNotification(n *notification.Notification, user *model.User, note *model.Note, idGen id.Generator) map[string]any {
+//
+// instLookup / emojiLookup を渡すと top-level user と note.user に
+// Instance / 絵文字 URL を埋める。nil なら no-op リゾルバとして扱われ、
+// 従来互換の挙動になる (#415 notifications page InstanceTicker)。
+func PackNotification(n *notification.Notification, user *model.User, note *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) map[string]any {
 	if n == nil {
 		return nil
 	}
@@ -33,16 +37,18 @@ func PackNotification(n *notification.Notification, user *model.User, note *mode
 		// TS本家はnotifierIdを"userId"として返す。
 		out["userId"] = n.NotifierID
 		if user != nil {
-			out["user"] = PackUserLite(user)
+			out["user"] = packUserLiteWithResolvers(user, instLookup, emojiLookup)
 		}
 	}
 	if n.NoteID != "" {
 		// reply/mention/reaction/renote/quote/pollEnded等、noteを要する
 		// 通知タイプ向け。REST API互換のため noteId は常に含める。
 		// 加えて note object が fetch できていればpacked Noteも入れる。
+		// PackNoteWithInstance で note.user / Renote/Reply の embed にも
+		// Instance / 絵文字を適用する。
 		out["noteId"] = n.NoteID
 		if note != nil && idGen != nil {
-			out["note"] = PackNote(note, idGen)
+			out["note"] = PackNoteWithInstance(note, idGen, instLookup, emojiLookup)
 		}
 	}
 	if n.Reaction != "" {
@@ -61,4 +67,23 @@ func PackNotification(n *notification.Notification, user *model.User, note *mode
 		out[k] = v
 	}
 	return out
+}
+
+// packUserLiteWithResolvers packs a model.User and applies optional Instance /
+// emoji resolution so that top-level user surfaces (notification userId / user)
+// carry the same InstanceTicker metadata as embedded note authors. nil lookups
+// leave Instance / Emojis empty (same as plain PackUserLite).
+func packUserLiteWithResolvers(u *model.User, instLookup InstanceLookup, emojiLookup EmojiLookup) UserLite {
+	lite := PackUserLite(u)
+	if u == nil {
+		return lite
+	}
+	instResolver := NewInstanceResolver(instLookup, u)
+	instResolver.FillUserLite(&lite)
+	// 絵文字は note.User の User.Emojis を引く経路と同じ interface を再利用。
+	// 合成 note に User だけ詰めた shell を渡すと NewEmojiResolver は
+	// user.Emojis から unique name を拾って一括 fetch してくれる。
+	emojiResolver := NewEmojiResolver(emojiLookup, []*model.Note{{User: u}})
+	emojiResolver.PopulateUserEmojis(u, &lite)
+	return lite
 }

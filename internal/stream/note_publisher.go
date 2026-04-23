@@ -121,10 +121,12 @@ type NotificationNoteRepo interface {
 // the outbound JSON is packed via entity.PackNotification so the WebSocket
 // body matches Misskey's NotificationEntityService.pack shape.
 type NotificationPublisher struct {
-	pub      PubSubPublisher
-	userRepo NotificationUserRepo
-	noteRepo NotificationNoteRepo
-	idGen    id.Generator
+	pub            PubSubPublisher
+	userRepo       NotificationUserRepo
+	noteRepo       NotificationNoteRepo
+	idGen          id.Generator
+	instanceLookup entity.InstanceLookup
+	emojiLookup    entity.EmojiLookup
 }
 
 // NewNotificationPublisher constructs a NotificationPublisher.
@@ -139,6 +141,19 @@ func (p *NotificationPublisher) SetRepos(userRepo NotificationUserRepo, noteRepo
 	p.userRepo = userRepo
 	p.noteRepo = noteRepo
 	p.idGen = idGen
+}
+
+// SetInstanceLookup attaches an InstanceLookup so user.instance (used by
+// frontend InstanceTicker for theme color / software name) is populated on
+// notification streaming payloads (#415 follow-up).
+func (p *NotificationPublisher) SetInstanceLookup(lookup entity.InstanceLookup) {
+	p.instanceLookup = lookup
+}
+
+// SetEmojiLookup attaches an EmojiLookup so custom emoji shortcodes resolve
+// to URLs in notification streaming payloads.
+func (p *NotificationPublisher) SetEmojiLookup(lookup entity.EmojiLookup) {
+	p.emojiLookup = lookup
 }
 
 // Pack implements core/notification.Packer. Returns the packed map shape
@@ -163,7 +178,7 @@ func (p *NotificationPublisher) Pack(n *corenotification.Notification) any {
 			note = n2
 		}
 	}
-	return entity.PackNotification(n, user, note, p.idGen)
+	return entity.PackNotification(n, user, note, p.idGen, p.instanceLookup, p.emojiLookup)
 }
 
 // PublishNotification serializes the notification and publishes to
