@@ -1,6 +1,8 @@
 package reversi
 
 import (
+	"strings"
+
 	"github.com/google/uuid"
 	"github.com/shiroha-a/mk/internal/model"
 )
@@ -185,6 +187,65 @@ func RenderUndo(baseURL, actorURI string, original APActivity) APActivity {
 		Type:    "Undo",
 		Actor:   actorURI,
 		Object:  original,
+	}
+}
+
+// APReactionActivity represents an EmojiReaction activity sent against a
+// reversi game. Object is a URI string (game session) per CherryPick spec,
+// not the nested Game object used by Invite/Update/Leave/Undo.
+//
+// 別 struct にしているのは Object フィールドの型が違う (URI string) のと
+// `_misskey_reaction` / `tag` 等の reversi reaction 専用フィールドを持つため。
+type APReactionActivity struct {
+	Context         any      `json:"@context,omitempty"`
+	ID              string   `json:"id,omitempty"`
+	Type            string   `json:"type"`
+	Actor           string   `json:"actor"`
+	Object          string   `json:"object"`
+	Content         string   `json:"content,omitempty"`
+	MisskeyReaction string   `json:"_misskey_reaction,omitempty"`
+	To              string   `json:"to,omitempty"`
+	CC              []string `json:"cc,omitempty"`
+}
+
+// GameSessionURI builds the canonical URI used by CherryPick to identify a
+// reversi game session in EmojiReaction activities. CherryPick の
+// `/games/{UUID}/{sessionID}` パターンをそのまま生成する。inbox 側の
+// ParseGameSessionURI と対称。
+func GameSessionURI(baseURL, sessionID string) string {
+	return baseURL + "/games/" + GameTypeUUID + "/" + sessionID
+}
+
+// ParseGameSessionURI extracts the reversi session id from a CherryPick-style
+// `/games/{UUID}/{sessionID}` URI. URI が reversi game セッションの形でなけ
+// れば空文字を返す (= 通常 Like / EmojiReaction として処理させる)。
+func ParseGameSessionURI(uri string) string {
+	const marker = "/games/" + GameTypeUUID + "/"
+	idx := strings.Index(uri, marker)
+	if idx < 0 {
+		return ""
+	}
+	return uri[idx+len(marker):]
+}
+
+// RenderReversiReaction builds an EmojiReaction activity addressed to the
+// remote opponent for a live reversi game session. CherryPick はこれを
+// `reacted` WS event の federation に使う (#417 P5)。
+//
+//	emoji  : `:name:` 形式 (custom) か Unicode 1 文字 (default)
+//	tags   : custom emoji の場合の `tag` 配列 (省略可)。プロトコル上必須では
+//	         ない (受け側はローカルにある絵文字定義で fallback できる)。
+func RenderReversiReaction(baseURL, sessionID, actorURI, targetURI, emoji string) APReactionActivity {
+	return APReactionActivity{
+		Context:         defaultContext,
+		ID:              activityID(baseURL),
+		Type:            "EmojiReaction",
+		Actor:           actorURI,
+		Object:          GameSessionURI(baseURL, sessionID),
+		Content:         emoji,
+		MisskeyReaction: emoji,
+		To:              targetURI,
+		CC:              []string{},
 	}
 }
 

@@ -614,9 +614,6 @@ func hydrateNoteForFanout(repo interface {
 
 // handleLike attaches a reaction to a local note based on a Like activity.
 func (p *Processor) handleLike(act genericActivity) error {
-	if p.reactionService == nil {
-		return ErrUnsupportedActivity
-	}
 	reactor, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
 		return err
@@ -630,17 +627,37 @@ func (p *Processor) handleLike(act genericActivity) error {
 		// act.Object (RawMessage) から直接読む
 		uri, rerr := readObjectString(act.Object)
 		if rerr != nil {
-			return rerr
+			// object 欠如した malformed Like は未対応扱いで 202 ack させる。
+			// 旧実装は reactionService nil 経由で ErrUnsupportedActivity を
+			// 返していたため reversi 分岐を入れた今の構造でも同じ挙動を保つ。
+			return ErrUnsupportedActivity
 		}
 		like.Object = uri
-	}
-	target, err := p.resolver.ResolveNote(like.Object)
-	if err != nil {
-		return err
 	}
 	reaction := like.Content
 	if like.MisskeyReaction != "" {
 		reaction = like.MisskeyReaction
+	}
+	// reversi game session URI (`/games/{UUID}/{sessionID}`) は note resolve
+	// より先にチェックする (#417 P5)。Note Like より早く分岐させないと
+	// resolver.ResolveNote が 404 で失敗してしまう。
+	if sessionID := corereversi.ParseGameSessionURI(like.Object); sessionID != "" {
+		if !p.reversiReady() {
+			return ErrUnsupportedActivity
+		}
+		gameID, gerr := p.reversiFedCache.Get(context.Background(), sessionID)
+		if gerr != nil || gameID == "" {
+			// session TTL 切れ後の reaction は ack 扱い (#417 P4 と同じ思想)。
+			return nil
+		}
+		return p.reversiSvc.SendReaction(context.Background(), gameID, reactor.ID, reaction)
+	}
+	if p.reactionService == nil {
+		return ErrUnsupportedActivity
+	}
+	target, err := p.resolver.ResolveNote(like.Object)
+	if err != nil {
+		return err
 	}
 	if _, err := p.reactionService.Create(reactor, target.ID, reaction); err != nil {
 		if errors.Is(err, corereaction.ErrAlreadyReacted) {

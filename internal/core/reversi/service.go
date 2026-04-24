@@ -706,6 +706,73 @@ func (s *Service) CheckTimeout(ctx context.Context, gameID string) error {
 	return nil
 }
 
+// --- Reactions (#417 P5) ---
+
+// defaultReactionEmoji は reaction 文字列が空の場合に使う fallback。
+// CherryPick の sendReaction と同じ。
+const defaultReactionEmoji = "❤️"
+
+// SendReaction handles a reversi reaction action by either a local or remote
+// player. publishes a `reacted` WebSocket event to both players, and when the
+// caller is local with a remote opponent, delivers an EmojiReaction AP
+// activity so the remote side can publish its own `reacted` event (#417 P5)。
+//
+// game が pre-start / ended / 当事者外 の場合は no-op。CherryPick が ack 扱い
+// にする挙動と揃える (= peer 側エラーを起こさない)。
+func (s *Service) SendReaction(ctx context.Context, gameID, userID, reaction string) error {
+	game, err := s.Get(ctx, gameID)
+	if err != nil {
+		return err
+	}
+	if !game.IsStarted || game.IsEnded {
+		return nil
+	}
+	if !isPlayer(game, userID) {
+		return nil
+	}
+	if reaction == "" {
+		reaction = defaultReactionEmoji
+	}
+	s.publish(gameID, "reacted", map[string]any{
+		"userId":   userID,
+		"reaction": reaction,
+	})
+	s.deliverReactionToOpponent(ctx, game, userID, reaction)
+	return nil
+}
+
+// deliverReactionToOpponent renders an EmojiReaction activity and delivers it
+// to the remote opponent only when the actor is local。CherryPick 側の
+// sendReaction が `user.host === null` ガードを掛けているのと同じ挙動。
+// 受信した EmojiReaction で SendReaction が再度呼ばれた場合に echo back し
+// ないようにするためにも、actor.Host != nil を弾く必要がある。
+func (s *Service) deliverReactionToOpponent(ctx context.Context, game *model.ReversiGame, actorUserID, reaction string) {
+	if s.deliverer == nil || s.userRepo == nil || s.fedCache == nil || s.baseURL == "" {
+		return
+	}
+	actor, err := s.userRepo.FindByID(actorUserID)
+	if err != nil || actor == nil || actor.Host != nil {
+		return
+	}
+	oppID := opponent(game, actorUserID)
+	opp, err := s.userRepo.FindByID(oppID)
+	if err != nil || opp == nil || opp.Host == nil || opp.URI == nil {
+		return
+	}
+	sessionID, ok := s.fedCache.GetSessionByGame(ctx, game.ID)
+	if !ok {
+		return
+	}
+	activity := RenderReversiReaction(s.baseURL, sessionID,
+		s.baseURL+"/users/"+actor.ID, *opp.URI, reaction)
+	body, err := json.Marshal(activity)
+	if err != nil {
+		return
+	}
+	slog.Info("reversi deliver: sending reaction", "gameId", game.ID, "session", sessionID, "to", oppID, "reaction", reaction)
+	_ = s.deliverer.DeliverToUser(actor.ID, opp, body)
+}
+
 // --- helpers ---
 
 func (s *Service) publish(gameID, eventType string, body any) {

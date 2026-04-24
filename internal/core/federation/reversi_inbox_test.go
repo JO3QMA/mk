@@ -614,6 +614,83 @@ func TestReversiInbox_Leave_UnknownSession(t *testing.T) {
 	assert.Error(t, b.processor.Process(body))
 }
 
+// --- EmojiReaction / Like over reversi game session URI (#417 P5) ---
+
+// reversi reaction の inbox 経路は handleLike 内で URI パターンにより
+// 分岐される。Note への Like / Reaction とは独立に処理される必要がある。
+
+func TestReversiInbox_Reaction_PublishesReactedEvent(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	bw := 1
+	game := &model.ReversiGame{
+		ID:                   "fedg-react",
+		User1ID:              "bob",
+		User2ID:              "alice",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "1",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+		IsStarted:            true,
+		Black:                &bw,
+	}
+	require.NoError(t, b.gameRepo.Create(game))
+	b.fedCache.Set(context.Background(), "sess-react", game.ID)
+
+	// EmojiReaction with object pointing at the reversi game session URI
+	body := []byte(`{
+		"type": "EmojiReaction",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/games/1c086295-25e3-4b82-b31e-3e3959906312/sess-react",
+		"content": ":fire:",
+		"_misskey_reaction": ":fire:"
+	}`)
+	require.NoError(t, b.processor.Process(body))
+	// publisher capture が無いとイベント発火を直接 assert できないため、
+	// 失敗しないことのみ確認 (内部 publish は no-op でも OK)。
+}
+
+func TestReversiInbox_Reaction_LikeWithGameURI(t *testing.T) {
+	// type: "Like" でも reversi URI なら同じハンドラに振り分けられる。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	bw := 1
+	game := &model.ReversiGame{
+		ID:                   "fedg-like",
+		User1ID:              "bob",
+		User2ID:              "alice",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "1",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+		IsStarted:            true,
+		Black:                &bw,
+	}
+	require.NoError(t, b.gameRepo.Create(game))
+	b.fedCache.Set(context.Background(), "sess-like", game.ID)
+
+	body := []byte(`{
+		"type": "Like",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/games/1c086295-25e3-4b82-b31e-3e3959906312/sess-like",
+		"content": "❤️"
+	}`)
+	require.NoError(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_Reaction_UnknownSessionAcked(t *testing.T) {
+	// session TTL 切れ後に届いた reaction は ack 扱い (#417 P5)。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	body := []byte(`{
+		"type": "EmojiReaction",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/games/1c086295-25e3-4b82-b31e-3e3959906312/ghost-sess",
+		"content": ":fire:"
+	}`)
+	assert.NoError(t, b.processor.Process(body))
+}
+
 // --- Update (reversi variant) ---
 
 func TestReversiInbox_Update_ReadyStates(t *testing.T) {
