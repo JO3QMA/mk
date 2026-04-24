@@ -61,7 +61,7 @@ func (p *Processor) handleReversiInvite(act genericActivity) error {
 	// CherryPick は fresh session_id で Invite を 5 秒ごと再送するため、
 	// 同じ (inviter, invitee) の pending game があれば session mapping を
 	// 最新に差し替えて再利用する。これが無いと招待ごとに row が増殖する。
-	if existing := findPendingReversiGame(p.reversiRepo, invitee.ID, actor.ID); existing != nil {
+	if existing := corereversi.FindPendingInvitation(p.reversiRepo, invitee.ID, actor.ID); existing != nil {
 		if oldSession, ok := p.reversiFedCache.GetSessionByGame(ctx, existing.ID); ok && oldSession != state.GameSessionID {
 			p.reversiFedCache.Delete(ctx, oldSession, "")
 		}
@@ -87,27 +87,6 @@ func (p *Processor) handleReversiInvite(act genericActivity) error {
 	p.reversiFedCache.Set(ctx, state.GameSessionID, game.ID)
 	slog.Info("reversi federation: accepted invite",
 		"gameId", game.ID, "session", state.GameSessionID, "inviter", actor.ID, "invitee", invitee.ID)
-	return nil
-}
-
-// findPendingReversiGame looks for a pending game (not started / ended)
-// where User1=inviter and User2=invitee. 使うのは handleReversiInvite の
-// 再送 dedup。最新の pending を採用する (ListByUser は id DESC 順)。
-func findPendingReversiGame(repo interface {
-	ListByUser(userID string, limit int) ([]*model.ReversiGame, error)
-}, inviteeID, inviterID string) *model.ReversiGame {
-	games, err := repo.ListByUser(inviteeID, 20)
-	if err != nil {
-		return nil
-	}
-	for _, g := range games {
-		if g.IsStarted || g.IsEnded {
-			continue
-		}
-		if g.User1ID == inviterID && g.User2ID == inviteeID {
-			return g
-		}
-	}
 	return nil
 }
 

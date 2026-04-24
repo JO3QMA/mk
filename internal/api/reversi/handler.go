@@ -292,22 +292,9 @@ func (h *Handler) Match(c echo.Context) error {
 // findPendingInvitationFrom scans viewer's recent reversi_game rows and
 // returns the pending game where User1=inviter, User2=viewer, not started / ended.
 // inbound Invite によって作られた受信待ち招待を「ゲーム成立」として消費する
-// ために使う。相手から複数回招待が来ていれば最新のものを選ぶ (ListByUser は
-// id DESC で返る)。
+// ために使う。corereversi.FindPendingInvitation に共有実装。
 func (h *Handler) findPendingInvitationFrom(viewerID, inviterID string) *model.ReversiGame {
-	games, err := h.repo.ListByUser(viewerID, 20)
-	if err != nil {
-		return nil
-	}
-	for _, g := range games {
-		if g.IsStarted || g.IsEnded {
-			continue
-		}
-		if g.User1ID == inviterID && g.User2ID == viewerID {
-			return g
-		}
-	}
-	return nil
+	return corereversi.FindPendingInvitation(h.repo, viewerID, inviterID)
 }
 
 // sendJoinForAcceptedInvite delivers a Join activity to the remote inviter so
@@ -358,11 +345,17 @@ func (h *Handler) CancelMatch(c echo.Context) error {
 			continue
 		}
 		if h.svc != nil {
-			_ = h.svc.CancelGame(ctx, g.ID, user.ID)
+			// ListByUser snapshot 後に相手が ready / start させた場合、
+			// ErrAlreadyStarted で失敗する。その場合は進行中のゲームを
+			// 潰さないよう fedCache の掃除もせず skip する
+			// (#417 Devin review: TOCTOU)。
+			if err := h.svc.CancelGame(ctx, g.ID, user.ID); err != nil {
+				continue
+			}
 		} else {
 			_ = h.repo.Delete(g.ID)
 		}
-		// 連合 session mapping もあれば明示的に掃除
+		// 連合 session mapping もあれば明示的に掃除 (CancelGame 成功時のみ)
 		if h.fedCache != nil {
 			if sessionID, ok := h.fedCache.GetSessionByGame(ctx, g.ID); ok {
 				h.fedCache.Delete(ctx, sessionID, g.ID)
