@@ -453,6 +453,95 @@ func TestVerify_DivergingCRC(t *testing.T) {
 
 // --- Federation ---
 
+// /match remote target で FederationChecker が unavailable を返したら
+// 400 エラーで弾いて Invite 配信もゲーム行作成もしない (#417 P3)。
+func TestMatch_Returns400WhenFederationUnavailable(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+	h, repo := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "nonreversi.example"
+	uri := "https://nonreversi.example/users/alice"
+	userRepo.Users["remoteAlice"] = &model.User{
+		ID: "remoteAlice", Username: "alice", Host: &host, URI: &uri,
+	}
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+	h.SetFederationChecker(stubFedChecker{available: false})
+
+	rec := post(h.Match, `{"userId":"remoteAlice"}`, u1)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, 0, d.calls, "非対応ホストには deliver しない")
+	// ゲーム行は作成されない (rollback 不要な early return)
+	assert.Len(t, repo.games, 0)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "NO_REVERSI_FEDERATION", errObj["code"])
+}
+
+// FederationChecker が available を返したら従来通り Invite 配信。
+func TestMatch_SendsInviteWhenFederationAvailable(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+	h, _ := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	uri := "https://remote.example/users/alice"
+	userRepo.Users["remoteAlice"] = &model.User{
+		ID: "remoteAlice", Username: "alice", Host: &host, URI: &uri,
+	}
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+	h.SetFederationChecker(stubFedChecker{available: true})
+
+	rec := post(h.Match, `{"userId":"remoteAlice"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 1, d.calls)
+}
+
+// Acct `@user@host` で未キャッシュのリモートユーザーを WebFinger で取り込む。
+func TestMatch_AcctRemoteResolvesViaWebfinger(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+	h, _ := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	// ローカル DB には居ない相手
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+	h.SetFederationChecker(stubFedChecker{available: true})
+
+	host := "remote.example"
+	uri := "https://remote.example/users/ghost"
+	discovered := &model.User{ID: "discovered", Username: "ghost", Host: &host, URI: &uri}
+	h.SetRemoteUserLookup(&stubRemoteLookup{user: discovered})
+	// acct を local id に解決した後、FindByID で再取得されるため登録しておく。
+	userRepo.Users["discovered"] = discovered
+
+	rec := post(h.Match, `{"userId":"@ghost@remote.example"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 1, d.calls)
+}
+
+type stubFedChecker struct {
+	available bool
+}
+
+func (s stubFedChecker) Available(_ context.Context, _ string) bool { return s.available }
+
+type stubRemoteLookup struct {
+	user *model.User
+	err  error
+}
+
+func (s *stubRemoteLookup) ResolveByUsernameHost(_, _ string) (*model.User, error) {
+	return s.user, s.err
+}
+
 // Local ターゲットへの /match で reversi stream に `invited` が push される
 // (#417 P2)。リモートターゲットのときは Invite を deliver するのみで
 // local stream への push はしない。

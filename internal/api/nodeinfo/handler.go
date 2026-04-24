@@ -83,6 +83,10 @@ func (h *Handler) Version2_1(c echo.Context) error {
 			"name":  maintainerName,
 			"email": maintainerEmail,
 		},
+		// CherryPick 本家の reversi 連合拡張と互換性を示すバージョン。
+		// 相手側 (CherryPick) はこの値のメジャーバージョン一致で連合可否を
+		// 判定するので、破壊的変更が無い限り 1.1.x を維持する (#417 P3)。
+		"reversiVersion": "1.1.0-mkgo",
 	}
 	// 統計値は repo 経由で集計。未配線なら 0 (#403)。DB error は nodeinfo を
 	// 丸ごと failさせるより partial 値で返す方が federation crawler に優しい

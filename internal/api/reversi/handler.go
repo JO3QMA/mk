@@ -1,6 +1,7 @@
 package reversi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -35,14 +36,28 @@ type ReversiStreamPublisher interface {
 
 // Handler handles reversi/* endpoints.
 type Handler struct {
-	repo      repository.ReversiRepository
-	svc       *corereversi.Service
-	idGen     id.Generator
-	baseURL   string
-	deliverer FederationDeliverer
-	fedCache  *corereversi.FederationIDCache
-	userRepo  repository.UserRepository
-	streamPub ReversiStreamPublisher
+	repo         repository.ReversiRepository
+	svc          *corereversi.Service
+	idGen        id.Generator
+	baseURL      string
+	deliverer    FederationDeliverer
+	fedCache     *corereversi.FederationIDCache
+	userRepo     repository.UserRepository
+	streamPub    ReversiStreamPublisher
+	fedChecker   FederationAvailabilityChecker
+	remoteLookup RemoteUserLookup
+}
+
+// FederationAvailabilityChecker は reversiVersion を advertise している相手
+// かどうかを判定する。実装は core/reversi.FederationChecker。
+type FederationAvailabilityChecker interface {
+	Available(ctx context.Context, host string) bool
+}
+
+// RemoteUserLookup は `@user@host` 形式で未キャッシュのリモートユーザーを
+// WebFinger + AP Person 経由で取り込む。実装は core/federation.RemoteUserResolver。
+type RemoteUserLookup interface {
+	ResolveByUsernameHost(username, host string) (*model.User, error)
 }
 
 // NewHandler creates a new reversi handler.
@@ -56,6 +71,21 @@ func NewHandler(repo repository.ReversiRepository, idGen id.Generator) *Handler 
 // バックするので既存テスト互換。
 func (h *Handler) SetService(svc *corereversi.Service) {
 	h.svc = svc
+}
+
+// SetFederationChecker attaches a FederationAvailabilityChecker used to
+// gate outbound Invite delivery when the remote host does not advertise a
+// compatible reversiVersion (#417 P3)。未設定なら常に送信を許可する
+// (従来互換)。
+func (h *Handler) SetFederationChecker(c FederationAvailabilityChecker) {
+	h.fedChecker = c
+}
+
+// SetRemoteUserLookup attaches a webfinger-capable remote user resolver so
+// that /match can accept `@user@host` acct for users not yet cached locally
+// (#417 P3 Enhancement)。
+func (h *Handler) SetRemoteUserLookup(r RemoteUserLookup) {
+	h.remoteLookup = r
 }
 
 // SetStreamPublisher attaches a per-user reversi stream publisher used for
@@ -127,27 +157,34 @@ var defaultMap = pq.StringArray{
 }
 
 // resolveAcct converts an acct form (`@user` or `@user@host`) into a local
-// user id by looking up the UserRepository. Remote users must already exist
-// locally — webfinger-based discovery is intentionally out of scope.
+// user id。最初に UserRepository を引き、remote でキャッシュ未取込ならば
+// RemoteUserLookup (WebFinger + AP Person fetch) にフォールバックする
+// (#417 P3 Enhancement: リモートユーザーを招待できるようにする)。
 func (h *Handler) resolveAcct(acct string) (string, error) {
 	trimmed := strings.TrimPrefix(acct, "@")
 	if trimmed == "" {
 		return "", errors.New("empty acct")
 	}
 	username := trimmed
-	var hostPtr *string
+	var host string
 	if at := strings.IndexByte(trimmed, '@'); at >= 0 {
 		username = trimmed[:at]
-		host := strings.ToLower(trimmed[at+1:])
-		if host != "" {
-			hostPtr = &host
+		host = strings.ToLower(trimmed[at+1:])
+	}
+	var hostPtr *string
+	if host != "" {
+		hostPtr = &host
+	}
+	if u, err := h.userRepo.FindByUsernameLower(strings.ToLower(username), hostPtr); err == nil {
+		return u.ID, nil
+	}
+	// ローカル DB に無い remote user → WebFinger で取り込む。
+	if host != "" && h.remoteLookup != nil {
+		if u, err := h.remoteLookup.ResolveByUsernameHost(username, host); err == nil && u != nil {
+			return u.ID, nil
 		}
 	}
-	u, err := h.userRepo.FindByUsernameLower(strings.ToLower(username), hostPtr)
-	if err != nil {
-		return "", err
-	}
-	return u.ID, nil
+	return "", errors.New("user not found")
 }
 
 // Games handles POST /api/reversi/games — list games.
@@ -272,6 +309,20 @@ func (h *Handler) Match(c echo.Context) error {
 		}
 	}
 
+	// 新規招待で remote target の場合は reversiVersion 互換性を先に確認する
+	// (#417 P3)。非対応ホストへの招待は silent に握りつぶされるだけで UI が
+	// 「待機中」のまま動かないので、ゲーム行作成前に 400 エラーで弾く。
+	if req.UserID != "" && h.userRepo != nil && h.fedChecker != nil {
+		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.Host != nil && *targetUser.Host != "" {
+			if !h.fedChecker.Available(c.Request().Context(), *targetUser.Host) {
+				return c.JSON(http.StatusBadRequest, apierr.Error(
+					"NO_REVERSI_FEDERATION",
+					"The target user's server does not support reversi federation.",
+					"3c9d76c8-8d40-4f6e-9bea-e4e57ae02fed"))
+			}
+		}
+	}
+
 	now := time.Now()
 	game := &model.ReversiGame{
 		ID:                   h.idGen.Generate(now),
@@ -303,7 +354,8 @@ func (h *Handler) Match(c echo.Context) error {
 	if req.UserID != "" && h.userRepo != nil {
 		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil {
 			if targetUser.Host != nil && targetUser.URI != nil {
-				// remote: AP Invite を配信
+				// remote: AP Invite を配信 (reversiVersion 互換性は
+				// ゲーム行作成前の pre-check 済み)。
 				if h.deliverer != nil && h.fedCache != nil {
 					sessionID := h.idGen.Generate(now) + "-fed"
 					h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
