@@ -115,15 +115,6 @@ func (c *ReversiGameChannel) OnClientMessage(msgType string, body json.RawMessag
 		err = c.svc.CancelGame(ctx, c.gameID, user.ID)
 	case "claimTimeIsUp":
 		err = c.svc.CheckTimeout(ctx, c.gameID)
-	case "reaction":
-		// CherryPick reversi-game.ts は body を string として送る (`:name:`
-		// もしくは Unicode 1 文字)。空文字は service 側で default emoji に
-		// fallback されるので明示 validate しない (#417 P5)。
-		var reaction string
-		if jerr := json.Unmarshal(body, &reaction); jerr != nil {
-			return
-		}
-		err = c.svc.SendReaction(ctx, c.gameID, user.ID, reaction)
 	default:
 		return
 	}

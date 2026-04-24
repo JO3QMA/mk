@@ -99,25 +99,9 @@ func TestParseGameState_Nil(t *testing.T) {
 	assert.Nil(t, ParseGameState(map[string]any{"game_state": "invalid"}))
 }
 
-func TestGameSessionURI(t *testing.T) {
-	got := GameSessionURI("https://example.com", "sess-1")
-	assert.Equal(t, "https://example.com/games/"+GameTypeUUID+"/sess-1", got)
-}
-
-func TestParseGameSessionURI(t *testing.T) {
-	assert.Equal(t, "sess-x", ParseGameSessionURI("https://example.com/games/"+GameTypeUUID+"/sess-x"))
-	// reversi UUID と無関係な URI は空文字
-	assert.Equal(t, "", ParseGameSessionURI("https://example.com/notes/abc"))
-	assert.Equal(t, "", ParseGameSessionURI(""))
-}
-
-func TestRenderReversiReaction(t *testing.T) {
-	r := RenderReversiReaction("https://local.example", "sess-r",
-		"https://local.example/users/alice", "https://remote.example/users/bob", ":fire:")
-	assert.Equal(t, "EmojiReaction", r.Type)
-	assert.Equal(t, "https://local.example/users/alice", r.Actor)
-	assert.Equal(t, "https://local.example/games/"+GameTypeUUID+"/sess-r", r.Object)
-	assert.Equal(t, ":fire:", r.Content)
-	assert.Equal(t, ":fire:", r.MisskeyReaction)
-	assert.Equal(t, "https://remote.example/users/bob", r.To)
+func TestIsReversiGameSessionURI(t *testing.T) {
+	assert.True(t, IsReversiGameSessionURI("https://example.com/games/"+GameTypeUUID+"/sess-x"))
+	// reversi UUID と無関係な URI は false
+	assert.False(t, IsReversiGameSessionURI("https://example.com/notes/abc"))
+	assert.False(t, IsReversiGameSessionURI(""))
 }

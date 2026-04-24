@@ -638,19 +638,15 @@ func (p *Processor) handleLike(act genericActivity) error {
 	if like.MisskeyReaction != "" {
 		reaction = like.MisskeyReaction
 	}
-	// reversi game session URI (`/games/{UUID}/{sessionID}`) は note resolve
-	// より先にチェックする (#417 P5)。Note Like より早く分岐させないと
-	// resolver.ResolveNote が 404 で失敗してしまう。
-	if sessionID := corereversi.ParseGameSessionURI(like.Object); sessionID != "" {
-		if !p.reversiReady() {
-			return ErrUnsupportedActivity
-		}
-		gameID, gerr := p.reversiFedCache.Get(context.Background(), sessionID)
-		if gerr != nil || gameID == "" {
-			// session TTL 切れ後の reaction は ack 扱い (#417 P4 と同じ思想)。
-			return nil
-		}
-		return p.reversiSvc.SendReaction(context.Background(), gameID, reactor.ID, reaction)
+	// reversi game session URI (`/games/{UUID}/{sessionID}`) は CherryPick
+	// 拡張の reaction 連合。純正 Misskey フロントは `reacted` を表示する UI を
+	// 持たないので mk-go では state 変化させず 202 ack だけ返す (#417 P5)。
+	// resolver.ResolveNote が 404 で失敗するのを避けるため Note Like より先に
+	// 弾く必要がある。
+	if corereversi.IsReversiGameSessionURI(like.Object) {
+		_ = reactor // actor 解決の副作用 (キャッシュ取込) は残す
+		_ = reaction
+		return nil
 	}
 	if p.reactionService == nil {
 		return ErrUnsupportedActivity
