@@ -48,14 +48,16 @@ type Handler struct {
 	remoteLookup RemoteUserLookup
 }
 
-// FederationAvailabilityChecker は reversiVersion を advertise している相手
-// かどうかを判定する。実装は core/reversi.FederationChecker。
+// FederationAvailabilityChecker determines whether a remote host advertises
+// a compatible reversiVersion via its nodeinfo.
+// 実装は core/reversi.FederationChecker。
 type FederationAvailabilityChecker interface {
 	Available(ctx context.Context, host string) bool
 }
 
-// RemoteUserLookup は `@user@host` 形式で未キャッシュのリモートユーザーを
-// WebFinger + AP Person 経由で取り込む。実装は core/federation.RemoteUserResolver。
+// RemoteUserLookup resolves an uncached remote user identified by acct
+// (`@user@host`) via WebFinger + ActivityPub Person fetch.
+// 実装は core/federation.RemoteUserResolver。
 type RemoteUserLookup interface {
 	ResolveByUsernameHost(username, host string) (*model.User, error)
 }
