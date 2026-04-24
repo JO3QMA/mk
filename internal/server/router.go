@@ -1643,6 +1643,7 @@ func (s *Server) setupRoutes() {
 	reversiHandler := apireversi.NewHandler(reversiRepo, idGen)
 	reversiHandler.SetService(reversiService)
 	reversiHandler.SetFederation(s.config.URL, deliverService, reversiFedCache, userRepo)
+	reversiHandler.SetStreamPublisher(reversiPublisher)
 	// Service 側にも federation 一式を注入して state 変化時に Update / Leave を
 	// 配信できるようにする (#417 P1)。fedCache も Service 側で
 	// session→game 解決に必要なので忘れず設定する。
@@ -1650,6 +1651,9 @@ func (s *Server) setupRoutes() {
 	reversiService.SetFederationDeliverer(deliverService)
 	reversiService.SetUserRepo(userRepo)
 	reversiService.SetBaseURL(s.config.URL)
+	// 連合 inbox 経由の invite 受信時にも local 被招待者の reversi stream に
+	// `invited` を push する (#417 P2: リアルタイム招待)。
+	federationProcessor.SetReversiStreamPublisher(reversiPublisher)
 	api.POST("/reversi/games", reversiHandler.Games)
 	api.POST("/reversi/invitations", reversiHandler.Invitations, middleware.RequireAuth())
 	api.POST("/reversi/show-game", reversiHandler.ShowGame)

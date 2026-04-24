@@ -27,6 +27,12 @@ type FederationDeliverer interface {
 	DeliverToUser(signerUserID string, recipient *model.User, body []byte) error
 }
 
+// ReversiStreamPublisher publishes `invited` events to a local user's
+// reversi stream topic (#417 P2)。実装は internal/stream.ReversiGamePublisher。
+type ReversiStreamPublisher interface {
+	PublishInvited(targetUserID string, inviter *model.User)
+}
+
 // Handler handles reversi/* endpoints.
 type Handler struct {
 	repo      repository.ReversiRepository
@@ -36,6 +42,7 @@ type Handler struct {
 	deliverer FederationDeliverer
 	fedCache  *corereversi.FederationIDCache
 	userRepo  repository.UserRepository
+	streamPub ReversiStreamPublisher
 }
 
 // NewHandler creates a new reversi handler.
@@ -49,6 +56,17 @@ func NewHandler(repo repository.ReversiRepository, idGen id.Generator) *Handler 
 // バックするので既存テスト互換。
 func (h *Handler) SetService(svc *corereversi.Service) {
 	h.svc = svc
+}
+
+// SetStreamPublisher attaches a per-user reversi stream publisher used for
+// local-side `invited` events (#417 P2)。
+//
+// NOTE: local invite 経路でこのパブリッシャを使うには userRepo が必要で、
+// userRepo は SetFederation で設定される。プロダクションは router.go で
+// 両方同時に配線するので問題無いが、片方だけ呼んだ場合 publish は skip
+// される (Match 側で h.userRepo != nil guard がある)。
+func (h *Handler) SetStreamPublisher(p ReversiStreamPublisher) {
+	h.streamPub = p
 }
 
 // SetFederation attaches federation support.
@@ -273,17 +291,31 @@ func (h *Handler) Match(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	// リモートユーザーの場合、federation session を Redis に保存 + Invite 送信。
-	// DB スキーマは本家互換を保つため、session id はカラムに持たせず Redis のみに
-	// 保持する (internal/core/reversi.FederationIDCache)。
-	if req.UserID != "" && h.userRepo != nil && h.deliverer != nil && h.fedCache != nil {
-		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.Host != nil && targetUser.URI != nil {
-			sessionID := h.idGen.Generate(now) + "-fed"
-			h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
-			invite := corereversi.RenderInvite(h.baseURL, sessionID,
-				h.baseURL+"/users/"+user.ID, *targetUser.URI, now.UTC().Format(time.RFC3339))
-			if body, jerr := json.Marshal(invite); jerr == nil {
-				_ = h.deliverer.DeliverToUser(user.ID, targetUser, body)
+	// ターゲット種別によって挙動分岐:
+	//   - remote: federation session を Redis に保存 + Invite 送信
+	//            (Host != nil かつ URI != nil の両方を要求するのは remote
+	//             branch で AP Invite の targetURI として URI が必要なため)
+	//   - local : 招待された側の reversi stream に `invited` イベントを push
+	//            (CherryPick 互換。フロントが polling 無しで招待を検知できる)
+	//   - host はあるが URI が nil の degenerate state は理論上起こらない
+	//     (resolver が両方セットする) のでここで local 扱いに落ちても
+	//     Redis publish は subscriber 無しで no-op となり実害なし。
+	if req.UserID != "" && h.userRepo != nil {
+		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil {
+			if targetUser.Host != nil && targetUser.URI != nil {
+				// remote: AP Invite を配信
+				if h.deliverer != nil && h.fedCache != nil {
+					sessionID := h.idGen.Generate(now) + "-fed"
+					h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
+					invite := corereversi.RenderInvite(h.baseURL, sessionID,
+						h.baseURL+"/users/"+user.ID, *targetUser.URI, now.UTC().Format(time.RFC3339))
+					if body, jerr := json.Marshal(invite); jerr == nil {
+						_ = h.deliverer.DeliverToUser(user.ID, targetUser, body)
+					}
+				}
+			} else if h.streamPub != nil {
+				// local: stream に invited イベントを push (#417 P2)
+				h.streamPub.PublishInvited(targetUser.ID, user)
 			}
 		}
 	}

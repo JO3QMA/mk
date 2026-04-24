@@ -229,6 +229,46 @@ func TestReversiInbox_Invite_CreatesGame(t *testing.T) {
 	assert.Equal(t, "bob", g.User2ID)
 }
 
+// リモートから受信した Invite で local user の reversi stream に
+// `invited` イベントがリアルタイム push される (#417 P2)。
+func TestReversiInbox_Invite_PublishesInvitedToStream(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerLocalBob(t, b.userRepo)
+	stub := &stubInvitedStreamPub{}
+	b.processor.SetReversiStreamPublisher(stub)
+
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"to": "https://example.com/users/bob",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-p2"}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	require.Len(t, stub.calls, 1)
+	assert.Equal(t, "bob", stub.calls[0].targetUserID)
+	require.NotNil(t, stub.calls[0].inviter)
+	// inviter は resolveActor 結果 (remote alice)
+	assert.NotEmpty(t, stub.calls[0].inviter.ID)
+}
+
+type stubInvitedCall struct {
+	targetUserID string
+	inviter      *model.User
+}
+
+type stubInvitedStreamPub struct {
+	calls []stubInvitedCall
+}
+
+func (s *stubInvitedStreamPub) PublishInvited(targetUserID string, inviter *model.User) {
+	s.calls = append(s.calls, stubInvitedCall{targetUserID: targetUserID, inviter: inviter})
+}
+
 // CherryPick は ack が返らないと fresh session_id で Invite を 5 秒ごと再送
 // する。同じ (inviter, invitee) の pending game は 1 つに集約し、最新の
 // session_id に mapping を差し替える必要がある (#417 P1 UDS で発覚した増殖)。
