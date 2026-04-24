@@ -148,8 +148,14 @@ func TestService_CancelGame_InviterSendsUndoInviteToRemote(t *testing.T) {
 	var act map[string]any
 	require.NoError(t, json.Unmarshal(d.calls[0].body, &act))
 	assert.Equal(t, "Undo", act["type"])
+	// @context は outer Undo のみに付く (inner Invite には付かない) こと
+	// を確認する (#417 P4 Devin review: nested @context 除去)。
+	_, outerHasContext := act["@context"]
+	assert.True(t, outerHasContext, "outer Undo must carry @context")
 	obj := act["object"].(map[string]any)
 	assert.Equal(t, "Invite", obj["type"])
+	_, innerHasContext := obj["@context"]
+	assert.False(t, innerHasContext, "inner Invite must not carry nested @context")
 	// 元 Invite にも同じ session id が埋まっていることを確認する
 	inner := obj["object"].(map[string]any)
 	state := inner["game_state"].(map[string]any)

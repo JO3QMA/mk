@@ -317,6 +317,10 @@ func (s *Service) deliverUndoInviteToOpponent(ctx context.Context, game *model.R
 	}
 	actorURI := s.baseURL + "/users/" + actor.ID
 	original := RenderInvite(s.baseURL, sessionID, actorURI, *opp.URI, "")
+	// ActivityPub 慣習では @context は outer activity にのみ付く。
+	// CherryPick の normalizer は nested を許容するが strict な peer
+	// 向けに inner Invite の Context を空にする (#417 P4 Devin review)。
+	original.Context = nil
 	undo := RenderUndo(s.baseURL, actorURI, original)
 	undo.To = *opp.URI
 	body, err := json.Marshal(undo)
