@@ -173,11 +173,15 @@ func (h *Handler) resolveAcct(acct string) (string, error) {
 		username = trimmed[:at]
 		host = strings.ToLower(trimmed[at+1:])
 	}
+	// DB 側は username_lower 比較、WebFinger は RFC 7033 case-insensitive、
+	// AP resolver も canonical username を再取得するので username を一度だけ
+	// 小文字化して両経路で同じ値を使う (#417 P3 Devin review)。
+	username = strings.ToLower(username)
 	var hostPtr *string
 	if host != "" {
 		hostPtr = &host
 	}
-	if u, err := h.userRepo.FindByUsernameLower(strings.ToLower(username), hostPtr); err == nil {
+	if u, err := h.userRepo.FindByUsernameLower(username, hostPtr); err == nil {
 		return u.ID, nil
 	}
 	// ローカル DB に無い remote user → WebFinger で取り込む。
@@ -311,17 +315,25 @@ func (h *Handler) Match(c echo.Context) error {
 		}
 	}
 
+	// target user を一度だけ引いて pre-check と deliver 両方で使い回す
+	// (#417 P3 Devin review: 元実装では pre-check と delivery で 2 回
+	// FindByID していた)。
+	var targetUser *model.User
+	if req.UserID != "" && h.userRepo != nil {
+		if u, err := h.userRepo.FindByID(req.UserID); err == nil {
+			targetUser = u
+		}
+	}
+
 	// 新規招待で remote target の場合は reversiVersion 互換性を先に確認する
 	// (#417 P3)。非対応ホストへの招待は silent に握りつぶされるだけで UI が
 	// 「待機中」のまま動かないので、ゲーム行作成前に 400 エラーで弾く。
-	if req.UserID != "" && h.userRepo != nil && h.fedChecker != nil {
-		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil && targetUser.Host != nil && *targetUser.Host != "" {
-			if !h.fedChecker.Available(c.Request().Context(), *targetUser.Host) {
-				return c.JSON(http.StatusBadRequest, apierr.Error(
-					"NO_REVERSI_FEDERATION",
-					"The target user's server does not support reversi federation.",
-					"3c9d76c8-8d40-4f6e-9bea-e4e57ae02fed"))
-			}
+	if targetUser != nil && h.fedChecker != nil && targetUser.Host != nil && *targetUser.Host != "" {
+		if !h.fedChecker.Available(c.Request().Context(), *targetUser.Host) {
+			return c.JSON(http.StatusBadRequest, apierr.Error(
+				"NO_REVERSI_FEDERATION",
+				"The target user's server does not support reversi federation.",
+				"3c9d76c8-8d40-4f6e-9bea-e4e57ae02fed"))
 		}
 	}
 
@@ -353,24 +365,22 @@ func (h *Handler) Match(c echo.Context) error {
 	//   - host はあるが URI が nil の degenerate state は理論上起こらない
 	//     (resolver が両方セットする) のでここで local 扱いに落ちても
 	//     Redis publish は subscriber 無しで no-op となり実害なし。
-	if req.UserID != "" && h.userRepo != nil {
-		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil {
-			if targetUser.Host != nil && targetUser.URI != nil {
-				// remote: AP Invite を配信 (reversiVersion 互換性は
-				// ゲーム行作成前の pre-check 済み)。
-				if h.deliverer != nil && h.fedCache != nil {
-					sessionID := h.idGen.Generate(now) + "-fed"
-					h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
-					invite := corereversi.RenderInvite(h.baseURL, sessionID,
-						h.baseURL+"/users/"+user.ID, *targetUser.URI, now.UTC().Format(time.RFC3339))
-					if body, jerr := json.Marshal(invite); jerr == nil {
-						_ = h.deliverer.DeliverToUser(user.ID, targetUser, body)
-					}
+	if targetUser != nil {
+		if targetUser.Host != nil && targetUser.URI != nil {
+			// remote: AP Invite を配信 (reversiVersion 互換性は
+			// ゲーム行作成前の pre-check 済み)。
+			if h.deliverer != nil && h.fedCache != nil {
+				sessionID := h.idGen.Generate(now) + "-fed"
+				h.fedCache.Set(c.Request().Context(), sessionID, game.ID)
+				invite := corereversi.RenderInvite(h.baseURL, sessionID,
+					h.baseURL+"/users/"+user.ID, *targetUser.URI, now.UTC().Format(time.RFC3339))
+				if body, jerr := json.Marshal(invite); jerr == nil {
+					_ = h.deliverer.DeliverToUser(user.ID, targetUser, body)
 				}
-			} else if h.streamPub != nil {
-				// local: stream に invited イベントを push (#417 P2)
-				h.streamPub.PublishInvited(targetUser.ID, user)
 			}
+		} else if h.streamPub != nil {
+			// local: stream に invited イベントを push (#417 P2)
+			h.streamPub.PublishInvited(targetUser.ID, user)
 		}
 	}
 
