@@ -194,7 +194,9 @@ func (p *Processor) handleReversiUndoInvite(act genericActivity, inner genericAc
 	}
 	game, err := p.reversiRepo.FindByID(gameID)
 	if err != nil {
-		return nil
+		// fedCache hit なのに repo miss は inconsistent state。
+		// handleReversiLeave と同じく err を返して可観測性を上げる。
+		return fmt.Errorf("reversi undo(invite): game %s gone", gameID)
 	}
 	if game.IsStarted {
 		// Undo(Invite) は pre-start 専用。started 後は Leave を使うべき。

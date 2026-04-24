@@ -541,6 +541,46 @@ func TestReversiInbox_UndoInvite_StartedGameIgnored(t *testing.T) {
 	assert.False(t, g.IsEnded)
 }
 
+func TestReversiInbox_UndoInvite_NonReversiReturnsUnsupported(t *testing.T) {
+	// 非 reversi な Undo(Invite) (Group Invite 等) は ErrUnsupportedActivity
+	// を返し、inbox handler で 202 ack されるべき (#417 P4 Devin review)。
+	// 400 にしてしまうと peer の配送 retry を招く。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	body := []byte(`{
+		"type": "Undo",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Invite",
+			"object": {
+				"type": "Group",
+				"id": "https://remote.example/groups/42"
+			}
+		}
+	}`)
+	err := b.processor.Process(body)
+	assert.ErrorIs(t, err, federation.ErrUnsupportedActivity)
+}
+
+func TestReversiInbox_Invite_NonReversiReturnsUnsupported(t *testing.T) {
+	// 非 reversi な top-level Invite (Group Invite 等) も同様に
+	// ErrUnsupportedActivity を返す (pre-existing regression を同時に修正)。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	registerLocalBob(t, b.userRepo)
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"to": "https://example.com/users/bob",
+		"object": {
+			"type": "Group",
+			"id": "https://remote.example/groups/42"
+		}
+	}`)
+	err := b.processor.Process(body)
+	assert.ErrorIs(t, err, federation.ErrUnsupportedActivity)
+}
+
 func TestReversiInbox_UndoInvite_UnknownSessionIgnored(t *testing.T) {
 	// Session TTL 切れ後の Undo(Invite) は ack 扱いにする (#417 P4)。
 	b := newReversiProcessor(t)
