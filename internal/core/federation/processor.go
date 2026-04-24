@@ -251,7 +251,16 @@ func (p *Processor) Process(body []byte) error {
 	case "emojireaction", "emojireact":
 		return p.handleLike(act)
 	case "invite":
-		return p.handleReversiInvite(act)
+		// 非 reversi (Group Invite 等) は未対応扱いで 202 を返させる。
+		// reversi Game object 以外の Invite をここで 400 にすると relay
+		// 以外の peer との互換性が崩れる (#417 P4 Devin review)。
+		if err := p.handleReversiInvite(act); err != nil {
+			if errors.Is(err, ErrNotReversiGame) {
+				return ErrUnsupportedActivity
+			}
+			return err
+		}
+		return nil
 	case "join":
 		return p.handleReversiJoin(act)
 	case "leave":
@@ -402,6 +411,19 @@ func (p *Processor) handleUndo(act genericActivity) error {
 		return p.handleUndoBlock(act, inner)
 	case "emojireaction", "emojireact":
 		return p.handleUndoLike(act, inner)
+	case "invite":
+		// CherryPick が pre-start reversi 招待を取り消す際に Undo(Invite) を
+		// 送ってくる (#417 P4)。inner.Object が reversi Game なら reversi
+		// 側で処理、それ以外 (例: Group Invite) は未対応扱いにして inbox
+		// が 202 を返すようにする (400 にすると peer 側の配送 retry を
+		// 招いてしまう)。
+		if err := p.handleReversiUndoInvite(act, inner); err != nil {
+			if errors.Is(err, ErrNotReversiGame) {
+				return ErrUnsupportedActivity
+			}
+			return err
+		}
+		return nil
 	}
 	return ErrUnsupportedActivity
 }
