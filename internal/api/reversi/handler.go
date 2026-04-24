@@ -457,27 +457,11 @@ func (h *Handler) Verify(c echo.Context) error {
 
 	// ログを再生して engine CRC を算出し、client が送ってきた crc32 と
 	// 比較する。CRC が合わなければ desync 判定。client が crc32 を送って
-	// こないケースは比較不可なので常に desynced=false。
-	opts := corereversi.Options{
-		IsLlotheo:        game.IsLlotheo,
-		CanPutEverywhere: game.CanPutEverywhere,
-		LoopedBoard:      game.LoopedBoard,
-	}
-	g := corereversi.NewGame(game.Map, opts)
-	// Log shape は EngineFromGame と同じ: misskey-reversi 形式
-	// [timeDelta, player, operation(0=put), pos]。旧 2 要素 [pos, color] は
-	// fallback (新旧両形式を読める)。以前の Verify は log[0] を pos と解釈
-	// していたが、新形式では timeDelta (兆オーダーのミリ秒) を PutStone に
-	// 渡すことになり盤面が崩壊していた (#417 P1 Devin review)。
-	var logs [][]int
-	_ = json.Unmarshal(game.Logs, &logs)
-	for _, log := range logs {
-		switch {
-		case len(log) >= 4 && log[2] == 0:
-			g.PutStone(log[3])
-		case len(log) == 2:
-			g.PutStone(log[0])
-		}
+	// こないケースは比較不可なので常に desynced=false。ログ parse は
+	// EngineFromGame を再利用して二重実装を避ける (#417 Devin review)。
+	g, err := corereversi.EngineFromGame(game)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
 	serverCRC := strconv.FormatUint(uint64(g.CalcCRC32()), 10)

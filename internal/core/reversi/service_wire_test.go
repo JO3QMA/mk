@@ -450,6 +450,31 @@ func TestPickBlack_Explicit(t *testing.T) {
 	}
 }
 
+// packGame が User1 / User2 に UserLite 互換 map を埋めることを確認
+// (#417 Devin review: entity 依存を外したあとの自前 userLiteMap)。
+func TestPackGame_EmbedsUserLiteMaps(t *testing.T) {
+	remoteHost := "remote.example"
+	name := "Alice"
+	g := &model.ReversiGame{
+		ID: "g1", User1ID: "alice", User2ID: "bob",
+		User1: &model.User{ID: "alice", Username: "alice", Name: &name, Host: &remoteHost},
+		User2: &model.User{ID: "bob", Username: "bob"},
+	}
+	out := packGame(g)
+	u1, ok := out["user1"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "alice", u1["id"])
+	assert.Equal(t, "alice", u1["username"])
+	assert.Equal(t, &name, u1["name"])
+	assert.Equal(t, &remoteHost, u1["host"])
+	// avatar 未設定なら identicon URL が入る
+	if url, ok := u1["avatarUrl"].(*string); ok && url != nil {
+		assert.Contains(t, *url, "/identicon/alice")
+	}
+	u2, _ := out["user2"].(map[string]any)
+	assert.Equal(t, "bob", u2["id"])
+}
+
 // sessionID が与えられれば random でも両サイドで一致する決定論的な値を返す。
 func TestPickBlack_FederatedDeterministic(t *testing.T) {
 	// 同じ session で複数回呼んでも同じ値

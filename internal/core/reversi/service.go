@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
@@ -878,13 +877,45 @@ func packGame(game *model.ReversiGame) map[string]any {
 		"startedAt":            game.StartedAt,
 		"endedAt":              game.EndedAt,
 	}
-	// user1 / user2 (UserLite) はフロントエンドの GameBoard が対戦相手の
-	// アバター描画などで必要とする。preload 済みなら埋め、nil ならキー省略。
+	// user1 / user2 (UserLite 互換) はフロントエンドの GameBoard が対戦
+	// 相手のアバター描画などで必要とする。preload 済みなら埋め、nil なら
+	// キー省略。entity パッケージに依存せず最小限のフィールドだけ手で組み
+	// 立てる (#417 Devin review: CLAUDE.md layer rule core → entity 禁止)。
 	if game.User1 != nil {
-		out["user1"] = entity.PackUserLite(game.User1)
+		out["user1"] = userLiteMap(game.User1)
 	}
 	if game.User2 != nil {
-		out["user2"] = entity.PackUserLite(game.User2)
+		out["user2"] = userLiteMap(game.User2)
 	}
 	return out
+}
+
+// userLiteMap builds a UserLite-compatible map without importing the
+// entity package (core layer must not depend on presentation layer).
+// フィールドは entity.PackUserLite の必須部分のみ (optional な TS 互換
+// フィールドは省略)。avatar が空なら identicon URL を返すのは本家互換。
+func userLiteMap(u *model.User) map[string]any {
+	avatarURL := u.AvatarURL
+	if avatarURL == nil || *avatarURL == "" {
+		host := ""
+		if u.Host != nil {
+			host = "@" + *u.Host
+		}
+		identicon := "/identicon/" + u.Username + host
+		avatarURL = &identicon
+	}
+	return map[string]any{
+		"id":                u.ID,
+		"name":              u.Name,
+		"username":          u.Username,
+		"host":              u.Host,
+		"avatarUrl":         avatarURL,
+		"avatarBlurhash":    u.AvatarBlurhash,
+		"avatarDecorations": u.AvatarDecorations,
+		"isBot":             u.IsBot,
+		"isCat":             u.IsCat,
+		"emojis":            map[string]string{},
+		"onlineStatus":      "unknown",
+		"badgeRoles":        []any{},
+	}
 }
