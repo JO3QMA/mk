@@ -1644,6 +1644,22 @@ func (s *Server) setupRoutes() {
 	reversiHandler.SetService(reversiService)
 	reversiHandler.SetFederation(s.config.URL, deliverService, reversiFedCache, userRepo)
 	reversiHandler.SetStreamPublisher(reversiPublisher)
+	// #417 P3: reversi 連合対応ホストのみ Invite を送る。Federation check
+	// 用の HTTP client は SSRF-safe transport + timeout を明示的に渡す
+	// (既存の webfingerClient と同じ設定を流用)。
+	reversiHandler.SetFederationChecker(corereversi.NewFederationChecker(
+		s.redis.Default,
+		&http.Client{
+			Timeout:   10 * time.Second,
+			Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+		},
+	))
+	// #417 P3: /match の acct 引数で未キャッシュのリモートユーザーを
+	// WebFinger 経由で取り込めるようにする。ここで webfingerClient /
+	// federationResolver は既存の users/show 用と同じインスタンスを再利用。
+	reversiHandler.SetRemoteUserLookup(corefederation.NewRemoteUserResolver(
+		webfingerClient, federationResolver, userRepo, localHost,
+	))
 	// Service 側にも federation 一式を注入して state 変化時に Update / Leave を
 	// 配信できるようにする (#417 P1)。fedCache も Service 側で
 	// session→game 解決に必要なので忘れず設定する。
