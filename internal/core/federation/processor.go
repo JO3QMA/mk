@@ -62,6 +62,9 @@ type Processor struct {
 	reversiRepo     repository.ReversiRepository
 	reversiIDGen    id.Generator
 	reversiFedCache *corereversi.FederationIDCache
+	// reversiStreamPub: 招待受信時に recipient の `reversi:<id>` stream
+	// に `invited` イベントを publish する (#417 P2 リアルタイム招待)。
+	reversiStreamPub ReversiStreamPublisher
 
 	// Relay follow-accept / -reject hook. nil 時は relay 特化処理をスキップ。
 	relayMarker RelayStatusMarker
@@ -333,6 +336,12 @@ func (p *Processor) SetReversi(
 	p.reversiRepo = repo
 	p.reversiIDGen = idGen
 	p.reversiFedCache = fedCache
+}
+
+// SetReversiStreamPublisher wires a per-user reversi stream publisher used
+// by handleReversiInvite to push `invited` events in real-time (#417 P2)。
+func (p *Processor) SetReversiStreamPublisher(pub ReversiStreamPublisher) {
+	p.reversiStreamPub = pub
 }
 
 // handleFollow processes an inbound Follow activity.

@@ -13,6 +13,14 @@ import (
 	"gorm.io/datatypes"
 )
 
+// ReversiStreamPublisher forwards per-user reversi events (Invite arrival)
+// to the `reversi:<userID>` pub/sub topic so that the WebSocket channel
+// can push `invited` in real-time to the recipient's UI (#417 P2). 実装は
+// internal/stream.ReversiGamePublisher。未設定なら publish しない。
+type ReversiStreamPublisher interface {
+	PublishInvited(targetUserID string, inviter *model.User)
+}
+
 // --- Incoming reversi AP activities (CherryPick compatible) ---
 //
 // All four activity types carry a custom Game object as `object`, structured
@@ -87,6 +95,12 @@ func (p *Processor) handleReversiInvite(act genericActivity) error {
 	p.reversiFedCache.Set(ctx, state.GameSessionID, game.ID)
 	slog.Info("reversi federation: accepted invite",
 		"gameId", game.ID, "session", state.GameSessionID, "inviter", actor.ID, "invitee", invitee.ID)
+	// 招待されたユーザーの reversi stream に `invited` を push することで
+	// Misskey/CherryPick フロントがリアルタイムで招待カードを表示する
+	// (#417 P2: polling/reload 依存の解消)。
+	if p.reversiStreamPub != nil {
+		p.reversiStreamPub.PublishInvited(invitee.ID, actor)
+	}
 	return nil
 }
 

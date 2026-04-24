@@ -453,6 +453,63 @@ func TestVerify_DivergingCRC(t *testing.T) {
 
 // --- Federation ---
 
+// Local ターゲットへの /match で reversi stream に `invited` が push される
+// (#417 P2)。リモートターゲットのときは Invite を deliver するのみで
+// local stream への push はしない。
+func TestMatch_LocalTargetPublishesInvited(t *testing.T) {
+	h, _ := newTestHandler()
+	userRepo := testutil.NewMockUserRepository()
+	// local target u2 を登録
+	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob"}
+	h.SetFederation("https://example.com", &mockDeliverer{}, nil, userRepo)
+	pub := &stubStreamPub{}
+	h.SetStreamPublisher(pub)
+
+	rec := post(h.Match, `{"userId":"u2"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u2", pub.calls[0].targetUserID)
+	assert.Equal(t, "u1", pub.calls[0].inviter.ID)
+}
+
+// Remote ターゲットの /match では stream push は行わない (相手は別 instance)。
+func TestMatch_RemoteTargetSkipsStream(t *testing.T) {
+	ctx := context.Background()
+	apiReversiRedis.FlushAll(ctx)
+	h, _ := newTestHandler()
+	d := &mockDeliverer{}
+	userRepo := testutil.NewMockUserRepository()
+	host := "remote.example"
+	uri := "https://remote.example/users/alice"
+	userRepo.Users["remoteAlice"] = &model.User{
+		ID: "remoteAlice", Username: "alice", Host: &host, URI: &uri,
+	}
+	fedCache := corereversi.NewFederationIDCache(apiReversiRedis.Client)
+	h.SetFederation("https://example.com", d, fedCache, userRepo)
+	pub := &stubStreamPub{}
+	h.SetStreamPublisher(pub)
+
+	rec := post(h.Match, `{"userId":"remoteAlice"}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Equal(t, 1, d.calls, "remote target には Invite AP activity が配信される")
+	assert.Len(t, pub.calls, 0, "remote target では local stream push は無い")
+}
+
+type stubStreamPubCall struct {
+	targetUserID string
+	inviter      *model.User
+}
+
+type stubStreamPub struct {
+	calls []stubStreamPubCall
+}
+
+func (s *stubStreamPub) PublishInvited(targetUserID string, inviter *model.User) {
+	s.calls = append(s.calls, stubStreamPubCall{targetUserID: targetUserID, inviter: inviter})
+}
+
 type mockDeliverer struct {
 	calls int
 }
