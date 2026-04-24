@@ -134,18 +134,12 @@ func (p *Processor) handleReversiLeave(act genericActivity) error {
 	if err != nil {
 		return fmt.Errorf("reversi leave: game %s gone", gameID)
 	}
-	var svcErr error
+	// Service.Surrender / CancelGame が fedCache cleanup も担う
+	// (#417 Devin review で全終了経路を Service 側に統一)。
 	if game.IsStarted {
-		svcErr = p.reversiSvc.Surrender(ctx, game.ID, actor.ID)
-	} else {
-		svcErr = p.reversiSvc.CancelGame(ctx, game.ID, actor.ID)
+		return p.reversiSvc.Surrender(ctx, game.ID, actor.ID)
 	}
-	// Service が正常終了したら session mapping を片付ける (#417 Devin review:
-	// 24h TTL で自然消滅するが orphan が残ると Redis がじわじわ溜まる)。
-	if svcErr == nil {
-		p.reversiFedCache.Delete(ctx, state.GameSessionID, game.ID)
-	}
-	return svcErr
+	return p.reversiSvc.CancelGame(ctx, game.ID, actor.ID)
 }
 
 // handleReversiUpdate dispatches an Update carrying a reversi Game object.

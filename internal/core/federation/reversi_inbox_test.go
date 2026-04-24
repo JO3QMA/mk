@@ -147,6 +147,9 @@ func newReversiProcessor(t *testing.T) *reversiFedBundle {
 	fedCache := corereversi.NewFederationIDCache(fedTestRedis.Client)
 	gameRepo := newFedFakeReversiRepo()
 	reversiSvc := corereversi.NewService(gameRepo, nil, fedTestRedis.Client)
+	// Service 側にも fedCache を配線 (プロダクション router.go と同じ)。
+	// Surrender/CancelGame/PutStone 終了時の cleanupFedCache が有効になる。
+	reversiSvc.SetFederationCache(fedCache)
 	processor.SetReversi(reversiSvc, gameRepo, idGen, fedCache)
 
 	return &reversiFedBundle{

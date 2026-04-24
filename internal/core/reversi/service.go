@@ -396,12 +396,14 @@ func (s *Service) CancelGame(ctx context.Context, gameID, userID string) error {
 	if !isPlayer(game, userID) {
 		return ErrNotPlayer
 	}
-	// Leave の配信は Delete 前に行う (Delete で fedCache も後段で cleanup
-	// されるため、配信に必要な session マッピングが残っているうちに送る)。
+	// Leave の配信は Delete 前に行う (配信に必要な session マッピングが
+	// 残っているうちに送る)。成功後に fedCache も片付ける (#417 Devin
+	// review で全終了経路に統一)。
 	s.deliverLeaveToOpponent(ctx, game, userID)
 	if err := s.repo.Delete(gameID); err != nil {
 		return err
 	}
+	s.cleanupFedCache(ctx, gameID)
 	s.publish(gameID, "canceled", map[string]any{"userId": userID})
 	return nil
 }
@@ -536,6 +538,10 @@ func (s *Service) PutStone(ctx context.Context, gameID, userID string, pos int) 
 			"winnerId": game.WinnerID,
 			"game":     packGame(game),
 		})
+		// ゲーム自然終了 (投了・キャンセル以外の勝敗確定) でも federation
+		// session mapping を片付ける。24h TTL で自然消滅するが orphan が
+		// じわじわ積まれるのを避ける (#417 Devin review)。
+		s.cleanupFedCache(ctx, game.ID)
 	}
 	// 連合対戦の場合は putstone Update を相手に配信 (#417 P1)。ゲーム終了
 	// (engine.Turn == nil) でも相手側で同じ engine を回すため最後の手を送る。
@@ -545,6 +551,19 @@ func (s *Service) PutStone(ctx context.Context, gameID, userID string, pos int) 
 		Pos:  &posVal,
 	})
 	return nil
+}
+
+// cleanupFedCache removes the federation session mapping for a terminated
+// game。ゲーム終了 / キャンセル時にすべての経路 (PutStone 自然終了 /
+// Surrender / CancelGame / CheckTimeout) から呼び出して Redis の mapping
+// が 24h TTL で残り続けるのを防ぐ。
+func (s *Service) cleanupFedCache(ctx context.Context, gameID string) {
+	if s.fedCache == nil {
+		return
+	}
+	if sessionID, ok := s.fedCache.GetSessionByGame(ctx, gameID); ok {
+		s.fedCache.Delete(ctx, sessionID, gameID)
+	}
 }
 
 // Surrender marks the opposing user as the winner and ends the game.
@@ -578,8 +597,10 @@ func (s *Service) Surrender(ctx context.Context, gameID, userID string) error {
 		"reason":   "surrender",
 		"game":     packGame(game),
 	})
-	// 連合対戦の場合は Leave を相手に配信 (#417 P1)。
+	// 連合対戦の場合は Leave を相手に配信 (#417 P1)。配信後に fedCache を
+	// 片付ける (session mapping 参照が Leave 配信側に必要)。
 	s.deliverLeaveToOpponent(ctx, game, userID)
+	s.cleanupFedCache(ctx, gameID)
 	return nil
 }
 
@@ -631,6 +652,7 @@ func (s *Service) CheckTimeout(ctx context.Context, gameID string) error {
 		"reason":   "timeout",
 		"game":     packGame(game),
 	})
+	s.cleanupFedCache(ctx, gameID)
 	return nil
 }
 

@@ -356,12 +356,8 @@ func (h *Handler) CancelMatch(c echo.Context) error {
 		} else {
 			_ = h.repo.Delete(g.ID)
 		}
-		// 連合 session mapping もあれば明示的に掃除 (CancelGame 成功時のみ)
-		if h.fedCache != nil {
-			if sessionID, ok := h.fedCache.GetSessionByGame(ctx, g.ID); ok {
-				h.fedCache.Delete(ctx, sessionID, g.ID)
-			}
-		}
+		// fedCache 片付けは Service.CancelGame が既に実行済み (#417 Devin
+		// review で全終了経路に統一)。
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -411,14 +407,8 @@ func (h *Handler) Surrender(c echo.Context) error {
 		_ = h.repo.Update(game)
 	}
 
-	// Leave の送信は Service.Surrender 側で済ませている (#417 P1)。
-	// ここではゲーム終了時に federation mapping を cleanup するだけ。
-	if h.fedCache != nil {
-		if sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), req.GameID); ok {
-			h.fedCache.Delete(c.Request().Context(), sessionID, req.GameID)
-		}
-	}
-
+	// Leave 配信 + fedCache cleanup は Service.Surrender が実行済み
+	// (#417 Devin review で全終了経路を Service 側に統一)。
 	return c.NoContent(http.StatusNoContent)
 }
 
