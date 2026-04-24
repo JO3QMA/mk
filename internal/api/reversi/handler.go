@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -438,9 +439,13 @@ func surrenderErrorResponse(c echo.Context, err error) error {
 }
 
 // Verify handles POST /api/reversi/verify — verify game integrity.
+// CherryPick 互換: クライアントが送ってくる `crc32` をサーバ側で再計算した
+// ものと比較し、不一致なら `{desynced: true, game}` を返してフロント側で
+// restoreGame を走らせる。一致なら `{desynced: false}` のみ。
 func (h *Handler) Verify(c echo.Context) error {
 	var req struct {
 		GameID string `json:"gameId"`
+		CRC32  string `json:"crc32"`
 	}
 	if err := c.Bind(&req); err != nil || req.GameID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
@@ -450,14 +455,15 @@ func (h *Handler) Verify(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	}
 
-	// ゲームログを再生して検証
+	// ログを再生して engine CRC を算出し、client が送ってきた crc32 と
+	// 比較する。CRC が合わなければ desync 判定。client が crc32 を送って
+	// こないケースは比較不可なので常に desynced=false。
 	opts := corereversi.Options{
 		IsLlotheo:        game.IsLlotheo,
 		CanPutEverywhere: game.CanPutEverywhere,
 		LoopedBoard:      game.LoopedBoard,
 	}
 	g := corereversi.NewGame(game.Map, opts)
-
 	// Log shape は EngineFromGame と同じ: misskey-reversi 形式
 	// [timeDelta, player, operation(0=put), pos]。旧 2 要素 [pos, color] は
 	// fallback (新旧両形式を読める)。以前の Verify は log[0] を pos と解釈
@@ -474,8 +480,11 @@ func (h *Handler) Verify(c echo.Context) error {
 		}
 	}
 
-	return c.JSON(http.StatusOK, map[string]any{
-		"desynced": false,
-		"game":     packGame(game, h.idGen),
-	})
+	serverCRC := strconv.FormatUint(uint64(g.CalcCRC32()), 10)
+	desynced := req.CRC32 != "" && req.CRC32 != serverCRC
+	resp := map[string]any{"desynced": desynced}
+	if desynced {
+		resp["game"] = packGame(game, h.idGen)
+	}
+	return c.JSON(http.StatusOK, resp)
 }

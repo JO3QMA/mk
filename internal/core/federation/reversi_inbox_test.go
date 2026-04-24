@@ -418,11 +418,16 @@ func TestReversiInbox_Leave_StartedSurrenders(t *testing.T) {
 	}`)
 	require.NoError(t, b.processor.Process(body))
 
-	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-leave-started")
-	require.NotNil(t, g)
+	// ゲーム行は IsEnded で残る。fedCache 側の session mapping は Surrender
+	// 成功時に削除される (#417 Devin review: orphan mapping 掃除)。
+	g, err := b.gameRepo.FindByID("fedg-sess-leave-started")
+	require.NoError(t, err)
 	assert.True(t, g.IsEnded)
 	require.NotNil(t, g.WinnerID)
 	assert.Equal(t, "bob", *g.WinnerID)
+	// session mapping は片付けられている
+	_, cacheErr := b.fedCache.Get(context.Background(), "sess-leave-started")
+	assert.Error(t, cacheErr, "session mapping must be cleaned up after Leave")
 }
 
 func TestReversiInbox_Leave_UnknownSession(t *testing.T) {

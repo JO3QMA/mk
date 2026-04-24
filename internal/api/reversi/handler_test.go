@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -415,6 +416,39 @@ func TestVerify_WithLogs(t *testing.T) {
 	repo.games["g1"] = g
 	rec := post(h.Verify, `{"gameId":"g1"}`, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// crc32 を送ってサーバ側計算値と比較: 一致で desynced=false
+// (#417 Devin review: Verify が従来 dead code だった)。
+func TestVerify_MatchingCRC(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.games["g1"] = sampleGame()
+	// 空ログの初期状態 CRC を求めるため一度 empty payload で叩いて期待値を
+	// 得てから、その値を client crc32 として返し desynced=false を期待する。
+	g := corereversi.NewGame(sampleGame().Map, corereversi.Options{})
+	expectedCRC := strconv.FormatUint(uint64(g.CalcCRC32()), 10)
+
+	rec := post(h.Verify, `{"gameId":"g1","crc32":"`+expectedCRC+`"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["desynced"])
+	_, hasGame := resp["game"]
+	assert.False(t, hasGame, "同期時は game は返さない")
+}
+
+// crc32 が不一致で desynced=true + game が返る。
+func TestVerify_DivergingCRC(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.games["g1"] = sampleGame()
+
+	rec := post(h.Verify, `{"gameId":"g1","crc32":"999999"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["desynced"])
+	_, hasGame := resp["game"]
+	assert.True(t, hasGame, "desync 時は game を返して restoreGame させる")
 }
 
 // --- Federation ---
