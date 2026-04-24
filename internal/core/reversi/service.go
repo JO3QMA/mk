@@ -538,18 +538,20 @@ func (s *Service) PutStone(ctx context.Context, gameID, userID string, pos int) 
 			"winnerId": game.WinnerID,
 			"game":     packGame(game),
 		})
-		// ゲーム自然終了 (投了・キャンセル以外の勝敗確定) でも federation
-		// session mapping を片付ける。24h TTL で自然消滅するが orphan が
-		// じわじわ積まれるのを避ける (#417 Devin review)。
-		s.cleanupFedCache(ctx, game.ID)
 	}
 	// 連合対戦の場合は putstone Update を相手に配信 (#417 P1)。ゲーム終了
 	// (engine.Turn == nil) でも相手側で同じ engine を回すため最後の手を送る。
+	// fedCache 参照に session mapping が必要なので、必ず配信後に cleanup する
+	// (#417 Devin review: 逆順だと mapping が既に消えていて deliver が skip
+	// されていた)。
 	posVal := pos
 	s.deliverStateToOpponent(ctx, game, userID, APGameState{
 		Type: "putstone",
 		Pos:  &posVal,
 	})
+	if engine.Turn == nil {
+		s.cleanupFedCache(ctx, game.ID)
+	}
 	return nil
 }
 

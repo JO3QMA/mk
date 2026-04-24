@@ -391,12 +391,6 @@ func (h *Handler) Surrender(c echo.Context) error {
 	if game.User1ID != user.ID && game.User2ID != user.ID {
 		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	}
-	var winnerID string
-	if game.User1ID == user.ID {
-		winnerID = game.User2ID
-	} else {
-		winnerID = game.User1ID
-	}
 
 	// service が注入されていればそちらを経由する (本来のパス)。
 	// フォールバックは従来の repo 直接操作 (service 未注入の古いテスト互換)。
@@ -405,6 +399,13 @@ func (h *Handler) Surrender(c echo.Context) error {
 			return surrenderErrorResponse(c, err)
 		}
 	} else {
+		// svc 未配線 path は legacy test 互換。winnerID もここで計算する。
+		var winnerID string
+		if game.User1ID == user.ID {
+			winnerID = game.User2ID
+		} else {
+			winnerID = game.User1ID
+		}
 		now := time.Now()
 		game.IsEnded = true
 		game.EndedAt = &now
