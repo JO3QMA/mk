@@ -172,6 +172,9 @@ func (p *Processor) handleReversiUndoInvite(act genericActivity, inner genericAc
 	if err != nil {
 		return err
 	}
+	// JSON 構造は Undo → Invite → Game の二段ネスト。act.Object は Invite 全体
+	// (= inner)、inner.Object が更にその中の Game 本体。ここで parse したいのは
+	// Game なので inner.Object を使う (act.Object ではない)。
 	var objMap map[string]any
 	if err := json.Unmarshal(inner.Object, &objMap); err != nil {
 		return fmt.Errorf("reversi undo(invite): object not a JSON object: %w", err)
