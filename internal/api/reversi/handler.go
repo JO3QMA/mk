@@ -60,6 +60,11 @@ func (h *Handler) SetService(svc *corereversi.Service) {
 
 // SetStreamPublisher attaches a per-user reversi stream publisher used for
 // local-side `invited` events (#417 P2)。
+//
+// NOTE: local invite 経路でこのパブリッシャを使うには userRepo が必要で、
+// userRepo は SetFederation で設定される。プロダクションは router.go で
+// 両方同時に配線するので問題無いが、片方だけ呼んだ場合 publish は skip
+// される (Match 側で h.userRepo != nil guard がある)。
 func (h *Handler) SetStreamPublisher(p ReversiStreamPublisher) {
 	h.streamPub = p
 }
@@ -288,8 +293,13 @@ func (h *Handler) Match(c echo.Context) error {
 
 	// ターゲット種別によって挙動分岐:
 	//   - remote: federation session を Redis に保存 + Invite 送信
+	//            (Host != nil かつ URI != nil の両方を要求するのは remote
+	//             branch で AP Invite の targetURI として URI が必要なため)
 	//   - local : 招待された側の reversi stream に `invited` イベントを push
 	//            (CherryPick 互換。フロントが polling 無しで招待を検知できる)
+	//   - host はあるが URI が nil の degenerate state は理論上起こらない
+	//     (resolver が両方セットする) のでここで local 扱いに落ちても
+	//     Redis publish は subscriber 無しで no-op となり実害なし。
 	if req.UserID != "" && h.userRepo != nil {
 		if targetUser, err := h.userRepo.FindByID(req.UserID); err == nil {
 			if targetUser.Host != nil && targetUser.URI != nil {
