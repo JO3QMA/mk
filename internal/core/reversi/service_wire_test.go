@@ -61,8 +61,26 @@ func (r *fakeRepo) Update(g *model.ReversiGame) error {
 }
 
 func (r *fakeRepo) ListByUser(userID string, limit int) ([]*model.ReversiGame, error) {
-	_ = userID
-	_ = limit
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*model.ReversiGame, 0)
+	for _, g := range r.games {
+		if g.User1ID == userID || g.User2ID == userID {
+			clone := *g
+			out = append(out, &clone)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) ListByUserCursor(_, _, _ string, _ int) ([]*model.ReversiGame, error) {
+	return nil, nil
+}
+
+func (r *fakeRepo) ListStartedCursor(_, _ string, _ int) ([]*model.ReversiGame, error) {
 	return nil, nil
 }
 
@@ -328,7 +346,10 @@ func TestService_PutStone_Valid(t *testing.T) {
 	var logs [][]int
 	_ = json.Unmarshal(got.Logs, &logs)
 	require.Len(t, logs, 1)
-	assert.Equal(t, 19, logs[0][0])
+	// log shape: [timeDelta, player, operation, pos] (misskey-reversi format)
+	require.Len(t, logs[0], 4)
+	assert.Equal(t, 0, logs[0][2], "operation: 0 (put)")
+	assert.Equal(t, 19, logs[0][3], "pos")
 
 	// log event published
 	types := pub.types()
@@ -430,13 +451,51 @@ func TestService_CheckTimeout_GameNotFound(t *testing.T) {
 // --- helpers ---
 
 func TestPickBlack_Explicit(t *testing.T) {
-	assert.Equal(t, 1, pickBlack("1"))
-	assert.Equal(t, 2, pickBlack("2"))
+	assert.Equal(t, 1, pickBlack("1", ""))
+	assert.Equal(t, 2, pickBlack("2", ""))
 	// random mode returns 1 or 2
 	for range 5 {
-		v := pickBlack("random")
+		v := pickBlack("random", "")
 		assert.True(t, v == 1 || v == 2)
 	}
+}
+
+// packGame が User1 / User2 に UserLite 互換 map を埋めることを確認
+// (#417 Devin review: entity 依存を外したあとの自前 userLiteMap)。
+func TestPackGame_EmbedsUserLiteMaps(t *testing.T) {
+	remoteHost := "remote.example"
+	name := "Alice"
+	g := &model.ReversiGame{
+		ID: "g1", User1ID: "alice", User2ID: "bob",
+		User1: &model.User{ID: "alice", Username: "alice", Name: &name, Host: &remoteHost},
+		User2: &model.User{ID: "bob", Username: "bob"},
+	}
+	out := packGame(g)
+	u1, ok := out["user1"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "alice", u1["id"])
+	assert.Equal(t, "alice", u1["username"])
+	assert.Equal(t, &name, u1["name"])
+	assert.Equal(t, &remoteHost, u1["host"])
+	// avatar 未設定なら identicon URL が入る
+	if url, ok := u1["avatarUrl"].(*string); ok && url != nil {
+		assert.Contains(t, *url, "/identicon/alice")
+	}
+	u2, _ := out["user2"].(map[string]any)
+	assert.Equal(t, "bob", u2["id"])
+}
+
+// sessionID が与えられれば random でも両サイドで一致する決定論的な値を返す。
+func TestPickBlack_FederatedDeterministic(t *testing.T) {
+	// 同じ session で複数回呼んでも同じ値
+	v1 := pickBlack("random", "abc-123")
+	v2 := pickBlack("random", "abc-123")
+	assert.Equal(t, v1, v2)
+	// 先頭 codePoint の偶奇で決まる (CherryPick 仕様)
+	// "b" = 0x62 = 98 (偶) → 1
+	// "a" = 0x61 = 97 (奇) → 2
+	assert.Equal(t, 1, pickBlack("random", "b-xxx"))
+	assert.Equal(t, 2, pickBlack("random", "a-xxx"))
 }
 
 func TestPlayerColor(t *testing.T) {

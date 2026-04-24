@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -61,6 +62,46 @@ func (m *mockReversiRepo) ListByUser(userID string, limit int) ([]*model.Reversi
 	return result, nil
 }
 
+func (m *mockReversiRepo) ListByUserCursor(userID, sinceID, untilID string, limit int) ([]*model.ReversiGame, error) {
+	var result []*model.ReversiGame
+	for _, g := range m.games {
+		if g.User1ID != userID && g.User2ID != userID {
+			continue
+		}
+		if sinceID != "" && g.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && g.ID >= untilID {
+			continue
+		}
+		result = append(result, g)
+	}
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+func (m *mockReversiRepo) ListStartedCursor(sinceID, untilID string, limit int) ([]*model.ReversiGame, error) {
+	var result []*model.ReversiGame
+	for _, g := range m.games {
+		if !g.IsStarted {
+			continue
+		}
+		if sinceID != "" && g.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && g.ID >= untilID {
+			continue
+		}
+		result = append(result, g)
+	}
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
 func (m *mockReversiRepo) ListActive() ([]*model.ReversiGame, error) {
 	var result []*model.ReversiGame
 	for _, g := range m.games {
@@ -110,26 +151,85 @@ func sampleGame() *model.ReversiGame {
 
 // --- Games ---
 
-func TestGames_WithUser(t *testing.T) {
+// my=true で viewer が関与するゲームのみ返す (CherryPick 互換)。
+func TestGames_MyFlag(t *testing.T) {
 	h, repo := newTestHandler()
 	repo.games["g1"] = sampleGame()
-	rec := post(h.Games, `{}`, u1)
+	rec := post(h.Games, `{"my": true}`, u1)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	var resp []any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Len(t, resp, 1)
 }
 
-func TestGames_Anonymous(t *testing.T) {
+// my=false (デフォルト) は isStarted=true のゲームのみ返す。sampleGame は
+// IsStarted=false なので空配列。
+func TestGames_PublicOnlyStarted(t *testing.T) {
 	h, repo := newTestHandler()
-	repo.games["g1"] = sampleGame()
+	repo.games["g1"] = sampleGame() // IsStarted=false
+	rec := post(h.Games, `{}`, u1)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 0)
+}
+
+// started なゲームは my=false でも返る。
+func TestGames_PublicShowsStarted(t *testing.T) {
+	h, repo := newTestHandler()
+	g := sampleGame()
+	g.IsStarted = true
+	repo.games["g1"] = g
 	rec := post(h.Games, `{}`, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 1)
+}
+
+// untilId でページング (cursor より古い = id が小さいゲームだけ返す) —
+// 無限ループ防止の核。aidx ID と同じく新しいほど lexicographic で大きい前提。
+func TestGames_UntilIdPagination(t *testing.T) {
+	h, repo := newTestHandler()
+	older := sampleGame()
+	older.ID = "aaa-old"
+	older.IsStarted = true
+	repo.games[older.ID] = older
+	newer := sampleGame()
+	newer.ID = "zzz-new"
+	newer.IsStarted = true
+	repo.games[newer.ID] = newer
+	rec := post(h.Games, `{"untilId":"zzz-new"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "aaa-old", resp[0]["id"])
 }
 
 // --- Invitations ---
 
+// CherryPick 互換で invitations は UserLite[] (招待者一覧) を返す。viewer が
+// User2 (招待される側) のゲームについてのみ、User1 を UserLite で載せる。
 func TestInvitations_Success(t *testing.T) {
+	h, repo := newTestHandler()
+	g := sampleGame()
+	// sampleGame は User1="u1", User2="u2" なので viewer を u2 にして
+	// u1 を招待者として得るパターンをテストする。
+	g.IsStarted = false
+	repo.games["g1"] = g
+	u2 := &model.User{ID: "u2", Username: "bob"}
+	rec := post(h.Invitations, `{}`, u2)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "u1", resp[0]["id"])
+	assert.Equal(t, "alice", resp[0]["username"])
+}
+
+// viewer が User1 (招待側) の場合は自分の invitations に出さない。
+func TestInvitations_ViewerIsInviter_ExcludeOwn(t *testing.T) {
 	h, repo := newTestHandler()
 	g := sampleGame()
 	g.IsStarted = false
@@ -138,7 +238,7 @@ func TestInvitations_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	var resp []any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Len(t, resp, 1)
+	assert.Len(t, resp, 0)
 }
 
 func TestInvitations_Empty(t *testing.T) {
@@ -316,6 +416,39 @@ func TestVerify_WithLogs(t *testing.T) {
 	repo.games["g1"] = g
 	rec := post(h.Verify, `{"gameId":"g1"}`, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// crc32 を送ってサーバ側計算値と比較: 一致で desynced=false
+// (#417 Devin review: Verify が従来 dead code だった)。
+func TestVerify_MatchingCRC(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.games["g1"] = sampleGame()
+	// 空ログの初期状態 CRC を求めるため一度 empty payload で叩いて期待値を
+	// 得てから、その値を client crc32 として返し desynced=false を期待する。
+	g := corereversi.NewGame(sampleGame().Map, corereversi.Options{})
+	expectedCRC := strconv.FormatUint(uint64(g.CalcCRC32()), 10)
+
+	rec := post(h.Verify, `{"gameId":"g1","crc32":"`+expectedCRC+`"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["desynced"])
+	_, hasGame := resp["game"]
+	assert.False(t, hasGame, "同期時は game は返さない")
+}
+
+// crc32 が不一致で desynced=true + game が返る。
+func TestVerify_DivergingCRC(t *testing.T) {
+	h, repo := newTestHandler()
+	repo.games["g1"] = sampleGame()
+
+	rec := post(h.Verify, `{"gameId":"g1","crc32":"999999"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["desynced"])
+	_, hasGame := resp["game"]
+	assert.True(t, hasGame, "desync 時は game を返して restoreGame させる")
 }
 
 // --- Federation ---

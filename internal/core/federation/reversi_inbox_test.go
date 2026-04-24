@@ -74,7 +74,22 @@ func (r *fedFakeReversiRepo) Update(g *model.ReversiGame) error {
 	return nil
 }
 
-func (r *fedFakeReversiRepo) ListByUser(_ string, _ int) ([]*model.ReversiGame, error) {
+func (r *fedFakeReversiRepo) ListByUser(userID string, _ int) ([]*model.ReversiGame, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*model.ReversiGame, 0)
+	for _, g := range r.games {
+		if g.User1ID == userID || g.User2ID == userID {
+			clone := *g
+			out = append(out, &clone)
+		}
+	}
+	return out, nil
+}
+func (r *fedFakeReversiRepo) ListByUserCursor(_, _, _ string, _ int) ([]*model.ReversiGame, error) {
+	return nil, nil
+}
+func (r *fedFakeReversiRepo) ListStartedCursor(_, _ string, _ int) ([]*model.ReversiGame, error) {
 	return nil, nil
 }
 func (r *fedFakeReversiRepo) ListActive() ([]*model.ReversiGame, error) { return nil, nil }
@@ -132,6 +147,9 @@ func newReversiProcessor(t *testing.T) *reversiFedBundle {
 	fedCache := corereversi.NewFederationIDCache(fedTestRedis.Client)
 	gameRepo := newFedFakeReversiRepo()
 	reversiSvc := corereversi.NewService(gameRepo, nil, fedTestRedis.Client)
+	// Service 側にも fedCache を配線 (プロダクション router.go と同じ)。
+	// Surrender/CancelGame/PutStone 終了時の cleanupFedCache が有効になる。
+	reversiSvc.SetFederationCache(fedCache)
 	processor.SetReversi(reversiSvc, gameRepo, idGen, fedCache)
 
 	return &reversiFedBundle{
@@ -211,6 +229,43 @@ func TestReversiInbox_Invite_CreatesGame(t *testing.T) {
 	assert.Equal(t, "bob", g.User2ID)
 }
 
+// CherryPick は ack が返らないと fresh session_id で Invite を 5 秒ごと再送
+// する。同じ (inviter, invitee) の pending game は 1 つに集約し、最新の
+// session_id に mapping を差し替える必要がある (#417 P1 UDS で発覚した増殖)。
+func TestReversiInbox_Invite_RetryWithNewSessionReusesPendingGame(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerLocalBob(t, b.userRepo)
+	send := func(sessionID string) {
+		body := []byte(`{
+			"type": "Invite",
+			"actor": "https://remote.example/users/alice",
+			"to": "https://example.com/users/bob",
+			"object": {
+				"type": "Game",
+				"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+				"game_state": {"game_session_id": "` + sessionID + `"}
+			}
+		}`)
+		require.NoError(t, b.processor.Process(body))
+	}
+
+	send("sess-retry-1")
+	send("sess-retry-2")
+	send("sess-retry-3")
+
+	// ゲームは 1 件のまま (dedup)
+	assert.Len(t, b.gameRepo.games, 1)
+
+	// 最新の session にだけ mapping が残っている
+	latestGameID, err := b.fedCache.Get(context.Background(), "sess-retry-3")
+	require.NoError(t, err)
+	assert.NotEmpty(t, latestGameID)
+
+	// 古い session は削除されている
+	_, err = b.fedCache.Get(context.Background(), "sess-retry-1")
+	assert.Error(t, err, "old session mapping must be cleaned up")
+}
+
 func TestReversiInbox_Invite_IdempotentOnResend(t *testing.T) {
 	b := newReversiProcessor(t)
 	registerLocalBob(t, b.userRepo)
@@ -241,6 +296,33 @@ func TestReversiInbox_Invite_MissingRecipient(t *testing.T) {
 		}
 	}`)
 	assert.Error(t, b.processor.Process(body))
+}
+
+// プロダクション DB の local user は user.uri が NULL なので、inbound Invite
+// の `to` が "{localBaseURL}/users/{id}" 形式のときは resolveTargetUser 経由で
+// ID から引く必要がある (FindByURI 直だと NULL 列とは match しないため)。
+// #417 P1 deploy で "recipient ... not found" エラーが出た regression を防ぐ。
+func TestReversiInbox_Invite_RecipientLocalWithoutURI(t *testing.T) {
+	b := newReversiProcessor(t)
+	b.processor.SetLocalBaseURL("https://example.com")
+	// local user は URI 未設定 (プロダクション挙動)
+	b.userRepo.Users["localbob"] = &model.User{
+		ID: "localbob", Username: "localbob", UsernameLower: "localbob",
+	}
+	body := []byte(`{
+		"type": "Invite",
+		"actor": "https://remote.example/users/alice",
+		"to": "https://example.com/users/localbob",
+		"object": {
+			"type": "Game",
+			"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+			"game_state": {"game_session_id": "sess-local-noURI"}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-local-noURI")
+	require.NotNil(t, g)
+	assert.Equal(t, "localbob", g.User2ID)
 }
 
 func TestReversiInbox_Invite_RecipientNotLocal(t *testing.T) {
@@ -339,11 +421,16 @@ func TestReversiInbox_Leave_StartedSurrenders(t *testing.T) {
 	}`)
 	require.NoError(t, b.processor.Process(body))
 
-	g := b.gameRepo.findGameBySession(t, b.fedCache, "sess-leave-started")
-	require.NotNil(t, g)
+	// ゲーム行は IsEnded で残る。fedCache 側の session mapping は Surrender
+	// 成功時に削除される (#417 Devin review: orphan mapping 掃除)。
+	g, err := b.gameRepo.FindByID("fedg-sess-leave-started")
+	require.NoError(t, err)
 	assert.True(t, g.IsEnded)
 	require.NotNil(t, g.WinnerID)
 	assert.Equal(t, "bob", *g.WinnerID)
+	// session mapping は片付けられている
+	_, cacheErr := b.fedCache.Get(context.Background(), "sess-leave-started")
+	assert.Error(t, cacheErr, "session mapping must be cleaned up after Leave")
 }
 
 func TestReversiInbox_Leave_UnknownSession(t *testing.T) {

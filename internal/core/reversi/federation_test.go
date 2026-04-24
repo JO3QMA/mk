@@ -38,8 +38,9 @@ func TestRenderUpdate(t *testing.T) {
 		Type:          "putstone",
 		Pos:           &pos,
 	}
-	a := RenderUpdate("https://example.com/users/alice", "https://remote.example/users/bob", state)
+	a := RenderUpdate("https://example.com", "https://example.com/users/alice", "https://remote.example/users/bob", state)
 	assert.Equal(t, "Update", a.Type)
+	assert.NotEmpty(t, a.ID, "Update activity must carry id (#417 InboxProcessor requirement)")
 	game, ok := a.Object.(APGame)
 	require.True(t, ok)
 	assert.Equal(t, "putstone", game.GameState.Type)
@@ -47,14 +48,16 @@ func TestRenderUpdate(t *testing.T) {
 }
 
 func TestRenderLeave(t *testing.T) {
-	a := RenderLeave("https://example.com/users/alice", "https://remote.example/users/bob", "sess1")
+	a := RenderLeave("https://example.com", "https://example.com/users/alice", "https://remote.example/users/bob", "sess1")
 	assert.Equal(t, "Leave", a.Type)
+	assert.NotEmpty(t, a.ID, "Leave activity must carry id")
 }
 
 func TestRenderUndo(t *testing.T) {
 	invite := RenderInvite("https://example.com", "sess1", "actor", "target", "2026-01-01T00:00:00Z")
-	undo := RenderUndo("actor", invite)
+	undo := RenderUndo("https://example.com", "actor", invite)
 	assert.Equal(t, "Undo", undo.Type)
+	assert.NotEmpty(t, undo.ID, "Undo activity must carry id")
 }
 
 func TestIsReversiGame(t *testing.T) {

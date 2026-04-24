@@ -3,7 +3,9 @@ package reversi
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,20 +133,30 @@ func (h *Handler) resolveAcct(acct string) (string, error) {
 }
 
 // Games handles POST /api/reversi/games — list games.
+// CherryPick 本家互換で sinceId / untilId / my の keyset pagination を受ける。
+// my=true (要認証) は自分が User1 or User2 のゲーム、それ以外は isStarted=true
+// のゲームを返す。pagination を無視すると frontend の無限スクロールが同じ
+// ページを繰り返しロードするので必須 (#417 P1 UDS 検証で発覚)。
 func (h *Handler) Games(c echo.Context) error {
 	var req struct {
-		Limit int `json:"limit"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+		My      bool   `json:"my"`
 	}
 	_ = c.Bind(&req)
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
 	viewer := middleware.GetUser(c)
 	var games []*model.ReversiGame
-	if viewer != nil {
-		games, _ = h.repo.ListByUser(viewer.ID, req.Limit)
+	if req.My && viewer != nil {
+		games, _ = h.repo.ListByUserCursor(viewer.ID, req.SinceID, req.UntilID, req.Limit)
 	} else {
-		games, _ = h.repo.ListActive()
+		games, _ = h.repo.ListStartedCursor(req.SinceID, req.UntilID, req.Limit)
 	}
 	out := make([]map[string]any, len(games))
 	for i, g := range games {
@@ -154,19 +166,34 @@ func (h *Handler) Games(c echo.Context) error {
 }
 
 // Invitations handles POST /api/reversi/invitations — list pending invitations.
+// レスポンス shape は CherryPick 本家と同じ UserLite[] (招待者一覧)。Game[] を
+// 返すと Misskey フロントエンドの matching UI が期待値と食い違って無限 loading
+// になる (#417 P1 deploy で発覚)。viewer が User2 (招待される側) となっている
+// 未開始 / 未終了 game の User1 を UserLite として返す。
 func (h *Handler) Invitations(c echo.Context) error {
 	user := middleware.GetUser(c)
 	games, _ := h.repo.ListByUser(user.ID, 20)
-	var pending []map[string]any
+	inviters := make([]entity.UserLite, 0)
+	seen := make(map[string]struct{})
 	for _, g := range games {
-		if !g.IsStarted && !g.IsEnded {
-			pending = append(pending, packGame(g, h.idGen))
+		if g.IsStarted || g.IsEnded {
+			continue
 		}
+		// 招待を受けている側 (User2) のみ対象。自分が招待側 (User1) のゲームは
+		// invitations UI の文脈的に表示しない。
+		if g.User2ID != user.ID {
+			continue
+		}
+		if g.User1 == nil {
+			continue
+		}
+		if _, dup := seen[g.User1.ID]; dup {
+			continue
+		}
+		seen[g.User1.ID] = struct{}{}
+		inviters = append(inviters, entity.PackUserLite(g.User1))
 	}
-	if pending == nil {
-		pending = []map[string]any{}
-	}
-	return c.JSON(http.StatusOK, pending)
+	return c.JSON(http.StatusOK, inviters)
 }
 
 // ShowGame handles POST /api/reversi/show-game.
@@ -180,6 +207,15 @@ func (h *Handler) ShowGame(c echo.Context) error {
 	game, err := h.repo.FindByID(req.GameID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
+	}
+	// ユーザーが invitations UI からではなく「自分の対局」一覧などから
+	// pending game に直接入った場合、/match が呼ばれないままなので相手側が
+	// ゲームを作成できない (Join が飛ばない)。viewer が User2 (招待された
+	// 側) で game が pre-start、かつ User1 がリモートなら Join を自動配信
+	// する (#417 P1 UDS 検証で発覚)。deliver は idempotent。
+	viewer := middleware.GetUser(c)
+	if viewer != nil && !game.IsStarted && !game.IsEnded && game.User2ID == viewer.ID {
+		h.sendJoinForAcceptedInvite(c, viewer, game)
 	}
 	return c.JSON(http.StatusOK, packGame(game, h.idGen))
 }
@@ -203,6 +239,19 @@ func (h *Handler) Match(c echo.Context) error {
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "6cc579cc-885d-43d8-95c2-b8c7fc963280"))
 		}
 		req.UserID = resolved
+	}
+
+	// 既に相手から招待を受けている pending game があれば、それを accept 扱いで
+	// 再利用する (#417 P1)。CherryPick 本家の matchSpecificUser と同じ動作:
+	// inbound Invite 経由で作成された reversi_game 行 (User1=相手, User2=自分)
+	// を流用し、相手に Join を返すだけにする。これをやらないと /match が毎回
+	// 新しいゲーム + 新しい session_id を作って二重招待になり、state 伝播が
+	// 噛み合わなくなる。
+	if req.UserID != "" {
+		if existing := h.findPendingInvitationFrom(user.ID, req.UserID); existing != nil {
+			h.sendJoinForAcceptedInvite(c, user, existing)
+			return c.JSON(http.StatusOK, packGame(existing, h.idGen))
+		}
 	}
 
 	now := time.Now()
@@ -242,15 +291,79 @@ func (h *Handler) Match(c echo.Context) error {
 	return c.JSON(http.StatusOK, packGame(game, h.idGen))
 }
 
+// findPendingInvitationFrom scans viewer's recent reversi_game rows and
+// returns the pending game where User1=inviter, User2=viewer, not started / ended.
+// inbound Invite によって作られた受信待ち招待を「ゲーム成立」として消費する
+// ために使う。corereversi.FindPendingInvitation に共有実装。
+func (h *Handler) findPendingInvitationFrom(viewerID, inviterID string) *model.ReversiGame {
+	return corereversi.FindPendingInvitation(h.repo, viewerID, inviterID)
+}
+
+// sendJoinForAcceptedInvite delivers a Join activity to the remote inviter so
+// both sides agree the match has started. local-only の招待の場合 (User1 が
+// ローカル) は federation 不要なので何もしない。
+func (h *Handler) sendJoinForAcceptedInvite(c echo.Context, accepter *model.User, game *model.ReversiGame) {
+	if h.userRepo == nil || h.deliverer == nil || h.fedCache == nil {
+		return
+	}
+	inviter, err := h.userRepo.FindByID(game.User1ID)
+	if err != nil || inviter == nil || inviter.Host == nil || inviter.URI == nil {
+		return
+	}
+	ctx := c.Request().Context()
+	sessionID, ok := h.fedCache.GetSessionByGame(ctx, game.ID)
+	if !ok {
+		return
+	}
+	// show-game 経由で User2 が pending game を表示するたびに呼ばれる
+	// 経路があるため、session ごとに 1 回だけ送るよう guard する
+	// (#417 Devin review)。相手側 (CherryPick) でも zset idempotent なので
+	// 重複しても実害は無いが、無駄な deliver job を抑える。
+	if h.fedCache.IsJoinSent(ctx, sessionID) {
+		return
+	}
+	join := corereversi.RenderJoin(h.baseURL, sessionID,
+		h.baseURL+"/users/"+accepter.ID, *inviter.URI, time.Now().UTC().Format(time.RFC3339))
+	body, err := json.Marshal(join)
+	if err != nil {
+		return
+	}
+	if err := h.deliverer.DeliverToUser(accepter.ID, inviter, body); err != nil {
+		return
+	}
+	h.fedCache.MarkJoinSent(ctx, sessionID)
+}
+
 // CancelMatch handles POST /api/reversi/cancel-match.
+// Service.CancelGame 経由で: Leave をリモート相手に配信 + canceled
+// イベントを WebSocket に publish + fedCache の session mapping も
+// 片付く。svc 未配線な旧テスト互換のため repo.Delete フォールバックも残す。
 func (h *Handler) CancelMatch(c echo.Context) error {
 	user := middleware.GetUser(c)
-	// 未開始のゲームを削除
+	ctx := c.Request().Context()
 	games, _ := h.repo.ListByUser(user.ID, 10)
 	for _, g := range games {
-		if !g.IsStarted && !g.IsEnded {
+		if g.IsStarted || g.IsEnded {
+			continue
+		}
+		if h.svc != nil {
+			// ListByUser snapshot 後に相手が ready / start させた場合、
+			// ErrAlreadyStarted で失敗する。その場合は進行中のゲームを
+			// 潰さないよう fedCache の掃除もせず skip する
+			// (#417 Devin review: TOCTOU)。ErrAlreadyStarted 以外の
+			// 想定外エラー (DB障害等) は observability のため WARN する。
+			if err := h.svc.CancelGame(ctx, g.ID, user.ID); err != nil {
+				if !errors.Is(err, corereversi.ErrAlreadyStarted) {
+					slog.Warn("reversi cancel-match: cancel failed",
+						"gameId", g.ID, "userId", user.ID, "err", err)
+				}
+				continue
+			}
+		} else {
 			_ = h.repo.Delete(g.ID)
 		}
+		// fedCache 片付けは Service.CancelGame が既に実行済み (#417 Devin
+		// review で全終了経路に統一)。
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -278,12 +391,6 @@ func (h *Handler) Surrender(c echo.Context) error {
 	if game.User1ID != user.ID && game.User2ID != user.ID {
 		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	}
-	var winnerID string
-	if game.User1ID == user.ID {
-		winnerID = game.User2ID
-	} else {
-		winnerID = game.User1ID
-	}
 
 	// service が注入されていればそちらを経由する (本来のパス)。
 	// フォールバックは従来の repo 直接操作 (service 未注入の古いテスト互換)。
@@ -292,6 +399,13 @@ func (h *Handler) Surrender(c echo.Context) error {
 			return surrenderErrorResponse(c, err)
 		}
 	} else {
+		// svc 未配線 path は legacy test 互換。winnerID もここで計算する。
+		var winnerID string
+		if game.User1ID == user.ID {
+			winnerID = game.User2ID
+		} else {
+			winnerID = game.User1ID
+		}
 		now := time.Now()
 		game.IsEnded = true
 		game.EndedAt = &now
@@ -300,20 +414,8 @@ func (h *Handler) Surrender(c echo.Context) error {
 		_ = h.repo.Update(game)
 	}
 
-	// リモート相手に Leave 送信。federation session は Redis 側にある。
-	if h.fedCache != nil && h.deliverer != nil && h.userRepo != nil {
-		if sessionID, ok := h.fedCache.GetSessionByGame(c.Request().Context(), req.GameID); ok {
-			if remoteUser, err := h.userRepo.FindByID(winnerID); err == nil && remoteUser.Host != nil && remoteUser.URI != nil {
-				leave := corereversi.RenderLeave(h.baseURL+"/users/"+user.ID, *remoteUser.URI, sessionID)
-				if body, jerr := json.Marshal(leave); jerr == nil {
-					_ = h.deliverer.DeliverToUser(user.ID, remoteUser, body)
-				}
-			}
-			// ゲーム終了時に mapping を明示削除
-			h.fedCache.Delete(c.Request().Context(), sessionID, req.GameID)
-		}
-	}
-
+	// Leave 配信 + fedCache cleanup は Service.Surrender が実行済み
+	// (#417 Devin review で全終了経路を Service 側に統一)。
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -334,9 +436,13 @@ func surrenderErrorResponse(c echo.Context, err error) error {
 }
 
 // Verify handles POST /api/reversi/verify — verify game integrity.
+// CherryPick 互換: クライアントが送ってくる `crc32` をサーバ側で再計算した
+// ものと比較し、不一致なら `{desynced: true, game}` を返してフロント側で
+// restoreGame を走らせる。一致なら `{desynced: false}` のみ。
 func (h *Handler) Verify(c echo.Context) error {
 	var req struct {
 		GameID string `json:"gameId"`
+		CRC32  string `json:"crc32"`
 	}
 	if err := c.Bind(&req); err != nil || req.GameID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "gameId is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
@@ -346,24 +452,20 @@ func (h *Handler) Verify(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_GAME", "No such game.", "d8a95858-973b-4f3b-8592-fcf2eb4dd044"))
 	}
 
-	// ゲームログを再生して検証
-	opts := corereversi.Options{
-		IsLlotheo:        game.IsLlotheo,
-		CanPutEverywhere: game.CanPutEverywhere,
-		LoopedBoard:      game.LoopedBoard,
-	}
-	g := corereversi.NewGame(game.Map, opts)
-
-	var logs [][]int
-	_ = json.Unmarshal(game.Logs, &logs)
-	for _, log := range logs {
-		if len(log) >= 1 {
-			g.PutStone(log[0])
-		}
+	// ログを再生して engine CRC を算出し、client が送ってきた crc32 と
+	// 比較する。CRC が合わなければ desync 判定。client が crc32 を送って
+	// こないケースは比較不可なので常に desynced=false。ログ parse は
+	// EngineFromGame を再利用して二重実装を避ける (#417 Devin review)。
+	g, err := corereversi.EngineFromGame(game)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
-	return c.JSON(http.StatusOK, map[string]any{
-		"desynced": false,
-		"game":     packGame(game, h.idGen),
-	})
+	serverCRC := strconv.FormatUint(uint64(g.CalcCRC32()), 10)
+	desynced := req.CRC32 != "" && req.CRC32 != serverCRC
+	resp := map[string]any{"desynced": desynced}
+	if desynced {
+		resp["game"] = packGame(game, h.idGen)
+	}
+	return c.JSON(http.StatusOK, resp)
 }

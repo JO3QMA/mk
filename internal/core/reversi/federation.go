@@ -1,5 +1,37 @@
 package reversi
 
+import (
+	"github.com/google/uuid"
+	"github.com/shiroha-a/mk/internal/model"
+)
+
+// PendingGameLookup is the minimal interface for finding a pending reversi
+// game between two users. repository.ReversiRepository がそのまま満たす。
+type PendingGameLookup interface {
+	ListByUser(userID string, limit int) ([]*model.ReversiGame, error)
+}
+
+// FindPendingInvitation returns the latest pending (not started / ended)
+// reversi_game row where User1=inviterID and User2=inviteeID. 招待の受諾
+// (/api/reversi/match) 経路と、連合経路 (handleReversiInvite の 5 秒再送
+// dedup) の両方から使う共有ヘルパー。ListByUser は id DESC なので最初に
+// ヒットしたものを返すだけで最新が取れる。
+func FindPendingInvitation(repo PendingGameLookup, inviteeID, inviterID string) *model.ReversiGame {
+	games, err := repo.ListByUser(inviteeID, 20)
+	if err != nil {
+		return nil
+	}
+	for _, g := range games {
+		if g.IsStarted || g.IsEnded {
+			continue
+		}
+		if g.User1ID == inviterID && g.User2ID == inviteeID {
+			return g
+		}
+	}
+	return nil
+}
+
 // GameTypeUUID is the unique identifier for the reversi game type in ActivityPub.
 // CherryPick互換の固定UUID。
 const GameTypeUUID = "1c086295-25e3-4b82-b31e-3e3959906312"
@@ -36,6 +68,7 @@ func NewAPGame(sessionID string) APGame {
 
 // APActivity represents a generic ActivityPub activity for reversi.
 type APActivity struct {
+	Context   any      `json:"@context,omitempty"`
 	ID        string   `json:"id,omitempty"`
 	Type      string   `json:"type"`
 	Actor     string   `json:"actor"`
@@ -45,10 +78,38 @@ type APActivity struct {
 	Published string   `json:"published,omitempty"`
 }
 
+// defaultContext は activitypub パッケージが activity 一般に付けるのと同じ
+// JSON-LD @context。CherryPick の inbox はこれが無い reversi activity を
+// 弾く可能性があるため Render 時に必ず埋める (#417 P1)。
+var defaultContext = []any{
+	"https://www.w3.org/ns/activitystreams",
+	"https://w3id.org/security/v1",
+	map[string]any{
+		"Key":               "sec:Key",
+		"sensitive":         "as:sensitive",
+		"Hashtag":           "as:Hashtag",
+		"quoteUrl":          "as:quoteUrl",
+		"toot":              "http://joinmastodon.org/ns#",
+		"Emoji":             "toot:Emoji",
+		"featured":          "toot:featured",
+		"discoverable":      "toot:discoverable",
+		"schema":            "http://schema.org#",
+		"PropertyValue":     "schema:PropertyValue",
+		"value":             "schema:value",
+		"misskey":           "https://misskey-hub.net/ns#",
+		"_misskey_content":  "misskey:_misskey_content",
+		"_misskey_quote":    "misskey:_misskey_quote",
+		"_misskey_reaction": "misskey:_misskey_reaction",
+		"_misskey_votes":    "misskey:_misskey_votes",
+		"isCat":             "misskey:isCat",
+	},
+}
+
 // RenderInvite creates an Invite activity for a reversi game.
 func RenderInvite(baseURL, sessionID, actorURI, targetURI string, published string) APActivity {
 	game := NewAPGame(sessionID)
 	return APActivity{
+		Context:   defaultContext,
 		ID:        baseURL + "/games/" + GameTypeUUID + "/" + sessionID + "/activity",
 		Type:      "Invite",
 		Actor:     actorURI,
@@ -63,6 +124,7 @@ func RenderInvite(baseURL, sessionID, actorURI, targetURI string, published stri
 func RenderJoin(baseURL, sessionID, actorURI, targetURI string, published string) APActivity {
 	game := NewAPGame(sessionID)
 	return APActivity{
+		Context:   defaultContext,
 		ID:        baseURL + "/games/" + GameTypeUUID + "/" + sessionID + "/activity",
 		Type:      "Join",
 		Actor:     actorURI,
@@ -73,8 +135,17 @@ func RenderJoin(baseURL, sessionID, actorURI, targetURI string, published string
 	}
 }
 
+// activityID builds a per-activity id so that CherryPick's
+// InboxProcessorService does not silent-drop the payload. 同じ actor が複数
+// 回 Update/Leave/Undo を送るので session id ベースの決定的 id は衝突する。
+// 本家 addContext と同じくランダム UUID ベースにする。
+func activityID(baseURL string) string {
+	return baseURL + "/activities/" + uuid.NewString()
+}
+
 // RenderUpdate creates an Update activity for game state changes.
-func RenderUpdate(actorURI, targetURI string, state APGameState) APActivity {
+// baseURL はローカルインスタンスのベース URL (id フィールド生成用)。
+func RenderUpdate(baseURL, actorURI, targetURI string, state APGameState) APActivity {
 	game := APGame{
 		Type:         "Game",
 		GameTypeUUID: GameTypeUUID,
@@ -82,32 +153,38 @@ func RenderUpdate(actorURI, targetURI string, state APGameState) APActivity {
 		GameState:    state,
 	}
 	return APActivity{
-		Type:   "Update",
-		Actor:  actorURI,
-		Object: game,
-		To:     targetURI,
-		CC:     []string{},
+		Context: defaultContext,
+		ID:      activityID(baseURL),
+		Type:    "Update",
+		Actor:   actorURI,
+		Object:  game,
+		To:      targetURI,
+		CC:      []string{},
 	}
 }
 
 // RenderLeave creates a Leave activity for surrendering or cancelling.
-func RenderLeave(actorURI, targetURI string, sessionID string) APActivity {
+func RenderLeave(baseURL, actorURI, targetURI, sessionID string) APActivity {
 	game := NewAPGame(sessionID)
 	return APActivity{
-		Type:   "Leave",
-		Actor:  actorURI,
-		Object: game,
-		To:     targetURI,
-		CC:     []string{},
+		Context: defaultContext,
+		ID:      activityID(baseURL),
+		Type:    "Leave",
+		Actor:   actorURI,
+		Object:  game,
+		To:      targetURI,
+		CC:      []string{},
 	}
 }
 
 // RenderUndo creates an Undo activity wrapping another activity.
-func RenderUndo(actorURI string, original APActivity) APActivity {
+func RenderUndo(baseURL, actorURI string, original APActivity) APActivity {
 	return APActivity{
-		Type:   "Undo",
-		Actor:  actorURI,
-		Object: original,
+		Context: defaultContext,
+		ID:      activityID(baseURL),
+		Type:    "Undo",
+		Actor:   actorURI,
+		Object:  original,
 	}
 }
 

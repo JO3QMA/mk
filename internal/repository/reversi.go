@@ -11,7 +11,13 @@ type ReversiRepository interface {
 	FindByID(id string) (*model.ReversiGame, error)
 	Update(game *model.ReversiGame) error
 	ListByUser(userID string, limit int) ([]*model.ReversiGame, error)
+	// ListByUserCursor returns user's games (User1 or User2) with keyset
+	// pagination via sinceID / untilID。limit は上限 (0 → 10)。id DESC 順。
+	ListByUserCursor(userID, sinceID, untilID string, limit int) ([]*model.ReversiGame, error)
 	ListActive() ([]*model.ReversiGame, error)
+	// ListStartedCursor returns only started games with keyset pagination。
+	// "my=false" な /reversi/games 用。
+	ListStartedCursor(sinceID, untilID string, limit int) ([]*model.ReversiGame, error)
 	Delete(id string) error
 }
 
@@ -71,6 +77,43 @@ func (r *reversiRepository) ListActive() ([]*model.ReversiGame, error) {
 	if err := r.db.Preload("User1").Preload("User2").
 		Where(`"isEnded" = false`).
 		Order(`"id" DESC`).Limit(50).Find(&games).Error; err != nil {
+		return nil, err
+	}
+	return games, nil
+}
+
+func (r *reversiRepository) ListByUserCursor(userID, sinceID, untilID string, limit int) ([]*model.ReversiGame, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := r.db.Preload("User1").Preload("User2").
+		Where(`"user1Id" = ? OR "user2Id" = ?`, userID, userID)
+	if sinceID != "" {
+		q = q.Where(`"id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"id" < ?`, untilID)
+	}
+	var games []*model.ReversiGame
+	if err := q.Order(`"id" DESC`).Limit(limit).Find(&games).Error; err != nil {
+		return nil, err
+	}
+	return games, nil
+}
+
+func (r *reversiRepository) ListStartedCursor(sinceID, untilID string, limit int) ([]*model.ReversiGame, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := r.db.Preload("User1").Preload("User2").Where(`"isStarted" = true`)
+	if sinceID != "" {
+		q = q.Where(`"id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"id" < ?`, untilID)
+	}
+	var games []*model.ReversiGame
+	if err := q.Order(`"id" DESC`).Limit(limit).Find(&games).Error; err != nil {
 		return nil, err
 	}
 	return games, nil
