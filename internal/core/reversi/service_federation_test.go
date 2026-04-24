@@ -6,9 +6,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 // --- test doubles ---
@@ -133,9 +135,45 @@ func TestService_PutStone_DeliversPutstoneUpdateToRemote(t *testing.T) {
 	assert.Equal(t, "sess-put", state["game_session_id"])
 }
 
-func TestService_CancelGame_DeliversLeaveToRemote(t *testing.T) {
+func TestService_CancelGame_InviterSendsUndoInviteToRemote(t *testing.T) {
+	// alice = User1 (local inviter), bob = User2 (remote)。inviter 側が
+	// CancelGame を呼ぶと CherryPick protocol-compliant に Undo(Invite) が
+	// 送られる (#417 P4)。pre-start 専用で Surrender (started) は Leave。
 	game, _, _, svc := newPendingGame(t)
 	d := wireFederated(t, svc, game, "sess-cancel")
+
+	require.NoError(t, svc.CancelGame(context.Background(), game.ID, "alice"))
+
+	require.Len(t, d.calls, 1)
+	var act map[string]any
+	require.NoError(t, json.Unmarshal(d.calls[0].body, &act))
+	assert.Equal(t, "Undo", act["type"])
+	obj := act["object"].(map[string]any)
+	assert.Equal(t, "Invite", obj["type"])
+	// 元 Invite にも同じ session id が埋まっていることを確認する
+	inner := obj["object"].(map[string]any)
+	state := inner["game_state"].(map[string]any)
+	assert.Equal(t, "sess-cancel", state["game_session_id"])
+}
+
+func TestService_CancelGame_InviteeSendsLeaveToRemote(t *testing.T) {
+	// User1 = 招待者 = remote (bob), User2 = 招待される側 = local (alice)。
+	// 招待された側が CancelGame する場合は Undo(Invite) を投げるのは誤りで、
+	// 従来通り Leave にフォールバックする (#417 P4)。
+	repo := newFakeRepo()
+	pub := &capturePublisher{}
+	svc := NewService(repo, pub, nil)
+	game := &model.ReversiGame{
+		ID:                   "g2",
+		User1ID:              "bob",
+		User2ID:              "alice",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "1",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+	}
+	require.NoError(t, repo.Create(game))
+	d := wireFederated(t, svc, game, "sess-decline")
 
 	require.NoError(t, svc.CancelGame(context.Background(), game.ID, "alice"))
 

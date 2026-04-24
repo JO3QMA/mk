@@ -473,6 +473,93 @@ func TestReversiInbox_Leave_StartedSurrenders(t *testing.T) {
 	assert.Error(t, cacheErr, "session mapping must be cleaned up after Leave")
 }
 
+// --- Undo(Invite) — pre-start invitation retracted by remote inviter (#417 P4) ---
+
+func TestReversiInbox_UndoInvite_CancelsPreStartGame(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	// alice が招待した pre-start ゲーム (User1=bob はダミーで User1ID=alice
+	// にしないと actor.ID を CancelGame に渡す時 not-player になってしまう)。
+	// seedFederatedGame は User1=bob 固定なので手動構築する。
+	ctx := context.Background()
+	game := &model.ReversiGame{
+		ID:                   "fedg-undo",
+		User1ID:              "alice",
+		User2ID:              "bob",
+		Map:                  pq.StringArray{"--------", "--------", "--------", "---wb---", "---bw---", "--------", "--------", "--------"},
+		BW:                   "1",
+		TimeLimitForEachTurn: 90,
+		Logs:                 datatypes.JSON("[]"),
+	}
+	require.NoError(t, b.gameRepo.Create(game))
+	b.fedCache.Set(ctx, "sess-undo", game.ID)
+
+	body := []byte(`{
+		"type": "Undo",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Invite",
+			"actor": "https://remote.example/users/alice",
+			"object": {
+				"type": "Game",
+				"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+				"game_state": {"game_session_id": "sess-undo"}
+			}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	assert.Nil(t, b.gameRepo.findGameBySession(t, b.fedCache, "sess-undo"),
+		"Undo(Invite) must delete the pre-start game and clean fedCache")
+}
+
+func TestReversiInbox_UndoInvite_StartedGameIgnored(t *testing.T) {
+	// Undo(Invite) は pre-start 専用。started 後に届いた場合はエラーにせず
+	// 黙って ack するのが仕様 (#417 P4)。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	seedFederatedGame(t, b, "sess-undo-started", true)
+
+	body := []byte(`{
+		"type": "Undo",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Invite",
+			"object": {
+				"type": "Game",
+				"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+				"game_state": {"game_session_id": "sess-undo-started"}
+			}
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+
+	// started ゲームは無効な Undo で消滅しない
+	g, err := b.gameRepo.FindByID("fedg-sess-undo-started")
+	require.NoError(t, err)
+	assert.True(t, g.IsStarted)
+	assert.False(t, g.IsEnded)
+}
+
+func TestReversiInbox_UndoInvite_UnknownSessionIgnored(t *testing.T) {
+	// Session TTL 切れ後の Undo(Invite) は ack 扱いにする (#417 P4)。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	body := []byte(`{
+		"type": "Undo",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Invite",
+			"object": {
+				"type": "Game",
+				"game_type_uuid": "1c086295-25e3-4b82-b31e-3e3959906312",
+				"game_state": {"game_session_id": "ghost-undo"}
+			}
+		}
+	}`)
+	assert.NoError(t, b.processor.Process(body))
+}
+
 func TestReversiInbox_Leave_UnknownSession(t *testing.T) {
 	b := newReversiProcessor(t)
 	body := []byte(`{

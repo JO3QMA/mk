@@ -156,6 +156,58 @@ func (p *Processor) handleReversiLeave(act genericActivity) error {
 	return p.reversiSvc.CancelGame(ctx, game.ID, actor.ID)
 }
 
+// handleReversiUndoInvite processes an Undo(Invite) — the remote inviter is
+// retracting a pre-start invitation. We locate the game by session id and
+// route through Service.CancelGame so fedCache cleanup / `canceled` stream
+// event fire uniformly (#417 P4).
+//
+// inner は Undo.object に入っていた元 Invite で、その object が reversi Game。
+// reversi Game でない Undo(Invite) は別機能 (未実装) なので ErrNotReversiGame
+// で dispatcher に戻し、一般 Undo パスで無視される。
+func (p *Processor) handleReversiUndoInvite(act genericActivity, inner genericActivity) error {
+	if !p.reversiReady() {
+		return ErrUnsupportedActivity
+	}
+	actor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
+	var objMap map[string]any
+	if err := json.Unmarshal(inner.Object, &objMap); err != nil {
+		return fmt.Errorf("reversi undo(invite): object not a JSON object: %w", err)
+	}
+	if !corereversi.IsReversiGame(objMap) {
+		return ErrNotReversiGame
+	}
+	state := corereversi.ParseGameState(objMap)
+	if state == nil || state.GameSessionID == "" {
+		return errors.New("reversi undo(invite): missing game_state")
+	}
+	ctx := context.Background()
+	gameID, err := p.reversiFedCache.Get(ctx, state.GameSessionID)
+	if err != nil || gameID == "" {
+		// CherryPick は session TTL 切れ後にも undo を送り得るが既に消えて
+		// いるので ack 扱い (return nil)。
+		slog.Info("reversi undo(invite): unknown session, ignoring",
+			"session", state.GameSessionID, "actor", actor.ID)
+		return nil
+	}
+	game, err := p.reversiRepo.FindByID(gameID)
+	if err != nil {
+		return nil
+	}
+	if game.IsStarted {
+		// Undo(Invite) は pre-start 専用。started 後は Leave を使うべき。
+		// 受信しても副作用無しで ack する。
+		slog.Warn("reversi undo(invite): game already started, ignoring",
+			"gameId", game.ID, "actor", actor.ID)
+		return nil
+	}
+	slog.Info("reversi federation: undo(invite) received",
+		"gameId", game.ID, "session", state.GameSessionID, "actor", actor.ID)
+	return p.reversiSvc.CancelGame(ctx, game.ID, actor.ID)
+}
+
 // handleReversiUpdate dispatches an Update carrying a reversi Game object.
 // Called from handleUpdate when the object type is "Game" with the reversi
 // UUID. Update semantics come from game_state.type:

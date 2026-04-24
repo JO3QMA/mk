@@ -286,6 +286,47 @@ func (s *Service) deliverLeaveToOpponent(ctx context.Context, game *model.Revers
 	_ = s.deliverer.DeliverToUser(actor.ID, opp, body)
 }
 
+// deliverUndoInviteToOpponent renders an Undo(Invite) and delivers it to the
+// remote invitee when the local inviter cancels a pre-start game. CherryPick
+// protocol-wise Leave is reserved for started games, Undo(Invite) is the
+// correct form for retracting a pending invitation (#417 P4)。
+// invitee 側 (User2 = local) がキャンセルする経路では Undo(Invite) ではなく
+// 従来の Leave を送る (Undo は invitee からは投げないのが CherryPick 仕様)。
+func (s *Service) deliverUndoInviteToOpponent(ctx context.Context, game *model.ReversiGame, actorUserID string) {
+	if s.deliverer == nil || s.userRepo == nil || s.fedCache == nil || s.baseURL == "" {
+		return
+	}
+	actor, err := s.userRepo.FindByID(actorUserID)
+	if err != nil || actor == nil || actor.Host != nil {
+		return
+	}
+	// Undo(Invite) は「招待者が招待を取り消す」セマンティクスなので、
+	// キャンセル実行者が招待側 (User1) でない場合は Leave にフォールバック。
+	if game.User1ID != actorUserID {
+		s.deliverLeaveToOpponent(ctx, game, actorUserID)
+		return
+	}
+	oppID := opponent(game, actorUserID)
+	opp, err := s.userRepo.FindByID(oppID)
+	if err != nil || opp == nil || opp.Host == nil || opp.URI == nil {
+		return
+	}
+	sessionID, ok := s.fedCache.GetSessionByGame(ctx, game.ID)
+	if !ok {
+		return
+	}
+	actorURI := s.baseURL + "/users/" + actor.ID
+	original := RenderInvite(s.baseURL, sessionID, actorURI, *opp.URI, "")
+	undo := RenderUndo(s.baseURL, actorURI, original)
+	undo.To = *opp.URI
+	body, err := json.Marshal(undo)
+	if err != nil {
+		return
+	}
+	slog.Info("reversi deliver: sending undo(invite)", "gameId", game.ID, "session", sessionID, "to", oppID)
+	_ = s.deliverer.DeliverToUser(actor.ID, opp, body)
+}
+
 // --- Queries ---
 
 // Get fetches a game by id.
@@ -396,10 +437,13 @@ func (s *Service) CancelGame(ctx context.Context, gameID, userID string) error {
 	if !isPlayer(game, userID) {
 		return ErrNotPlayer
 	}
-	// Leave の配信は Delete 前に行う (配信に必要な session マッピングが
-	// 残っているうちに送る)。成功後に fedCache も片付ける (#417 Devin
-	// review で全終了経路に統一)。
-	s.deliverLeaveToOpponent(ctx, game, userID)
+	// 終了 AP activity の配信は Delete 前に行う (配信に必要な session
+	// マッピングが残っているうちに送る)。成功後に fedCache も片付ける
+	// (#417 Devin review で全終了経路に統一)。
+	// CherryPick protocol-wise: pre-start + actor が招待側は Undo(Invite)、
+	// それ以外は Leave (#417 P4)。CancelGame は pre-start 用 API なので
+	// Undo(Invite) 分岐、Surrender 経路は引き続き Leave。
+	s.deliverUndoInviteToOpponent(ctx, game, userID)
 	if err := s.repo.Delete(gameID); err != nil {
 		return err
 	}

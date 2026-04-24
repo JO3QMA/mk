@@ -402,6 +402,11 @@ func (p *Processor) handleUndo(act genericActivity) error {
 		return p.handleUndoBlock(act, inner)
 	case "emojireaction", "emojireact":
 		return p.handleUndoLike(act, inner)
+	case "invite":
+		// CherryPick が pre-start reversi 招待を取り消す際に Undo(Invite) を
+		// 送ってくる (#417 P4)。inner.Object が reversi Game なら reversi
+		// 側で処理、それ以外 (例: glb Invite) は未対応。
+		return p.handleReversiUndoInvite(act, inner)
 	}
 	return ErrUnsupportedActivity
 }
