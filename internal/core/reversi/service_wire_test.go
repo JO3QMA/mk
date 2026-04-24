@@ -61,9 +61,19 @@ func (r *fakeRepo) Update(g *model.ReversiGame) error {
 }
 
 func (r *fakeRepo) ListByUser(userID string, limit int) ([]*model.ReversiGame, error) {
-	_ = userID
-	_ = limit
-	return nil, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*model.ReversiGame, 0)
+	for _, g := range r.games {
+		if g.User1ID == userID || g.User2ID == userID {
+			clone := *g
+			out = append(out, &clone)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (r *fakeRepo) ListByUserCursor(_, _, _ string, _ int) ([]*model.ReversiGame, error) {

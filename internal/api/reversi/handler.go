@@ -3,6 +3,7 @@ package reversi
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -349,8 +350,13 @@ func (h *Handler) CancelMatch(c echo.Context) error {
 			// ListByUser snapshot 後に相手が ready / start させた場合、
 			// ErrAlreadyStarted で失敗する。その場合は進行中のゲームを
 			// 潰さないよう fedCache の掃除もせず skip する
-			// (#417 Devin review: TOCTOU)。
+			// (#417 Devin review: TOCTOU)。ErrAlreadyStarted 以外の
+			// 想定外エラー (DB障害等) は observability のため WARN する。
 			if err := h.svc.CancelGame(ctx, g.ID, user.ID); err != nil {
+				if !errors.Is(err, corereversi.ErrAlreadyStarted) {
+					slog.Warn("reversi cancel-match: cancel failed",
+						"gameId", g.ID, "userId", user.ID, "err", err)
+				}
 				continue
 			}
 		} else {
