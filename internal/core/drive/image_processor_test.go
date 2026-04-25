@@ -90,7 +90,9 @@ func TestIsMimeImage(t *testing.T) {
 		{"image/webp", true},
 		{"image/bmp", true},
 		{"image/tiff", true},
+		// IANA 公式名 (vnd.microsoft.icon) と古い慣例 (x-icon) を両方許可 (#418)
 		{"image/x-icon", true},
+		{"image/vnd.microsoft.icon", true},
 		{"image/vnd.mozilla.apng", true},
 		{"image/svg+xml", false},
 		{"image/avif", false},
