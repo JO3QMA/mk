@@ -440,6 +440,13 @@ func (s *Server) setupRoutes() {
 	sysAcctSvc := coresystemaccount.NewService(userRepo, keypairRepo, repository.NewSystemAccountRepository(s.db), idGen)
 	relaySvc := corerelay.NewService(repository.NewRelayRepository(s.db), sysAcctSvc, apRenderer, deliverService, idGen)
 
+	// AP fetch のデフォルト signer に instance.actor を配線する (#419)。
+	// IceShrimp.NET 等の authorized-fetch peer では未署名 GET が 401 で
+	// 弾かれるため、apFetcher.FetchObject は signed GET を優先しに行く。
+	// 署名失敗時は従来通り unsigned にフォールバック (deliver_service と
+	// 同じ keyID 形式 = `<baseURL>/users/<id>#main-key`)。
+	apFetcher.SetSigner(newInstanceActorSigner(sysAcctSvc, keypairRepo, apURLs))
+
 	noteDeliveryHook := corefederation.NewNoteDeliveryHook(deliverService, apRenderer, apURLs, idGen, userRepo, noteRepo)
 	noteDeliveryHook.SetRelayBroadcaster(relaySvc)
 	noteCreateService.SetFederationHook(noteDeliveryHook)
@@ -2124,4 +2131,40 @@ type notifReaderAdapter struct {
 
 func (a *notifReaderAdapter) ReadAll(userID string) error {
 	return a.svc.MarkAllAsRead(context.Background(), userID)
+}
+
+// instanceActorSigner is the SignerProvider used by APFetcher to sign
+// outgoing GETs with the instance.actor system account (#419)。
+//
+// 各 fetch ごとに systemaccount.Fetch + keypair Lookup を呼ぶ。実体は in-memory
+// cache 化されており (systemaccount は upsert + saRepo lookup、keypairRepo は
+// 単純 row fetch) per-fetch overhead は無視できる。lazy 解決により起動順序
+// (apFetcher 構築 < sysAcctSvc 構築) の制約を緩める利点もある。
+type instanceActorSigner struct {
+	sysAcct *coresystemaccount.Service
+	keypair repository.UserKeypairRepository
+	urls    *activitypub.URLBuilder
+}
+
+func newInstanceActorSigner(
+	svc *coresystemaccount.Service,
+	kp repository.UserKeypairRepository,
+	urls *activitypub.URLBuilder,
+) *instanceActorSigner {
+	return &instanceActorSigner{sysAcct: svc, keypair: kp, urls: urls}
+}
+
+// SignerCredentials returns the keyId URI and PEM private key of
+// instance.actor. corefederation.ErrNoSigner を返した場合 APFetcher は
+// unsigned-only モードで継続する。
+func (s *instanceActorSigner) SignerCredentials() (string, string, error) {
+	user, err := s.sysAcct.Fetch("instance")
+	if err != nil || user == nil {
+		return "", "", corefederation.ErrNoSigner
+	}
+	kp, err := s.keypair.FindByUserID(user.ID)
+	if err != nil || kp == nil || kp.PrivateKey == "" {
+		return "", "", corefederation.ErrNoSigner
+	}
+	return s.urls.UserKeyURI(user.ID), kp.PrivateKey, nil
 }
