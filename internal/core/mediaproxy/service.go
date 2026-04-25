@@ -58,34 +58,38 @@ var (
 
 // browsersafeMIMEs lists MIME types safe to serve inline in browsers.
 var browsersafeMIMEs = map[string]bool{
-	"image/png":              true,
-	"image/gif":              true,
-	"image/jpeg":             true,
-	"image/webp":             true,
-	"image/avif":             true,
-	"image/apng":             true,
-	"image/bmp":              true,
-	"image/tiff":             true,
-	"image/x-icon":           true,
-	"image/vnd.mozilla.apng": true,
-	"audio/opus":             true,
-	"video/ogg":              true,
-	"audio/ogg":              true,
-	"application/ogg":        true,
-	"video/quicktime":        true,
-	"video/mp4":              true,
-	"audio/mp4":              true,
-	"video/x-m4v":            true,
-	"audio/x-m4a":            true,
-	"video/3gpp":             true,
-	"video/3gpp2":            true,
-	"video/mpeg":             true,
-	"audio/mpeg":             true,
-	"video/webm":             true,
-	"audio/webm":             true,
-	"audio/aac":              true,
-	"audio/flac":             true,
-	"audio/wav":              true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/jpeg": true,
+	"image/webp": true,
+	"image/avif": true,
+	"image/apng": true,
+	"image/bmp":  true,
+	"image/tiff": true,
+	// `image/x-icon` は古い慣例、`image/vnd.microsoft.icon` は IANA 公式
+	// 登録名 (RFC 4329)。リモート Misskey/Mastodon の favicon.ico は後者で
+	// 返ってくるホストが多いため両方許可する (#418)。
+	"image/x-icon":             true,
+	"image/vnd.microsoft.icon": true,
+	"image/vnd.mozilla.apng":   true,
+	"audio/opus":               true,
+	"video/ogg":                true,
+	"audio/ogg":                true,
+	"application/ogg":          true,
+	"video/quicktime":          true,
+	"video/mp4":                true,
+	"audio/mp4":                true,
+	"video/x-m4v":              true,
+	"audio/x-m4a":              true,
+	"video/3gpp":               true,
+	"video/3gpp2":              true,
+	"video/mpeg":               true,
+	"audio/mpeg":               true,
+	"video/webm":               true,
+	"audio/webm":               true,
+	"audio/aac":                true,
+	"audio/flac":               true,
+	"audio/wav":                true,
 }
 
 // ProxyResult is the output of proxy resolution + processing.
@@ -347,7 +351,10 @@ func isConvertibleImage(mime string) bool {
 	switch mime {
 	case "image/jpeg", "image/png", "image/gif",
 		"image/webp", "image/bmp", "image/tiff",
-		"image/x-icon", "image/vnd.mozilla.apng":
+		// IANA 公式名 (image/vnd.microsoft.icon) と古い慣例 (image/x-icon)
+		// を両方許可する (#418)。
+		"image/x-icon", "image/vnd.microsoft.icon",
+		"image/vnd.mozilla.apng":
 		return true
 	default:
 		return false

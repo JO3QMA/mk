@@ -274,6 +274,43 @@ func TestFetch_LocalFile(t *testing.T) {
 	assert.Equal(t, "image/png", result.ContentType)
 }
 
+// favicon.ico を返すリモートサーバーは IANA 公式 MIME `image/vnd.microsoft.icon`
+// を使う場合がある (#418)。古い慣例の `image/x-icon` だけで safe-list を組むと
+// 多くのリモートホストの favicon が unsafe MIME 拒否で 500 になり、UI 上で
+// instance ticker のアイコンが消える。両 alias とも許容することを確認する。
+func TestFetch_FaviconWithIANAMIMETypeAccepted(t *testing.T) {
+	imgData := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10} // bogus ico header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/vnd.microsoft.icon")
+		w.Write(imgData)
+	}))
+	defer ts.Close()
+
+	s := testService(map[string]bool{ts.URL + "/favicon.ico": true})
+
+	result, err := s.Fetch(context.Background(), ts.URL+"/favicon.ico", ModeDefault)
+	require.NoError(t, err, "image/vnd.microsoft.icon must pass through")
+	defer result.Body.Close()
+	assert.Equal(t, "image/vnd.microsoft.icon", result.ContentType)
+}
+
+func TestFetch_FaviconWithLegacyMIMETypeAccepted(t *testing.T) {
+	// 古い慣例 image/x-icon も引き続き許可する (regression guard)。
+	imgData := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.Write(imgData)
+	}))
+	defer ts.Close()
+
+	s := testService(map[string]bool{ts.URL + "/favicon.ico": true})
+
+	result, err := s.Fetch(context.Background(), ts.URL+"/favicon.ico", ModeDefault)
+	require.NoError(t, err)
+	defer result.Body.Close()
+	assert.Equal(t, "image/x-icon", result.ContentType)
+}
+
 func TestFetch_UnsafeMIME_Rejected(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript")
@@ -307,6 +344,9 @@ func TestIsConvertibleImage(t *testing.T) {
 		{"image/webp", true},
 		{"image/bmp", true},
 		{"image/tiff", true},
+		// IANA 公式名 (vnd.microsoft.icon) と古い慣例 (x-icon) を両方許可 (#418)
+		{"image/x-icon", true},
+		{"image/vnd.microsoft.icon", true},
 		{"image/svg+xml", false},
 		{"video/mp4", false},
 		{"text/plain", false},
@@ -322,6 +362,9 @@ func TestBrowsersafeMIMEs(t *testing.T) {
 	assert.True(t, browsersafeMIMEs["image/png"])
 	assert.True(t, browsersafeMIMEs["video/mp4"])
 	assert.True(t, browsersafeMIMEs["audio/mpeg"])
+	// favicon.ico の MIME alias 両方を許可 (#418)
+	assert.True(t, browsersafeMIMEs["image/x-icon"])
+	assert.True(t, browsersafeMIMEs["image/vnd.microsoft.icon"])
 	assert.False(t, browsersafeMIMEs["application/javascript"])
 	assert.False(t, browsersafeMIMEs["text/html"])
 }
