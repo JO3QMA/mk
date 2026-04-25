@@ -205,15 +205,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 	if err != nil {
 		return nil, fmt.Errorf("notification marshal: %w", err)
 	}
-	// MAXLEN ~ で古い通知を確率的にtrim、IDフィールドはGorm IDを利用する
-	streamID := toXAddID(n.ID, now)
-	if err := s.client.XAdd(ctx, &redis.XAddArgs{
+	// MAXLEN ~ で古い通知を確率的にtrim、IDは toXAddID で `<ms>-*` パターン
+	// を渡して Redis に seq を自動採番させる。後段 (scheduleUnreadPublish)
+	// で latestReadNotification と lexicographic 比較するときに、`*` パター
+	// ンのままだと '*' (ASCII 42) < '0' (ASCII 48) で常に true になり既読
+	// 判定が壊れるため、`Result()` で実際の `<ms>-<seq>` を取り直す
+	// (#420 Devin review)。
+	requestedID := toXAddID(n.ID, now)
+	streamID, err := s.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: s.streamKey(in.NotifieeID),
 		MaxLen: MaxPerUser,
 		Approx: true,
-		ID:     streamID,
+		ID:     requestedID,
 		Values: map[string]any{"data": string(payload)},
-	}).Err(); err != nil {
+	}).Result()
+	if err != nil {
 		return nil, fmt.Errorf("notification xadd: %w", err)
 	}
 	// Packer配線済みなら user/note を fetch する Pack() は1回だけ実行し、
@@ -239,8 +245,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 	// notifications-grouped 等の冗長 fetch が発火する readAllNotifications と
 	// race して badge が一瞬付いて消える挙動になっていた。比較対象は
 	// `latestReadNotification` Redis key の値で、これは MarkAllAsRead が
-	// `XRevRangeN(...)[0].ID` (= streamID) を書き込むので、比較も streamID
-	// 形式で行う必要がある。
+	// `XRevRangeN(...)[0].ID` (= 実 streamID) を書き込むので、Redis が
+	// 採番した actual な streamID を渡す。
 	s.scheduleUnreadPublish(in.NotifieeID, streamID, packed)
 	return n, nil
 }
@@ -309,14 +315,13 @@ func (s *Service) DeleteByTypeAndNotifier(ctx context.Context, notifieeID string
 	return nil
 }
 
-// MarkAllAsRead records the latest notification id as read for the user.
 // scheduleUnreadPublish delivers an `unreadNotification` event to the user's
 // main stream after `s.unreadPublishDelay`, skipping the publish if the read
 // marker has already advanced past `streamID` in the meantime. Mirrors the
 // 2-second setTimeout + latestReadNotificationId guard in upstream TS
-// (#420 follow-up)。streamID は `<unix-ms>-<seq>` 形式 (XAdd の戻り値)で、
-// `latestReadNotification` Redis key と直接 lexicographic 比較できる。
-// delay==0 は同期 publish (テスト用)。
+// (#420 follow-up)。streamID は Redis が採番した `<unix-ms>-<seq>` 形式
+// (XAdd の Result) で、`latestReadNotification` Redis key と直接
+// lexicographic 比較できる。delay==0 は同期 publish (テスト用)。
 func (s *Service) scheduleUnreadPublish(notifieeID, streamID string, packed any) {
 	if s.mainStreamPublisher == nil {
 		slog.Warn("notification: mainStreamPublisher unset; badge will not update live",
@@ -342,15 +347,17 @@ func (s *Service) scheduleUnreadPublish(notifieeID, streamID string, packed any)
 	time.AfterFunc(s.unreadPublishDelay, publish)
 }
 
-// 既読位置を更新するだけで、ストリーム自体は変更しない。成功時に、かつ
-// 既読位置が実際に進む場合のみ `readAllNotifications` を main stream に
-// publish する (本家 TS NotificationService.readAllNotification の guard
-// と一致)。これが無いと、ユーザーが /notifications-grouped を fetch する
-// たびに既読 publish が走り、直前に push された unreadNotification が
-// 即座に上書きされて badge が点灯しなくなる (#420 follow-up)。
-// note_unread repositoryが注入されていれば同時にユーザー分の行を全削除する
-// (hasUnreadSpecifiedNotes / hasUnreadMentionsをfalseに戻すため)。
-// Redis SET失敗時はnote_unreadを温存する (整合性維持)。
+// MarkAllAsRead advances the user's notification read marker to the newest
+// stream entry and, only when the marker actually moves forward, publishes
+// `readAllNotifications` to the user's main stream. The publish guard
+// matches upstream TS NotificationService.readAllNotification — without it
+// every `notifications-grouped` fetch would re-emit `readAllNotifications`
+// and clobber any pending `unreadNotification` for the same user, leaving
+// the badge stuck at 0 (#420 follow-up).
+//
+// note_unread repository が注入されていれば同時にユーザー分の行を全削除し
+// (hasUnreadSpecifiedNotes / hasUnreadMentions を false に戻すため)、
+// Redis SET 失敗時は note_unread を温存して再試行で整合性を担保する。
 func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 	res, err := s.client.XRevRangeN(ctx, s.streamKey(userID), "+", "-", 1).Result()
 	if err != nil {

@@ -83,8 +83,10 @@ type ListRequest struct {
 	ExcludeTypes []string `json:"excludeTypes"`
 	SinceID      string   `json:"sinceId"`
 	UntilID      string   `json:"untilId"`
-	// MarkAsRead は本家 i/notifications の暗黙引数 (default: true)。明示的に
-	// false が渡された場合のみ既読化を skip する。Misskey フロントが
+	// MarkAsRead controls whether fetching the notification list implicitly
+	// marks all notifications as read. nil / true means "mark as read"
+	// (default), explicit false leaves the read state untouched.
+	// 本家 i/notifications の暗黙引数。Misskey フロントが
 	// `notifications/mark-all-as-read` を明示呼び出しせず、通知一覧 fetch の
 	// 副作用で badge が消えることを期待しているため (#420)。
 	MarkAsRead *bool `json:"markAsRead"`
