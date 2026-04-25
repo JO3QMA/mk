@@ -70,6 +70,12 @@ func PackNotifications(items []NotificationItem, idGen id.Generator, instLookup 
 	// (単品ケース packNotificationCore でも同じ shell を経由する形)。
 	syntheticUserOnlyNotes := make([]*model.Note, 0, len(items))
 	for _, it := range items {
+		// it.N == nil の要素は最終的に skip されるので resolver 入力にも
+		// 含めない。User / Note だけが詰まった「亡霊」item を渡された場合に
+		// 無駄な host / 絵文字 fetch を起こさないための防御。
+		if it.N == nil {
+			continue
+		}
 		if it.User != nil {
 			notifierUsers = append(notifierUsers, it.User)
 			syntheticUserOnlyNotes = append(syntheticUserOnlyNotes, &model.Note{User: it.User})
