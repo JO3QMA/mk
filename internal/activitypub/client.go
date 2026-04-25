@@ -138,7 +138,15 @@ func (c *Client) FetchUnsigned(url string) ([]byte, error) {
 	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
 }
 
-// drainBody discards remaining bytes (up to MaxBodyBytes) on a non-2xx
+// drainBodyLimit caps how many bytes `drainBody` is willing to read from
+// a non-2xx response before giving up on connection reuse. Most error
+// payloads (Misskey/Mastodon JSON error envelope, plain-text 4xx page) fit
+// in well under 16 KiB, so 64 KiB leaves margin for verbose stack traces
+// without giving an adversarial peer a 1 MiB read budget per error
+// response (#419 Devin review)。
+const drainBodyLimit = 64 * 1024
+
+// drainBody discards remaining bytes (up to drainBodyLimit) on a non-2xx
 // response so the underlying TCP connection can be reused by the http
 // transport pool。authorized-fetch fallback (#419) で signed→unsigned の
 // 二段階 GET を同じ host に投げる際の connection reuse 効率を上げる。
@@ -146,7 +154,7 @@ func drainBody(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxBodyBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, drainBodyLimit))
 }
 
 // FetchHTML performs a plain GET with Accept: text/html. リモートインスタンスの
