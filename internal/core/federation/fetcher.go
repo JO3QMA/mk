@@ -3,24 +3,29 @@ package federation
 import (
 	"errors"
 	"log/slog"
+	"net/http"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 )
 
-// SignerProvider supplies the credentials of a local signer (typically the
-// instance.actor system account) used to sign outgoing AP fetches. Returning
-// an error keeps APFetcher in unsigned-only mode for that call so callers
-// don't fail just because the system account isn't available yet.
+// SignerProvider supplies the parsed private key (typically the
+// instance.actor system account) used to sign outgoing AP fetches.
+// 戻り値の `*PrivateKey` は parse 済みなので fetcher 側での再 parse は不要。
+// instance.actor の row / keypair は実質変わらないので実装側でキャッシュ
+// してよい。返却値が nil / err == ErrNoSigner なら APFetcher は unsigned
+// only モードで継続する。
 type SignerProvider interface {
-	SignerCredentials() (keyID, keyPEM string, err error)
+	Signer() (*activitypub.PrivateKey, error)
 }
 
 // APFetcher wraps an activitypub.Client to satisfy HTTPFetcher。
 //
 // Default behaviour after #419: try signed GET first using the configured
-// SignerProvider (instance.actor), fall back to unsigned GET on failure.
-// If no SignerProvider is wired, behaviour reverts to plain unsigned GET so
-// existing tests continue to work.
+// SignerProvider (instance.actor)。ピアが authorized-fetch を強制する
+// (Iceshrimp.NET / Mastodon secure mode 等) ケースを fail せずに通す。
+// 署名 GET が 401/403 を返した場合のみ unsigned GET にフォールバックする
+// (404/410 等の一過性でないエラーで二重リクエストはしない)。SignerProvider
+// が unset なら従来通り unsigned GET 一発で動く。
 type APFetcher struct {
 	client *activitypub.Client
 	signer SignerProvider
@@ -38,44 +43,54 @@ func (f *APFetcher) SetSigner(s SignerProvider) {
 }
 
 // FetchObject performs a default-signed GET against uri, falling back to
-// unsigned GET on signed-side error. Resolver でアクター取得やリモート Note
-// 取得に共通で使う。
-//
-// IceShrimp.NET のように authorized-fetch を強制する peer ではこちらが署名
-// しないと 401 が返る (#419)。逆に署名検証が緩い peer では unsigned GET の
-// 方が成功するケースもあるため、signed → unsigned の二段構えにしておく。
+// unsigned GET on 401/403. Resolver でアクター取得やリモート Note 取得に
+// 共通で使う (#419)。
 func (f *APFetcher) FetchObject(uri string) ([]byte, error) {
-	// signer が wire されていないか、credentials 取得失敗時はそのまま
-	// unsigned で行く (test / 起動直後の race)。
 	if f.signer != nil {
-		if keyID, keyPEM, err := f.signer.SignerCredentials(); err == nil {
-			if key, kerr := activitypub.NewPrivateKey(keyID, keyPEM); kerr == nil {
-				body, ferr := f.client.FetchJSON(uri, key)
-				if ferr == nil {
-					return body, nil
-				}
-				// 署名 fetch が失敗したら unsigned にフォールバック。
-				// 失敗種別 (network / 4xx / 5xx) を問わず試行する: peer の
-				// 設定次第で signed を弾くケースも有り得るため。
-				slog.Debug("ap fetcher: signed fetch failed, falling back to unsigned",
-					"uri", uri, "err", ferr)
-			} else {
-				slog.Debug("ap fetcher: signer key parse failed, falling back to unsigned",
-					"err", kerr)
+		key, err := f.signer.Signer()
+		if err == nil && key != nil {
+			body, ferr := f.client.FetchJSON(uri, key)
+			if ferr == nil {
+				return body, nil
 			}
+			// 4xx の中でも 401/403 だけがフォールバック対象。404/410 は
+			// 「リソース不在」を意味するので unsigned で再リクエストしても
+			// 結果は同じ (#419 Devin review)。
+			if !shouldFallbackToUnsigned(ferr) {
+				return nil, ferr
+			}
+			slog.Debug("ap fetcher: signed fetch unauthorized, falling back to unsigned",
+				"uri", uri, "err", ferr)
 		}
 	}
-	body, err := f.client.FetchUnsigned(uri)
-	if err != nil {
-		return nil, err
-	}
-	return body, nil
+	return f.client.FetchUnsigned(uri)
+}
+
+// FetchObjectUnsigned performs an explicit unsigned GET. nodeinfo /
+// .well-known/* など peer 認証を要求しない discovery endpoint 用 (#419
+// Devin review)。SignerProvider が wire されていても署名を付けない。
+func (f *APFetcher) FetchObjectUnsigned(uri string) ([]byte, error) {
+	return f.client.FetchUnsigned(uri)
 }
 
 // FetchHTML performs an unsigned GET with Accept: text/html. Instance metadata
 // fetcher がリモートトップページから <link rel="icon"> を抜き出す用途で使う。
 func (f *APFetcher) FetchHTML(uri string) ([]byte, error) {
 	return f.client.FetchHTML(uri)
+}
+
+// shouldFallbackToUnsigned reports whether an error from a signed fetch
+// warrants retrying without the signature. AP の authorized-fetch 系の peer
+// は鍵検証失敗で 401 / 403 を返すので、この 2 つだけフォールバック対象に
+// する。それ以外 (network error, 404, 5xx) は signed/unsigned で結果が
+// 変わらないので二重リクエストしない (#419 Devin review)。
+func shouldFallbackToUnsigned(err error) bool {
+	var se *activitypub.StatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.StatusCode == http.StatusUnauthorized ||
+		se.StatusCode == http.StatusForbidden
 }
 
 // ErrNoSigner is returned by SignerProvider implementations when the local

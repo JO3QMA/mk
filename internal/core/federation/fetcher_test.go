@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,27 +16,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// genTestRSAPEM produces a small RSA private key in PKCS#1 PEM format. Key
-// size is intentionally small (1024-bit) to keep tests fast — never use
-// these helpers in production paths.
-func genTestRSAPEM(t *testing.T) string {
+// genTestRSAKey produces a parsed *PrivateKey backed by a small RSA key.
+// Key size is intentionally small (1024-bit) to keep tests fast — never
+// use this helper in production paths.
+func genTestRSAKey(t *testing.T) *activitypub.PrivateKey {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
 	der := x509.MarshalPKCS1PrivateKey(key)
-	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}))
+	pem := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}))
+	pk, err := activitypub.NewPrivateKey("https://local.example/users/sys#main-key", pem)
+	require.NoError(t, err)
+	return pk
 }
 
-// stubSigner returns canned credentials. err != nil simulates the
+// stubSigner returns a canned PrivateKey. err != nil simulates the
 // "instance.actor not yet provisioned" branch (= ErrNoSigner)。
 type stubSigner struct {
-	keyID  string
-	keyPEM string
-	err    error
+	key *activitypub.PrivateKey
+	err error
 }
 
-func (s *stubSigner) SignerCredentials() (string, string, error) {
-	return s.keyID, s.keyPEM, s.err
+func (s *stubSigner) Signer() (*activitypub.PrivateKey, error) {
+	return s.key, s.err
 }
 
 func TestAPFetcher_FetchObject(t *testing.T) {
@@ -86,10 +89,7 @@ func TestAPFetcher_FetchObject_SignedDefault_PeerAcceptsSigned(t *testing.T) {
 	defer srv.Close()
 
 	f := NewAPFetcher(activitypub.NewClient(nil, "test"))
-	f.SetSigner(&stubSigner{
-		keyID:  "https://local.example/users/sys#main-key",
-		keyPEM: genTestRSAPEM(t),
-	})
+	f.SetSigner(&stubSigner{key: genTestRSAKey(t)})
 	body, err := f.FetchObject(srv.URL + "/users/alice")
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls, "should not fall back when signed succeeded")
@@ -112,22 +112,18 @@ func TestAPFetcher_FetchObject_SignedDefault_AuthorizedFetchPeer(t *testing.T) {
 	defer srv.Close()
 
 	f := NewAPFetcher(activitypub.NewClient(nil, "test"))
-	f.SetSigner(&stubSigner{
-		keyID:  "https://local.example/users/sys#main-key",
-		keyPEM: genTestRSAPEM(t),
-	})
+	f.SetSigner(&stubSigner{key: genTestRSAKey(t)})
 	body, err := f.FetchObject(srv.URL + "/users/alice")
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "ok")
 }
 
-// signed GET が失敗した時は従来の unsigned GET にフォールバックする (signature
-// 検証が緩い peer や signer key 不在時の互換性確保)。
-func TestAPFetcher_FetchObject_FallsBackToUnsignedOnSignedError(t *testing.T) {
+// signed GET が 401/403 を返した時は unsigned GET にフォールバックする
+// (signature 検証が緩い peer での互換性確保, #419)。
+func TestAPFetcher_FetchObject_FallsBackToUnsignedOnAuthError(t *testing.T) {
 	var unsignedHits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Signature") != "" {
-			// 例えば peer 側で signature verification 失敗 → 4xx
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"error":"bad sig"}`))
 			return
@@ -139,14 +135,28 @@ func TestAPFetcher_FetchObject_FallsBackToUnsignedOnSignedError(t *testing.T) {
 	defer srv.Close()
 
 	f := NewAPFetcher(activitypub.NewClient(nil, "test"))
-	f.SetSigner(&stubSigner{
-		keyID:  "https://local.example/users/sys#main-key",
-		keyPEM: genTestRSAPEM(t),
-	})
+	f.SetSigner(&stubSigner{key: genTestRSAKey(t)})
 	body, err := f.FetchObject(srv.URL + "/users/alice")
 	require.NoError(t, err)
 	assert.Equal(t, 1, unsignedHits, "expect single unsigned fallback")
 	assert.Contains(t, string(body), "unsigned-ok")
+}
+
+// 404 / 5xx 等で unsigned リトライを飛ばすことで二重リクエストを抑制する
+// (#419 Devin review)。signed の失敗をそのまま上位に返す。
+func TestAPFetcher_FetchObject_DoesNotFallBackOnNotFound(t *testing.T) {
+	var totalHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		totalHits++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	f := NewAPFetcher(activitypub.NewClient(nil, "test"))
+	f.SetSigner(&stubSigner{key: genTestRSAKey(t)})
+	_, err := f.FetchObject(srv.URL + "/users/alice")
+	require.Error(t, err)
+	assert.Equal(t, 1, totalHits, "404 must not trigger unsigned retry")
 }
 
 // SignerCredentials がエラー (instance.actor 未プロビジョン等) を返す場合は
@@ -175,31 +185,8 @@ func TestActivityPubClient_FetchUnsigned_NonOkReturnsStatusError(t *testing.T) {
 	_, err := activitypub.NewClient(nil, "test").FetchUnsigned(srv.URL + "/")
 	require.Error(t, err)
 	var se *activitypub.StatusError
-	require.True(t, errorsAs(err, &se))
+	require.True(t, errors.As(err, &se))
 	assert.Equal(t, http.StatusUnauthorized, se.StatusCode)
-}
-
-// errorsAs is a tiny errors.As shim usable in test code without pulling in
-// the whole errors package import here. Keeps the test file imports tidy.
-func errorsAs(err error, target any) bool {
-	se, ok := target.(**activitypub.StatusError)
-	if !ok {
-		return false
-	}
-	for e := err; e != nil; {
-		if v, ok := e.(*activitypub.StatusError); ok {
-			*se = v
-			return true
-		}
-		// 単純な Wrap 想定: Errorf("...: %w", inner) を unwrap
-		type unwrapper interface{ Unwrap() error }
-		if u, ok := e.(unwrapper); ok {
-			e = u.Unwrap()
-			continue
-		}
-		break
-	}
-	return false
 }
 
 // 互換性: 既存の fmt.Errorf("unexpected status: ...").Error() 文字列依存

@@ -14,8 +14,12 @@ import (
 
 // HTTPFetcher abstracts the HTTP clients used to fetch nodeinfo documents and
 // remote HTML. 実装は activitypub.Client の薄いラッパで十分。
+//
+// nodeinfo / .well-known は peer 認証を要求しない discovery endpoint なので
+// 署名 GET を付ける必要がない。FetchObjectUnsigned 経由で明示的に未署名
+// リクエストを投げる (#419)。
 type HTTPFetcher interface {
-	FetchObject(uri string) ([]byte, error)
+	FetchObjectUnsigned(uri string) ([]byte, error)
 	FetchHTML(uri string) ([]byte, error)
 }
 
@@ -226,7 +230,7 @@ func firstNonEmptyStr(vals ...string) string {
 
 // fetchDiscovery fetches /.well-known/nodeinfo and decodes the link list.
 func (s *FetchMetadataService) fetchDiscovery(host string) (*nodeinfoDiscovery, error) {
-	body, err := s.fetcher.FetchObject("https://" + host + "/.well-known/nodeinfo")
+	body, err := s.fetcher.FetchObjectUnsigned("https://" + host + "/.well-known/nodeinfo")
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +243,7 @@ func (s *FetchMetadataService) fetchDiscovery(host string) (*nodeinfoDiscovery, 
 
 // fetchDocument fetches the actual nodeinfo document.
 func (s *FetchMetadataService) fetchDocument(href string) (*nodeinfoDocument, error) {
-	body, err := s.fetcher.FetchObject(href)
+	body, err := s.fetcher.FetchObjectUnsigned(href)
 	if err != nil {
 		return nil, err
 	}

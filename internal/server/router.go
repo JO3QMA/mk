@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -2136,14 +2137,19 @@ func (a *notifReaderAdapter) ReadAll(userID string) error {
 // instanceActorSigner is the SignerProvider used by APFetcher to sign
 // outgoing GETs with the instance.actor system account (#419)。
 //
-// 各 fetch ごとに systemaccount.Fetch + keypair Lookup を呼ぶ。実体は in-memory
-// cache 化されており (systemaccount は upsert + saRepo lookup、keypairRepo は
-// 単純 row fetch) per-fetch overhead は無視できる。lazy 解決により起動順序
-// (apFetcher 構築 < sysAcctSvc 構築) の制約を緩める利点もある。
+// 初回 Signer() で systemaccount.Fetch + keypair lookup + RSA PEM parse を
+// やってから、結果 (parse 済みの *PrivateKey) を sync.Once 経由でキャッシュ
+// する。instance.actor は process lifetime 中に変わらない前提なので無期限
+// に握ってよい。再起動で再ロードされる。lazy 解決により起動順序
+// (apFetcher 構築 < sysAcctSvc 構築) の制約を緩めている。
 type instanceActorSigner struct {
 	sysAcct *coresystemaccount.Service
 	keypair repository.UserKeypairRepository
 	urls    *activitypub.URLBuilder
+
+	once sync.Once
+	key  *activitypub.PrivateKey
+	err  error
 }
 
 func newInstanceActorSigner(
@@ -2154,17 +2160,31 @@ func newInstanceActorSigner(
 	return &instanceActorSigner{sysAcct: svc, keypair: kp, urls: urls}
 }
 
-// SignerCredentials returns the keyId URI and PEM private key of
-// instance.actor. corefederation.ErrNoSigner を返した場合 APFetcher は
-// unsigned-only モードで継続する。
-func (s *instanceActorSigner) SignerCredentials() (string, string, error) {
+// Signer returns the parsed instance.actor PrivateKey. corefederation.ErrNoSigner
+// を返した場合 APFetcher は unsigned-only モードで継続する。
+func (s *instanceActorSigner) Signer() (*activitypub.PrivateKey, error) {
+	s.once.Do(s.load)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.key, nil
+}
+
+func (s *instanceActorSigner) load() {
 	user, err := s.sysAcct.Fetch("instance")
 	if err != nil || user == nil {
-		return "", "", corefederation.ErrNoSigner
+		s.err = corefederation.ErrNoSigner
+		return
 	}
 	kp, err := s.keypair.FindByUserID(user.ID)
 	if err != nil || kp == nil || kp.PrivateKey == "" {
-		return "", "", corefederation.ErrNoSigner
+		s.err = corefederation.ErrNoSigner
+		return
 	}
-	return s.urls.UserKeyURI(user.ID), kp.PrivateKey, nil
+	key, err := activitypub.NewPrivateKey(s.urls.UserKeyURI(user.ID), kp.PrivateKey)
+	if err != nil {
+		s.err = corefederation.ErrNoSigner
+		return
+	}
+	s.key = key
 }
