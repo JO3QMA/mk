@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -175,8 +176,11 @@ func TestService_PublishesStreamingEvent(t *testing.T) {
 	assert.Equal(t, []string{"alice"}, pub.hits)
 }
 
-// stubMainPublisher records every PublishMainEvent call.
+// stubMainPublisher records every PublishMainEvent call。time.AfterFunc に
+// よる遅延 publish が test goroutine と並走する可能性があるため、`go test
+// -race` で誤検出されないよう mutex で保護する (#420 Devin review)。
 type stubMainPublisher struct {
+	mu    sync.Mutex
 	calls []mainEventCall
 }
 
@@ -187,7 +191,19 @@ type mainEventCall struct {
 }
 
 func (s *stubMainPublisher) PublishMainEvent(userID, eventType string, body any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls = append(s.calls, mainEventCall{userID, eventType, body})
+}
+
+// snapshot returns a copy of recorded calls so test assertions can run
+// without holding the publisher's lock.
+func (s *stubMainPublisher) snapshot() []mainEventCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]mainEventCall, len(s.calls))
+	copy(out, s.calls)
+	return out
 }
 
 func TestService_Create_PublishesUnreadNotification(t *testing.T) {
@@ -292,8 +308,9 @@ func TestService_Create_DelayedUnread_SuppressedAfterMarkAllAsRead(t *testing.T)
 	time.Sleep(80 * time.Millisecond)
 
 	// readAllNotifications は publish される (MarkAllAsRead 由来) が、
-	// unreadNotification は suppressed されている。
-	for _, c := range pub.calls {
+	// unreadNotification は suppressed されている。lock 越しの snapshot で
+	// race detector に引っかからないよう取得する。
+	for _, c := range pub.snapshot() {
 		assert.NotEqual(t, "unreadNotification", c.eventType,
 			"unreadNotification must be suppressed when read marker advanced first")
 	}
