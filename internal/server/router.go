@@ -84,6 +84,7 @@ import (
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
 	corerelay "github.com/shiroha-a/mk/internal/core/relay"
+	coreretention "github.com/shiroha-a/mk/internal/core/retention"
 	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	corerole "github.com/shiroha-a/mk/internal/core/role"
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
@@ -593,6 +594,14 @@ func (s *Server) setupRoutes() {
 	// coreinstance.FetchMetadataService を流用する。
 	instanceRefreshProc := processors.NewInstanceRefreshProcessor(instanceRepo, metadataFetcher, processors.InstanceRefreshConfig{})
 	s.queueServer.Handle(queue.TaskTypeInstanceRefresh, instanceRefreshProc.Handle)
+
+	// Daily retention aggregation (#421)。
+	// 本家 AggregateRetentionProcessorService と同等で、retention_aggregation
+	// テーブルに 1 日 1 行 cohort を追加し、過去 31 日分の data フィールドを
+	// 更新する。/api/retention と admin overview の「定着率」heatmap が読む。
+	retentionSvc := coreretention.NewService(userRepo, retentionRepo, idGen)
+	retentionProc := processors.NewRetentionAggregateProcessor(retentionSvc)
+	s.queueServer.Handle(queue.TaskTypeRetentionAggregate, retentionProc.Handle)
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {

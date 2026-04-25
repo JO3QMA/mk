@@ -1,0 +1,156 @@
+// Package retention runs the daily retention aggregation that backs
+// /api/retention and the admin overview「定着率」heatmap (#421)。
+//
+// 処理は本家 AggregateRetentionProcessorService と同じ:
+//
+//  1. 今日 (UTC) 1 日に新規登録したローカルユーザー一覧を取得
+//  2. 同じ dateKey で `retention_aggregation` 行が無ければ新規 INSERT
+//     (重複は別 worker が同時走行した場合の自然なスキップ)
+//  3. 直近 31 日分の retention_aggregation 行を読み出す
+//  4. 今日アクティブだったローカルユーザーの ID 集合を求める
+//  5. 各過去行の userIds と intersection を取り、`data[今日の dateKey]`
+//     にその数を書き込んで Update
+package retention
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/lib/pq"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
+	"gorm.io/datatypes"
+)
+
+// Default cohort window. Misskey TS uses ~30 days.
+const cohortWindow = 31 * 24 * time.Hour
+
+// dailyWindow は「今日」と判定する遡及時間。本家と同じ 24 時間。
+const dailyWindow = 24 * time.Hour
+
+// Service aggregates retention statistics into the retention_aggregation
+// table. Stateless — safe to call Aggregate concurrently; the unique
+// dateKey constraint handles double-runs.
+type Service struct {
+	userRepo      repository.UserRepository
+	retentionRepo repository.RetentionAggregationRepository
+	idGen         id.Generator
+	clock         func() time.Time
+}
+
+// NewService constructs a Service.
+func NewService(userRepo repository.UserRepository, retentionRepo repository.RetentionAggregationRepository, idGen id.Generator) *Service {
+	return &Service{
+		userRepo:      userRepo,
+		retentionRepo: retentionRepo,
+		idGen:         idGen,
+		clock:         time.Now,
+	}
+}
+
+// SetClock overrides the time source. Tests use this to make Aggregate
+// deterministic.
+func (s *Service) SetClock(clock func() time.Time) {
+	if clock != nil {
+		s.clock = clock
+	}
+}
+
+// Aggregate runs one pass of the daily retention computation.
+func (s *Service) Aggregate(ctx context.Context) error {
+	now := s.clock()
+	dateKey := formatDateKey(now)
+
+	// 1. Today's new local user IDs (registered within the last 24 hours).
+	cutoff := now.Add(-dailyWindow)
+	cursorID := s.idGen.Generate(cutoff)
+	newIDs, err := s.userRepo.ListLocalUserIDsRegisteredAfter(cursorID)
+	if err != nil {
+		return err
+	}
+
+	// 2. Insert today's row. Duplicate dateKey -> already processed elsewhere.
+	row := &model.RetentionAggregation{
+		ID:         s.idGen.Generate(now),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		DateKey:    dateKey,
+		UserIDs:    pq.StringArray(newIDs),
+		UsersCount: len(newIDs),
+		Data:       datatypes.JSON([]byte("{}")),
+	}
+	if err := s.retentionRepo.Insert(row); err != nil {
+		if errors.Is(err, repository.ErrDuplicateKey) {
+			slog.Debug("retention: dateKey already processed", "dateKey", dateKey)
+			return nil
+		}
+		return err
+	}
+
+	// 3-5. Refresh data[dateKey] on the last 31 days of cohort rows.
+	pastRows, err := s.retentionRepo.ListSince(now.Add(-cohortWindow))
+	if err != nil {
+		return err
+	}
+	activeIDs, err := s.userRepo.ListLocalUserIDsActiveSince(cutoff)
+	if err != nil {
+		return err
+	}
+	activeSet := make(map[string]struct{}, len(activeIDs))
+	for _, id := range activeIDs {
+		activeSet[id] = struct{}{}
+	}
+
+	for _, past := range pastRows {
+		// Today's row: the cohort itself is brand new and trivially "active",
+		// but skip the self-update since data[dateKey] for today is implicit.
+		if past.DateKey == dateKey {
+			continue
+		}
+		retained := 0
+		for _, uid := range past.UserIDs {
+			if _, ok := activeSet[uid]; ok {
+				retained++
+			}
+		}
+		merged, err := mergeDataKey(past.Data, dateKey, retained)
+		if err != nil {
+			slog.Warn("retention: data merge failed", "dateKey", dateKey, "rowId", past.ID, "err", err)
+			continue
+		}
+		if err := s.retentionRepo.Update(past.ID, now, merged); err != nil {
+			slog.Warn("retention: row update failed", "rowId", past.ID, "err", err)
+		}
+	}
+	return nil
+}
+
+// formatDateKey returns the upstream `<year>-<month>-<day>` (no zero
+// padding) using UTC. Misskey TS の AggregateRetentionProcessorService
+// で使う key 形式と一致させ、相互運用性を保つ。
+func formatDateKey(t time.Time) string {
+	y, m, d := t.UTC().Date()
+	return fmt.Sprintf("%d-%d-%d", y, int(m), d)
+}
+
+// mergeDataKey reads the existing JSON object, sets `[key] = value`, and
+// returns the new bytes. Empty / missing input is treated as `{}`.
+func mergeDataKey(raw datatypes.JSON, key string, value int) (datatypes.JSON, error) {
+	m := map[string]int{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+	}
+	m[key] = value
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(out), nil
+}

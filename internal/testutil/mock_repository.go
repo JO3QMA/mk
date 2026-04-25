@@ -244,6 +244,37 @@ func (m *MockUserRepository) CountLocalUsersActiveSince(since time.Time) (int64,
 	return n, nil
 }
 
+// ListLocalUserIDsRegisteredAfter returns the IDs of stored local users
+// whose id is lexicographically greater than `idCursor`.
+func (m *MockUserRepository) ListLocalUserIDsRegisteredAfter(idCursor string) ([]string, error) {
+	out := make([]string, 0, len(m.Users))
+	for _, u := range m.Users {
+		if u.Host != nil {
+			continue
+		}
+		if u.ID > idCursor {
+			out = append(out, u.ID)
+		}
+	}
+	return out, nil
+}
+
+// ListLocalUserIDsActiveSince returns the IDs of stored local users whose
+// LastActiveDate is at or after `since`.
+func (m *MockUserRepository) ListLocalUserIDsActiveSince(since time.Time) ([]string, error) {
+	out := make([]string, 0, len(m.Users))
+	for _, u := range m.Users {
+		if u.Host != nil || u.LastActiveDate == nil {
+			continue
+		}
+		if u.LastActiveDate.Before(since) {
+			continue
+		}
+		out = append(out, u.ID)
+	}
+	return out, nil
+}
+
 // Followings はテスト側で MockUserRepository.Followings[viewerID] に followeeID
 // のリストを入れておくと、ListUserRecommendations から除外される。
 func (m *MockUserRepository) ListUserRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {
