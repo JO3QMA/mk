@@ -1,3 +1,4 @@
+# 既存除外: 開発時の git / 一時 / シークレット / 成果物
 .git
 .tmp
 .env
@@ -6,3 +7,26 @@ built
 files
 node_modules
 *.md
+
+# IDE / editor 設定 (image に焼き込む意味なし)
+.vscode
+.idea
+*.swp
+*.swo
+
+# Coverage / テスト成果物 (CI で生成され、ビルドコンテキストに混ざると無駄)
+coverage*.out
+*.test
+dist
+
+# CI / dev 用 docker compose のオーバーレイ。本体 Dockerfile が参照する
+# tests/federation/common/* は別 compose の COPY 対象なので blanket 除外
+# しない (.dockerignore は全 docker build context 共通)。代わりに
+# compose / GH workflow / 開発用 docs / e2e python テストなど image に
+# 入れる必要が無いものを個別に削る。
+.github
+docs
+tests/dropin
+tests/dropin_frontend
+tests/playwright
+tests/bench

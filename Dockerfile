@@ -1,3 +1,9 @@
+# syntax=docker/dockerfile:1.7
+#
+# `# syntax=` directive は BuildKit の RUN --mount=type=cache を有効に
+# するために必須 (#432)。ローカル `docker build` でも CI (GitHub Actions
+# runner) でも default frontend が 1.5+ になる現代では `1.7` で問題なし。
+
 # Stage 1: Build Go binary
 FROM golang:1.25-alpine AS builder
 
@@ -8,7 +14,10 @@ RUN apk add --no-cache git build-base
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+# go module cache を BuildKit cache mount に乗せると、再ビルド時の
+# `go mod download` が依存に変更が無ければ no-op で済む (#432)。
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 
@@ -25,7 +34,12 @@ RUN test -f third_party/misskey/packages/backend/node_modules/@discordapp/twemoj
     (echo "ERROR: twemoji assets not found (pnpm install not run?)." && \
      echo "Run: make e2e-frontend-build (installs third_party/misskey node_modules)" && exit 1)
 
-RUN go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
+# Go の build cache (`$GOCACHE` = /root/.cache/go-build) と module cache を
+# BuildKit cache mount として永続化する。再ビルド時に変更の無いパッケージは
+# 再コンパイルされずに layer 完成までが秒単位になる (#432)。
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
     go build -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
 # Stage 2: Runtime
