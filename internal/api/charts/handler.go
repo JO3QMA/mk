@@ -58,12 +58,18 @@ func NewHandler(c Charts, clock chart.Clock) *Handler {
 // `Limit` defaults to 30 and is clamped to [1, 500]; `Offset` shifts
 // the window back in time by that many spans (so offset=24 with
 // span=hour returns the chart ending 24 hours ago).
+// Request is the shared shape of chart query parameters.
+//
+// `query` タグは GET 経路で必要 (#421)。Misskey フロントは
+// `misskeyApiGet('charts/...')` で chart を引きに来るため、`json` タグだけ
+// だと query string が bind されずに span="" → INVALID_PARAM になる。
+// POST 経路の挙動を変えないよう既存 `json` タグを残しつつ `query` を追加。
 type Request struct {
-	Span   string `json:"span"`
-	Limit  *int   `json:"limit"`
-	Offset *int   `json:"offset"`
-	UserID string `json:"userId"`
-	Host   string `json:"host"`
+	Span   string `json:"span" query:"span"`
+	Limit  *int   `json:"limit" query:"limit"`
+	Offset *int   `json:"offset" query:"offset"`
+	UserID string `json:"userId" query:"userId"`
+	Host   string `json:"host" query:"host"`
 }
 
 // --- instance-wide endpoints -------------------------------------------------

@@ -301,6 +301,52 @@ func TestUserRepository_ListUsers_Suspended(t *testing.T) {
 	}
 }
 
+// adminOrModerator filter joins role_assignment + role and returns only
+// users with isAdministrator/isModerator role and host IS NULL (#421)。
+// 旧実装は state=adminOrModerator を黙って無視していたので admin/overview
+// の moderator 一覧に観測した全リモートユーザーが流れ込んでいた。
+func TestUserRepository_ListUsers_AdminOrModerator(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	host := "remote.example"
+	mod := insertTestUser(t, "lu_mod", "modlocal")
+	defer cleanupUser(t, mod.ID)
+	plain := insertTestUser(t, "lu_plain", "plainlocal")
+	defer cleanupUser(t, plain.ID)
+	remote := insertTestUser(t, "lu_remote", "remotemod")
+	require.NoError(t, repo.UpdateUser(remote.ID, map[string]any{"host": host}))
+	defer cleanupUser(t, remote.ID)
+
+	// moderator role + assignment
+	now := time.Now()
+	role := &model.Role{
+		ID:              "role_lu_mod",
+		Name:            "test-mod",
+		IsModerator:     true,
+		IsAdministrator: false,
+		UpdatedAt:       now,
+		LastUsedAt:      now,
+	}
+	require.NoError(t, testDB.Create(role).Error)
+	defer testDB.Exec(`DELETE FROM "role" WHERE id = ?`, role.ID)
+
+	// local mod + remote (incorrectly) get the moderator role
+	for _, uid := range []string{mod.ID, remote.ID} {
+		ra := &model.RoleAssignment{ID: "ra_" + uid, UserID: uid, RoleID: role.ID}
+		require.NoError(t, testDB.Create(ra).Error)
+		defer testDB.Exec(`DELETE FROM "role_assignment" WHERE id = ?`, ra.ID)
+	}
+
+	users, err := repo.ListUsers(model.UserListFilter{State: "adminOrModerator", Limit: 100})
+	require.NoError(t, err)
+	ids := make(map[string]struct{}, len(users))
+	for _, u := range users {
+		ids[u.ID] = struct{}{}
+	}
+	assert.Contains(t, ids, mod.ID, "local moderator must be listed")
+	assert.NotContains(t, ids, plain.ID, "non-moderator local user must be excluded")
+	assert.NotContains(t, ids, remote.ID, "remote user must be excluded even if assigned the role")
+}
+
 func TestUserRepository_ListUsers_SortAndPagination(t *testing.T) {
 	repo := NewUserRepository(testDB)
 	u1 := insertTestUser(t, "lu_s1", "sortuser1")

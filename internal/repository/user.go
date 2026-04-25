@@ -203,8 +203,34 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 	switch filter.State {
 	case "suspended":
 		q = q.Where("\"isSuspended\" = true")
-	case "alive":
+	case "alive", "available":
+		// `available` は本家 admin/show-users で `alive` と同義 (suspended で
+		// ない = アクティブ)。`alive` だけ受け付けると admin UI が空返却に
+		// なるので両方カバーする。
 		q = q.Where("\"isSuspended\" = false")
+	case "admin", "moderator", "adminOrModerator":
+		// 本家 RoleService.getModeratorIds と等価な条件を SQL に落とす。
+		// expiresAt が過ぎている assignment は除外、role の
+		// isAdministrator / isModerator フラグで絞る。host は問わない方が
+		// 上位表示で柔軟だが、admin/overview の moderator カードはローカル
+		// だけを期待するので host IS NULL も付ける (#421)。
+		var roleCond string
+		switch filter.State {
+		case "admin":
+			roleCond = `r."isAdministrator" = true`
+		case "moderator":
+			roleCond = `r."isModerator" = true`
+		default: // adminOrModerator
+			roleCond = `(r."isAdministrator" = true OR r."isModerator" = true)`
+		}
+		q = q.Where("host IS NULL").Where(`
+			id IN (
+				SELECT ra."userId" FROM role_assignment ra
+				JOIN role r ON ra."roleId" = r.id
+				WHERE ` + roleCond + `
+				  AND (ra."expiresAt" IS NULL OR ra."expiresAt" > now())
+			)
+		`)
 	}
 
 	switch filter.Sort {
@@ -216,6 +242,15 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 		q = q.Order("\"updatedAt\" ASC NULLS LAST")
 	case "-updatedAt":
 		q = q.Order("\"updatedAt\" DESC NULLS LAST")
+	case "+lastActiveDate", "-lastActiveDate":
+		// 本家 admin/show-users が moderator 一覧に使う sort key (#421)。
+		// NULLS は最後に固定して accidental ASC で空アクティビティ user が
+		// 先頭に来ないようにする。
+		dir := "DESC"
+		if filter.Sort == "+lastActiveDate" {
+			dir = "ASC"
+		}
+		q = q.Order(`"lastActiveDate" ` + dir + ` NULLS LAST`)
 	case "+followersCount":
 		q = q.Order("\"followersCount\" ASC")
 	case "-followersCount":
