@@ -77,6 +77,13 @@ func (s *Service) Aggregate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// nil のままだと pq.StringArray.Value が NULL を返し、`userIds` カラムに
+	// SQL NULL が入る。entity 層 / API JSON で `null` が露出すると Misskey
+	// 互換の `[]` 表現が崩れて frontend heatmap 描画が壊れるので、empty な
+	// 場合は明示的に non-nil の空 slice にしておく。
+	if newIDs == nil {
+		newIDs = []string{}
+	}
 
 	// 2. Insert today's row. Duplicate dateKey -> already processed elsewhere.
 	row := &model.RetentionAggregation{

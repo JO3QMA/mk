@@ -133,6 +133,29 @@ func (s *stubRetentionRepo) Update(id string, updatedAt time.Time, data datatype
 
 // --- tests ---
 
+// 新規登録がゼロの日でも UserIDs カラムに SQL NULL を書かず空配列で
+// 正規化されることを確認する。pq.StringArray(nil) は NULL を生成し、
+// API JSON で `userIds: null` が露出して Misskey 互換が崩れる。
+func TestService_Aggregate_EmptyRegisteredYieldsEmptyArrayNotNull(t *testing.T) {
+	now := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	users := &stubUserRepo{registered: nil} // 0 user 登録の日
+	retentions := newStubRetentionRepo()
+
+	svc := NewService(users, retentions, idGen)
+	svc.SetClock(func() time.Time { return now })
+
+	require.NoError(t, svc.Aggregate(context.Background()))
+
+	row := retentions.rows["2026-4-25"]
+	require.NotNil(t, row)
+	assert.Equal(t, 0, row.UsersCount)
+	assert.NotNil(t, row.UserIDs, "UserIDs must be a non-nil empty slice, never nil")
+	assert.Equal(t, pq.StringArray{}, row.UserIDs)
+}
+
 func TestService_Aggregate_InsertsTodayRow(t *testing.T) {
 	now := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
 	idGen, err := id.NewGenerator("aidx")
