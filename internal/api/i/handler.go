@@ -73,6 +73,13 @@ type Handler struct {
 	instanceRepo        repository.InstanceRepository
 	emojiRepo           repository.EmojiRepository
 	mainStreamPublisher MainStreamPublisher
+	fieldRes            *entity.NoteFieldResolver
+}
+
+// SetNoteFieldResolver wires the shared resolver that fills Files /
+// MyReaction / Channel on packed pinned notes (#426)。
+func (h *Handler) SetNoteFieldResolver(r *entity.NoteFieldResolver) {
+	h.fieldRes = r
 }
 
 // MainStreamPublisher emits events to a single user's `main` WebSocket
@@ -874,6 +881,9 @@ func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, re
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
 					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+					// /api/i は認証された自身を返す path なので u 自身を viewer
+					// として渡し、pinned note の myReaction も含めて埋める (#426)。
+					h.fieldRes.Apply(entities, u)
 					packed := make([]any, 0, len(entities))
 					for _, pn := range entities {
 						packed = append(packed, pn)

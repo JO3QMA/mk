@@ -20,7 +20,7 @@ func TestResolveFiles_NilRepo(t *testing.T) {
 	notes := []entity.NoteEntity{
 		{FileIDs: pq.StringArray{"f1"}},
 	}
-	h.resolveFiles(notes)
+	h.fieldResolver().ResolveFiles(notes)
 	// driveFileRepo 未設定なので Files は埋まらない
 	assert.Nil(t, notes[0].Files)
 }
@@ -31,7 +31,7 @@ func TestResolveFiles_NoFileIDs(t *testing.T) {
 	notes := []entity.NoteEntity{
 		{FileIDs: pq.StringArray{}},
 	}
-	h.resolveFiles(notes)
+	h.fieldResolver().ResolveFiles(notes)
 	assert.Nil(t, notes[0].Files)
 }
 
@@ -47,7 +47,7 @@ func TestResolveFiles_Populates(t *testing.T) {
 		{FileIDs: pq.StringArray{"f1", "f2"}},
 		{FileIDs: pq.StringArray{"f1"}},
 	}
-	h.resolveFiles(notes)
+	h.fieldResolver().ResolveFiles(notes)
 
 	// 1 本目は 2 ファイルパックされているはず
 	require := assert.New(t)
@@ -70,7 +70,7 @@ func TestResolveFiles_EmbeddedRenoteAndReply(t *testing.T) {
 		Renote:  &entity.NoteEntity{FileIDs: pq.StringArray{"f2"}},
 		Reply:   &entity.NoteEntity{FileIDs: pq.StringArray{"f3"}},
 	}}
-	h.resolveFiles(notes)
+	h.fieldResolver().ResolveFiles(notes)
 
 	assert.Len(t, notes[0].Files, 1)
 	assert.Len(t, notes[0].Renote.Files, 1)
@@ -89,7 +89,7 @@ func TestResolveFiles_EmbeddedRenoteOnly(t *testing.T) {
 	notes := []entity.NoteEntity{{
 		Renote: &entity.NoteEntity{FileIDs: pq.StringArray{"f2"}},
 	}}
-	h.resolveFiles(notes)
+	h.fieldResolver().ResolveFiles(notes)
 	assert.Len(t, notes[0].Renote.Files, 1)
 }
 
@@ -104,6 +104,6 @@ func TestResolveFiles_UnknownFileIDsIgnored(t *testing.T) {
 	notes := []entity.NoteEntity{
 		{FileIDs: pq.StringArray{"f1", "missing"}},
 	}
-	h.resolveFiles(notes)
+	h.fieldResolver().ResolveFiles(notes)
 	assert.Len(t, notes[0].Files, 1)
 }

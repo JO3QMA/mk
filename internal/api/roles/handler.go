@@ -10,6 +10,7 @@ import (
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // RoleNotesQuery provides a way to fetch notes by role.
@@ -24,6 +25,13 @@ type Handler struct {
 	idGen        id.Generator
 	instanceRepo repository.InstanceRepository
 	emojiRepo    repository.EmojiRepository
+	fieldRes     *entity.NoteFieldResolver
+}
+
+// SetNoteFieldResolver wires the shared resolver that fills Files /
+// MyReaction / Channel on packed notes (#426)。
+func (h *Handler) SetNoteFieldResolver(r *entity.NoteFieldResolver) {
+	h.fieldRes = r
 }
 
 // NewHandler creates a new roles Handler. idGen is required for note packing
@@ -147,7 +155,9 @@ func (h *Handler) Notes(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
+	viewer := middleware.GetUser(c)
 	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	h.fieldRes.Apply(entities, viewer)
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
 		out = append(out, pn)

@@ -865,6 +865,11 @@ func (s *Server) setupRoutes() {
 	api.POST("/emoji", emojisHandler.Emoji)
 	api.GET("/emoji", emojisHandler.Emoji)
 
+	// 7+ handlers across api/* pack notes via entity.PackNotes. Files /
+	// MyReaction / Channel の post-pack 解決は notes 以外でも必要 (#426)。
+	// 共通 resolver を 1 つだけ作って全 handler に注入する。
+	noteFieldResolver := entity.NewNoteFieldResolver(driveFileRepo, driveFolderRepo, userRepo, reactionRepo, channelRepo, idGen)
+
 	// Notes endpoints
 	notesHandler := notes.NewHandler(noteRepo, noteCreateService, noteDeleteService, noteQueryService, timelineService, reactionService, pollService, searchService, idGen)
 	notesHandler.SetDriveFileRepo(driveFileRepo)
@@ -939,6 +944,7 @@ func (s *Server) setupRoutes() {
 	usersHandler.SetFlashRepo(flashRepo)
 	usersHandler.SetGalleryRepo(repository.NewGalleryRepository(s.db))
 	usersHandler.SetPageRepo(pageRepo)
+	usersHandler.SetNoteFieldResolver(noteFieldResolver)
 	api.POST("/users/show", usersHandler.Show)
 	api.POST("/users/search", usersHandler.Search)
 	api.POST("/users/notes", usersHandler.Notes)
@@ -1028,6 +1034,7 @@ func (s *Server) setupRoutes() {
 	iHandler.SetPageRepo(pageRepo)
 	iHandler.SetInstanceRepo(instanceRepo)
 	iHandler.SetEmojiRepo(emojiRepo)
+	iHandler.SetNoteFieldResolver(noteFieldResolver)
 	// announcementRepoは後続で構築されるため SetupAdditional() 相当の順序依存があるが、
 	// 現状 announcementRepo := ... の行がここより後にあるため下で wire する。
 
@@ -1165,6 +1172,7 @@ func (s *Server) setupRoutes() {
 	driveHandler.SetUserRepo(userRepo)
 	driveHandler.SetInstanceRepo(instanceRepo)
 	driveHandler.SetEmojiRepo(emojiRepo)
+	driveHandler.SetNoteFieldResolver(noteFieldResolver)
 	api.POST("/drive", driveHandler.Usage, middleware.RequireAuth())
 	api.POST("/drive/files", driveHandler.FilesList, middleware.RequireAuth())
 	api.POST("/drive/files/create", driveHandler.FilesCreate, middleware.RequireAuth())
@@ -1280,11 +1288,13 @@ func (s *Server) setupRoutes() {
 	api.POST("/channels/timeline", channelsHandler.Timeline)
 	channelsHandler.SetInstanceRepo(instanceRepo)
 	channelsHandler.SetEmojiRepo(emojiRepo)
+	channelsHandler.SetNoteFieldResolver(noteFieldResolver)
 
 	// Antennas endpoints (Phase 4.3)
 	antennasHandler := antennas.NewHandler(antennaService, noteRepo, idGen)
 	antennasHandler.SetInstanceRepo(instanceRepo)
 	antennasHandler.SetEmojiRepo(emojiRepo)
+	antennasHandler.SetNoteFieldResolver(noteFieldResolver)
 	api.POST("/antennas/create", antennasHandler.Create, middleware.RequireAuth())
 	api.POST("/antennas/show", antennasHandler.Show, middleware.RequireAuth())
 	api.POST("/antennas/update", antennasHandler.Update, middleware.RequireAuth())
@@ -1297,6 +1307,7 @@ func (s *Server) setupRoutes() {
 	clipsHandler.SetFavoriteRepo(clipFavoriteRepo)
 	clipsHandler.SetInstanceRepo(instanceRepo)
 	clipsHandler.SetEmojiRepo(emojiRepo)
+	clipsHandler.SetNoteFieldResolver(noteFieldResolver)
 	api.POST("/clips/create", clipsHandler.Create, middleware.RequireAuth())
 	api.POST("/clips/show", clipsHandler.Show)
 	api.POST("/clips/update", clipsHandler.Update, middleware.RequireAuth())
@@ -1481,6 +1492,7 @@ func (s *Server) setupRoutes() {
 	rolesHandler.SetNotesQuery(repository.NewRoleNotesQuery(s.db))
 	rolesHandler.SetInstanceRepo(instanceRepo)
 	rolesHandler.SetEmojiRepo(emojiRepo)
+	rolesHandler.SetNoteFieldResolver(noteFieldResolver)
 	api.POST("/roles/list", rolesHandler.List)
 	api.POST("/roles/show", rolesHandler.Show)
 	api.POST("/roles/users", rolesHandler.Users)
