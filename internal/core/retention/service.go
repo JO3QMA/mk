@@ -68,6 +68,10 @@ func (s *Service) Aggregate(ctx context.Context) error {
 
 	// 1. Today's new local user IDs (registered within the last 24 hours).
 	cutoff := now.Add(-dailyWindow)
+	// idGen.Generate(cutoff) は cutoff のミリ秒タイムスタンプ + nodeID +
+	// counter サフィックスから合成 ID を作る。本物のユーザー ID とサフィックス
+	// 比較が一致する保証は無いので、ちょうど cutoff ミリ秒に登録されたユーザー
+	// が ±1 件ぶれる可能性がある。24h 集計では誤差は無視できるレベル。
 	cursorID := s.idGen.Generate(cutoff)
 	newIDs, err := s.userRepo.ListLocalUserIDsRegisteredAfter(cursorID)
 	if err != nil {

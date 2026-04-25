@@ -28,12 +28,14 @@ func TestRetentionAggregateProcessor_Handle_Success(t *testing.T) {
 	assert.Equal(t, 1, agg.called)
 }
 
-func TestRetentionAggregateProcessor_Handle_PropagatesError(t *testing.T) {
+// 失敗時も nil を返してジョブとしては success 扱いにする契約を確認する。
+// MaxRetry(0) と組み合わさって dead queue を膨らませない方針 (#421)。
+func TestRetentionAggregateProcessor_Handle_SwallowsError(t *testing.T) {
 	wantErr := errors.New("db boom")
 	agg := &stubAggregator{err: wantErr}
 	p := processors.NewRetentionAggregateProcessor(agg)
 	err := p.Handle(context.Background(), asynq.NewTask("x", nil))
-	assert.ErrorIs(t, err, wantErr, "asynq stats should reflect the underlying failure")
+	assert.NoError(t, err, "aggregation failures must not surface as job errors")
 	assert.Equal(t, 1, agg.called)
 }
 

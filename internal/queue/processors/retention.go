@@ -32,8 +32,12 @@ func (p *RetentionAggregateProcessor) Handle(ctx context.Context, _ *asynq.Task)
 		return nil
 	}
 	if err := p.svc.Aggregate(ctx); err != nil {
+		// 失敗時も nil を返してジョブを success 扱いにする。MaxRetry(0) で
+		// asynq に retry させない方針なので err を返すと dead queue が肥大
+		// するだけで利点が無い。次回 cron (翌日 0:00 UTC) を待てば自然に
+		// 再アグリゲートされる。
 		slog.Warn("retention aggregate: failed", "err", err)
-		return err
+		return nil
 	}
 	slog.Info("retention aggregate: done")
 	return nil
