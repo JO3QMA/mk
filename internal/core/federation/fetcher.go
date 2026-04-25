@@ -48,7 +48,15 @@ func (f *APFetcher) SetSigner(s SignerProvider) {
 func (f *APFetcher) FetchObject(uri string) ([]byte, error) {
 	if f.signer != nil {
 		key, err := f.signer.Signer()
-		if err == nil && key != nil {
+		switch {
+		case err != nil:
+			// signer が unavailable な場合の degradation がログ無しで隠れて
+			// しまうのを避ける (#419 Devin review)。事象自体の Warn ログは
+			// signer 実装側で出すので、ここでは per-fetch の Debug にとどめ
+			// て log spam を抑える。
+			slog.Debug("ap fetcher: signer unavailable, falling back to unsigned",
+				"uri", uri, "err", err)
+		case key != nil:
 			body, ferr := f.client.FetchJSON(uri, key)
 			if ferr == nil {
 				return body, nil

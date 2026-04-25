@@ -2138,19 +2138,26 @@ func (a *notifReaderAdapter) ReadAll(userID string) error {
 // outgoing GETs with the instance.actor system account (#419)。
 //
 // 初回 Signer() で systemaccount.Fetch + keypair lookup + RSA PEM parse を
-// やってから、結果 (parse 済みの *PrivateKey) を sync.Once 経由でキャッシュ
-// する。instance.actor は process lifetime 中に変わらない前提なので無期限
-// に握ってよい。再起動で再ロードされる。lazy 解決により起動順序
-// (apFetcher 構築 < sysAcctSvc 構築) の制約を緩めている。
+// やってから、結果 (parse 済みの *PrivateKey) を mutex 配下にキャッシュする。
+// 一度成功した key は process lifetime 中に変わらない前提で無期限保持し、
+// 再起動で再ロードされる。
+//
+// 失敗側はキャッシュしない: transient な DB glitch で起動直後に load が
+// コケた時、その後ずっと unsigned-only に張り付くことを避けるため、失敗
+// を `signerLoadBackoff` だけ抑制してから再試行する (#419 Devin review)。
 type instanceActorSigner struct {
 	sysAcct *coresystemaccount.Service
 	keypair repository.UserKeypairRepository
 	urls    *activitypub.URLBuilder
 
-	once sync.Once
-	key  *activitypub.PrivateKey
-	err  error
+	mu          sync.Mutex
+	cachedKey   *activitypub.PrivateKey
+	lastFailure time.Time
 }
+
+// signerLoadBackoff は load() 失敗後の再試行抑制間隔。DB が一時的に死んだ
+// 時に Signer() の per-fetch で同じクエリを叩き続けないようにする。
+const signerLoadBackoff = 30 * time.Second
 
 func newInstanceActorSigner(
 	svc *coresystemaccount.Service,
@@ -2163,28 +2170,46 @@ func newInstanceActorSigner(
 // Signer returns the parsed instance.actor PrivateKey. corefederation.ErrNoSigner
 // を返した場合 APFetcher は unsigned-only モードで継続する。
 func (s *instanceActorSigner) Signer() (*activitypub.PrivateKey, error) {
-	s.once.Do(s.load)
-	if s.err != nil {
-		return nil, s.err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cachedKey != nil {
+		return s.cachedKey, nil
 	}
-	return s.key, nil
+	if !s.lastFailure.IsZero() && time.Since(s.lastFailure) < signerLoadBackoff {
+		// 直近の失敗から十分時間が経っていない → DB spam 抑制で
+		// 即 ErrNoSigner を返す。
+		return nil, corefederation.ErrNoSigner
+	}
+	key, err := s.loadLocked()
+	if err != nil {
+		s.lastFailure = time.Now()
+		return nil, corefederation.ErrNoSigner
+	}
+	s.cachedKey = key
+	s.lastFailure = time.Time{}
+	return key, nil
 }
 
-func (s *instanceActorSigner) load() {
+// loadLocked performs the actual systemaccount + keypair + PEM parse. mu を
+// 既に保持している前提。
+func (s *instanceActorSigner) loadLocked() (*activitypub.PrivateKey, error) {
 	user, err := s.sysAcct.Fetch("instance")
 	if err != nil || user == nil {
-		s.err = corefederation.ErrNoSigner
-		return
+		slog.Warn("instance.actor signer: system account fetch failed; AP fetches will fall back to unsigned",
+			"err", err)
+		return nil, corefederation.ErrNoSigner
 	}
 	kp, err := s.keypair.FindByUserID(user.ID)
 	if err != nil || kp == nil || kp.PrivateKey == "" {
-		s.err = corefederation.ErrNoSigner
-		return
+		slog.Warn("instance.actor signer: keypair lookup failed; AP fetches will fall back to unsigned",
+			"userId", user.ID, "err", err)
+		return nil, corefederation.ErrNoSigner
 	}
 	key, err := activitypub.NewPrivateKey(s.urls.UserKeyURI(user.ID), kp.PrivateKey)
 	if err != nil {
-		s.err = corefederation.ErrNoSigner
-		return
+		slog.Warn("instance.actor signer: PEM parse failed; AP fetches will fall back to unsigned",
+			"userId", user.ID, "err", err)
+		return nil, corefederation.ErrNoSigner
 	}
-	s.key = key
+	return key, nil
 }
