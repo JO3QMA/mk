@@ -48,6 +48,12 @@ func (m *mockUserRepo) ListRemoteInboxes() ([]string, error)                  { 
 func (m *mockUserRepo) CountOnlineUsers() (int64, error)                      { return 0, nil }
 func (m *mockUserRepo) CountLocalUsers() (int64, error)                       { return 0, nil }
 func (m *mockUserRepo) CountLocalUsersActiveSince(time.Time) (int64, error)   { return 0, nil }
+func (m *mockUserRepo) ListLocalUserIDsRegisteredAfter(string) ([]string, error) {
+	return nil, nil
+}
+func (m *mockUserRepo) ListLocalUserIDsActiveSince(time.Time) ([]string, error) {
+	return nil, nil
+}
 func (m *mockUserRepo) ListUserRecommendations(string, time.Time, int, int) ([]*model.User, error) {
 	return nil, nil
 }

@@ -74,6 +74,19 @@ func (s *Scheduler) RegisterInstanceRefreshJob() error {
 	return err
 }
 
+// RegisterRetentionJob registers the daily retention aggregation cron
+// (#421) at 00:00 UTC. The actual computation is implemented by
+// processors.RetentionAggregateProcessor.
+func (s *Scheduler) RegisterRetentionJob() error {
+	task := asynq.NewTask(TaskTypeRetentionAggregate, nil)
+	_, err := s.inner.Register("0 0 * * *", task,
+		asynq.Queue(MaintenanceQueueName),
+		asynq.MaxRetry(0),
+		asynq.Unique(24*time.Hour),
+	)
+	return err
+}
+
 // Start launches the scheduler in the background. Returns immediately.
 func (s *Scheduler) Start() error {
 	return s.inner.Start()

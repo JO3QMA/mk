@@ -84,6 +84,7 @@ import (
 	corepoll "github.com/shiroha-a/mk/internal/core/poll"
 	corereaction "github.com/shiroha-a/mk/internal/core/reaction"
 	corerelay "github.com/shiroha-a/mk/internal/core/relay"
+	coreretention "github.com/shiroha-a/mk/internal/core/retention"
 	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
 	corerole "github.com/shiroha-a/mk/internal/core/role"
 	coresearch "github.com/shiroha-a/mk/internal/core/search"
@@ -593,6 +594,26 @@ func (s *Server) setupRoutes() {
 	// coreinstance.FetchMetadataService を流用する。
 	instanceRefreshProc := processors.NewInstanceRefreshProcessor(instanceRepo, metadataFetcher, processors.InstanceRefreshConfig{})
 	s.queueServer.Handle(queue.TaskTypeInstanceRefresh, instanceRefreshProc.Handle)
+
+	// Daily retention aggregation (#421)。
+	// 本家 AggregateRetentionProcessorService と同等で、retention_aggregation
+	// テーブルに 1 日 1 行 cohort を追加し、過去 31 日分の data フィールドを
+	// 更新する。/api/retention と admin overview の「定着率」heatmap が読む。
+	retentionSvc := coreretention.NewService(userRepo, retentionRepo, idGen)
+	retentionProc := processors.NewRetentionAggregateProcessor(retentionSvc)
+	s.queueServer.Handle(queue.TaskTypeRetentionAggregate, retentionProc.Handle)
+
+	// 起動時にも 1 回 aggregation を発火する。cron (0 0 * * * UTC) を待つと
+	// 新規デプロイ後最大 24h は heatmap が空のままになるので、その日の
+	// cohort 行を即座に作って描画を始められるようにする (#421)。同じ
+	// dateKey で 2 回目を Insert しても repository.ErrDuplicateKey で
+	// silently 吸収されるので idempotent。DB 書き込みを startup hot path に
+	// 乗せないよう goroutine で実行する。
+	go func() {
+		if err := retentionSvc.Aggregate(context.Background()); err != nil {
+			slog.Warn("retention aggregate at startup failed", "err", err)
+		}
+	}()
 
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {

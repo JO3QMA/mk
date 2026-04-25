@@ -60,6 +60,13 @@ const TaskTypeDeleteAccount = "maintenance:deleteAccount"
 // `processors.InstanceRefreshProcessor`.
 const TaskTypeInstanceRefresh = "maintenance:instanceRefresh"
 
+// TaskTypeRetentionAggregate is the asynq task type for the daily
+// retention aggregation (#421). Registered by
+// `Scheduler.RegisterRetentionJob` at `0 0 * * *` UTC and handled by
+// `processors.RetentionAggregateProcessor`. Mirrors upstream
+// AggregateRetentionProcessorService.
+const TaskTypeRetentionAggregate = "maintenance:retentionAggregate"
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {

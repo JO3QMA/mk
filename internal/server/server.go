@@ -134,6 +134,9 @@ func (s *Server) Start() error {
 		if err := s.queueScheduler.RegisterInstanceRefreshJob(); err != nil {
 			slog.Warn("instance refresh scheduler register failed", "err", err)
 		}
+		if err := s.queueScheduler.RegisterRetentionJob(); err != nil {
+			slog.Warn("retention scheduler register failed", "err", err)
+		}
 		if err := s.queueScheduler.Start(); err != nil {
 			slog.Warn("scheduler start failed", "err", err)
 		}
