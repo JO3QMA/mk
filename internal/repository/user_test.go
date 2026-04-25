@@ -347,6 +347,57 @@ func TestUserRepository_ListUsers_AdminOrModerator(t *testing.T) {
 	assert.NotContains(t, ids, remote.ID, "remote user must be excluded even if assigned the role")
 }
 
+// admin / adminOrModerator フィルタは meta.rootUserId を暗黙の admin として
+// 含める必要がある。本家 RoleService.getModeratorIds の rootUserIds union と
+// 同じ挙動で、これが無いと「初期 root のみ」のインスタンスでは moderator
+// カードが空になる (#421 Devin review)。
+func TestUserRepository_ListUsers_AdminIncludesRootUser(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	root := insertTestUser(t, "lu_root", "rootuser")
+	defer cleanupUser(t, root.ID)
+	other := insertTestUser(t, "lu_other", "otheruser")
+	defer cleanupUser(t, other.ID)
+
+	// root を meta.rootUserId に設定する。テスト終了時に元の値へ戻す。
+	// migration には meta シードが無いので、行が無ければ INSERT でブート
+	// ストラップする。
+	var rowCount int64
+	require.NoError(t, testDB.Raw(`SELECT COUNT(*) FROM meta`).Scan(&rowCount).Error)
+	if rowCount == 0 {
+		require.NoError(t, testDB.Exec(`INSERT INTO meta (id, "rootUserId") VALUES ('x', ?)`, root.ID).Error)
+		t.Cleanup(func() { testDB.Exec(`DELETE FROM meta WHERE id = 'x'`) })
+	} else {
+		var prev *string
+		require.NoError(t, testDB.Raw(`SELECT "rootUserId" FROM meta LIMIT 1`).Scan(&prev).Error)
+		require.NoError(t, testDB.Exec(`UPDATE meta SET "rootUserId" = ?`, root.ID).Error)
+		t.Cleanup(func() {
+			if prev != nil {
+				testDB.Exec(`UPDATE meta SET "rootUserId" = ?`, *prev)
+			} else {
+				testDB.Exec(`UPDATE meta SET "rootUserId" = NULL`)
+			}
+		})
+	}
+
+	for _, state := range []string{"admin", "adminOrModerator"} {
+		users, err := repo.ListUsers(model.UserListFilter{State: state, Limit: 100})
+		require.NoError(t, err)
+		ids := make(map[string]struct{}, len(users))
+		for _, u := range users {
+			ids[u.ID] = struct{}{}
+		}
+		assert.Contains(t, ids, root.ID, "root user must be in state=%s results", state)
+		assert.NotContains(t, ids, other.ID, "non-admin local user must not be in state=%s results", state)
+	}
+
+	// pure moderator フィルタは root (admin) を含まない。
+	users, err := repo.ListUsers(model.UserListFilter{State: "moderator", Limit: 100})
+	require.NoError(t, err)
+	for _, u := range users {
+		assert.NotEqual(t, root.ID, u.ID, "root must NOT be in state=moderator (admin-only)")
+	}
+}
+
 func TestUserRepository_ListUsers_SortAndPagination(t *testing.T) {
 	repo := NewUserRepository(testDB)
 	u1 := insertTestUser(t, "lu_s1", "sortuser1")

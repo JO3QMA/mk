@@ -214,23 +214,33 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 		// isAdministrator / isModerator フラグで絞る。host は問わない方が
 		// 上位表示で柔軟だが、admin/overview の moderator カードはローカル
 		// だけを期待するので host IS NULL も付ける (#421)。
+		//
+		// root user (meta.rootUserId) は role_assignment 行を持たない
+		// 暗黙の administrator なので admin / adminOrModerator では OR 条件
+		// で必ず含める。本家 getModeratorIds の rootUserIds union と同じ
+		// (#421 Devin review)。pure moderator フィルタは root を含まない。
 		var roleCond string
+		includeRoot := false
 		switch filter.State {
 		case "admin":
 			roleCond = `r."isAdministrator" = true`
+			includeRoot = true
 		case "moderator":
 			roleCond = `r."isModerator" = true`
 		default: // adminOrModerator
 			roleCond = `(r."isAdministrator" = true OR r."isModerator" = true)`
+			includeRoot = true
 		}
-		q = q.Where("host IS NULL").Where(`
-			id IN (
-				SELECT ra."userId" FROM role_assignment ra
-				JOIN role r ON ra."roleId" = r.id
-				WHERE ` + roleCond + `
-				  AND (ra."expiresAt" IS NULL OR ra."expiresAt" > now())
-			)
-		`)
+		idCond := `id IN (
+			SELECT ra."userId" FROM role_assignment ra
+			JOIN role r ON ra."roleId" = r.id
+			WHERE ` + roleCond + `
+			  AND (ra."expiresAt" IS NULL OR ra."expiresAt" > now())
+		)`
+		if includeRoot {
+			idCond = "(" + idCond + ` OR id = (SELECT "rootUserId" FROM meta WHERE "rootUserId" IS NOT NULL LIMIT 1))`
+		}
+		q = q.Where("host IS NULL").Where(idCond)
 	}
 
 	switch filter.Sort {
