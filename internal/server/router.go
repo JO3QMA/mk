@@ -2172,6 +2172,8 @@ func newInstanceActorSigner(
 //
 // double-checked locking で hot path (cache hit) を read-lock のみにし、
 // 同時 fetch が DB query 待ちで直列化しないようにする (#419 Devin review)。
+// slog.Warn は lock 解除後に呼んで、log handler が遅い時に他の goroutine を
+// 詰まらせない (#419 Devin review)。
 func (s *instanceActorSigner) Signer() (*activitypub.PrivateKey, error) {
 	// Fast path: 既に load 済みなら read-lock だけで返す
 	s.mu.RLock()
@@ -2182,48 +2184,64 @@ func (s *instanceActorSigner) Signer() (*activitypub.PrivateKey, error) {
 	s.mu.RUnlock()
 
 	// Slow path: load を試みる
+	var (
+		loaded  *activitypub.PrivateKey
+		loadLog func() // nil 以外なら lock 解除後に呼ぶ Warn ログ
+	)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	// double-check: lock 取得待ちの間に他 goroutine が load を成功させた
-	// 可能性
-	if s.cachedKey != nil {
-		return s.cachedKey, nil
+	switch {
+	case s.cachedKey != nil:
+		// double-check: lock 取得待ちの間に他 goroutine が load を成功させた
+		loaded = s.cachedKey
+	case !s.lastFailure.IsZero() && time.Since(s.lastFailure) < signerLoadBackoff:
+		// 直近の失敗から十分時間が経っていない → DB spam 抑制で skip
+	default:
+		key, logFn := s.loadLocked()
+		loadLog = logFn
+		if key != nil {
+			s.cachedKey = key
+			s.lastFailure = time.Time{}
+			loaded = key
+		} else {
+			s.lastFailure = time.Now()
+		}
 	}
-	if !s.lastFailure.IsZero() && time.Since(s.lastFailure) < signerLoadBackoff {
-		// 直近の失敗から十分時間が経っていない → DB spam 抑制で
-		// 即 ErrNoSigner を返す。
-		return nil, corefederation.ErrNoSigner
+	s.mu.Unlock()
+
+	if loadLog != nil {
+		loadLog()
 	}
-	key, err := s.loadLocked()
-	if err != nil {
-		s.lastFailure = time.Now()
-		return nil, corefederation.ErrNoSigner
+	if loaded != nil {
+		return loaded, nil
 	}
-	s.cachedKey = key
-	s.lastFailure = time.Time{}
-	return key, nil
+	return nil, corefederation.ErrNoSigner
 }
 
 // loadLocked performs the actual systemaccount + keypair + PEM parse. mu を
-// 既に保持している前提。
-func (s *instanceActorSigner) loadLocked() (*activitypub.PrivateKey, error) {
+// 既に保持している前提。Warn ログ呼び出しは caller (Signer) が lock 解除後
+// に走らせるよう関数値で返す (sync 化されたログハンドラ呼び出しが他の
+// goroutine をブロックしないため, #419 Devin review)。
+func (s *instanceActorSigner) loadLocked() (*activitypub.PrivateKey, func()) {
 	user, err := s.sysAcct.Fetch("instance")
 	if err != nil || user == nil {
-		slog.Warn("instance.actor signer: system account fetch failed; AP fetches will fall back to unsigned",
-			"err", err)
-		return nil, corefederation.ErrNoSigner
+		return nil, func() {
+			slog.Warn("instance.actor signer: system account fetch failed; AP fetches will fall back to unsigned",
+				"err", err)
+		}
 	}
 	kp, err := s.keypair.FindByUserID(user.ID)
 	if err != nil || kp == nil || kp.PrivateKey == "" {
-		slog.Warn("instance.actor signer: keypair lookup failed; AP fetches will fall back to unsigned",
-			"userId", user.ID, "err", err)
-		return nil, corefederation.ErrNoSigner
+		return nil, func() {
+			slog.Warn("instance.actor signer: keypair lookup failed; AP fetches will fall back to unsigned",
+				"userId", user.ID, "err", err)
+		}
 	}
 	key, err := activitypub.NewPrivateKey(s.urls.UserKeyURI(user.ID), kp.PrivateKey)
 	if err != nil {
-		slog.Warn("instance.actor signer: PEM parse failed; AP fetches will fall back to unsigned",
-			"userId", user.ID, "err", err)
-		return nil, corefederation.ErrNoSigner
+		return nil, func() {
+			slog.Warn("instance.actor signer: PEM parse failed; AP fetches will fall back to unsigned",
+				"userId", user.ID, "err", err)
+		}
 	}
 	return key, nil
 }
