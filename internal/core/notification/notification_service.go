@@ -103,6 +103,14 @@ type Packer interface {
 	Pack(n *Notification) any
 }
 
+// unreadPublishDelay は Notification 永続化から `unreadNotification` を main
+// stream に流すまでの待機時間。本家 TS の 2 秒 setTimeout と同じで、その間
+// に MarkAllAsRead が呼ばれた (= ユーザーが既読化した) 場合は publish を
+// skip し、不要な badge flicker (badge++ → 直後に readAllNotifications で
+// 0) を回避する (#420 follow-up)。テストでは SetUnreadPublishDelay(0) で
+// 同期化する。
+const defaultUnreadPublishDelay = 2 * time.Second
+
 // Service manages notifications.
 type Service struct {
 	client              *redis.Client
@@ -112,6 +120,7 @@ type Service struct {
 	mainStreamPublisher MainStreamPublisher
 	packer              Packer
 	noteUnreadRepo      repository.NoteUnreadRepository
+	unreadPublishDelay  time.Duration
 }
 
 // NewService constructs a new NotificationService.
@@ -120,7 +129,19 @@ type Service struct {
 // 名前空間 (`<host>:notificationTimeline:*`, `<host>:latestReadNotification:*`)
 // を使うために全 Redis キーの前に付与される。空文字列ならprefix無し。
 func NewService(client *redis.Client, idGen id.Generator, keyPrefix string) *Service {
-	return &Service{client: client, idGen: idGen, keyPrefix: keyPrefix}
+	return &Service{
+		client:             client,
+		idGen:              idGen,
+		keyPrefix:          keyPrefix,
+		unreadPublishDelay: defaultUnreadPublishDelay,
+	}
+}
+
+// SetUnreadPublishDelay overrides the delay between Notification persistence
+// and `unreadNotification` publish. 0 makes the publish synchronous (used by
+// tests so they don't have to wait for time.AfterFunc to fire).
+func (s *Service) SetUnreadPublishDelay(d time.Duration) {
+	s.unreadPublishDelay = d
 }
 
 // SetStreamingPublisher attaches a StreamingPublisher invoked best-effort
@@ -212,13 +233,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Notification, er
 			s.publisher.PublishNotification(in.NotifieeID, n)
 		}
 	}
-	// TS本家 NotificationService は 2 秒遅延で `unreadNotification` を
-	// main stream に publish して、その間に既読になれば送信しない。本実装
-	// では Redis publish が軽量なため即時 emit し、未読判定のみクライアント
-	// 側に任せる (UI の flicker は許容)。
-	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(in.NotifieeID, "unreadNotification", packed)
-	}
+	// 本家 TS NotificationService 互換: 2 秒遅延後に既読位置を再チェックし、
+	// その間に MarkAllAsRead が走っていなければ unreadNotification を main
+	// stream に publish する (#420 follow-up)。即時 publish だと
+	// notifications-grouped 等の冗長 fetch が発火する readAllNotifications と
+	// race して badge が一瞬付いて消える挙動になっていた。比較対象は
+	// `latestReadNotification` Redis key の値で、これは MarkAllAsRead が
+	// `XRevRangeN(...)[0].ID` (= streamID) を書き込むので、比較も streamID
+	// 形式で行う必要がある。
+	s.scheduleUnreadPublish(in.NotifieeID, streamID, packed)
 	return n, nil
 }
 
@@ -287,8 +310,44 @@ func (s *Service) DeleteByTypeAndNotifier(ctx context.Context, notifieeID string
 }
 
 // MarkAllAsRead records the latest notification id as read for the user.
-// 既読位置を更新するだけで、ストリーム自体は変更しない。成功時に
-// `readAllNotifications` を main stream に publish する。
+// scheduleUnreadPublish delivers an `unreadNotification` event to the user's
+// main stream after `s.unreadPublishDelay`, skipping the publish if the read
+// marker has already advanced past `streamID` in the meantime. Mirrors the
+// 2-second setTimeout + latestReadNotificationId guard in upstream TS
+// (#420 follow-up)。streamID は `<unix-ms>-<seq>` 形式 (XAdd の戻り値)で、
+// `latestReadNotification` Redis key と直接 lexicographic 比較できる。
+// delay==0 は同期 publish (テスト用)。
+func (s *Service) scheduleUnreadPublish(notifieeID, streamID string, packed any) {
+	if s.mainStreamPublisher == nil {
+		slog.Warn("notification: mainStreamPublisher unset; badge will not update live",
+			"userId", notifieeID, "streamId", streamID)
+		return
+	}
+	publish := func() {
+		latestRead, err := s.client.Get(context.Background(), s.readKey(notifieeID)).Result()
+		if err == nil && latestRead != "" && latestRead >= streamID {
+			// 待機中に既読化された → publish skip。badge を burn しない。
+			slog.Debug("notification: unreadNotification suppressed (already read)",
+				"userId", notifieeID, "streamId", streamID, "latestRead", latestRead)
+			return
+		}
+		s.mainStreamPublisher.PublishMainEvent(notifieeID, "unreadNotification", packed)
+		slog.Debug("notification: published unreadNotification",
+			"userId", notifieeID, "streamId", streamID)
+	}
+	if s.unreadPublishDelay <= 0 {
+		publish()
+		return
+	}
+	time.AfterFunc(s.unreadPublishDelay, publish)
+}
+
+// 既読位置を更新するだけで、ストリーム自体は変更しない。成功時に、かつ
+// 既読位置が実際に進む場合のみ `readAllNotifications` を main stream に
+// publish する (本家 TS NotificationService.readAllNotification の guard
+// と一致)。これが無いと、ユーザーが /notifications-grouped を fetch する
+// たびに既読 publish が走り、直前に push された unreadNotification が
+// 即座に上書きされて badge が点灯しなくなる (#420 follow-up)。
 // note_unread repositoryが注入されていれば同時にユーザー分の行を全削除する
 // (hasUnreadSpecifiedNotes / hasUnreadMentionsをfalseに戻すため)。
 // Redis SET失敗時はnote_unreadを温存する (整合性維持)。
@@ -298,22 +357,23 @@ func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 		return err
 	}
 	if len(res) == 0 {
-		// 既読対象が無い場合でも (frontendの既読フラグ同期のため)
-		// readAllNotificationsをemitする。TS本家と同じ挙動。
-		// note_unreadも合わせてcleanup (Redis書き込みは無いため失敗パスなし)。
+		// 既読対象が無い: ストリームに通知が無いので publish 不要。
+		// note_unread だけは念のため cleanup する。
 		s.clearNoteUnread(userID)
-		if s.mainStreamPublisher != nil {
-			s.mainStreamPublisher.PublishMainEvent(userID, "readAllNotifications", nil)
-		}
 		return nil
 	}
-	if err := s.client.Set(ctx, s.readKey(userID), res[0].ID, 0).Err(); err != nil {
+	latestNotifID := res[0].ID
+	// 直前の既読 ID と比較して、実際に進む場合だけ publish する。
+	// `Get` の Redis Nil error は「初回 = 未読あり」として扱う。
+	prev, gerr := s.client.Get(ctx, s.readKey(userID)).Result()
+	hadUnread := gerr != nil || prev == "" || prev < latestNotifID
+	if err := s.client.Set(ctx, s.readKey(userID), latestNotifID, 0).Err(); err != nil {
 		return err
 	}
 	// Redis SET成功後にnote_unreadを消す (SET失敗時は温存して次回retryで
 	// 両方更新されることを期待する)。
 	s.clearNoteUnread(userID)
-	if s.mainStreamPublisher != nil {
+	if hadUnread && s.mainStreamPublisher != nil {
 		s.mainStreamPublisher.PublishMainEvent(userID, "readAllNotifications", nil)
 	}
 	return nil

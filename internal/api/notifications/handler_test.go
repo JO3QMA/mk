@@ -44,6 +44,8 @@ func newTestHandler(t *testing.T) (*Handler, *notification.Service) {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
 	svc := notification.NewService(testRedis.Client, idGen, "")
+	// テストは AfterFunc 待ちを避けるため同期 publish にする。
+	svc.SetUnreadPublishDelay(0)
 	return NewHandler(svc, idGen), svc
 }
 

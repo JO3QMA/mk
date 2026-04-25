@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -37,7 +38,10 @@ func TestMain(m *testing.M) {
 func newTestSvc(t *testing.T) *Service {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
-	return NewService(testRedis.Client, idGen, "")
+	svc := NewService(testRedis.Client, idGen, "")
+	// テストでは 2 秒の AfterFunc を待ちたくないので同期 publish にする。
+	svc.SetUnreadPublishDelay(0)
+	return svc
 }
 
 func closedClient(t *testing.T) *redis.Client {
@@ -253,15 +257,69 @@ func TestService_MarkAllAsRead_PublishesReadAll(t *testing.T) {
 	assert.Nil(t, pub.calls[0].body)
 }
 
-func TestService_MarkAllAsRead_EmptyStream_StillPublishesReadAll(t *testing.T) {
+func TestService_MarkAllAsRead_EmptyStream_DoesNotPublish(t *testing.T) {
 	svc := newTestSvc(t)
 	pub := &stubMainPublisher{}
 	svc.SetMainStreamPublisher(pub)
 
-	// notification が 1 件も無い状態でも、既読フラグ同期のため publish する。
+	// 通知が空 → 既読対象が無いので readAllNotifications を publish しない。
+	// 本家 TS NotificationService.readAllNotification の guard と同じ挙動
+	// (#420 follow-up)。冗長な publish が来ると新しい unreadNotification が
+	// 即座に上書きされるため。
 	require.NoError(t, svc.MarkAllAsRead(context.Background(), "alice"))
+	assert.Empty(t, pub.calls, "no notifications → no readAllNotifications publish")
+}
+
+// 待機中に MarkAllAsRead が走ると unreadNotification publish は skip される
+// (#420 follow-up: 本家 TS NotificationService の setTimeout + 既読再チェック
+// と同じ guard)。delay=10ms で実時間遅延を入れて検証する。
+func TestService_Create_DelayedUnread_SuppressedAfterMarkAllAsRead(t *testing.T) {
+	svc := newTestSvc(t)
+	svc.SetUnreadPublishDelay(20 * time.Millisecond)
+
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	ctx := context.Background()
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: TypeMention,
+	})
+	require.NoError(t, err)
+
+	// AfterFunc が走る前に既読化する。
+	require.NoError(t, svc.MarkAllAsRead(ctx, "alice"))
+	// AfterFunc + GoSched が確実に終わる時間まで待つ
+	time.Sleep(80 * time.Millisecond)
+
+	// readAllNotifications は publish される (MarkAllAsRead 由来) が、
+	// unreadNotification は suppressed されている。
+	for _, c := range pub.calls {
+		assert.NotEqual(t, "unreadNotification", c.eventType,
+			"unreadNotification must be suppressed when read marker advanced first")
+	}
+}
+
+// 既に最新まで読まれている状態で再度 MarkAllAsRead を呼んでも publish は
+// 発生しない (#420 follow-up: badge を即リセットしないため)。
+func TestService_MarkAllAsRead_AlreadyRead_DoesNotPublish(t *testing.T) {
+	svc := newTestSvc(t)
+	ctx := context.Background()
+	_, err := svc.Create(ctx, CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: TypeFollow,
+	})
+	require.NoError(t, err)
+
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	// 1 回目: 未読がある → publish する
+	require.NoError(t, svc.MarkAllAsRead(ctx, "alice"))
 	require.Len(t, pub.calls, 1)
 	assert.Equal(t, "readAllNotifications", pub.calls[0].eventType)
+
+	// 2 回目: 新着が無い → publish しない
+	require.NoError(t, svc.MarkAllAsRead(ctx, "alice"))
+	assert.Len(t, pub.calls, 1, "second call must not re-publish readAllNotifications")
 }
 
 func TestService_Flush_PublishesNotificationFlushed(t *testing.T) {
