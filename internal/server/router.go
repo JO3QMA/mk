@@ -2150,7 +2150,7 @@ type instanceActorSigner struct {
 	keypair repository.UserKeypairRepository
 	urls    *activitypub.URLBuilder
 
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	cachedKey   *activitypub.PrivateKey
 	lastFailure time.Time
 }
@@ -2169,9 +2169,23 @@ func newInstanceActorSigner(
 
 // Signer returns the parsed instance.actor PrivateKey. corefederation.ErrNoSigner
 // を返した場合 APFetcher は unsigned-only モードで継続する。
+//
+// double-checked locking で hot path (cache hit) を read-lock のみにし、
+// 同時 fetch が DB query 待ちで直列化しないようにする (#419 Devin review)。
 func (s *instanceActorSigner) Signer() (*activitypub.PrivateKey, error) {
+	// Fast path: 既に load 済みなら read-lock だけで返す
+	s.mu.RLock()
+	if k := s.cachedKey; k != nil {
+		s.mu.RUnlock()
+		return k, nil
+	}
+	s.mu.RUnlock()
+
+	// Slow path: load を試みる
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// double-check: lock 取得待ちの間に他 goroutine が load を成功させた
+	// 可能性
 	if s.cachedKey != nil {
 		return s.cachedKey, nil
 	}

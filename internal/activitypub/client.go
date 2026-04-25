@@ -3,6 +3,7 @@ package activitypub
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -106,6 +107,7 @@ func (c *Client) FetchJSON(url string, key *PrivateKey) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		drainBody(resp)
 		return nil, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status, URL: url}
 	}
 	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
@@ -130,9 +132,21 @@ func (c *Client) FetchUnsigned(url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		drainBody(resp)
 		return nil, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status, URL: url}
 	}
 	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
+}
+
+// drainBody discards remaining bytes (up to MaxBodyBytes) on a non-2xx
+// response so the underlying TCP connection can be reused by the http
+// transport pool。authorized-fetch fallback (#419) で signed→unsigned の
+// 二段階 GET を同じ host に投げる際の connection reuse 効率を上げる。
+func drainBody(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxBodyBytes))
 }
 
 // FetchHTML performs a plain GET with Accept: text/html. リモートインスタンスの

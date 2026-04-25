@@ -12,8 +12,14 @@ import (
 // instance.actor system account) used to sign outgoing AP fetches.
 // 戻り値の `*PrivateKey` は parse 済みなので fetcher 側での再 parse は不要。
 // instance.actor の row / keypair は実質変わらないので実装側でキャッシュ
-// してよい。返却値が nil / err == ErrNoSigner なら APFetcher は unsigned
-// only モードで継続する。
+// してよい。
+//
+// 契約:
+//   - 成功時: (*PrivateKey, nil) を返す。nil key + nil error は invalid と
+//     し、APFetcher は unsigned-only モードにフォールバックする (将来の
+//     実装が誤って (nil, nil) を返した場合の defensive default)。
+//   - 失敗時: (nil, ErrNoSigner) を返す。実装側で transient / permanent の
+//     区別を吸収すること (例: 一定時間 backoff してから再試行)。
 type SignerProvider interface {
 	Signer() (*activitypub.PrivateKey, error)
 }
