@@ -454,10 +454,16 @@ func (p *Processor) handleUndoFollow(act genericActivity, inner genericActivity)
 // handleUndoLike removes a reaction previously added via Like.
 //
 // Note: reversi game session URI を対象とした Undo(EmojiReaction) は
-// handleLike と対称に 202 ack で握り潰す (#417 P5)。reactionService の有無に
-// 関わらず先に弾くため、reversi check は reactionService nil 判定より前に
-// 置く。
+// handleLike と対称に 202 ack で握り潰す (#417 P5)。dispatch 順も handleLike
+// と揃えており、ResolveActor を先頭で実行することで actor cache の populate
+// が両 path で同様に行われるようにする (#417 P5 Devin review)。
+// reactionService nil の本番 config は無いので unconditional な ResolveActor
+// で実害なし。
 func (p *Processor) handleUndoLike(act genericActivity, inner genericActivity) error {
+	reactor, err := p.resolver.ResolveActor(act.Actor)
+	if err != nil {
+		return err
+	}
 	targetURI, err := readObjectString(inner.Object)
 	if err != nil {
 		// inner.object 欠如した malformed Undo(Like) は handleLike と同じく
@@ -470,10 +476,6 @@ func (p *Processor) handleUndoLike(act genericActivity, inner genericActivity) e
 	}
 	if p.reactionService == nil {
 		return ErrUnsupportedActivity
-	}
-	reactor, err := p.resolver.ResolveActor(act.Actor)
-	if err != nil {
-		return err
 	}
 	target, err := p.resolver.ResolveNote(targetURI)
 	if err != nil {
