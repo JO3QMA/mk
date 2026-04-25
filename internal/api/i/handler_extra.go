@@ -73,11 +73,16 @@ func (h *Handler) DeleteAccount(c echo.Context) error {
 }
 
 // Favorites handles POST /api/i/favorites.
+//
+// CherryPick / Misskey 本家互換で sinceId / untilId による keyset pagination
+// を受け付ける (#424)。フロントの無限スクロールは untilId を毎ページ送って
+// くるので、cursor 無視だと同一ページが永久ループする。
 func (h *Handler) Favorites(c echo.Context) error {
 	u := middleware.GetUser(c)
 	var req struct {
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -85,7 +90,7 @@ func (h *Handler) Favorites(c echo.Context) error {
 	if h.favoriteRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	favs, err := h.favoriteRepo.ListByUser(u.ID, req.Limit, req.Offset)
+	favs, err := h.favoriteRepo.ListByUser(u.ID, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
@@ -109,6 +114,8 @@ func (h *Handler) Favorites(c echo.Context) error {
 		item := map[string]any{
 			"id":     f.ID,
 			"noteId": f.NoteID,
+			// Misskey 本家互換のため createdAt を含める (#424 Devin review)。
+			"createdAt": f.CreatedAt.UTC().Format(time.RFC3339Nano),
 		}
 		if f.Note != nil {
 			if pn, ok := byID[f.Note.ID]; ok {

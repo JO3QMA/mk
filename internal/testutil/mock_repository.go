@@ -950,12 +950,37 @@ func (m *MockNoteFavoriteRepository) Exists(userID, noteID string) (bool, error)
 	return ok, nil
 }
 
-func (m *MockNoteFavoriteRepository) ListByUser(userID string, limit, offset int) ([]*model.NoteFavorite, error) {
+func (m *MockNoteFavoriteRepository) ListByUser(userID, untilID, sinceID string, limit int) ([]*model.NoteFavorite, error) {
 	var result []*model.NoteFavorite
 	for _, f := range m.Favorites {
-		if f.UserID == userID {
-			result = append(result, f)
+		if f.UserID != userID {
+			continue
 		}
+		// keyset cursor を mock 側でも正しく適用しないと、handler の
+		// pagination 動作テストが repo 全件返却で偽陽性になる (#424)。
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		result = append(result, f)
+	}
+	// id DESC (untilID 経路) / ASC (sinceID-only 経路) を実 repo と揃える。
+	sort.Slice(result, func(i, j int) bool {
+		if sinceID != "" && untilID == "" {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].ID > result[j].ID
+	})
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if len(result) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }

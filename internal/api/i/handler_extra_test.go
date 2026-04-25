@@ -155,6 +155,32 @@ func TestFavorites_WithNote(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// untilId 経由の cursor pagination が repo に正しく伝わり、cursor 以下の
+// favorite だけ返ることを検証する (#424 の core fix)。
+func TestFavorites_UntilIDPaginates(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	favRepo := testutil.NewMockNoteFavoriteRepository()
+	for _, fid := range []string{"f1", "f2", "f3"} {
+		nid := "n_" + fid
+		favRepo.Favorites["u1:"+nid] = &model.NoteFavorite{
+			ID: fid, UserID: "u1", NoteID: nid,
+			Note: &model.Note{ID: nid, UserID: "u1", Visibility: "public"},
+		}
+	}
+	h.SetFavoriteRepo(favRepo)
+
+	// untilId=f3 → f3 より小さい id (f1,f2) のみ返るはず
+	rec := postExtra(h.Favorites, `{"untilId":"f3","limit":10}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Len(t, got, 2)
+	for _, item := range got {
+		id := item["id"].(string)
+		assert.Less(t, id, "f3")
+	}
+}
+
 // --- NotificationsGrouped ---
 
 func TestNotificationsGrouped(t *testing.T) {
@@ -279,7 +305,7 @@ type failingFavListRepo struct {
 	*testutil.MockNoteFavoriteRepository
 }
 
-func (f *failingFavListRepo) ListByUser(_ string, _, _ int) ([]*model.NoteFavorite, error) {
+func (f *failingFavListRepo) ListByUser(_ string, _, _ string, _ int) ([]*model.NoteFavorite, error) {
 	return nil, testutil.ErrNotFound
 }
 

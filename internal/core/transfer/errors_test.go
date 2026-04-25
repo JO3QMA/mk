@@ -72,7 +72,7 @@ type failingNoteFavoriteRepo struct {
 	*testutil.MockNoteFavoriteRepository
 }
 
-func (f *failingNoteFavoriteRepo) ListByUser(_ string, _, _ int) ([]*model.NoteFavorite, error) {
+func (f *failingNoteFavoriteRepo) ListByUser(_, _, _ string, _ int) ([]*model.NoteFavorite, error) {
 	return nil, errors.New("db boom")
 }
 
