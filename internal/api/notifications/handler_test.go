@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -43,6 +44,8 @@ func newTestHandler(t *testing.T) (*Handler, *notification.Service) {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
 	svc := notification.NewService(testRedis.Client, idGen, "")
+	// テストは AfterFunc 待ちを避けるため同期 publish にする。
+	svc.SetUnreadPublishDelay(0)
 	return NewHandler(svc, idGen), svc
 }
 
@@ -115,6 +118,78 @@ func TestShow_RedisError(t *testing.T) {
 	setAuth(c, &model.User{ID: "alice"})
 	require.NoError(t, h.Show(c))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// stubMainPublisher captures PublishMainEvent calls so the test can verify
+// the implicit mark-as-read side effect of /api/i/notifications (#420).
+type stubMainPublisher struct {
+	mu     sync.Mutex
+	events []stubMainEvent
+}
+
+type stubMainEvent struct {
+	userID    string
+	eventType string
+}
+
+func (s *stubMainPublisher) PublishMainEvent(userID, eventType string, _ any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, stubMainEvent{userID: userID, eventType: eventType})
+}
+
+func (s *stubMainPublisher) types(userID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.events))
+	for _, e := range s.events {
+		if e.userID == userID {
+			out = append(out, e.eventType)
+		}
+	}
+	return out
+}
+
+// 通知一覧 fetch の副作用として暗黙の mark-all-as-read が走り、main stream
+// に `readAllNotifications` が publish されることを確認する (#420)。
+func TestShow_DefaultMarksAllAsRead(t *testing.T) {
+	h, svc := newTestHandler(t)
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	_, err := svc.Create(context.Background(), notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeFollow,
+	})
+	require.NoError(t, err)
+
+	c, rec := newJSONRequest(t, "/api/i/notifications", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Contains(t, pub.types("alice"), "readAllNotifications",
+		"Show should publish readAllNotifications by default")
+}
+
+// markAsRead: false を明示した場合は副作用を発火させない。本家
+// i/notifications と同じ semantics。
+func TestShow_MarkAsReadFalseSkipsRead(t *testing.T) {
+	h, svc := newTestHandler(t)
+	pub := &stubMainPublisher{}
+	svc.SetMainStreamPublisher(pub)
+
+	_, err := svc.Create(context.Background(), notification.CreateInput{
+		NotifieeID: "alice", NotifierID: "bob", Type: notification.TypeFollow,
+	})
+	require.NoError(t, err)
+
+	c, rec := newJSONRequest(t, "/api/i/notifications", `{"markAsRead":false}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.NotContains(t, pub.types("alice"), "readAllNotifications",
+		"Show with markAsRead:false must not publish readAllNotifications")
 }
 
 func TestMarkAllAsRead_OK(t *testing.T) {

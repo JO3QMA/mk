@@ -2,6 +2,7 @@
 package notifications
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -82,6 +83,13 @@ type ListRequest struct {
 	ExcludeTypes []string `json:"excludeTypes"`
 	SinceID      string   `json:"sinceId"`
 	UntilID      string   `json:"untilId"`
+	// MarkAsRead controls whether fetching the notification list implicitly
+	// marks all notifications as read. nil / true means "mark as read"
+	// (default), explicit false leaves the read state untouched.
+	// 本家 i/notifications の暗黙引数。Misskey フロントが
+	// `notifications/mark-all-as-read` を明示呼び出しせず、通知一覧 fetch の
+	// 副作用で badge が消えることを期待しているため (#420)。
+	MarkAsRead *bool `json:"markAsRead"`
 }
 
 // Show handles POST /api/i/notifications - returns the authenticated user's
@@ -149,6 +157,18 @@ func (h *Handler) Show(c echo.Context) error {
 			}
 		}
 		out = append(out, entity.PackNotification(n, notifier, note, h.idGen, h.instanceLookup(), h.emojiLookup()))
+	}
+	// 本家 i/notifications と互換: markAsRead 未指定または true なら通知一覧
+	// 取得の副作用で全通知を既読化し、main stream に readAllNotifications を
+	// publish する。これが無いとフロントエンドが /my/notifications を開いても
+	// バッジカウントが残り続ける (#420)。
+	if req.MarkAsRead == nil || *req.MarkAsRead {
+		if err := h.svc.MarkAllAsRead(c.Request().Context(), user.ID); err != nil {
+			// 既読化失敗は通知一覧の取得結果には影響しないので 200 のまま
+			// 返し、ログだけ残す。
+			slog.Warn("notifications: implicit mark-all-as-read failed",
+				"userId", user.ID, "err", err)
+		}
 	}
 	return c.JSON(http.StatusOK, out)
 }

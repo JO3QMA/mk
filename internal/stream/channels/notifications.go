@@ -80,16 +80,27 @@ func (c *MainChannel) Init(_ json.RawMessage) error {
 	return nil
 }
 
-// OnRedisEvent attempts to read a hint type from the payload (a JSON object
-// with a `type` field) and forwards it under that type. Falls back to
-// "unreadNotification" when there is no embedded type field, which keeps
-// notification payloads usable by clients that follow the Misskey schema.
+// OnRedisEvent forwards a payload to the appropriate frontend event:
+//
+//   - main:<userID> topic carries a `{type, body}` envelope from
+//     MainStreamPublisher (e.g. unreadNotification / readAllNotifications /
+//     follow / meUpdated etc). Forward as the wrapped type.
+//   - notifications:<userID> topic carries a bare packed Notification body
+//     ({id, type:"mention"|"follow"|..., createdAt, ...}). Forward as
+//     "notification" so the frontend's `main.on('notification', ...)`
+//     listeners (timeline live update) fire.
+//
+// 旧実装は payload 全体に対して `type` だけを見て分岐していたため、bare
+// 通知 body 内の `type:"mention"` を envelope の type として誤って扱い、
+// 存在しない `mention` イベントを送出して通知 timeline のライブ更新を
+// 落としていた (#420 follow-up)。`type` と `body` の両方が揃っている時だけ
+// envelope として扱うことで誤検出を防ぐ。
 func (c *MainChannel) OnRedisEvent(payload []byte) {
 	var env struct {
 		Type string          `json:"type"`
 		Body json.RawMessage `json:"body"`
 	}
-	if err := json.Unmarshal(payload, &env); err == nil && env.Type != "" {
+	if err := json.Unmarshal(payload, &env); err == nil && env.Type != "" && len(env.Body) > 0 {
 		_ = c.ctx.Send(env.Type, env.Body)
 		return
 	}
