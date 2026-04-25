@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -230,7 +231,15 @@ func (s *Service) fetchRemote(ctx context.Context, rawURL string, mode ProxyMode
 		return nil, ErrTooLarge
 	}
 
-	contentType := resp.Header.Get("Content-Type")
+	// Content-Type ヘッダーには `; charset=utf-8` 等のパラメータが付くことが
+	// あるので、media type だけを切り出してから allowlist と比較する
+	// (#418 Devin review)。`mime.ParseMediaType` 失敗時は元のヘッダ値を
+	// そのまま使い、後段の DetectContentType フォールバックに任せる。
+	rawCT := resp.Header.Get("Content-Type")
+	contentType := rawCT
+	if mt, _, err := mime.ParseMediaType(rawCT); err == nil {
+		contentType = mt
+	}
 	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = http.DetectContentType(data)
 	}

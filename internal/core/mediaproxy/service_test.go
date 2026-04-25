@@ -294,6 +294,24 @@ func TestFetch_FaviconWithIANAMIMETypeAccepted(t *testing.T) {
 	assert.Equal(t, "image/vnd.microsoft.icon", result.ContentType)
 }
 
+func TestFetch_ContentTypeWithParameters(t *testing.T) {
+	// Content-Type に charset 等のパラメータが付いていても media type だけで
+	// allowlist 照合する (#418 Devin review)。
+	imgData := makePNG()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png; charset=binary")
+		w.Write(imgData)
+	}))
+	defer ts.Close()
+
+	s := testService(map[string]bool{ts.URL + "/img.png": true})
+
+	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeDefault)
+	require.NoError(t, err, "media type should match after stripping parameters")
+	defer result.Body.Close()
+	assert.Equal(t, "image/png", result.ContentType)
+}
+
 func TestFetch_FaviconWithLegacyMIMETypeAccepted(t *testing.T) {
 	// 古い慣例 image/x-icon も引き続き許可する (regression guard)。
 	imgData := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
