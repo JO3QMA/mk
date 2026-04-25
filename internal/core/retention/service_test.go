@@ -169,9 +169,49 @@ func TestService_Aggregate_DuplicateDateKeyIsSkipped(t *testing.T) {
 	svc.SetClock(func() time.Time { return now })
 
 	require.NoError(t, svc.Aggregate(context.Background()))
-	// Insert は ErrDuplicateKey で吸収されるので Update は走らない (今日の
-	// 行に対する self-skip だけが起きるため)。
+	// Insert は ErrDuplicateKey で吸収される。今日の行は past loop 内の
+	// self-skip 条件でスキップされるので updateCalls は 0。past row が他に
+	// あった場合の挙動は次テストで検証する。
 	assert.Equal(t, 0, retentions.updateCalls)
+}
+
+// 重複 Insert でも past cohort の data[dateKey] 更新は継続することを確認。
+// startup goroutine + 再起動 / cron が同日に複数回走る現実的なシナリオで、
+// 最新の active set で past row が refresh される必要がある。
+func TestService_Aggregate_DuplicateDateKeyStillRefreshesPastCohorts(t *testing.T) {
+	now := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	retentions := newStubRetentionRepo()
+	// 今日 (insert 重複の原因) と yesterday cohort の両方を準備。
+	retentions.rows["2026-4-25"] = &model.RetentionAggregation{
+		ID:      "today-existing",
+		DateKey: "2026-4-25",
+		Data:    datatypes.JSON([]byte("{}")),
+	}
+	retentions.rows["2026-4-24"] = &model.RetentionAggregation{
+		ID:      "row-yesterday",
+		DateKey: "2026-4-24",
+		UserIDs: pq.StringArray{"u_y_active", "u_y_dropped"},
+		Data:    datatypes.JSON([]byte("{}")),
+	}
+
+	users := &stubUserRepo{
+		registered: []string{"newcomer"},
+		active:     []string{"u_y_active", "newcomer"},
+	}
+	svc := NewService(users, retentions, idGen)
+	svc.SetClock(func() time.Time { return now })
+
+	require.NoError(t, svc.Aggregate(context.Background()))
+
+	// yesterday の data["2026-4-25"] が refresh されている。
+	yesterday := retentions.rows["2026-4-24"]
+	var data map[string]int
+	require.NoError(t, json.Unmarshal(yesterday.Data, &data))
+	assert.Equal(t, 1, data["2026-4-25"], "1 of 2 yesterday-cohort users active today")
+	assert.Equal(t, 1, retentions.updateCalls, "past row must be updated even on duplicate insert")
 }
 
 func TestService_Aggregate_UpdatesPastCohorts(t *testing.T) {

@@ -89,11 +89,16 @@ func (s *Service) Aggregate(ctx context.Context) error {
 		Data:       datatypes.JSON([]byte("{}")),
 	}
 	if err := s.retentionRepo.Insert(row); err != nil {
-		if errors.Is(err, repository.ErrDuplicateKey) {
-			slog.Debug("retention: dateKey already processed", "dateKey", dateKey)
-			return nil
+		if !errors.Is(err, repository.ErrDuplicateKey) {
+			return err
 		}
-		return err
+		// 重複は別 worker / 同日の startup-fire で既に処理済み。Insert 自体は
+		// skip するが、past cohort の data[dateKey] 更新 (steps 3-5) は continue
+		// する。同日に startup goroutine と再起動 / cron が複数回走った時、
+		// 最後に走った Aggregate の active set で past row を最新化したい。
+		// past 側 self-update は line 116 (past.DateKey == dateKey) で弾かれる
+		// のでこのまま loop に進んでも安全。
+		slog.Debug("retention: dateKey already processed, refreshing past cohorts", "dateKey", dateKey)
 	}
 
 	// 3-5. Refresh data[dateKey] on the last 31 days of cohort rows.

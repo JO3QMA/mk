@@ -260,11 +260,12 @@ func (m *MockUserRepository) ListLocalUserIDsRegisteredAfter(idCursor string) ([
 }
 
 // ListLocalUserIDsActiveSince returns the IDs of stored local users whose
-// LastActiveDate is at or after `since`.
+// LastActiveDate is at or after `since`. 削除済みユーザーは除外する
+// (CountLocalUsersActiveSince および実装の repository 層と挙動を揃える)。
 func (m *MockUserRepository) ListLocalUserIDsActiveSince(since time.Time) ([]string, error) {
 	out := make([]string, 0, len(m.Users))
 	for _, u := range m.Users {
-		if u.Host != nil || u.LastActiveDate == nil {
+		if u.Host != nil || u.IsDeleted || u.LastActiveDate == nil {
 			continue
 		}
 		if u.LastActiveDate.Before(since) {
