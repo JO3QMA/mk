@@ -324,8 +324,10 @@ func (s *Service) DeleteByTypeAndNotifier(ctx context.Context, notifieeID string
 // lexicographic 比較できる。delay==0 は同期 publish (テスト用)。
 func (s *Service) scheduleUnreadPublish(notifieeID, streamID string, packed any) {
 	if s.mainStreamPublisher == nil {
-		slog.Warn("notification: mainStreamPublisher unset; badge will not update live",
-			"userId", notifieeID, "streamId", streamID)
+		// SetMainStreamPublisher は nil で実行する (= publish 機能を無効化
+		// する) ことを明示的に許容している。テストや mainStream が不要な
+		// 構成でも Create が呼ばれるたびに Warn ログを出すと noise になる
+		// ので silent skip する (#420 Devin review)。
 		return
 	}
 	publish := func() {
