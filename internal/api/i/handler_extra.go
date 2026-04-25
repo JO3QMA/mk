@@ -114,6 +114,8 @@ func (h *Handler) Favorites(c echo.Context) error {
 		item := map[string]any{
 			"id":     f.ID,
 			"noteId": f.NoteID,
+			// Misskey 本家互換のため createdAt を含める (#424 Devin review)。
+			"createdAt": f.CreatedAt.UTC().Format(time.RFC3339Nano),
 		}
 		if f.Note != nil {
 			if pn, ok := byID[f.Note.ID]; ok {

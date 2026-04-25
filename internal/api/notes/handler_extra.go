@@ -36,10 +36,12 @@ func (h *Handler) FavoritesCreate(c echo.Context) error {
 	if exists {
 		return c.JSON(http.StatusConflict, apierr.Error("ALREADY_FAVORITED", "Already favorited.", "a402c12b-34dd-41d2-97d8-4d2c5b7e4645"))
 	}
+	now := time.Now()
 	fav := &model.NoteFavorite{
-		ID:     h.idGen.Generate(time.Now()),
-		UserID: user.ID,
-		NoteID: req.NoteID,
+		ID:        h.idGen.Generate(now),
+		UserID:    user.ID,
+		NoteID:    req.NoteID,
+		CreatedAt: now,
 	}
 	if err := h.favoriteRepo.Create(fav); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
