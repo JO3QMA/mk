@@ -14,20 +14,21 @@ import (
 )
 
 // scriptedFetcher returns canned responses keyed by call order.
-// FetchObject / FetchHTML それぞれ独立カウンタで bodies / errs を消費する。
+// FetchObjectUnsigned / FetchHTML それぞれ独立カウンタで bodies / errs を
+// 消費する。
 type scriptedFetcher struct {
 	bodies [][]byte
 	errs   []error
 	idx    int
 
-	// HTMLレスポンスは FetchObject と独立に供給する。未設定ならFetchHTML呼出
-	// は error を返してicon抽出 step を no-op にする (nodeinfo テストを
-	// icon logicの追加で壊さないため)。
+	// HTMLレスポンスは nodeinfo fetch と独立に供給する。未設定なら
+	// FetchHTML 呼出は error を返して icon 抽出 step を no-op にする
+	// (nodeinfo テストを icon logic の追加で壊さないため)。
 	htmlBody []byte
 	htmlErr  error
 }
 
-func (s *scriptedFetcher) FetchObject(_ string) ([]byte, error) {
+func (s *scriptedFetcher) FetchObjectUnsigned(_ string) ([]byte, error) {
 	if s.idx >= len(s.bodies) {
 		return nil, errors.New("no more bodies")
 	}

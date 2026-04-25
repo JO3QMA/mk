@@ -3,6 +3,7 @@ package activitypub
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -12,6 +13,21 @@ import (
 // MaxBodyBytes caps the response body size for FetchJSON / FetchUnsigned to
 // prevent memory exhaustion via attacker-controlled remote AP servers (#323).
 const MaxBodyBytes = safehttp.DefaultAPBodyLimit
+
+// StatusError carries the HTTP status from a failed Fetch* call so callers
+// can react to specific codes (e.g. retry with signed GET on 401/403 for
+// authorized-fetch peers like IceShrimp.NET, #419)。
+type StatusError struct {
+	StatusCode int
+	Status     string
+	URL        string
+}
+
+// Error returns "unexpected status: NNN <text>" — same shape as the legacy
+// errors.New("unexpected status: ...") so existing log readers keep working.
+func (e *StatusError) Error() string {
+	return "unexpected status: " + e.Status
+}
 
 // MaxHTMLBodyBytes caps the response body size for FetchHTML. Landing pages
 // of real Misskey / Mastodon 等は inline JS/CSS が多く1MiB (AP payload想定)
@@ -82,7 +98,8 @@ func (c *Client) GetSigned(url string, key *PrivateKey, acceptOverride string) (
 }
 
 // FetchJSON performs a signed GET and returns the response body. Non-2xx
-// responses produce an error.
+// responses produce a *StatusError so callers can branch on status (e.g.
+// authorized-fetch fallback on 401/403, #419)。
 func (c *Client) FetchJSON(url string, key *PrivateKey) ([]byte, error) {
 	resp, err := c.GetSigned(url, key, "")
 	if err != nil {
@@ -90,13 +107,16 @@ func (c *Client) FetchJSON(url string, key *PrivateKey) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("unexpected status: " + resp.Status)
+		drainBody(resp)
+		return nil, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status, URL: url}
 	}
 	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
 }
 
 // FetchUnsigned performs a plain GET without HTTP signing. 多くのAPサーバーは
 // アクター取得を未署名で許可するため、resolver の初回 fetch 用に使う。
+// Non-2xx responses produce a *StatusError so callers can branch on status
+// (e.g. authorized-fetch fallback on 401/403, #419)。
 func (c *Client) FetchUnsigned(url string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -112,9 +132,29 @@ func (c *Client) FetchUnsigned(url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("unexpected status: " + resp.Status)
+		drainBody(resp)
+		return nil, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status, URL: url}
 	}
 	return safehttp.ReadAllLimit(resp.Body, MaxBodyBytes)
+}
+
+// drainBodyLimit caps how many bytes `drainBody` is willing to read from
+// a non-2xx response before giving up on connection reuse. Most error
+// payloads (Misskey/Mastodon JSON error envelope, plain-text 4xx page) fit
+// in well under 16 KiB, so 64 KiB leaves margin for verbose stack traces
+// without giving an adversarial peer a 1 MiB read budget per error
+// response (#419 Devin review)。
+const drainBodyLimit = 64 * 1024
+
+// drainBody discards remaining bytes (up to drainBodyLimit) on a non-2xx
+// response so the underlying TCP connection can be reused by the http
+// transport pool。authorized-fetch fallback (#419) で signed→unsigned の
+// 二段階 GET を同じ host に投げる際の connection reuse 効率を上げる。
+func drainBody(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, drainBodyLimit))
 }
 
 // FetchHTML performs a plain GET with Accept: text/html. リモートインスタンスの
