@@ -3,6 +3,7 @@ package retention
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -21,15 +22,23 @@ type stubUserRepo struct {
 	// idGen.Generate(t) には random suffix が含まれて呼び出しごとに値が
 	// 変わるので、cursor 一致比較ではなく「直近登録ユーザー一覧」を直接
 	// 持たせる。
-	registered []string
-	active     []string
+	registered    []string
+	active        []string
+	registeredErr error
+	activeErr     error
 }
 
 func (s *stubUserRepo) ListLocalUserIDsRegisteredAfter(_ string) ([]string, error) {
+	if s.registeredErr != nil {
+		return nil, s.registeredErr
+	}
 	return append([]string(nil), s.registered...), nil
 }
 
 func (s *stubUserRepo) ListLocalUserIDsActiveSince(_ time.Time) ([]string, error) {
+	if s.activeErr != nil {
+		return nil, s.activeErr
+	}
 	return append([]string(nil), s.active...), nil
 }
 
@@ -63,6 +72,8 @@ func (s *stubUserRepo) ListUserRecommendations(string, time.Time, int, int) ([]*
 type stubRetentionRepo struct {
 	rows            map[string]*model.RetentionAggregation // dateKey -> row
 	insertErr       error
+	listSinceErr    error
+	updateErr       error
 	updateCalls     int
 	insertedDateKey string
 }
@@ -76,6 +87,9 @@ func (s *stubRetentionRepo) ListRecent(int) ([]*model.RetentionAggregation, erro
 }
 
 func (s *stubRetentionRepo) ListSince(_ time.Time) ([]*model.RetentionAggregation, error) {
+	if s.listSinceErr != nil {
+		return nil, s.listSinceErr
+	}
 	out := make([]*model.RetentionAggregation, 0, len(s.rows))
 	for _, r := range s.rows {
 		out = append(out, r)
@@ -104,6 +118,9 @@ func (s *stubRetentionRepo) Insert(row *model.RetentionAggregation) error {
 
 func (s *stubRetentionRepo) Update(id string, updatedAt time.Time, data datatypes.JSON) error {
 	s.updateCalls++
+	if s.updateErr != nil {
+		return s.updateErr
+	}
 	for _, r := range s.rows {
 		if r.ID == id {
 			r.UpdatedAt = updatedAt
@@ -208,4 +225,138 @@ func TestService_Aggregate_DoesNotUpdateTodayCohortItself(t *testing.T) {
 	require.NotNil(t, row)
 	// Today's data starts as `{}` and stays empty — service skips self-update.
 	assert.Equal(t, "{}", string(row.Data))
+}
+
+func TestService_SetClock_NilIsIgnored(t *testing.T) {
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	svc := NewService(&stubUserRepo{}, newStubRetentionRepo(), idGen)
+	before := svc.clock
+	svc.SetClock(nil)
+	assert.NotNil(t, svc.clock, "nil clock must be ignored, default kept")
+	// 同一関数値であることまでは比較しない (関数比較は不可)。default 由来か
+	// どうかは「now を呼べる」ことだけ確認する。
+	_ = before
+	assert.False(t, svc.clock().IsZero())
+}
+
+func TestService_Aggregate_RegisteredErrIsReturned(t *testing.T) {
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	wantErr := errors.New("registered boom")
+	users := &stubUserRepo{registeredErr: wantErr}
+	svc := NewService(users, newStubRetentionRepo(), idGen)
+	svc.SetClock(func() time.Time { return time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC) })
+
+	got := svc.Aggregate(context.Background())
+	assert.ErrorIs(t, got, wantErr)
+}
+
+func TestService_Aggregate_InsertErrIsReturned(t *testing.T) {
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	wantErr := errors.New("insert boom")
+	retentions := newStubRetentionRepo()
+	retentions.insertErr = wantErr
+	svc := NewService(&stubUserRepo{}, retentions, idGen)
+	svc.SetClock(func() time.Time { return time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC) })
+
+	got := svc.Aggregate(context.Background())
+	assert.ErrorIs(t, got, wantErr)
+}
+
+func TestService_Aggregate_ListSinceErrIsReturned(t *testing.T) {
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	wantErr := errors.New("list boom")
+	retentions := newStubRetentionRepo()
+	retentions.listSinceErr = wantErr
+	svc := NewService(&stubUserRepo{}, retentions, idGen)
+	svc.SetClock(func() time.Time { return time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC) })
+
+	got := svc.Aggregate(context.Background())
+	assert.ErrorIs(t, got, wantErr)
+}
+
+func TestService_Aggregate_ActiveErrIsReturned(t *testing.T) {
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	wantErr := errors.New("active boom")
+	users := &stubUserRepo{activeErr: wantErr}
+	svc := NewService(users, newStubRetentionRepo(), idGen)
+	svc.SetClock(func() time.Time { return time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC) })
+
+	got := svc.Aggregate(context.Background())
+	assert.ErrorIs(t, got, wantErr)
+}
+
+// Update が失敗しても warn で握り、他の cohort に影響を与えないことを確認。
+func TestService_Aggregate_UpdateErrIsSwallowed(t *testing.T) {
+	now := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	users := &stubUserRepo{registered: []string{"n1"}, active: []string{"u_y"}}
+	retentions := newStubRetentionRepo()
+	retentions.updateErr = errors.New("update boom")
+	retentions.rows["2026-4-24"] = &model.RetentionAggregation{
+		ID:      "row-yesterday",
+		DateKey: "2026-4-24",
+		UserIDs: pq.StringArray{"u_y"},
+		Data:    datatypes.JSON([]byte("{}")),
+	}
+
+	svc := NewService(users, retentions, idGen)
+	svc.SetClock(func() time.Time { return now })
+	require.NoError(t, svc.Aggregate(context.Background()))
+	assert.Equal(t, 1, retentions.updateCalls)
+}
+
+// 既存 data に他日の値があれば残しつつ今日の key を merge することを確認。
+// mergeDataKey の `len(raw) > 0` 分岐を踏むためのテスト。
+func TestService_Aggregate_MergesIntoExistingData(t *testing.T) {
+	now := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	users := &stubUserRepo{registered: []string{"n1"}, active: []string{"u_y"}}
+	retentions := newStubRetentionRepo()
+	retentions.rows["2026-4-24"] = &model.RetentionAggregation{
+		ID:      "row-yesterday",
+		DateKey: "2026-4-24",
+		UserIDs: pq.StringArray{"u_y"},
+		Data:    datatypes.JSON([]byte(`{"2026-4-24":1}`)),
+	}
+
+	svc := NewService(users, retentions, idGen)
+	svc.SetClock(func() time.Time { return now })
+	require.NoError(t, svc.Aggregate(context.Background()))
+
+	var data map[string]int
+	require.NoError(t, json.Unmarshal(retentions.rows["2026-4-24"].Data, &data))
+	assert.Equal(t, 1, data["2026-4-24"], "prior key must be preserved")
+	assert.Equal(t, 1, data["2026-4-25"], "new key must be merged in")
+}
+
+// data カラムが壊れていても他の cohort 行の処理を継続することを確認。
+// mergeDataKey の json.Unmarshal err 分岐を踏むためのテスト。
+func TestService_Aggregate_CorruptDataRowIsSkipped(t *testing.T) {
+	now := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	idGen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	users := &stubUserRepo{registered: []string{"n1"}, active: []string{"u_y"}}
+	retentions := newStubRetentionRepo()
+	retentions.rows["2026-4-24"] = &model.RetentionAggregation{
+		ID:      "row-yesterday",
+		DateKey: "2026-4-24",
+		UserIDs: pq.StringArray{"u_y"},
+		Data:    datatypes.JSON([]byte(`not-json`)),
+	}
+
+	svc := NewService(users, retentions, idGen)
+	svc.SetClock(func() time.Time { return now })
+	require.NoError(t, svc.Aggregate(context.Background()))
+	// merge が失敗 → continue で Update は走らない。
+	assert.Equal(t, 0, retentions.updateCalls)
 }
