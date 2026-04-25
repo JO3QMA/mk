@@ -67,7 +67,11 @@ func isMimeImage(mime string) bool {
 	switch mime {
 	case "image/jpeg", "image/png", "image/gif",
 		"image/webp", "image/bmp", "image/tiff",
-		"image/x-icon", "image/vnd.mozilla.apng":
+		// IANA 公式名 (image/vnd.microsoft.icon) と古い慣例 (image/x-icon)
+		// を両方許可。mediaproxy 側 isConvertibleImage と同じ alias を扱う
+		// (#418)。
+		"image/x-icon", "image/vnd.microsoft.icon",
+		"image/vnd.mozilla.apng":
 		return true
 	default:
 		return false

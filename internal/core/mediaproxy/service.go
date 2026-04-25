@@ -66,9 +66,10 @@ var browsersafeMIMEs = map[string]bool{
 	"image/apng": true,
 	"image/bmp":  true,
 	"image/tiff": true,
-	// `image/x-icon` は古い慣例、`image/vnd.microsoft.icon` は IANA 公式
-	// 登録名 (RFC 4329)。リモート Misskey/Mastodon の favicon.ico は後者で
-	// 返ってくるホストが多いため両方許可する (#418)。
+	// `image/x-icon` は古い慣例、`image/vnd.microsoft.icon` は IANA media
+	// type registry に登録されている公式名 (RFC 紐付け無し)。リモート
+	// Misskey/Mastodon の favicon.ico は後者で返ってくるホストが多いため
+	// 両方許可する (#418)。
 	"image/x-icon":             true,
 	"image/vnd.microsoft.icon": true,
 	"image/vnd.mozilla.apng":   true,
