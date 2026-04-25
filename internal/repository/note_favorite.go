@@ -10,7 +10,10 @@ type NoteFavoriteRepository interface {
 	Create(f *model.NoteFavorite) error
 	Delete(userID, noteID string) error
 	Exists(userID, noteID string) (bool, error)
-	ListByUser(userID string, limit, offset int) ([]*model.NoteFavorite, error)
+	// ListByUser returns favorites filtered by keyset pagination cursors.
+	// untilID == "" && sinceID == "" returns the latest page in DESC order.
+	// Both empty / one empty matches Misskey's makePaginationQuery semantics.
+	ListByUser(userID, untilID, sinceID string, limit int) ([]*model.NoteFavorite, error)
 }
 
 type noteFavoriteRepository struct {
@@ -37,7 +40,7 @@ func (r *noteFavoriteRepository) Exists(userID, noteID string) (bool, error) {
 	return count > 0, err
 }
 
-func (r *noteFavoriteRepository) ListByUser(userID string, limit, offset int) ([]*model.NoteFavorite, error) {
+func (r *noteFavoriteRepository) ListByUser(userID, untilID, sinceID string, limit int) ([]*model.NoteFavorite, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -49,10 +52,17 @@ func (r *noteFavoriteRepository) ListByUser(userID string, limit, offset int) ([
 	q := r.db.Preload("Note").Preload("Note.User").
 		Preload("Note.Renote").Preload("Note.Renote.User").
 		Preload("Note.Reply").Preload("Note.Reply.User").
-		Where("\"userId\" = ?", userID).Order("id DESC").Limit(limit)
-	if offset > 0 {
-		q = q.Offset(offset)
+		Where("\"userId\" = ?", userID)
+	// id は note_favorite.id (aidx) で keyset pagination する。Misskey 本家
+	// の makePaginationQuery と同じ向きで、untilId は < cursor (DESC で次
+	// ページへ進む)、sinceId は > cursor (新しい方向)。
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
 	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
 	var favs []*model.NoteFavorite
 	if err := q.Find(&favs).Error; err != nil {
 		return nil, err

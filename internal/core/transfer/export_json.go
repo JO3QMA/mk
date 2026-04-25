@@ -10,13 +10,16 @@ import (
 // exportFavorites reuses the note export pipeline but pulls rows from
 // NoteFavoriteRepository instead. Each favorite is unwrapped to its note so
 // the output matches the notes export shape (easy round-trip).
+//
+// keyset pagination で順送りに取り込む (#424 でリポジトリ側を offset から
+// untilID 方式に変更した移行)。collectClipNotes と同じパターン。
 func (e *Exporter) exportFavorites(userID string) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('[')
 	first := true
-	offset := 0
+	untilID := ""
 	for {
-		rows, err := e.deps.NoteFavoriteRepo.ListByUser(userID, notesExportBatchSize, offset)
+		rows, err := e.deps.NoteFavoriteRepo.ListByUser(userID, untilID, "", notesExportBatchSize)
 		if err != nil {
 			return nil, err
 		}
@@ -45,7 +48,9 @@ func (e *Exporter) exportFavorites(userID string) ([]byte, error) {
 		if len(rows) < notesExportBatchSize {
 			break
 		}
-		offset += notesExportBatchSize
+		// 結果は id DESC で帰ってくるので最後の (= 最も古い) ID を次の
+		// untilID に渡して次ページを取得する。
+		untilID = rows[len(rows)-1].ID
 	}
 	buf.WriteByte(']')
 	return buf.Bytes(), nil
