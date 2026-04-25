@@ -120,3 +120,89 @@ func TestPackNotification_ExtraFields_Merged(t *testing.T) {
 }
 
 func ptrStr(s string) *string { return &s }
+
+// PackNotifications は N 件の通知を pack しても InstanceLookup を 1 回 /
+// EmojiLookup は host 数分しか叩かないことを確認する (#428 N+1 解消)。
+// 単品 PackNotification を loop で呼ぶと 1 件あたり 2 + 2 (note 用 +
+// user 用) クエリ発生するため、20 件で 80 クエリにふくらむ前提を防ぐ。
+func TestPackNotifications_BatchesResolvers(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	hostA := "a.example"
+	hostB := "b.example"
+	themeColor := "#cafe00"
+	instLookup := &stubInstanceLookup{data: map[string]*model.Instance{
+		hostA: {Host: hostA, ThemeColor: &themeColor},
+		hostB: {Host: hostB, ThemeColor: &themeColor},
+	}}
+	emojiLookup := &stubEmojiLookup{data: map[string][]*model.Emoji{}}
+
+	// 3 件の通知: 同じ host を含む / 別 host / local の混在で host 集約も確認。
+	mkItem := func(id string, host *string) NotificationItem {
+		u := &model.User{ID: "u" + id, Username: "u" + id, UsernameLower: "u" + id, Host: host}
+		return NotificationItem{
+			N: &notification.Notification{
+				ID: id, CreatedAt: time.Now(), Type: notification.TypeFollow, NotifierID: "u" + id,
+			},
+			User: u,
+		}
+	}
+	items := []NotificationItem{
+		mkItem("n1", &hostA),
+		mkItem("n2", &hostA),
+		mkItem("n3", &hostB),
+	}
+
+	out := PackNotifications(items, idGen, instLookup, emojiLookup)
+	require.Len(t, out, 3)
+
+	assert.Len(t, instLookup.calls, 1, "InstanceResolver は 1 batch fetch のみ")
+	// host は a/b の 2 つ uniq 化されている。
+	assert.ElementsMatch(t, []string{hostA, hostB}, instLookup.calls[0])
+
+	// remote user の Instance が乗っていることだけ抜き取り検証。
+	for _, item := range out {
+		u, ok := item["user"].(UserLite)
+		require.True(t, ok)
+		require.NotNil(t, u.Instance)
+		assert.Equal(t, themeColor, *u.Instance.ThemeColor)
+	}
+}
+
+// item 内で N == nil な要素は skip され、残りは入力順序を保つことを確認。
+func TestPackNotifications_SkipsNilNotifications(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	items := []NotificationItem{
+		{N: &notification.Notification{ID: "x1", CreatedAt: time.Now(), Type: notification.TypeFollow}},
+		{N: nil},
+		{N: &notification.Notification{ID: "x2", CreatedAt: time.Now(), Type: notification.TypeFollow}},
+	}
+	out := PackNotifications(items, idGen, nil, nil)
+	require.Len(t, out, 2)
+	assert.Equal(t, "x1", out[0]["id"])
+	assert.Equal(t, "x2", out[1]["id"])
+}
+
+// note を持つ通知も 1 batch で resolve されることを確認 (note.user の Instance
+// と top-level notifier の Instance が同じ host でも fetch は 1 回)。
+func TestPackNotifications_NoteAndUserShareInstanceFetch(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	host := "remote.example"
+	themeColor := "#abcdef"
+	instLookup := &stubInstanceLookup{data: map[string]*model.Instance{
+		host: {Host: host, ThemeColor: &themeColor},
+	}}
+
+	notifier := &model.User{ID: "u_a", Username: "a", UsernameLower: "a", Host: &host}
+	noteAuthor := &model.User{ID: "u_b", Username: "b", UsernameLower: "b", Host: &host}
+	note := &model.Note{ID: "n_1", UserID: "u_b", User: noteAuthor, Text: ptrStr("hi")}
+
+	n := &notification.Notification{
+		ID: "x", CreatedAt: time.Now(), Type: notification.TypeReply,
+		NotifierID: "u_a", NoteID: "n_1",
+	}
+
+	out := PackNotifications([]NotificationItem{{N: n, User: notifier, Note: note}}, idGen, instLookup, nil)
+	require.Len(t, out, 1)
+	assert.Len(t, instLookup.calls, 1, "host 重複は uniq 化されて 1 回の fetch")
+	assert.ElementsMatch(t, []string{host}, instLookup.calls[0])
+}

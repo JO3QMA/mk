@@ -116,7 +116,9 @@ func (h *Handler) Show(c echo.Context) error {
 		excludeSet[t] = true
 	}
 
-	out := make([]map[string]any, 0, len(rows))
+	// 1 ページ分の通知を filter してから entity.PackNotifications に渡し、
+	// InstanceResolver / EmojiResolver を 1 回だけ構築する (#428 N+1 解消)。
+	items := make([]entity.NotificationItem, 0, len(rows))
 	for _, n := range rows {
 		// カーソルベースページネーション
 		if req.SinceID != "" && n.ID <= req.SinceID {
@@ -140,10 +142,8 @@ func (h *Handler) Show(c echo.Context) error {
 				continue
 			}
 		}
-		// WebSocket 経由の packing と一貫性を保つため entity.PackNotification
-		// にdelegateする(Devin #315 指摘)。user/note 取得は handler 側で
-		// repo が wire されていれば best-effort。外側の認証ユーザー(`user`
-		// at line 48)をshadowしないよう明示的に notifier 名で受ける。
+		// user/note 取得は handler 側で repo が wire されていれば best-effort。
+		// 外側の認証ユーザー (`user`) を shadow しないよう notifier 名で受ける。
 		var notifier *model.User
 		if h.userRepo != nil && n.NotifierID != "" {
 			if u, err := h.userRepo.FindByID(n.NotifierID); err == nil {
@@ -156,8 +156,9 @@ func (h *Handler) Show(c echo.Context) error {
 				note = nn
 			}
 		}
-		out = append(out, entity.PackNotification(n, notifier, note, h.idGen, h.instanceLookup(), h.emojiLookup()))
+		items = append(items, entity.NotificationItem{N: n, User: notifier, Note: note})
 	}
+	out := entity.PackNotifications(items, h.idGen, h.instanceLookup(), h.emojiLookup())
 	// 本家 i/notifications と互換: markAsRead 未指定または true なら通知一覧
 	// 取得の副作用で全通知を既読化し、main stream に readAllNotifications を
 	// publish する。これが無いとフロントエンドが /my/notifications を開いても

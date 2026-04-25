@@ -13,6 +13,16 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 )
 
+// NotificationItem bundles a notification record with its already-resolved
+// notifier user and referenced note. PackNotifications takes a slice of
+// these so the caller can pre-fetch users / notes once and the packer can
+// build InstanceResolver / EmojiResolver once for the whole batch (#428)。
+type NotificationItem struct {
+	N    *notification.Notification
+	User *model.User
+	Note *model.Note
+}
+
 // PackNotification converts a Notification record into the map shape
 // emitted over the `main` WebSocket channel and returned by
 // /api/i/notifications. Matches Misskey's NotificationEntityService.pack
@@ -23,7 +33,83 @@ import (
 // instLookup / emojiLookup を渡すと top-level user と note.user に
 // Instance / 絵文字 URL を埋める。nil なら no-op リゾルバとして扱われ、
 // 従来互換の挙動になる (#415 notifications page InstanceTicker)。
+//
+// **Single-item only.** 内部で 1 件用の InstanceResolver / EmojiResolver を
+// 都度作るので、ループから呼ぶと N+1 クエリになる。複数件をまとめて pack
+// する callsite (例: /api/i/notifications) は PackNotifications を使うこと
+// (#428)。
 func PackNotification(n *notification.Notification, user *model.User, note *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) map[string]any {
+	if n == nil {
+		return nil
+	}
+	out := PackNotifications([]NotificationItem{{N: n, User: user, Note: note}}, idGen, instLookup, emojiLookup)
+	if len(out) == 0 {
+		return nil
+	}
+	return out[0]
+}
+
+// PackNotifications batches PackNotification across a slice of items with a
+// single InstanceResolver / EmojiResolver shared across all items. Callers
+// must pre-resolve notifier User and target Note (FindByID / FindByIDWithUser)
+// per item; the packer is responsible only for resolver-level batching
+// (Instance / 絵文字)。
+//
+// 通知一覧 hot-path (#428) で 1 件ごとに resolver を作っていた N+1 を解消する。
+// 20 件ページで Instance lookup × 2 + Emoji lookup × 2 (note 用 + user 用) =
+// 約 80 クエリ → 各 1 回に削減される (host / 絵文字名は内部で uniq 化)。
+//
+// items 内で N == nil の要素は単純に skip する。残りは入力順序を保って返す。
+func PackNotifications(items []NotificationItem, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) []map[string]any {
+	// 全 item の notifier user + 埋め込み note.user / Renote/Reply author を
+	// flatten して resolver の入力にする。
+	notifierUsers := make([]*model.User, 0, len(items))
+	notes := make([]*model.Note, 0, len(items))
+	// EmojiResolver は notes ベースで host 別に集約するので、notifier user の
+	// User.Emojis を拾うために合成 note shell ({User: u}) を別途 push する
+	// (単品ケース packNotificationCore でも同じ shell を経由する形)。
+	syntheticUserOnlyNotes := make([]*model.Note, 0, len(items))
+	for _, it := range items {
+		// it.N == nil の要素は最終的に skip されるので resolver 入力にも
+		// 含めない。User / Note だけが詰まった「亡霊」item を渡された場合に
+		// 無駄な host / 絵文字 fetch を起こさないための防御。
+		if it.N == nil {
+			continue
+		}
+		if it.User != nil {
+			notifierUsers = append(notifierUsers, it.User)
+			syntheticUserOnlyNotes = append(syntheticUserOnlyNotes, &model.Note{User: it.User})
+		}
+		if it.Note != nil {
+			notes = append(notes, it.Note)
+		}
+	}
+	flat := flattenNotesPlusRelations(notes)
+	noteAuthors := CollectNoteAuthors(flat)
+	// notifierUsers の backing array は cap=len(items) で確保済み。素朴な
+	// append(notifierUsers, ...) だと余剰 cap 内で同じ backing array に書く
+	// 可能性があり、後で notifierUsers を再利用したくなった時に aliasing
+	// バグになりうる。意識的に新規 backing array を確保しておく。
+	allUsers := make([]*model.User, 0, len(notifierUsers)+len(noteAuthors))
+	allUsers = append(allUsers, notifierUsers...)
+	allUsers = append(allUsers, noteAuthors...)
+	instResolver := NewInstanceResolver(instLookup, allUsers...)
+	emojiInput := append(append([]*model.Note(nil), flat...), syntheticUserOnlyNotes...)
+	emojiResolver := NewEmojiResolver(emojiLookup, emojiInput)
+
+	out := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		if packed := packNotificationCore(it.N, it.User, it.Note, idGen, instResolver, emojiResolver); packed != nil {
+			out = append(out, packed)
+		}
+	}
+	return out
+}
+
+// packNotificationCore is the resolver-aware body shared by the single-item
+// PackNotification entry point and the batched PackNotifications. Resolvers
+// are passed in so the same instance can be re-used across many items.
+func packNotificationCore(n *notification.Notification, user *model.User, note *model.Note, idGen id.Generator, instResolver *InstanceResolver, emojiResolver *EmojiResolver) map[string]any {
 	if n == nil {
 		return nil
 	}
@@ -37,18 +123,23 @@ func PackNotification(n *notification.Notification, user *model.User, note *mode
 		// TS本家はnotifierIdを"userId"として返す。
 		out["userId"] = n.NotifierID
 		if user != nil {
-			out["user"] = packUserLiteWithResolvers(user, instLookup, emojiLookup)
+			lite := PackUserLite(user)
+			instResolver.FillUserLite(&lite)
+			emojiResolver.PopulateUserEmojis(user, &lite)
+			out["user"] = lite
 		}
 	}
 	if n.NoteID != "" {
 		// reply/mention/reaction/renote/quote/pollEnded等、noteを要する
 		// 通知タイプ向け。REST API互換のため noteId は常に含める。
 		// 加えて note object が fetch できていればpacked Noteも入れる。
-		// PackNoteWithInstance で note.user / Renote/Reply の embed にも
+		// applyNoteResolvers で note.user / Renote/Reply の embed にも
 		// Instance / 絵文字を適用する。
 		out["noteId"] = n.NoteID
 		if note != nil && idGen != nil {
-			out["note"] = PackNoteWithInstance(note, idGen, instLookup, emojiLookup)
+			packed := PackNote(note, idGen)
+			applyNoteResolvers(note, &packed, instResolver, emojiResolver)
+			out["note"] = packed
 		}
 	}
 	if n.Reaction != "" {
@@ -67,23 +158,4 @@ func PackNotification(n *notification.Notification, user *model.User, note *mode
 		out[k] = v
 	}
 	return out
-}
-
-// packUserLiteWithResolvers packs a model.User and applies optional Instance /
-// emoji resolution so that top-level user surfaces (notification userId / user)
-// carry the same InstanceTicker metadata as embedded note authors. nil lookups
-// leave Instance / Emojis empty (same as plain PackUserLite).
-func packUserLiteWithResolvers(u *model.User, instLookup InstanceLookup, emojiLookup EmojiLookup) UserLite {
-	lite := PackUserLite(u)
-	if u == nil {
-		return lite
-	}
-	instResolver := NewInstanceResolver(instLookup, u)
-	instResolver.FillUserLite(&lite)
-	// 絵文字は note.User の User.Emojis を引く経路と同じ interface を再利用。
-	// 合成 note に User だけ詰めた shell を渡すと NewEmojiResolver は
-	// user.Emojis から unique name を拾って一括 fetch してくれる。
-	emojiResolver := NewEmojiResolver(emojiLookup, []*model.Note{{User: u}})
-	emojiResolver.PopulateUserEmojis(u, &lite)
-	return lite
 }
