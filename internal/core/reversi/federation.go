@@ -1,6 +1,9 @@
 package reversi
 
 import (
+	"net/url"
+	"strings"
+
 	"github.com/google/uuid"
 	"github.com/shiroha-a/mk/internal/model"
 )
@@ -186,6 +189,26 @@ func RenderUndo(baseURL, actorURI string, original APActivity) APActivity {
 		Actor:   actorURI,
 		Object:  original,
 	}
+}
+
+// IsReversiGameSessionURI reports whether `uri` follows CherryPick's
+// `/games/{UUID}/{sessionID}` pattern used as the EmojiReaction `object`
+// in reversi reaction federation (#417 P5). 純正 Misskey フロントは
+// reversi の `reacted` イベントを表示する UI を持たないため、mk-go では
+// この URI 形式を持つ Like / EmojiReaction を 202 ack して連合衛生だけ
+// 担保する。送信側は実装しない (ボタン UI が無いので呼ばれない)。
+//
+// クエリ文字列 / fragment のみに `/games/{UUID}/` 文字列が現れた URI を
+// 誤検出しないよう、URL parse して path 部分のみ照合する (#417 P5 Devin
+// review)。UUID エントロピー的に偽陽性は実用上ありえないが、防御的に
+// path 限定チェックにしておく。
+func IsReversiGameSessionURI(uri string) bool {
+	const marker = "/games/" + GameTypeUUID + "/"
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(parsed.Path, marker)
 }
 
 // IsReversiGame checks if an object is a reversi Game by UUID.

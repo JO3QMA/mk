@@ -1,6 +1,7 @@
 # Binary
 /misskey
 /misskey-go
+/built/
 *.exe
 *.exe~
 *.dll

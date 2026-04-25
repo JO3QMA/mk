@@ -614,6 +614,56 @@ func TestReversiInbox_Leave_UnknownSession(t *testing.T) {
 	assert.Error(t, b.processor.Process(body))
 }
 
+// --- EmojiReaction / Like over reversi game session URI (#417 P5) ---
+//
+// 純正 Misskey フロントは reversi `reacted` を表示する UI を持たないので
+// mk-go では state 変化させず 202 ack だけ返す。Note Like より早く分岐
+// しないと resolver.ResolveNote が 404 で失敗するため URI パターンで弾く。
+
+func TestReversiInbox_Reaction_AcksGameURI(t *testing.T) {
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	body := []byte(`{
+		"type": "EmojiReaction",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/games/1c086295-25e3-4b82-b31e-3e3959906312/sess-anything",
+		"content": ":fire:",
+		"_misskey_reaction": ":fire:"
+	}`)
+	require.NoError(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_Reaction_LikeTypeAlsoAcked(t *testing.T) {
+	// type: "Like" でも reversi URI なら同じく ack。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	body := []byte(`{
+		"type": "Like",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/games/1c086295-25e3-4b82-b31e-3e3959906312/sess-like",
+		"content": "❤️"
+	}`)
+	require.NoError(t, b.processor.Process(body))
+}
+
+func TestReversiInbox_UndoReaction_AcksGameURI(t *testing.T) {
+	// Undo(EmojiReaction) も reversi URI 対象なら ack 扱いにする
+	// (#417 P5 Devin review: handleLike と handleUndoLike の対称化)。
+	b := newReversiProcessor(t)
+	registerRemoteAlice(t, b.userRepo)
+	body := []byte(`{
+		"type": "Undo",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "EmojiReaction",
+			"actor": "https://remote.example/users/alice",
+			"object": "https://remote.example/games/1c086295-25e3-4b82-b31e-3e3959906312/sess-undo-react",
+			"content": ":fire:"
+		}
+	}`)
+	require.NoError(t, b.processor.Process(body))
+}
+
 // --- Update (reversi variant) ---
 
 func TestReversiInbox_Update_ReadyStates(t *testing.T) {

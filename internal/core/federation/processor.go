@@ -452,17 +452,30 @@ func (p *Processor) handleUndoFollow(act genericActivity, inner genericActivity)
 }
 
 // handleUndoLike removes a reaction previously added via Like.
+//
+// Note: reversi game session URI を対象とした Undo(EmojiReaction) は
+// handleLike と対称に 202 ack で握り潰す (#417 P5)。dispatch 順も handleLike
+// と揃えており、ResolveActor を先頭で実行することで actor cache の populate
+// が両 path で同様に行われるようにする (#417 P5 Devin review)。
+// reactionService nil の本番 config は無いので unconditional な ResolveActor
+// で実害なし。
 func (p *Processor) handleUndoLike(act genericActivity, inner genericActivity) error {
-	if p.reactionService == nil {
-		return ErrUnsupportedActivity
-	}
 	reactor, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
 		return err
 	}
 	targetURI, err := readObjectString(inner.Object)
 	if err != nil {
-		return err
+		// inner.object 欠如した malformed Undo(Like) は handleLike と同じく
+		// 202 ack 扱い (旧実装は reactionService nil 経路で ErrUnsupportedActivity
+		// を返していた)。
+		return ErrUnsupportedActivity
+	}
+	if corereversi.IsReversiGameSessionURI(targetURI) {
+		return nil
+	}
+	if p.reactionService == nil {
+		return ErrUnsupportedActivity
 	}
 	target, err := p.resolver.ResolveNote(targetURI)
 	if err != nil {
@@ -613,10 +626,19 @@ func hydrateNoteForFanout(repo interface {
 }
 
 // handleLike attaches a reaction to a local note based on a Like activity.
+//
+// Note: P5 (#417) で reversi 早期分岐を入れた都合上、reactionService nil
+// チェックを reversi 分岐の後に移動している。副作用として:
+//   - ResolveActor が無条件で呼ばれる (旧実装は reactionService nil 時に
+//     早期 return していた)。reversi 分岐側でも actor 解決は必要なので
+//     妥当な変更。reactionService が wire されていない config は production
+//     には無いので実害なし (#417 P5 Devin review)。
+//   - object が malformed (string でも nested object でもない) Like は
+//     reactionService の有無に関わらず ErrUnsupportedActivity (= 202 ack)
+//     を返す。旧実装は reactionService 配線時に readObjectString error を
+//     400 として返していたが、404 / 400 で peer の retry を誘発するより
+//     202 で握り潰すほうが連合衛生的に望ましい (#417 P5 Devin review)。
 func (p *Processor) handleLike(act genericActivity) error {
-	if p.reactionService == nil {
-		return ErrUnsupportedActivity
-	}
 	reactor, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
 		return err
@@ -630,17 +652,31 @@ func (p *Processor) handleLike(act genericActivity) error {
 		// act.Object (RawMessage) から直接読む
 		uri, rerr := readObjectString(act.Object)
 		if rerr != nil {
-			return rerr
+			return ErrUnsupportedActivity
 		}
 		like.Object = uri
-	}
-	target, err := p.resolver.ResolveNote(like.Object)
-	if err != nil {
-		return err
 	}
 	reaction := like.Content
 	if like.MisskeyReaction != "" {
 		reaction = like.MisskeyReaction
+	}
+	// reversi game session URI (`/games/{UUID}/{sessionID}`) は CherryPick
+	// 拡張の reaction 連合。純正 Misskey フロントは `reacted` を表示する UI を
+	// 持たないので mk-go では state 変化させず 202 ack だけ返す (#417 P5)。
+	// resolver.ResolveNote が 404 で失敗するのを避けるため Note Like より先に
+	// 弾く必要がある。
+	if corereversi.IsReversiGameSessionURI(like.Object) {
+		// reactor / reaction は note Like 経路で使われるので blank assign 不要。
+		// actor 解決は handleLike 冒頭で済ませているのでキャッシュ取込の
+		// 副作用はこの早期 return でも残る。
+		return nil
+	}
+	if p.reactionService == nil {
+		return ErrUnsupportedActivity
+	}
+	target, err := p.resolver.ResolveNote(like.Object)
+	if err != nil {
+		return err
 	}
 	if _, err := p.reactionService.Create(reactor, target.ID, reaction); err != nil {
 		if errors.Is(err, corereaction.ErrAlreadyReacted) {
