@@ -336,6 +336,10 @@ func (r *userRepository) CountOnlineUsers() (int64, error) {
 // timestamp-prefixed なので、`idGen.Generate(cutoff)` で作った合成 id を
 // 渡せば「`cutoff` 以降に作成されたユーザー」と等価になる (#421
 // retention aggregation で使用)。
+//
+// `isDeleted = false` フィルタは意図的に省いている。retention の cohort は
+// 「その日に登録したユーザー集合」であり、後から削除されたユーザーも cohort
+// 母数からは外さない方が正しい (定着率の分母は登録時点で固定)。
 func (r *userRepository) ListLocalUserIDsRegisteredAfter(idCursor string) ([]string, error) {
 	var ids []string
 	err := r.db.Model(&model.User{}).
@@ -348,10 +352,15 @@ func (r *userRepository) ListLocalUserIDsRegisteredAfter(idCursor string) ([]str
 // ListLocalUserIDsActiveSince returns the IDs of local users whose
 // lastActiveDate is at or after `since`. Used by the retention aggregation
 // job to determine the "active today" cohort (#421)。
+//
+// 定着 (active) 側は削除済みユーザーを除外する。退会したアカウントを「定着」
+// と数えると分子が膨らんで誤った retention 率になるため。`CountLocalUsers`
+// /`CountLocalUsersActiveSince` と同じフィルタ方針。
 func (r *userRepository) ListLocalUserIDsActiveSince(since time.Time) ([]string, error) {
 	var ids []string
 	err := r.db.Model(&model.User{}).
 		Where("host IS NULL").
+		Where(`"isDeleted" = false`).
 		Where(`"lastActiveDate" >= ?`, since).
 		Pluck("id", &ids).Error
 	return ids, err

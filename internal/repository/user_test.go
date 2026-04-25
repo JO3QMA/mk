@@ -677,6 +677,65 @@ func TestUserRepository_CountLocalUsersActiveSince(t *testing.T) {
 	assert.GreaterOrEqual(t, cnt, int64(1))
 }
 
+// retention aggregation (#421) で使う 2 メソッドを統合テストする。
+// 削除済みフィルタが retention 側 (active) のみで効き、cohort 側
+// (registered) では効かないことを確認する。
+func TestUserRepository_ListLocalUserIDsRegisteredAfter(t *testing.T) {
+	repo := NewUserRepository(testDB)
+
+	// id 順に並ぶよう prefix を時系列順にする (aidx は timestamp prefixed
+	// なので「id > cursor」 = 「cursor 以降に登録」と等価)。
+	older := insertTestUser(t, "uregaaaa", "regaaaa")
+	defer cleanupUser(t, older.ID)
+	newer := insertTestUser(t, "uregzzzz", "regzzzz")
+	defer cleanupUser(t, newer.ID)
+
+	// 削除済み local user も cohort には含める (定着率の分母は登録時点で固定)。
+	deleted := insertTestUser(t, "uregyyyy", "regyyyy")
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", deleted.ID).Update("isDeleted", true).Error)
+	defer cleanupUser(t, deleted.ID)
+
+	// remote user は除外される。
+	remote := insertRemoteTestUser(t, "uregremo", "regremo", "remote.example")
+	defer cleanupUser(t, remote.ID)
+
+	got, err := repo.ListLocalUserIDsRegisteredAfter(older.ID)
+	require.NoError(t, err)
+	// older 自身は ">"" なので含まれない。newer と deleted は含まれる。
+	assert.Contains(t, got, newer.ID)
+	assert.Contains(t, got, deleted.ID, "deleted users must remain in the registration cohort")
+	assert.NotContains(t, got, older.ID)
+	assert.NotContains(t, got, remote.ID, "remote users must be excluded")
+}
+
+func TestUserRepository_ListLocalUserIDsActiveSince(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	now := time.Now()
+	recent := now.Add(-5 * time.Minute)
+	old := now.Add(-200 * 24 * time.Hour)
+
+	active := insertTestUser(t, "ulistact", "listact")
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", active.ID).UpdateColumn("lastActiveDate", &recent).Error)
+	defer cleanupUser(t, active.ID)
+
+	stale := insertTestUser(t, "uliststa", "liststa")
+	require.NoError(t, testDB.Model(&model.User{}).Where("id = ?", stale.ID).UpdateColumn("lastActiveDate", &old).Error)
+	defer cleanupUser(t, stale.ID)
+
+	// 削除済み + 直近 active は除外する (退会者を「定着」と数えない)。
+	deleted := insertTestUser(t, "ulistdel", "listdel")
+	require.NoError(t, testDB.Model(&model.User{}).
+		Where("id = ?", deleted.ID).
+		Updates(map[string]any{"lastActiveDate": &recent, "isDeleted": true}).Error)
+	defer cleanupUser(t, deleted.ID)
+
+	got, err := repo.ListLocalUserIDsActiveSince(now.Add(-1 * time.Hour))
+	require.NoError(t, err)
+	assert.Contains(t, got, active.ID)
+	assert.NotContains(t, got, stale.ID, "stale users must be excluded")
+	assert.NotContains(t, got, deleted.ID, "deleted users must be excluded from the retained set")
+}
+
 func TestUserRepository_CountLocalUsers_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
