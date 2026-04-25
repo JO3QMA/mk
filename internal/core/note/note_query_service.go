@@ -32,9 +32,24 @@ func (s *QueryService) SetThreadMutingRepo(r repository.NoteThreadMutingReposito
 }
 
 // Show returns the requested note if it exists and the viewer can see it.
-// viewerはnil可 (未認証ユーザー)。
+// viewerはnil可 (未認証ユーザー)。返り値は handler 側で pack されるため、
+// Renote / Reply embed まで full preload する (#425 重量経路)。
 func (s *QueryService) Show(viewer *model.User, noteID string) (*model.Note, error) {
 	n, err := s.noteRepo.FindByIDWithRelations(noteID)
+	if err != nil {
+		return nil, ErrNoteNotFound
+	}
+	if !CanSeeNote(viewer, n, s.followingRepo) {
+		return nil, ErrNoteNotFound
+	}
+	return n, nil
+}
+
+// requireVisible は visibility check 用の軽量ロード。返り値の note は
+// 呼び出し元で pack せず捨てるか top-level フィールドだけを参照する想定 (#425)。
+// Show は handler に返す note を full preload するため別経路。
+func (s *QueryService) requireVisible(viewer *model.User, noteID string) (*model.Note, error) {
+	n, err := s.noteRepo.FindByIDWithUser(noteID)
 	if err != nil {
 		return nil, ErrNoteNotFound
 	}
@@ -47,7 +62,7 @@ func (s *QueryService) Show(viewer *model.User, noteID string) (*model.Note, err
 // ListRenotes returns the renotes of the given noteID after filtering for visibility.
 // 元のノートが閲覧できない場合はErrNoteNotFoundを返す。
 func (s *QueryService) ListRenotes(viewer *model.User, noteID, untilID, sinceID string, limit int) ([]*model.Note, error) {
-	if _, err := s.Show(viewer, noteID); err != nil {
+	if _, err := s.requireVisible(viewer, noteID); err != nil {
 		return nil, err
 	}
 	rows, err := s.noteRepo.ListRenotesOf(noteID, untilID, sinceID, limit)
@@ -59,7 +74,7 @@ func (s *QueryService) ListRenotes(viewer *model.User, noteID, untilID, sinceID 
 
 // ListReplies returns replies to the given noteID after filtering for visibility.
 func (s *QueryService) ListReplies(viewer *model.User, noteID, untilID, sinceID string, limit int) ([]*model.Note, error) {
-	if _, err := s.Show(viewer, noteID); err != nil {
+	if _, err := s.requireVisible(viewer, noteID); err != nil {
 		return nil, err
 	}
 	rows, err := s.noteRepo.ListRepliesOf(noteID, untilID, sinceID, limit)
@@ -71,7 +86,7 @@ func (s *QueryService) ListReplies(viewer *model.User, noteID, untilID, sinceID 
 
 // ListChildren returns notes that reply to or quote the given noteID.
 func (s *QueryService) ListChildren(viewer *model.User, noteID, untilID, sinceID string, limit int) ([]*model.Note, error) {
-	if _, err := s.Show(viewer, noteID); err != nil {
+	if _, err := s.requireVisible(viewer, noteID); err != nil {
 		return nil, err
 	}
 	rows, err := s.noteRepo.ListChildrenOf(noteID, untilID, sinceID, limit)
@@ -127,7 +142,8 @@ func (s *QueryService) Conversation(viewer *model.User, noteID string, limit int
 // upstream Misskey の notes/state は isFavorited / isMutedThread のみを返す
 // (isWatching は廃止) ため、こちらも同じ shape に揃える。
 func (s *QueryService) State(viewer *model.User, noteID string) (*NoteState, error) {
-	note, err := s.Show(viewer, noteID)
+	// State は note.ID と note.ThreadID しか触らないので軽量経路で十分 (#425)。
+	note, err := s.requireVisible(viewer, noteID)
 	if err != nil {
 		return nil, err
 	}
