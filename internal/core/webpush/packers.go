@@ -26,7 +26,7 @@ func (p *NoteRepoPacker) PackNoteByID(noteID string) (map[string]any, bool) {
 	if p == nil || p.repo == nil {
 		return nil, false
 	}
-	n, err := p.repo.FindByIDWithUser(noteID)
+	n, err := p.repo.FindByIDWithRelations(noteID)
 	if err != nil {
 		return nil, false
 	}

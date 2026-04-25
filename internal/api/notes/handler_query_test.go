@@ -350,16 +350,6 @@ func TestSearch_RepoError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-// findFailQueryRepo causes FindByIDWithUser to fail so that State/Conversation
-// triggerするServiceエラー (Show経由) でnoSuchNoteパスが踏まれる。
-type findFailQueryRepo struct {
-	*testutil.MockNoteRepository
-}
-
-func (f *findFailQueryRepo) FindByIDWithUser(_ string) (*model.Note, error) {
-	return nil, testutil.ErrNotFound
-}
-
 // TestCreate_ReplyTargetNotFound triggers the NO_SUCH_REPLY_TARGET branch in
 // Create when the reply target does not exist.
 func TestCreate_ReplyTargetNotFound(t *testing.T) {

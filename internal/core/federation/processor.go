@@ -610,16 +610,17 @@ func (p *Processor) handleCreate(act genericActivity) error {
 	return nil
 }
 
-// hydrateNoteForFanout reloads a freshly-created note via FindByIDWithUser so
-// that Renote/Reply relations are preloaded before handing it to the fanout
-// hook. reload が失敗した場合は元の note をそのまま返す (best-effort)。
+// hydrateNoteForFanout reloads a freshly-created note via
+// FindByIDWithRelations so that Renote/Reply relations are preloaded before
+// handing it to the fanout hook. reload が失敗した場合は元の note をその
+// まま返す (best-effort)。
 func hydrateNoteForFanout(repo interface {
-	FindByIDWithUser(id string) (*model.Note, error)
+	FindByIDWithRelations(id string) (*model.Note, error)
 }, note *model.Note) *model.Note {
 	if repo == nil || note == nil {
 		return note
 	}
-	if loaded, err := repo.FindByIDWithUser(note.ID); err == nil && loaded != nil {
+	if loaded, err := repo.FindByIDWithRelations(note.ID); err == nil && loaded != nil {
 		return loaded
 	}
 	return note

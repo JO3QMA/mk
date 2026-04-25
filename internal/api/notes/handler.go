@@ -290,7 +290,7 @@ func (h *Handler) lookupVisible(viewer *model.User, noteID string) (*model.Note,
 	if h.queryService != nil {
 		return h.queryService.Show(viewer, noteID)
 	}
-	return h.noteRepo.FindByIDWithUser(noteID)
+	return h.noteRepo.FindByIDWithRelations(noteID)
 }
 
 // DeleteRequest is the request body for notes/delete.

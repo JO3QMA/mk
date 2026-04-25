@@ -210,7 +210,7 @@ type stubNotifNoteRepo struct {
 	err  error
 }
 
-func (s *stubNotifNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
+func (s *stubNotifNoteRepo) FindByIDWithRelations(_ string) (*model.Note, error) {
 	return s.note, s.err
 }
 

@@ -478,9 +478,11 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		note.HasPoll = true
 	}
 
-	// Userリレーションをpreloadして返す。失敗時は引数のUserをそのまま埋めて返す
+	// User / Renote / Reply リレーションをpreloadして返す。失敗時は引数の
+	// Userをそのまま埋めて返す。fanout / hook 先で renote/reply embed を
+	// 触るため full version を使う (#425)。
 	finalNote := note
-	if loaded, err := s.noteRepo.FindByIDWithUser(noteID); err == nil && loaded != nil {
+	if loaded, err := s.noteRepo.FindByIDWithRelations(noteID); err == nil && loaded != nil {
 		finalNote = loaded
 	} else {
 		finalNote.User = in.User

@@ -164,7 +164,11 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 		return "", errors.New("user is required")
 	}
 
-	target, err := s.noteRepo.FindByIDWithUser(noteID)
+	// webhookHook.OnReactionCreated が target を PackNote 経由で payload に
+	// 詰めるため、Renote / Reply embed を含む full 経路を踏む (#425)。軽量な
+	// FindByIDWithUser を使うと webhook 受信側が note.renote / reply の
+	// 欠落で Misskey TS 互換が崩れる。
+	target, err := s.noteRepo.FindByIDWithRelations(noteID)
 	if err != nil {
 		return "", ErrNoteNotFound
 	}

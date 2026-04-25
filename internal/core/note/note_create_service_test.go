@@ -36,10 +36,12 @@ func (f *failingPollRepo) Create(_ *model.Poll) error                 { return s
 func (f *failingPollRepo) FindByNoteID(_ string) (*model.Poll, error) { return nil, stubError }
 func (f *failingPollRepo) IncrementVote(_ string, _ int, _ int) error { return nil }
 
-// findFailNoteRepo creates successfully but FindByIDWithUser always fails.
+// findFailNoteRepo creates successfully but FindByIDWithRelations always
+// fails (CreateService uses the full-relations variant for finalNote since
+// fanout / hooks need Renote/Reply embed; #425 split)。
 type findFailNoteRepo struct{ *testutil.MockNoteRepository }
 
-func (f *findFailNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
+func (f *findFailNoteRepo) FindByIDWithRelations(_ string) (*model.Note, error) {
 	return nil, stubError
 }
 
@@ -248,7 +250,7 @@ func TestCreateService_NoteRepoUpdateError(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestCreateService_FindByIDWithUserFails(t *testing.T) {
+func TestCreateService_FindByIDWithRelationsFails(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	noteRepo := &findFailNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
 	pollRepo := testutil.NewMockPollRepository()
@@ -258,7 +260,7 @@ func TestCreateService_FindByIDWithUserFails(t *testing.T) {
 	text := "x"
 	created, err := svc.Create(note.CreateInput{User: user, Text: &text})
 	require.NoError(t, err)
-	// FindByIDWithUserが失敗してもin.Userが埋められて返る
+	// FindByIDWithRelations が失敗しても in.User が埋められて返る (#425)。
 	assert.Equal(t, user, created.User)
 }
 

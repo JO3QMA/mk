@@ -128,6 +128,54 @@ func TestNoteRepository_FindByIDWithUser(t *testing.T) {
 	assert.NotNil(t, found.User)
 	assert.Equal(t, user.ID, found.User.ID)
 	assert.Equal(t, "noteuser2", found.User.Username)
+	// 軽量経路 (#425) では Renote/Reply は preload されない。
+	assert.Nil(t, found.Renote)
+	assert.Nil(t, found.Reply)
+}
+
+// FindByIDWithRelations は User に加えて Renote / Renote.User / Reply /
+// Reply.User まで preload する full version (#425)。
+func TestNoteRepository_FindByIDWithRelations(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	author := insertTestUser(t, "u_nfr_a", "nfra")
+	defer cleanupUser(t, author.ID)
+	rnAuthor := insertTestUser(t, "u_nfr_r", "nfrr")
+	defer cleanupUser(t, rnAuthor.ID)
+
+	renoteID := "n_nfr_rn"
+	renoteTarget := &model.Note{
+		ID:         renoteID,
+		UserID:     rnAuthor.ID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(renoteTarget))
+	defer cleanupNote(t, renoteTarget.ID)
+
+	parent := &model.Note{
+		ID:         "n_nfr_main",
+		UserID:     author.ID,
+		RenoteID:   &renoteID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(parent))
+	defer cleanupNote(t, parent.ID)
+
+	found, err := repo.FindByIDWithRelations(parent.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.User)
+	assert.Equal(t, author.ID, found.User.ID)
+	require.NotNil(t, found.Renote, "Renote must be preloaded")
+	assert.Equal(t, renoteID, found.Renote.ID)
+	require.NotNil(t, found.Renote.User, "Renote.User must be preloaded")
+	assert.Equal(t, rnAuthor.ID, found.Renote.User.ID)
+}
+
+func TestNoteRepository_FindByIDWithRelations_NotFound(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	_, err := repo.FindByIDWithRelations("nonexistent_note_relations")
+	assert.Error(t, err)
 }
 
 func TestNoteRepository_UpdateFields(t *testing.T) {
