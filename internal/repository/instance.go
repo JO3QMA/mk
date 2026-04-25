@@ -25,6 +25,13 @@ type InstanceRepository interface {
 	// returned. Ordered by infoUpdatedAt ASC NULLS FIRST so the oldest data
 	// is refreshed first.
 	ListForRefresh(staleBefore time.Time, limit int) ([]*model.Instance, error)
+	// RecomputeFollowCounts refreshes followersCount / followingCount on
+	// every instance row from the live `following` table. Currently nobody
+	// keeps these counters in sync incrementally, so admin/overview's
+	// federation pie chart gets all-zero slices. Running this on startup
+	// gives the dashboard the right pie until incremental hooks land
+	// (#421)。
+	RecomputeFollowCounts() error
 }
 
 type instanceRepository struct {
@@ -181,4 +188,63 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 		return nil, err
 	}
 	return rows, nil
+}
+
+// RecomputeFollowCounts recomputes the followersCount / followingCount
+// columns of every instance row from the live `following` table. Used at
+// startup to backfill stale zeros until incremental hooks land (#421)。
+//
+// 命名は本家 Misskey と揃える:
+//   - `followersCount`: 当該リモートインスタンスの user が **我々を**
+//     何人 follow しているか (= 受信側 = subscribing)。SQL では
+//     follower.host = X を数える。
+//   - `followingCount`: 我々のローカル user が **当該インスタンスの user
+//     を** 何人 follow しているか (= 配信側 = publishing)。SQL では
+//     followee.host = X を数える。
+//
+// Reset → backfill の二段構え: 過去 follow が消えた host (= subquery に
+// 出てこない) は subquery JOIN だと UPDATE 対象外になり、古い非ゼロ値が
+// 永遠に残ってしまう (#421 Devin review)。先に全 instance を 0 にしてから
+// 該当 host のみ再上書きすることで、follow を全部解除した instance も
+// 確実に 0 へ戻す。
+//
+// 3 つの UPDATE は単一トランザクションでまとめる: reset だけ先に走って
+// 後段で fail すると全 instance が永続的に 0 になってしまうため (#421
+// Devin review)。
+func (r *instanceRepository) RecomputeFollowCounts() error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(
+			`UPDATE "instance" SET "followersCount" = 0, "followingCount" = 0`,
+		).Error; err != nil {
+			return err
+		}
+		// followersCount = COUNT of remote followers per host (follower.host).
+		// "How many users on host X follow any local user" ≒ they subscribe to us.
+		const followers = `
+UPDATE "instance" SET "followersCount" = c.cnt
+FROM (
+  SELECT u.host AS host, COUNT(*)::int AS cnt
+  FROM "following" f
+  JOIN "user" u ON f."followerId" = u.id
+  WHERE u.host IS NOT NULL
+  GROUP BY u.host
+) c
+WHERE "instance".host = c.host`
+		if err := tx.Exec(followers).Error; err != nil {
+			return err
+		}
+		// followingCount = COUNT of remote followees per host (followee.host).
+		// "How many users on host X are followed by any local user" ≒ we publish to them.
+		const following = `
+UPDATE "instance" SET "followingCount" = c.cnt
+FROM (
+  SELECT u.host AS host, COUNT(*)::int AS cnt
+  FROM "following" f
+  JOIN "user" u ON f."followeeId" = u.id
+  WHERE u.host IS NOT NULL
+  GROUP BY u.host
+) c
+WHERE "instance".host = c.host`
+		return tx.Exec(following).Error
+	})
 }

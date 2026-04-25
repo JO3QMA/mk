@@ -1891,6 +1891,14 @@ func (m *MockInstanceRepository) ListForRefresh(staleBefore time.Time, limit int
 	return rows, nil
 }
 
+// RecomputeFollowCounts is a no-op stub for tests; the mock has no
+// `following` rows to aggregate from, and tests that exercise the
+// pie-chart endpoint can seed Instance.FollowersCount / FollowingCount
+// directly.
+func (m *MockInstanceRepository) RecomputeFollowCounts() error {
+	return nil
+}
+
 // List returns all stored instances filtered by the most common predicates.
 // 並び順は host 昇順 (テストの安定性のため)。
 func (m *MockInstanceRepository) List(filter model.InstanceListFilter) ([]*model.Instance, error) {

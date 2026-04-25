@@ -116,8 +116,10 @@ func (h *Handler) Users(c echo.Context) error {
 // 連合統計: followers / following がもっとも多いリモートインスタンス上位
 // N 件と、そのほかのインスタンスをまとめた残り総計を返す。
 func (h *Handler) Stats(c echo.Context) error {
+	// admin/overview は GET で叩いてくるので `query` タグも必要
+	// (#421 Devin review: charts.Request と同じ pattern)。
 	var req struct {
-		Limit int `json:"limit"`
+		Limit int `json:"limit" query:"limit"`
 	}
 	_ = c.Bind(&req)
 	if req.Limit <= 0 || req.Limit > 100 {

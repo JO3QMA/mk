@@ -125,17 +125,39 @@ func (r *gormRepository) scanRow(raw map[string]any) *Row {
 	return row
 }
 
-// toInt64 coerces a database driver value (int / int64 / float64 / []byte)
-// into int64. Defaults to zero on unknown types.
+// toInt64 coerces a database driver value into int64. Postgres `smallint`
+// (Range: chart.RangeSmall) comes back as int16 from pgx, so we MUST handle
+// it explicitly — without this the federation / charts API silently returns
+// 0 for every smallint column even though the underlying row has real data
+// (#421).
+//
+// The full set covers every signed integer width and a couple of unsigned
+// edge cases just in case a future driver hands us those.
 func toInt64(v any) int64 {
 	switch x := v.(type) {
 	case int64:
 		return x
 	case int32:
 		return int64(x)
+	case int16:
+		return int64(x)
+	case int8:
+		return int64(x)
 	case int:
 		return int64(x)
+	case uint64:
+		return int64(x)
+	case uint32:
+		return int64(x)
+	case uint16:
+		return int64(x)
+	case uint8:
+		return int64(x)
+	case uint:
+		return int64(x)
 	case float64:
+		return int64(x)
+	case float32:
 		return int64(x)
 	case []byte:
 		var n int64

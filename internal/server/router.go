@@ -144,6 +144,13 @@ func (s *Server) setupRoutes() {
 	driveFolderRepo := repository.NewDriveFolderRepository(s.db)
 	keypairRepo := repository.NewUserKeypairRepository(s.db)
 	instanceRepo := repository.NewInstanceRepository(s.db)
+	// instance.{followersCount,followingCount} はリアルタイム incremental
+	// 維持の hook が未実装で常に 0 → admin/overview の federation pie chart
+	// が空になる。起動時に `following` テーブルから一回 backfill する
+	// (#421)。失敗は警告だけで起動継続。
+	if err := instanceRepo.RecomputeFollowCounts(); err != nil {
+		slog.Warn("instance follow-counts recompute failed", "err", err)
+	}
 	channelRepo := repository.NewChannelRepository(s.db)
 	channelFollowingRepo := repository.NewChannelFollowingRepository(s.db)
 	antennaRepo := repository.NewAntennaRepository(s.db)
@@ -1231,7 +1238,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/federation/followers", federationHandler.Followers)
 	api.POST("/federation/following", federationHandler.Following)
 	api.POST("/federation/users", federationHandler.Users)
+	// admin overview から `misskeyApiGet` で叩かれるため GET も登録 (#421)。
 	api.POST("/federation/stats", federationHandler.Stats)
+	api.GET("/federation/stats", federationHandler.Stats)
 	api.POST("/federation/update-remote-user", federationHandler.UpdateRemoteUser, middleware.RequireModerator(roleService))
 
 	// Channels endpoints (Phase 4.2)
@@ -1401,19 +1410,24 @@ func (s *Server) setupRoutes() {
 	s.echo.GET("/streaming", streamingHandler.Stream)
 
 	// Charts API endpoints (engines + hooks already wired earlier).
+	// フロントエンドは `misskeyApiGet` (GET) でチャートを取得し、
+	// `misskeyApi` (POST) も使う場面があるので両方受ける。POST のみ登録だと
+	// GET が `api.Any("/*")` の catchall (= 200 + 空オブジェクト) に落ちて、
+	// 受信側で `chart.pubActive[0]` 等が `undefined` 例外を起こす (#421)。
 	chartsHandler := apicharts.NewHandler(chartCharts, nil)
-	api.POST("/charts/notes", chartsHandler.Notes)
-	api.POST("/charts/users", chartsHandler.Users)
-	api.POST("/charts/drive", chartsHandler.Drive)
-	api.POST("/charts/federation", chartsHandler.Federation)
-	api.POST("/charts/instance", chartsHandler.Instance)
-	api.POST("/charts/ap-request", chartsHandler.ApRequest)
-	api.POST("/charts/active-users", chartsHandler.ActiveUsers)
-	api.POST("/charts/user/notes", chartsHandler.UserNotes)
-	api.POST("/charts/user/drive", chartsHandler.UserDrive)
-	api.POST("/charts/user/following", chartsHandler.UserFollowing)
-	api.POST("/charts/user/pv", chartsHandler.UserPv)
-	api.POST("/charts/user/reactions", chartsHandler.UserReactions)
+	chartMethods := []string{http.MethodGet, http.MethodPost}
+	api.Match(chartMethods, "/charts/notes", chartsHandler.Notes)
+	api.Match(chartMethods, "/charts/users", chartsHandler.Users)
+	api.Match(chartMethods, "/charts/drive", chartsHandler.Drive)
+	api.Match(chartMethods, "/charts/federation", chartsHandler.Federation)
+	api.Match(chartMethods, "/charts/instance", chartsHandler.Instance)
+	api.Match(chartMethods, "/charts/ap-request", chartsHandler.ApRequest)
+	api.Match(chartMethods, "/charts/active-users", chartsHandler.ActiveUsers)
+	api.Match(chartMethods, "/charts/user/notes", chartsHandler.UserNotes)
+	api.Match(chartMethods, "/charts/user/drive", chartsHandler.UserDrive)
+	api.Match(chartMethods, "/charts/user/following", chartsHandler.UserFollowing)
+	api.Match(chartMethods, "/charts/user/pv", chartsHandler.UserPv)
+	api.Match(chartMethods, "/charts/user/reactions", chartsHandler.UserReactions)
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)
@@ -1738,11 +1752,16 @@ func (s *Server) setupRoutes() {
 
 	// --- Phase P3: 補助公開エンドポイント ---
 
-	// get-online-users-count — オンラインユーザー数
-	api.POST("/get-online-users-count", func(c echo.Context) error {
+	// get-online-users-count — オンラインユーザー数。フロントが
+	// `misskeyApiGet` で GET 呼び出ししても catchall に落ちないよう
+	// 両メソッドを受ける (#421)。POST のみだと `count` が undefined になり
+	// admin overview の「NaN 人」表示の原因になっていた。
+	onlineUsersHandler := func(c echo.Context) error {
 		count, _ := userRepo.CountOnlineUsers()
 		return c.JSON(http.StatusOK, map[string]any{"count": count})
-	})
+	}
+	api.GET("/get-online-users-count", onlineUsersHandler)
+	api.POST("/get-online-users-count", onlineUsersHandler)
 
 	// server-info (公開版) — サーバー情報
 	// frontend の server-metric widget は `misskeyApiGet` で GET 呼び出し、
