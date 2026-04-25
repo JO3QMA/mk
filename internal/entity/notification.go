@@ -67,7 +67,7 @@ func PackNotifications(items []NotificationItem, idGen id.Generator, instLookup 
 	notes := make([]*model.Note, 0, len(items))
 	// EmojiResolver は notes ベースで host 別に集約するので、notifier user の
 	// User.Emojis を拾うために合成 note shell ({User: u}) を別途 push する
-	// (単品 packUserLiteWithResolvers と同じテクニック)。
+	// (単品ケース packNotificationCore でも同じ shell を経由する形)。
 	syntheticUserOnlyNotes := make([]*model.Note, 0, len(items))
 	for _, it := range items {
 		if it.User != nil {
@@ -79,7 +79,14 @@ func PackNotifications(items []NotificationItem, idGen id.Generator, instLookup 
 		}
 	}
 	flat := flattenNotesPlusRelations(notes)
-	allUsers := append(notifierUsers, CollectNoteAuthors(flat)...)
+	noteAuthors := CollectNoteAuthors(flat)
+	// notifierUsers の backing array は cap=len(items) で確保済み。素朴な
+	// append(notifierUsers, ...) だと余剰 cap 内で同じ backing array に書く
+	// 可能性があり、後で notifierUsers を再利用したくなった時に aliasing
+	// バグになりうる。意識的に新規 backing array を確保しておく。
+	allUsers := make([]*model.User, 0, len(notifierUsers)+len(noteAuthors))
+	allUsers = append(allUsers, notifierUsers...)
+	allUsers = append(allUsers, noteAuthors...)
 	instResolver := NewInstanceResolver(instLookup, allUsers...)
 	emojiInput := append(append([]*model.Note(nil), flat...), syntheticUserOnlyNotes...)
 	emojiResolver := NewEmojiResolver(emojiLookup, emojiInput)
