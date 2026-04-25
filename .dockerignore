@@ -30,7 +30,3 @@ tests/dropin
 tests/dropin_frontend
 tests/playwright
 tests/bench
-
-# pyhton/JS テストスタックのスナップショット / report (もし生成された時)
-tests/dropin*/cypress/screenshots
-tests/dropin*/cypress/videos
