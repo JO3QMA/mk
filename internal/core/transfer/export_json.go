@@ -128,7 +128,7 @@ func (e *Exporter) collectClipNotes(clipID string) ([]*model.Note, error) {
 			break
 		}
 		for _, cn := range rows {
-			n, err := e.deps.NoteRepo.FindByIDWithUser(cn.NoteID)
+			n, err := e.deps.NoteRepo.FindByIDWithRelations(cn.NoteID)
 			if err != nil || n == nil {
 				continue
 			}

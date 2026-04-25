@@ -34,7 +34,7 @@ func (s *QueryService) SetThreadMutingRepo(r repository.NoteThreadMutingReposito
 // Show returns the requested note if it exists and the viewer can see it.
 // viewerはnil可 (未認証ユーザー)。
 func (s *QueryService) Show(viewer *model.User, noteID string) (*model.Note, error) {
-	n, err := s.noteRepo.FindByIDWithUser(noteID)
+	n, err := s.noteRepo.FindByIDWithRelations(noteID)
 	if err != nil {
 		return nil, ErrNoteNotFound
 	}
@@ -105,7 +105,7 @@ func (s *QueryService) Conversation(viewer *model.User, noteID string, limit int
 		if _, dup := visited[parentID]; dup {
 			break
 		}
-		parent, err := s.noteRepo.FindByIDWithUser(parentID)
+		parent, err := s.noteRepo.FindByIDWithRelations(parentID)
 		if err != nil {
 			break
 		}

@@ -109,10 +109,11 @@ type NotificationUserRepo interface {
 	FindByID(id string) (*model.User, error)
 }
 
-// NotificationNoteRepo abstracts the FindByIDWithUser call needed to pack
-// the referenced note (for reply/mention/reaction/renote/quote/pollEnded).
+// NotificationNoteRepo abstracts the FindByIDWithRelations call needed to
+// pack the referenced note (for reply/mention/reaction/renote/quote/
+// pollEnded). Renote/Reply embed が要るので軽量版ではなく full 経路 (#425)。
 type NotificationNoteRepo interface {
-	FindByIDWithUser(id string) (*model.Note, error)
+	FindByIDWithRelations(id string) (*model.Note, error)
 }
 
 // NotificationPublisher serializes a notification.Notification and publishes
@@ -174,7 +175,7 @@ func (p *NotificationPublisher) Pack(n *corenotification.Notification) any {
 	}
 	var note *model.Note
 	if n.NoteID != "" && p.noteRepo != nil {
-		if n2, err := p.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
+		if n2, err := p.noteRepo.FindByIDWithRelations(n.NoteID); err == nil {
 			note = n2
 		}
 	}

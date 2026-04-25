@@ -565,16 +565,22 @@ func (m *MockNoteRepository) FindByID(id string) (*model.Note, error) {
 	return n, nil
 }
 
+// FindByIDWithUser returns the stored note as-is (User pointer that the
+// caller set is preserved). Renote / Reply の embed は行わず、軽量経路 (#425)
+// として visibility / userId 参照だけが必要な caller 用。
 func (m *MockNoteRepository) FindByIDWithUser(id string) (*model.Note, error) {
+	return m.FindByID(id)
+}
+
+// FindByIDWithRelations mirrors the production preloadNoteRelations behavior:
+// shallow-copy the stored note and embed Renote / Reply targets from the map
+// when their IDs are set (#425)。コピーに書き込むので、同じ note を
+// FindByID で取り直した時に relation が連鎖的に残らない。
+func (m *MockNoteRepository) FindByIDWithRelations(id string) (*model.Note, error) {
 	n, err := m.FindByID(id)
 	if err != nil {
 		return nil, err
 	}
-	// 本家 preloadNoteRelations と同等の挙動: RenoteID / ReplyID が立って
-	// いれば map から target note を引いて埋める (#416)。shallow-copy した
-	// コピーに書き込むことで、プロダクションの GORM 挙動 (クエリ毎に fresh
-	// struct) と合わせ、同じ note を FindByID で取り直した時に relation が
-	// 連鎖的に残らないようにする。
 	out := *n
 	if out.Renote == nil && out.RenoteID != nil {
 		if target, ok := m.Notes[*out.RenoteID]; ok {

@@ -39,7 +39,15 @@ func aidxCutoffID(t time.Time) string {
 type NoteRepository interface {
 	Create(note *model.Note) error
 	FindByID(id string) (*model.Note, error)
+	// FindByIDWithUser fetches a note with only its author (`User`) preloaded.
+	// Renote / Reply の embed までは要らない caller (visibility チェック等) 向け
+	// の軽量経路 (#425)。それらが必要な場合は FindByIDWithRelations を使う。
 	FindByIDWithUser(id string) (*model.Note, error)
+	// FindByIDWithRelations fetches a note with User / Renote / Renote.User /
+	// Reply / Reply.User を 1 階層分 preload する。pack/render に流す経路向け
+	// (#425)。GORM の preload は明示した relation しか辿らないため N+1 には
+	// ならない。
+	FindByIDWithRelations(id string) (*model.Note, error)
 	FindByURI(uri string) (*model.Note, error)
 	Delete(note *model.Note) error
 	Update(note *model.Note, column string, value any) error
@@ -123,6 +131,14 @@ func (r *noteRepository) FindByID(id string) (*model.Note, error) {
 }
 
 func (r *noteRepository) FindByIDWithUser(id string) (*model.Note, error) {
+	var note model.Note
+	if err := r.db.Preload("User").First(&note, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &note, nil
+}
+
+func (r *noteRepository) FindByIDWithRelations(id string) (*model.Note, error) {
 	var note model.Note
 	if err := preloadNoteRelations(r.db).First(&note, "id = ?", id).Error; err != nil {
 		return nil, err

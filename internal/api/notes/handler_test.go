@@ -815,6 +815,9 @@ func (f *failingNoteRepo) FindByID(_ string) (*model.Note, error) { return nil, 
 func (f *failingNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
+func (f *failingNoteRepo) FindByIDWithRelations(_ string) (*model.Note, error) {
+	return nil, testutil.ErrNotFound
+}
 func (f *failingNoteRepo) FindByURI(_ string) (*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }

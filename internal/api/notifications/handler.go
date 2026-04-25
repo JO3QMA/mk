@@ -152,7 +152,7 @@ func (h *Handler) Show(c echo.Context) error {
 		}
 		var note *model.Note
 		if h.noteRepo != nil && n.NoteID != "" {
-			if nn, err := h.noteRepo.FindByIDWithUser(n.NoteID); err == nil {
+			if nn, err := h.noteRepo.FindByIDWithRelations(n.NoteID); err == nil {
 				note = nn
 			}
 		}
