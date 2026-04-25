@@ -251,8 +251,7 @@ func (h *Handler) Create(c echo.Context) error {
 
 	packed := entity.PackNoteWithInstance(created, h.idGen, h.instanceLookup(), h.emojiLookup())
 	s := []entity.NoteEntity{packed}
-	h.resolveFiles(s)
-	h.resolveViewerFields(s, user)
+	h.fieldResolver().Apply(s, user)
 	return c.JSON(http.StatusOK, map[string]any{
 		"createdNote": s[0],
 	})
@@ -278,8 +277,7 @@ func (h *Handler) Show(c echo.Context) error {
 
 	packed := entity.PackNoteWithInstance(n, h.idGen, h.instanceLookup(), h.emojiLookup())
 	s := []entity.NoteEntity{packed}
-	h.resolveFiles(s)
-	h.resolveViewerFields(s, viewer)
+	h.fieldResolver().Apply(s, viewer)
 	return c.JSON(http.StatusOK, s[0])
 }
 
@@ -517,252 +515,60 @@ func (h *Handler) BulkShow(c echo.Context) error {
 // packMany serializes a list of notes into NoteEntity objects.
 // driveFileRepoが設定されている場合、ファイル情報を解決してFilesに含める。
 // viewerがnon-nilの場合、myReactionなどのviewer依存フィールドも解決する。
+//
+// Files / MyReaction / Channel の解決は entity.NoteFieldResolver に切り出して
+// あり、他の PackNotes 利用 handler (antennas / users / pinned 等) と共通化
+// している (#426)。
 func (h *Handler) packMany(notes []*model.Note, viewer *model.User) []entity.NoteEntity {
 	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
-	h.resolveFiles(out)
-	h.resolveViewerFields(out, viewer)
+	h.fieldResolver().Apply(out, viewer)
 	return out
 }
 
-// resolveFiles collects all fileIds from notes, fetches DriveFiles in bulk,
-// and populates the Files field of each NoteEntity.
-// Renote / Reply の embed エンティティにも同じ resolution を適用して、quote
-// renote の添付が空になる問題を避ける (#416 関連)。
-func (h *Handler) resolveFiles(notes []entity.NoteEntity) {
-	if h.driveFileRepo == nil {
-		return
-	}
-	// 全fileIDsを収集 (renote/reply の embed 分も含む)
-	var allIDs []string
-	for i := range notes {
-		allIDs = appendNoteFileIDs(allIDs, &notes[i])
-	}
-	if len(allIDs) == 0 {
-		return
-	}
-	files, err := h.driveFileRepo.FindByIDs(allIDs)
-	if err != nil || len(files) == 0 {
-		return
-	}
-	// IDでマップ化
-	fileMap := make(map[string]*model.DriveFile, len(files))
-	for _, f := range files {
-		fileMap[f.ID] = f
-	}
-	// folder / user を best-effort で pre-fetch して embed する (#317)。
-	// 添付ファイル経由で重複して参照される folder/user を最小限の read に
-	// 抑えるため、unique ID を集めて cache に流し込む。N+1 は残るが attachment
-	// 数は実用上少ないので許容 (batch 最適化は follow-up)。
-	folderCache, userCache := h.resolveFileOwners(files)
-
-	for i := range notes {
-		h.populateNoteFiles(&notes[i], fileMap, folderCache, userCache)
-	}
+// fieldResolver assembles the per-handler NoteFieldResolver from already-wired
+// repositories. Returns nil-safe (Apply is no-op when none of the repos are
+// configured)。
+func (h *Handler) fieldResolver() *entity.NoteFieldResolver {
+	return entity.NewNoteFieldResolver(
+		nilOrDriveFile(h.driveFileRepo),
+		nilOrDriveFolder(h.driveFolderRepo),
+		nilOrUser(h.userRepo),
+		nilOrNoteReaction(h.noteReactionRepo),
+		nilOrChannel(h.channelRepo),
+		h.idGen,
+	)
 }
 
-// appendNoteFileIDs collects fileIDs from the note plus its embedded Renote /
-// Reply targets (1 level deep, matching the repository preload depth).
-func appendNoteFileIDs(dst []string, n *entity.NoteEntity) []string {
-	if n == nil {
-		return dst
+// nilOr* helpers preserve the「未配線時は interface も nil で渡す」契約。
+// 直接代入だと typed-nil が non-nil interface になり resolver の lookup nil
+// チェックを擦り抜けてしまうため。
+func nilOrDriveFile(r repository.DriveFileRepository) entity.DriveFileLookup {
+	if r == nil {
+		return nil
 	}
-	dst = append(dst, n.FileIDs...)
-	if n.Renote != nil {
-		dst = append(dst, n.Renote.FileIDs...)
-	}
-	if n.Reply != nil {
-		dst = append(dst, n.Reply.FileIDs...)
-	}
-	return dst
+	return r
 }
-
-// populateNoteFiles fills NoteEntity.Files for the note plus its embedded
-// Renote / Reply targets using the shared file / folder / user caches.
-func (h *Handler) populateNoteFiles(n *entity.NoteEntity, fileMap map[string]*model.DriveFile, folderCache map[string]*model.DriveFolder, userCache map[string]*model.User) {
-	if n == nil {
-		return
+func nilOrDriveFolder(r repository.DriveFolderRepository) entity.DriveFolderLookup {
+	if r == nil {
+		return nil
 	}
-	n.Files = h.packNoteFiles(n.FileIDs, fileMap, folderCache, userCache)
-	if n.Renote != nil {
-		n.Renote.Files = h.packNoteFiles(n.Renote.FileIDs, fileMap, folderCache, userCache)
-	}
-	if n.Reply != nil {
-		n.Reply.Files = h.packNoteFiles(n.Reply.FileIDs, fileMap, folderCache, userCache)
-	}
+	return r
 }
-
-// packNoteFiles resolves a note's fileIDs into packed file entities using the
-// shared cache populated by resolveFiles.
-func (h *Handler) packNoteFiles(fileIDs []string, fileMap map[string]*model.DriveFile, folderCache map[string]*model.DriveFolder, userCache map[string]*model.User) []any {
-	packed := make([]any, 0, len(fileIDs))
-	for _, fid := range fileIDs {
-		f, ok := fileMap[fid]
-		if !ok {
-			continue
-		}
-		var folder *model.DriveFolder
-		if f.FolderID != nil {
-			folder = folderCache[*f.FolderID]
-		}
-		var user *model.User
-		if f.UserID != nil {
-			user = userCache[*f.UserID]
-		}
-		packed = append(packed, entity.PackDriveFileWithRelations(f, h.idGen, folder, user))
+func nilOrUser(r repository.UserRepository) entity.FileOwnerLookup {
+	if r == nil {
+		return nil
 	}
-	return packed
+	return r
 }
-
-// resolveFileOwners builds id→model caches for folder / user by iterating
-// the unique IDs referenced by files. Missing repos / lookup failures are
-// silently treated as "no embed" (PackDriveFileWithRelations handles nil).
-func (h *Handler) resolveFileOwners(files []*model.DriveFile) (map[string]*model.DriveFolder, map[string]*model.User) {
-	folderCache := map[string]*model.DriveFolder{}
-	userCache := map[string]*model.User{}
-	for _, f := range files {
-		if h.driveFolderRepo != nil && f.FolderID != nil {
-			if _, seen := folderCache[*f.FolderID]; !seen {
-				if folder, err := h.driveFolderRepo.FindByID(*f.FolderID); err == nil {
-					folderCache[*f.FolderID] = folder
-				} else {
-					folderCache[*f.FolderID] = nil
-				}
-			}
-		}
-		if h.userRepo != nil && f.UserID != nil {
-			if _, seen := userCache[*f.UserID]; !seen {
-				if u, err := h.userRepo.FindByID(*f.UserID); err == nil {
-					userCache[*f.UserID] = u
-				} else {
-					userCache[*f.UserID] = nil
-				}
-			}
-		}
+func nilOrNoteReaction(r repository.NoteReactionRepository) entity.NoteReactionLookup {
+	if r == nil {
+		return nil
 	}
-	return folderCache, userCache
+	return r
 }
-
-// resolveViewerFields populates viewer-dependent fields (MyReaction, Channel)
-// on packed NoteEntities. viewerがnilの場合はChannel解決のみ行う。
-// Renote / Reply の embed にも同じ処理を適用する (#416)。
-func (h *Handler) resolveViewerFields(notes []entity.NoteEntity, viewer *model.User) {
-	if len(notes) == 0 {
-		return
+func nilOrChannel(r repository.ChannelRepository) entity.ChannelLookup {
+	if r == nil {
+		return nil
 	}
-
-	// MyReaction: viewerが認証済みの場合にバッチ取得 (embed 分も同じクエリで)
-	if viewer != nil && h.noteReactionRepo != nil {
-		var noteIDs []string
-		for i := range notes {
-			noteIDs = appendNoteIDs(noteIDs, &notes[i])
-		}
-		reactionMap, err := h.noteReactionRepo.FindByUserAndNoteIDs(viewer.ID, noteIDs)
-		if err == nil {
-			for i := range notes {
-				applyMyReaction(&notes[i], reactionMap)
-			}
-		}
-	}
-
-	// Channel: ChannelIDがnon-nilのノートについてバッチ取得 (embed 分も含む)
-	if h.channelRepo != nil {
-		var channelIDs []string
-		for i := range notes {
-			channelIDs = appendNoteChannelIDs(channelIDs, &notes[i])
-		}
-		if len(channelIDs) > 0 {
-			channels, err := h.channelRepo.FindByIDs(channelIDs)
-			if err == nil {
-				chMap := make(map[string]*model.Channel, len(channels))
-				for _, ch := range channels {
-					chMap[ch.ID] = ch
-				}
-				for i := range notes {
-					applyChannel(&notes[i], chMap)
-				}
-			}
-		}
-	}
-}
-
-// appendNoteIDs collects the id of the note plus embedded Renote / Reply.
-func appendNoteIDs(dst []string, n *entity.NoteEntity) []string {
-	if n == nil {
-		return dst
-	}
-	dst = append(dst, n.ID)
-	if n.Renote != nil {
-		dst = append(dst, n.Renote.ID)
-	}
-	if n.Reply != nil {
-		dst = append(dst, n.Reply.ID)
-	}
-	return dst
-}
-
-// applyMyReaction fills MyReaction on the note and embedded renote/reply.
-func applyMyReaction(n *entity.NoteEntity, reactionMap map[string]*model.NoteReaction) {
-	if n == nil {
-		return
-	}
-	if r, ok := reactionMap[n.ID]; ok {
-		nr := entity.NormalizeReactionKey(r.Reaction)
-		n.MyReaction = &nr
-	}
-	if n.Renote != nil {
-		if r, ok := reactionMap[n.Renote.ID]; ok {
-			nr := entity.NormalizeReactionKey(r.Reaction)
-			n.Renote.MyReaction = &nr
-		}
-	}
-	if n.Reply != nil {
-		if r, ok := reactionMap[n.Reply.ID]; ok {
-			nr := entity.NormalizeReactionKey(r.Reaction)
-			n.Reply.MyReaction = &nr
-		}
-	}
-}
-
-// appendNoteChannelIDs collects channelIDs from the note plus embedded
-// Renote / Reply.
-func appendNoteChannelIDs(dst []string, n *entity.NoteEntity) []string {
-	if n == nil {
-		return dst
-	}
-	if n.ChannelID != nil && *n.ChannelID != "" {
-		dst = append(dst, *n.ChannelID)
-	}
-	if n.Renote != nil && n.Renote.ChannelID != nil && *n.Renote.ChannelID != "" {
-		dst = append(dst, *n.Renote.ChannelID)
-	}
-	if n.Reply != nil && n.Reply.ChannelID != nil && *n.Reply.ChannelID != "" {
-		dst = append(dst, *n.Reply.ChannelID)
-	}
-	return dst
-}
-
-// applyChannel fills Channel on the note and embedded renote/reply.
-func applyChannel(n *entity.NoteEntity, chMap map[string]*model.Channel) {
-	if n == nil {
-		return
-	}
-	setChannel := func(target *entity.NoteEntity) {
-		if target == nil || target.ChannelID == nil {
-			return
-		}
-		ch, ok := chMap[*target.ChannelID]
-		if !ok {
-			return
-		}
-		target.Channel = &entity.ChannelLite{
-			ID:                    ch.ID,
-			Name:                  ch.Name,
-			Color:                 ch.Color,
-			IsSensitive:           ch.IsSensitive,
-			AllowRenoteToExternal: ch.AllowRenoteToExternal,
-		}
-	}
-	setChannel(n)
-	setChannel(n.Renote)
-	setChannel(n.Reply)
+	return r
 }

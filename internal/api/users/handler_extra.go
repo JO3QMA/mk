@@ -96,7 +96,9 @@ func (h *Handler) FeaturedNotes(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	viewer := middleware.GetUser(c)
 	result := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	h.fieldRes.Apply(result, viewer)
 	return c.JSON(http.StatusOK, result)
 }
 

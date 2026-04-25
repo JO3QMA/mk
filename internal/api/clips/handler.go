@@ -22,6 +22,13 @@ type Handler struct {
 	favoriteRepo ClipFavoriteRepository
 	instanceRepo repository.InstanceRepository
 	emojiRepo    repository.EmojiRepository
+	fieldRes     *entity.NoteFieldResolver
+}
+
+// SetNoteFieldResolver wires the shared resolver that fills Files /
+// MyReaction / Channel on packed notes (#426)。
+func (h *Handler) SetNoteFieldResolver(r *entity.NoteFieldResolver) {
+	h.fieldRes = r
 }
 
 // SetInstanceRepo attaches an InstanceRepository so clips/notes populates
@@ -279,6 +286,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	h.fieldRes.Apply(entities, user)
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
 		out = append(out, pn)

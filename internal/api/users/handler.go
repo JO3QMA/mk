@@ -47,6 +47,14 @@ type Handler struct {
 	galleryRepo          repository.GalleryRepository
 	pageRepo             repository.PageRepository
 	piningRepo           repository.UserNotePiningRepository
+	fieldRes             *entity.NoteFieldResolver
+}
+
+// SetNoteFieldResolver wires the shared resolver that fills Files /
+// MyReaction / Channel on packed notes including embedded Renote / Reply
+// (#426)。
+func (h *Handler) SetNoteFieldResolver(r *entity.NoteFieldResolver) {
+	h.fieldRes = r
 }
 
 // SetPiningRepo wires the user_note_pining repository used to fill
@@ -236,12 +244,16 @@ func (h *Handler) Show(c echo.Context) error {
 		return apierr.JSONNoSuchUser(c)
 	}
 
+	// 認証済み viewer は pinned note の myReaction (#426) と viewer 依存
+	// フィールド取得 (下方ブロック) で再利用するため一度だけ取り出す。匿名なら nil。
+	viewer := middleware.GetUser(c)
+
 	// チャート集計はベストエフォート。匿名訪問者は visitor key として
 	// リモートホスト名を使う (簡易実装; 認証済みなら viewer id を渡す)。
 	if h.chartHook != nil {
 		viewerID := ""
 		visitorKey := ""
-		if viewer := middleware.GetUser(c); viewer != nil {
+		if viewer != nil {
 			viewerID = viewer.ID
 		} else {
 			visitorKey = c.Request().RemoteAddr
@@ -268,13 +280,14 @@ func (h *Handler) Show(c echo.Context) error {
 	// ユーザーdisplayNameのカスタム絵文字を解決 (#330)
 	h.populateUserEmojis(bundle.User, &detailed.UserLite)
 
-	// Phase 7-3 (#245): ピン止めnote / ピン止めpage を埋める。
-	h.fillPinned(bundle.User, bundle.Profile, &detailed)
+	// Phase 7-3 (#245): ピン止めnote / ピン止めpage を埋める。viewer は
+	// pinned note の myReaction を埋めるのに使う (#426)。
+	h.fillPinned(viewer, bundle.User, bundle.Profile, &detailed)
 
 	// viewerがログインしている場合、viewer依存フィールドを並列取得する。
 	// 各リポジトリへのクエリは完全に独立しているためgoroutineで並列実行し、
 	// 全結果が揃ってからdetailedに反映する。
-	if viewer := middleware.GetUser(c); viewer != nil && viewer.ID != bundle.User.ID {
+	if viewer != nil && viewer.ID != bundle.User.ID {
 		var (
 			isFollowing, isFollowed      bool
 			isBlocking, isBlocked        bool
@@ -411,7 +424,9 @@ func (h *Handler) Notes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
+	viewer := middleware.GetUser(c)
 	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	h.fieldRes.Apply(out, viewer)
 	return c.JSON(http.StatusOK, out)
 }
 
@@ -560,7 +575,10 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 // fillPinned populates PinnedNoteIDs / PinnedNotes / PinnedPageID / PinnedPage
 // on the passed UserDetailed from the user's user_note_pining rows and
 // user_profile.pinnedPageId. Missing repos fall back to default empty/nil.
-func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed *entity.UserDetailed) {
+//
+// viewer は users/show を叩いている認証ユーザー (匿名なら nil)。pinned note
+// の myReaction を埋めるために fieldRes.Apply に流す (#426)。
+func (h *Handler) fillPinned(viewer *model.User, u *model.User, profile *model.UserProfile, detailed *entity.UserDetailed) {
 	if h.piningRepo != nil {
 		if pinings, err := h.piningRepo.ListByUser(u.ID); err == nil && len(pinings) > 0 {
 			ids := make([]string, 0, len(pinings))
@@ -571,6 +589,7 @@ func (h *Handler) fillPinned(u *model.User, profile *model.UserProfile, detailed
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
 					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+					h.fieldRes.Apply(entities, viewer)
 					packed := make([]any, 0, len(entities))
 					for _, pn := range entities {
 						packed = append(packed, pn)

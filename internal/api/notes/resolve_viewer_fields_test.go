@@ -29,7 +29,7 @@ func TestResolveViewerFields_MyReactionEmbedded(t *testing.T) {
 	}}
 	viewer := &model.User{ID: "v1"}
 
-	h.resolveViewerFields(notes, viewer)
+	h.fieldResolver().ResolveViewerFields(notes, viewer)
 
 	require.NotNil(t, notes[0].MyReaction)
 	assert.Equal(t, "👍", *notes[0].MyReaction)
@@ -55,7 +55,7 @@ func TestResolveViewerFields_ChannelEmbedded(t *testing.T) {
 		Renote:    &entity.NoteEntity{ID: "n2", ChannelID: &ch2},
 	}}
 
-	h.resolveViewerFields(notes, nil)
+	h.fieldResolver().ResolveViewerFields(notes, nil)
 
 	require.NotNil(t, notes[0].Channel)
 	assert.Equal(t, "outer-ch", notes[0].Channel.Name)
@@ -64,12 +64,9 @@ func TestResolveViewerFields_ChannelEmbedded(t *testing.T) {
 }
 
 // nil エンティティ / 空スライスでも panic しない。
+// helper の nil safe 検証は entity package の note_field_resolver_test.go
+// に移譲。ここは handler 側の wiring 経路だけ確認する。
 func TestResolveViewerFields_NilSafe(t *testing.T) {
 	h, _ := newTestHandler(t)
-	h.resolveViewerFields(nil, nil)
-	// helper function に直接 nil を渡す経路も確認
-	applyMyReaction(nil, map[string]*model.NoteReaction{})
-	applyChannel(nil, map[string]*model.Channel{})
-	assert.Equal(t, []string(nil), appendNoteIDs(nil, nil))
-	assert.Equal(t, []string(nil), appendNoteChannelIDs(nil, nil))
+	h.fieldResolver().ResolveViewerFields(nil, nil)
 }

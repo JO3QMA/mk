@@ -23,6 +23,14 @@ type Handler struct {
 	mutingRepo   ChannelMutingRepository
 	instanceRepo repository.InstanceRepository
 	emojiRepo    repository.EmojiRepository
+	fieldRes     *entity.NoteFieldResolver
+}
+
+// SetNoteFieldResolver wires the shared resolver that fills Files /
+// MyReaction / Channel on packed notes including embedded Renote / Reply
+// (#426)。
+func (h *Handler) SetNoteFieldResolver(r *entity.NoteFieldResolver) {
+	h.fieldRes = r
 }
 
 // SetInstanceRepo attaches an InstanceRepository so channel timeline responses
@@ -296,7 +304,9 @@ func (h *Handler) Timeline(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
+	viewer := middleware.GetUser(c)
 	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	h.fieldRes.Apply(entities, viewer)
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
 		out = append(out, pn)

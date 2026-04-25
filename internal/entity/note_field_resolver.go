@@ -1,0 +1,304 @@
+package entity
+
+import (
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+)
+
+// DriveFileLookup batch-fetches drive files by ID. Implemented by
+// repository.DriveFileRepository. nil 受信時は resolver は no-op になる。
+type DriveFileLookup interface {
+	FindByIDs(ids []string) ([]*model.DriveFile, error)
+}
+
+// DriveFolderLookup fetches a single folder by ID. Used for embedding folder
+// metadata in DriveFile entities (#317)。
+type DriveFolderLookup interface {
+	FindByID(id string) (*model.DriveFolder, error)
+}
+
+// FileOwnerLookup fetches a single user by ID for embedding owner metadata
+// in DriveFile entities. UserLookup などと衝突しない命名にしている。
+type FileOwnerLookup interface {
+	FindByID(id string) (*model.User, error)
+}
+
+// NoteReactionLookup batch-fetches a viewer's reactions across multiple notes
+// to populate NoteEntity.MyReaction.
+type NoteReactionLookup interface {
+	FindByUserAndNoteIDs(userID string, noteIDs []string) (map[string]*model.NoteReaction, error)
+}
+
+// ChannelLookup batch-fetches channels by ID for NoteEntity.Channel embed.
+type ChannelLookup interface {
+	FindByIDs(ids []string) ([]*model.Channel, error)
+}
+
+// NoteFieldResolver applies post-pack file / viewer-dependent / channel
+// resolution to packed NoteEntity slices including their embedded Renote /
+// Reply targets (#426)。
+//
+// /api/notes/* 以外の handler (antennas / channels / users / clips / roles /
+// drive / i pinned 等) でも PackNotes を経由するため、共通化して quote renote
+// の files が空配列 / myReaction が欠落する問題を一括で解消する。
+//
+// nil レシーバはすべて no-op として扱われ、構築側 (router) の wiring が
+// 不完全でも panic しない。
+type NoteFieldResolver struct {
+	driveFile    DriveFileLookup
+	driveFolder  DriveFolderLookup
+	fileOwner    FileOwnerLookup
+	noteReaction NoteReactionLookup
+	channel      ChannelLookup
+	idGen        id.Generator
+}
+
+// NewNoteFieldResolver constructs a resolver. 個々の lookup が nil でも
+// 適切に skip される (例えば driveFile が nil なら ResolveFiles は no-op、
+// channel が nil なら ResolveViewerFields の channel 解決のみ skip)。
+func NewNoteFieldResolver(driveFile DriveFileLookup, driveFolder DriveFolderLookup, fileOwner FileOwnerLookup, noteReaction NoteReactionLookup, channel ChannelLookup, idGen id.Generator) *NoteFieldResolver {
+	return &NoteFieldResolver{
+		driveFile:    driveFile,
+		driveFolder:  driveFolder,
+		fileOwner:    fileOwner,
+		noteReaction: noteReaction,
+		channel:      channel,
+		idGen:        idGen,
+	}
+}
+
+// Apply runs ResolveFiles + ResolveViewerFields in order. caller の典型 1 行
+// 適用パスを縮める用途。
+func (r *NoteFieldResolver) Apply(notes []NoteEntity, viewer *model.User) {
+	if r == nil {
+		return
+	}
+	r.ResolveFiles(notes)
+	r.ResolveViewerFields(notes, viewer)
+}
+
+// ResolveFiles collects file IDs from the slice (including embedded Renote /
+// Reply targets), batch-fetches DriveFile rows, then populates each entity's
+// `Files` field with packed entities (folder / owner embed best-effort)。
+func (r *NoteFieldResolver) ResolveFiles(notes []NoteEntity) {
+	if r == nil || r.driveFile == nil {
+		return
+	}
+	var allIDs []string
+	for i := range notes {
+		allIDs = appendNoteFileIDs(allIDs, &notes[i])
+	}
+	if len(allIDs) == 0 {
+		return
+	}
+	files, err := r.driveFile.FindByIDs(allIDs)
+	if err != nil || len(files) == 0 {
+		return
+	}
+	fileMap := make(map[string]*model.DriveFile, len(files))
+	for _, f := range files {
+		fileMap[f.ID] = f
+	}
+	folderCache, userCache := r.resolveFileOwners(files)
+	for i := range notes {
+		r.populateNoteFiles(&notes[i], fileMap, folderCache, userCache)
+	}
+}
+
+// ResolveViewerFields fills MyReaction (when viewer != nil) and Channel on
+// each note plus its Renote / Reply embed using batch lookups.
+func (r *NoteFieldResolver) ResolveViewerFields(notes []NoteEntity, viewer *model.User) {
+	if r == nil || len(notes) == 0 {
+		return
+	}
+	if viewer != nil && r.noteReaction != nil {
+		var noteIDs []string
+		for i := range notes {
+			noteIDs = appendNoteIDs(noteIDs, &notes[i])
+		}
+		if len(noteIDs) > 0 {
+			reactionMap, err := r.noteReaction.FindByUserAndNoteIDs(viewer.ID, noteIDs)
+			if err == nil {
+				for i := range notes {
+					applyMyReaction(&notes[i], reactionMap)
+				}
+			}
+		}
+	}
+	if r.channel != nil {
+		var channelIDs []string
+		for i := range notes {
+			channelIDs = appendNoteChannelIDs(channelIDs, &notes[i])
+		}
+		if len(channelIDs) > 0 {
+			channels, err := r.channel.FindByIDs(channelIDs)
+			if err == nil {
+				chMap := make(map[string]*model.Channel, len(channels))
+				for _, ch := range channels {
+					chMap[ch.ID] = ch
+				}
+				for i := range notes {
+					applyChannel(&notes[i], chMap)
+				}
+			}
+		}
+	}
+}
+
+func (r *NoteFieldResolver) populateNoteFiles(n *NoteEntity, fileMap map[string]*model.DriveFile, folderCache map[string]*model.DriveFolder, userCache map[string]*model.User) {
+	if n == nil {
+		return
+	}
+	n.Files = r.packNoteFiles(n.FileIDs, fileMap, folderCache, userCache)
+	if n.Renote != nil {
+		n.Renote.Files = r.packNoteFiles(n.Renote.FileIDs, fileMap, folderCache, userCache)
+	}
+	if n.Reply != nil {
+		n.Reply.Files = r.packNoteFiles(n.Reply.FileIDs, fileMap, folderCache, userCache)
+	}
+}
+
+func (r *NoteFieldResolver) packNoteFiles(fileIDs []string, fileMap map[string]*model.DriveFile, folderCache map[string]*model.DriveFolder, userCache map[string]*model.User) []any {
+	packed := make([]any, 0, len(fileIDs))
+	for _, fid := range fileIDs {
+		f, ok := fileMap[fid]
+		if !ok {
+			continue
+		}
+		var folder *model.DriveFolder
+		if f.FolderID != nil {
+			folder = folderCache[*f.FolderID]
+		}
+		var user *model.User
+		if f.UserID != nil {
+			user = userCache[*f.UserID]
+		}
+		packed = append(packed, PackDriveFileWithRelations(f, r.idGen, folder, user))
+	}
+	return packed
+}
+
+// resolveFileOwners は folder / owner を best-effort で 1 件ずつ引く。
+// attachment 数は実用上少ないため batch クエリは省略 (folder/owner の
+// 専用 batch インターフェースを増やさない trade-off)。
+func (r *NoteFieldResolver) resolveFileOwners(files []*model.DriveFile) (map[string]*model.DriveFolder, map[string]*model.User) {
+	folderCache := map[string]*model.DriveFolder{}
+	userCache := map[string]*model.User{}
+	for _, f := range files {
+		if r.driveFolder != nil && f.FolderID != nil {
+			if _, seen := folderCache[*f.FolderID]; !seen {
+				if folder, err := r.driveFolder.FindByID(*f.FolderID); err == nil {
+					folderCache[*f.FolderID] = folder
+				} else {
+					folderCache[*f.FolderID] = nil
+				}
+			}
+		}
+		if r.fileOwner != nil && f.UserID != nil {
+			if _, seen := userCache[*f.UserID]; !seen {
+				if u, err := r.fileOwner.FindByID(*f.UserID); err == nil {
+					userCache[*f.UserID] = u
+				} else {
+					userCache[*f.UserID] = nil
+				}
+			}
+		}
+	}
+	return folderCache, userCache
+}
+
+// appendNoteFileIDs / appendNoteIDs / appendNoteChannelIDs / applyMyReaction /
+// applyChannel は NoteEntity と embed 1 階層を統一的に走査する補助関数。
+// 元は internal/api/notes/handler.go に閉じていたが、本 resolver の他
+// handler への展開 (#426) に伴って entity に再配置している。
+
+func appendNoteFileIDs(dst []string, n *NoteEntity) []string {
+	if n == nil {
+		return dst
+	}
+	dst = append(dst, n.FileIDs...)
+	if n.Renote != nil {
+		dst = append(dst, n.Renote.FileIDs...)
+	}
+	if n.Reply != nil {
+		dst = append(dst, n.Reply.FileIDs...)
+	}
+	return dst
+}
+
+func appendNoteIDs(dst []string, n *NoteEntity) []string {
+	if n == nil {
+		return dst
+	}
+	dst = append(dst, n.ID)
+	if n.Renote != nil {
+		dst = append(dst, n.Renote.ID)
+	}
+	if n.Reply != nil {
+		dst = append(dst, n.Reply.ID)
+	}
+	return dst
+}
+
+func appendNoteChannelIDs(dst []string, n *NoteEntity) []string {
+	if n == nil {
+		return dst
+	}
+	if n.ChannelID != nil && *n.ChannelID != "" {
+		dst = append(dst, *n.ChannelID)
+	}
+	if n.Renote != nil && n.Renote.ChannelID != nil && *n.Renote.ChannelID != "" {
+		dst = append(dst, *n.Renote.ChannelID)
+	}
+	if n.Reply != nil && n.Reply.ChannelID != nil && *n.Reply.ChannelID != "" {
+		dst = append(dst, *n.Reply.ChannelID)
+	}
+	return dst
+}
+
+func applyMyReaction(n *NoteEntity, reactionMap map[string]*model.NoteReaction) {
+	if n == nil {
+		return
+	}
+	if r, ok := reactionMap[n.ID]; ok {
+		nr := NormalizeReactionKey(r.Reaction)
+		n.MyReaction = &nr
+	}
+	if n.Renote != nil {
+		if r, ok := reactionMap[n.Renote.ID]; ok {
+			nr := NormalizeReactionKey(r.Reaction)
+			n.Renote.MyReaction = &nr
+		}
+	}
+	if n.Reply != nil {
+		if r, ok := reactionMap[n.Reply.ID]; ok {
+			nr := NormalizeReactionKey(r.Reaction)
+			n.Reply.MyReaction = &nr
+		}
+	}
+}
+
+func applyChannel(n *NoteEntity, chMap map[string]*model.Channel) {
+	if n == nil {
+		return
+	}
+	setChannel := func(target *NoteEntity) {
+		if target == nil || target.ChannelID == nil {
+			return
+		}
+		ch, ok := chMap[*target.ChannelID]
+		if !ok {
+			return
+		}
+		target.Channel = &ChannelLite{
+			ID:                    ch.ID,
+			Name:                  ch.Name,
+			Color:                 ch.Color,
+			IsSensitive:           ch.IsSensitive,
+			AllowRenoteToExternal: ch.AllowRenoteToExternal,
+		}
+	}
+	setChannel(n)
+	setChannel(n.Renote)
+	setChannel(n.Reply)
+}

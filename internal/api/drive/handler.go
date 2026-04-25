@@ -26,6 +26,13 @@ type Handler struct {
 	userRepo     repository.UserRepository
 	instanceRepo repository.InstanceRepository
 	emojiRepo    repository.EmojiRepository
+	fieldRes     *entity.NoteFieldResolver
+}
+
+// SetNoteFieldResolver wires the shared resolver that fills Files /
+// MyReaction / Channel on packed notes (#426)。
+func (h *Handler) SetNoteFieldResolver(r *entity.NoteFieldResolver) {
+	h.fieldRes = r
 }
 
 // NewHandler creates a new drive Handler.
@@ -460,7 +467,9 @@ func (h *Handler) FilesAttachedNotes(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
+	viewer := middleware.GetUser(c)
 	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	h.fieldRes.Apply(out, viewer)
 	return c.JSON(http.StatusOK, out)
 }
 

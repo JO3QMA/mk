@@ -104,6 +104,9 @@ func (h *Handler) Favorites(c echo.Context) error {
 		}
 	}
 	packed := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	// /api/i/favorites は認証 path なので u が viewer。pinned notes と同じく
+	// 自分の myReaction / Channel / Files を埋める (#426)。
+	h.fieldRes.Apply(packed, u)
 	byID := make(map[string]*entity.NoteEntity, len(packed))
 	for i := range packed {
 		byID[packed[i].ID] = &packed[i]

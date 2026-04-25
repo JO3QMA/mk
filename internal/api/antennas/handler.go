@@ -22,6 +22,14 @@ type Handler struct {
 	idGen        id.Generator
 	instanceRepo repository.InstanceRepository
 	emojiRepo    repository.EmojiRepository
+	fieldRes     *entity.NoteFieldResolver
+}
+
+// SetNoteFieldResolver attaches the shared resolver that fills Files /
+// MyReaction / Channel on packed notes including their Renote / Reply embed
+// (#426)。nil-safe (Apply no-op)。
+func (h *Handler) SetNoteFieldResolver(r *entity.NoteFieldResolver) {
+	h.fieldRes = r
 }
 
 // NewHandler constructs an antennas Handler. noteRepo は antennas/notes で
@@ -245,6 +253,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	h.fieldRes.Apply(entities, user)
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
 		out = append(out, pn)
