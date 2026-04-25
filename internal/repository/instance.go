@@ -200,10 +200,21 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 // 何人 follow しているか (= 我々を subscribe している側)。
 //
 // 命名は本家 Misskey と揃えてある。
+//
+// Reset → backfill の二段構え: 過去 follow が消えた host (= subquery に
+// 出てこない) は subquery JOIN だと UPDATE 対象外になり、古い非ゼロ値が
+// 永遠に残ってしまう (#421 Devin review)。先に全 instance を 0 にしてから
+// 該当 host のみ再上書きすることで、follow を全部解除した instance も
+// 確実に 0 へ戻す。
 func (r *instanceRepository) RecomputeFollowCounts() error {
+	if err := r.db.Exec(
+		`UPDATE "instance" SET "followersCount" = 0, "followingCount" = 0`,
+	).Error; err != nil {
+		return err
+	}
 	// followersCount: COUNT of remote followees per host.
 	const followers = `
-UPDATE "instance" SET "followersCount" = COALESCE(c.cnt, 0)
+UPDATE "instance" SET "followersCount" = c.cnt
 FROM (
   SELECT u.host AS host, COUNT(*)::int AS cnt
   FROM "following" f
@@ -217,7 +228,7 @@ WHERE "instance".host = c.host`
 	}
 	// followingCount: COUNT of remote followers per host.
 	const following = `
-UPDATE "instance" SET "followingCount" = COALESCE(c.cnt, 0)
+UPDATE "instance" SET "followingCount" = c.cnt
 FROM (
   SELECT u.host AS host, COUNT(*)::int AS cnt
   FROM "following" f

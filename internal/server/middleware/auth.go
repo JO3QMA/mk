@@ -72,6 +72,13 @@ func (a *AuthMiddleware) Authenticate() echo.MiddlewareFunc {
 // touchLastActive bumps the user's `lastActiveDate` column to now() if the
 // last update was more than `lastActiveUpdateInterval` ago. The DB write
 // runs in a goroutine to keep the request hot path lean (#421)。
+//
+// 同じ map で eviction も行う。古いエントリ (= last update から
+// `lastActiveUpdateInterval * 2` 以上経過) は次回 lookup の機会に削除する
+// ことで、長期稼働しても map サイズが「直近アクティブな user 数」程度に
+// 収束する (#421 Devin review: unbounded growth 対策)。
+//
+// 通過頻度が高くないので、専用 ticker goroutine ではなく lazy 削除で十分。
 func (a *AuthMiddleware) touchLastActive(userID string) {
 	if userID == "" || a.userRepo == nil {
 		return
@@ -84,6 +91,15 @@ func (a *AuthMiddleware) touchLastActive(userID string) {
 		return
 	}
 	a.lastActiveSeen[userID] = now
+	// 古い entry の lazy eviction。同じ lock 取得中に O(n) 走査するが、
+	// touch は既に DB 書き込み rate-limited されている (5 分間隔) ので
+	// hot path への影響は限定的。
+	staleBefore := now.Add(-2 * lastActiveUpdateInterval)
+	for uid, t := range a.lastActiveSeen {
+		if t.Before(staleBefore) {
+			delete(a.lastActiveSeen, uid)
+		}
+	}
 	a.lastActiveMu.Unlock()
 
 	go func(uid string, t time.Time) {
