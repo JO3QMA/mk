@@ -654,7 +654,7 @@ func TestCreate_RepoError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-func TestCreate_FindByIDWithUserFails(t *testing.T) {
+func TestCreate_FindByIDWithRelationsFails(t *testing.T) {
 	noteRepo := &findFailNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
@@ -881,12 +881,14 @@ func (f *failingNoteRepo) ListByUserList(_ string, _ int, _, _ string) ([]*model
 func (f *failingNoteRepo) CountLocalNotes() (int64, error)    { return 0, nil }
 func (f *failingNoteRepo) CountLocalComments() (int64, error) { return 0, nil }
 
-// findFailNoteRepo creates successfully but FindByIDWithUser always fails.
+// findFailNoteRepo creates successfully but FindByIDWithRelations always
+// fails. CreateService の finalNote が full 経路 (#425) を踏むため、fallback
+// で finalNote.User = in.User が埋まる挙動を exercise する。
 type findFailNoteRepo struct {
 	*testutil.MockNoteRepository
 }
 
-func (f *findFailNoteRepo) FindByIDWithUser(_ string) (*model.Note, error) {
+func (f *findFailNoteRepo) FindByIDWithRelations(_ string) (*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
 
