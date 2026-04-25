@@ -104,4 +104,8 @@ func TestIsReversiGameSessionURI(t *testing.T) {
 	// reversi UUID と無関係な URI は false
 	assert.False(t, IsReversiGameSessionURI("https://example.com/notes/abc"))
 	assert.False(t, IsReversiGameSessionURI(""))
+	// クエリ文字列に marker が出る誤検出パターンを弾く (#417 P5 Devin review)
+	assert.False(t, IsReversiGameSessionURI("https://example.com/notes/abc?ref=/games/"+GameTypeUUID+"/foo"))
+	// fragment のみのケース
+	assert.False(t, IsReversiGameSessionURI("https://example.com/notes/abc#/games/"+GameTypeUUID+"/foo"))
 }

@@ -613,6 +613,18 @@ func hydrateNoteForFanout(repo interface {
 }
 
 // handleLike attaches a reaction to a local note based on a Like activity.
+//
+// Note: P5 (#417) で reversi 早期分岐を入れた都合上、reactionService nil
+// チェックを reversi 分岐の後に移動している。副作用として:
+//   - ResolveActor が無条件で呼ばれる (旧実装は reactionService nil 時に
+//     早期 return していた)。reversi 分岐側でも actor 解決は必要なので
+//     妥当な変更。reactionService が wire されていない config は production
+//     には無いので実害なし (#417 P5 Devin review)。
+//   - object が malformed (string でも nested object でもない) Like は
+//     reactionService の有無に関わらず ErrUnsupportedActivity (= 202 ack)
+//     を返す。旧実装は reactionService 配線時に readObjectString error を
+//     400 として返していたが、404 / 400 で peer の retry を誘発するより
+//     202 で握り潰すほうが連合衛生的に望ましい (#417 P5 Devin review)。
 func (p *Processor) handleLike(act genericActivity) error {
 	reactor, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
@@ -627,9 +639,6 @@ func (p *Processor) handleLike(act genericActivity) error {
 		// act.Object (RawMessage) から直接読む
 		uri, rerr := readObjectString(act.Object)
 		if rerr != nil {
-			// object 欠如した malformed Like は未対応扱いで 202 ack させる。
-			// 旧実装は reactionService nil 経由で ErrUnsupportedActivity を
-			// 返していたため reversi 分岐を入れた今の構造でも同じ挙動を保つ。
 			return ErrUnsupportedActivity
 		}
 		like.Object = uri
