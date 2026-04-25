@@ -24,8 +24,8 @@ func genTestRSAKey(t *testing.T) *activitypub.PrivateKey {
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
 	der := x509.MarshalPKCS1PrivateKey(key)
-	pem := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}))
-	pk, err := activitypub.NewPrivateKey("https://local.example/users/sys#main-key", pem)
+	pemStr := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}))
+	pk, err := activitypub.NewPrivateKey("https://local.example/users/sys#main-key", pemStr)
 	require.NoError(t, err)
 	return pk
 }
