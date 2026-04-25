@@ -72,6 +72,8 @@ func (s *Service) Aggregate(ctx context.Context) error {
 	// counter サフィックスから合成 ID を作る。本物のユーザー ID とサフィックス
 	// 比較が一致する保証は無いので、ちょうど cutoff ミリ秒に登録されたユーザー
 	// が ±1 件ぶれる可能性がある。24h 集計では誤差は無視できるレベル。
+	// 副作用として shared idGen の counter を 1 つ消費するが、retention は
+	// 1 日数回しか走らないため uint32 wraparound には実用上到達しない。
 	cursorID := s.idGen.Generate(cutoff)
 	newIDs, err := s.userRepo.ListLocalUserIDsRegisteredAfter(cursorID)
 	if err != nil {
