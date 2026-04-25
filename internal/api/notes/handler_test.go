@@ -718,7 +718,10 @@ func TestCreate_RenoteTargetNotFound(t *testing.T) {
 }
 
 // fixedNoteRepo returns a preset note for FindByIDWithUser so visibility-check
-// paths can be exercised without touching a real database.
+// paths in CreateService (reply/renote target lookup, #425 軽量経路) can be
+// exercised without a real database. FindByIDWithRelations 経由の caller を
+// テストしたい場合は別途上書きが要る (本テスト群では visibility 弾きで先に
+// return するので不要)。
 type fixedNoteRepo struct {
 	*testutil.MockNoteRepository
 	note *model.Note
