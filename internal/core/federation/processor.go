@@ -653,8 +653,9 @@ func (p *Processor) handleLike(act genericActivity) error {
 	// resolver.ResolveNote が 404 で失敗するのを避けるため Note Like より先に
 	// 弾く必要がある。
 	if corereversi.IsReversiGameSessionURI(like.Object) {
-		_ = reactor // actor 解決の副作用 (キャッシュ取込) は残す
-		_ = reaction
+		// reactor / reaction は note Like 経路で使われるので blank assign 不要。
+		// actor 解決は handleLike 冒頭で済ませているのでキャッシュ取込の
+		// 副作用はこの早期 return でも残る。
 		return nil
 	}
 	if p.reactionService == nil {
