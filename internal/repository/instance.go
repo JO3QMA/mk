@@ -25,6 +25,13 @@ type InstanceRepository interface {
 	// returned. Ordered by infoUpdatedAt ASC NULLS FIRST so the oldest data
 	// is refreshed first.
 	ListForRefresh(staleBefore time.Time, limit int) ([]*model.Instance, error)
+	// RecomputeFollowCounts refreshes followersCount / followingCount on
+	// every instance row from the live `following` table. Currently nobody
+	// keeps these counters in sync incrementally, so admin/overview's
+	// federation pie chart gets all-zero slices. Running this on startup
+	// gives the dashboard the right pie until incremental hooks land
+	// (#421)。
+	RecomputeFollowCounts() error
 }
 
 type instanceRepository struct {
@@ -181,4 +188,43 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 		return nil, err
 	}
 	return rows, nil
+}
+
+// RecomputeFollowCounts recomputes the followersCount / followingCount
+// columns of every instance row from the live `following` table. Used at
+// startup to backfill stale zeros until incremental hooks land (#421)。
+//
+// `followersCount`: 当該リモートインスタンスの user を、ローカル user が
+// 何人 follow しているか (= 我々から見た subscribe 元 instance 別)。
+// `followingCount`: 当該リモートインスタンスの user が、ローカル user を
+// 何人 follow しているか (= 我々を subscribe している側)。
+//
+// 命名は本家 Misskey と揃えてある。
+func (r *instanceRepository) RecomputeFollowCounts() error {
+	// followersCount: COUNT of remote followees per host.
+	const followers = `
+UPDATE "instance" SET "followersCount" = COALESCE(c.cnt, 0)
+FROM (
+  SELECT u.host AS host, COUNT(*)::int AS cnt
+  FROM "following" f
+  JOIN "user" u ON f."followeeId" = u.id
+  WHERE u.host IS NOT NULL
+  GROUP BY u.host
+) c
+WHERE "instance".host = c.host`
+	if err := r.db.Exec(followers).Error; err != nil {
+		return err
+	}
+	// followingCount: COUNT of remote followers per host.
+	const following = `
+UPDATE "instance" SET "followingCount" = COALESCE(c.cnt, 0)
+FROM (
+  SELECT u.host AS host, COUNT(*)::int AS cnt
+  FROM "following" f
+  JOIN "user" u ON f."followerId" = u.id
+  WHERE u.host IS NOT NULL
+  GROUP BY u.host
+) c
+WHERE "instance".host = c.host`
+	return r.db.Exec(following).Error
 }

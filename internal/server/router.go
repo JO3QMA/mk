@@ -144,6 +144,13 @@ func (s *Server) setupRoutes() {
 	driveFolderRepo := repository.NewDriveFolderRepository(s.db)
 	keypairRepo := repository.NewUserKeypairRepository(s.db)
 	instanceRepo := repository.NewInstanceRepository(s.db)
+	// instance.{followersCount,followingCount} はリアルタイム incremental
+	// 維持の hook が未実装で常に 0 → admin/overview の federation pie chart
+	// が空になる。起動時に `following` テーブルから一回 backfill する
+	// (#421)。失敗は警告だけで起動継続。
+	if err := instanceRepo.RecomputeFollowCounts(); err != nil {
+		slog.Warn("instance follow-counts recompute failed", "err", err)
+	}
 	channelRepo := repository.NewChannelRepository(s.db)
 	channelFollowingRepo := repository.NewChannelFollowingRepository(s.db)
 	antennaRepo := repository.NewAntennaRepository(s.db)
