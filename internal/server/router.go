@@ -603,6 +603,18 @@ func (s *Server) setupRoutes() {
 	retentionProc := processors.NewRetentionAggregateProcessor(retentionSvc)
 	s.queueServer.Handle(queue.TaskTypeRetentionAggregate, retentionProc.Handle)
 
+	// 起動時にも 1 回 aggregation を発火する。cron (0 0 * * * UTC) を待つと
+	// 新規デプロイ後最大 24h は heatmap が空のままになるので、その日の
+	// cohort 行を即座に作って描画を始められるようにする (#421)。同じ
+	// dateKey で 2 回目を Insert しても repository.ErrDuplicateKey で
+	// silently 吸収されるので idempotent。DB 書き込みを startup hot path に
+	// 乗せないよう goroutine で実行する。
+	go func() {
+		if err := retentionSvc.Aggregate(context.Background()); err != nil {
+			slog.Warn("retention aggregate at startup failed", "err", err)
+		}
+	}()
+
 	// Health check
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
