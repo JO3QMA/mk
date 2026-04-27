@@ -177,7 +177,7 @@ fulltextSearch:
 # Available methods: aid, aidx, meid, ulid, objectid
 # ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE.
 
-id: aidx
+id: 'aidx'
 
 #   ┌────────────────┐
 #───┘ Error tracking └──────────────────────────────────────────
