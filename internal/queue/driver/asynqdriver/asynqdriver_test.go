@@ -45,6 +45,28 @@ func TestBuildRedisOpt_UnixSocket(t *testing.T) {
 	}
 }
 
+func TestBuildRedisOpt_PoolSize(t *testing.T) {
+	pool := 64
+	got := BuildRedisOpt(config.RedisOptions{
+		Host:     "redis.example",
+		Port:     6379,
+		PoolSize: &pool,
+	})
+	if got.PoolSize != 64 {
+		t.Fatalf("PoolSize: want 64, got %d", got.PoolSize)
+	}
+}
+
+func TestBuildRedisOpt_PoolSizeNilKeepsDefault(t *testing.T) {
+	got := BuildRedisOpt(config.RedisOptions{
+		Host: "redis.example",
+		Port: 6379,
+	})
+	if got.PoolSize != 0 {
+		t.Fatalf("PoolSize: want 0 (default), got %d", got.PoolSize)
+	}
+}
+
 func TestToAsynqOptions(t *testing.T) {
 	o := driver.ApplyEnqueueOptions([]driver.EnqueueOption{
 		driver.WithQueue("deliver"),

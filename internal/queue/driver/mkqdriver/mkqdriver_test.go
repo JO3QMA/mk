@@ -67,29 +67,40 @@ func TestToMkqAddOptions_JobNameOnly(t *testing.T) {
 }
 
 func TestUniqueKey_DistinctPayloads(t *testing.T) {
-	// Two payloads with the same task type must produce different
-	// unique keys so deleteAccount-for-userA and deleteAccount-for-userB
-	// don't collapse within the 24h dedup window.
-	a := uniqueKey("delete", []byte(`{"userId":"a"}`))
-	b := uniqueKey("delete", []byte(`{"userId":"b"}`))
+	// Two payloads with the same (queue, task type) must produce
+	// different unique keys so deleteAccount-for-userA and
+	// deleteAccount-for-userB don't collapse within the 24h window.
+	a := uniqueKey("deliver", "delete", []byte(`{"userId":"a"}`))
+	b := uniqueKey("deliver", "delete", []byte(`{"userId":"b"}`))
 	if a == b {
 		t.Fatalf("distinct payloads must yield distinct unique keys: %q == %q", a, b)
 	}
-	// Same payload + same type → same key (idempotency).
-	if a != uniqueKey("delete", []byte(`{"userId":"a"}`)) {
+	// Same triple → same key (idempotency).
+	if a != uniqueKey("deliver", "delete", []byte(`{"userId":"a"}`)) {
 		t.Fatalf("equal inputs must yield equal keys")
+	}
+}
+
+func TestUniqueKey_DistinctQueues(t *testing.T) {
+	// Same task type + payload routed to different queues must be
+	// treated as independent dedup scopes (matches asynq's
+	// (queue, type, payload) dedup tuple).
+	a := uniqueKey("deliver", "delete", []byte("p"))
+	b := uniqueKey("maintenance", "delete", []byte("p"))
+	if a == b {
+		t.Fatalf("different queues must yield different keys: %q == %q", a, b)
 	}
 }
 
 func TestUniqueKey_NilPayload(t *testing.T) {
 	// nil and empty payload should be equivalent (both hash to the
 	// SHA-256 of zero bytes), and non-nil payloads must differ.
-	a := uniqueKey("cron", nil)
-	b := uniqueKey("cron", []byte{})
+	a := uniqueKey("cron", "tick", nil)
+	b := uniqueKey("cron", "tick", []byte{})
 	if a != b {
 		t.Fatalf("nil and empty payload must produce the same key")
 	}
-	c := uniqueKey("cron", []byte{0})
+	c := uniqueKey("cron", "tick", []byte{0})
 	if a == c {
 		t.Fatalf("non-empty payload must yield a distinct key")
 	}
