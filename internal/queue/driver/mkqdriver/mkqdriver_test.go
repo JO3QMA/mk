@@ -1,0 +1,352 @@
+package mkqdriver
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/shiroha-a/mkq"
+
+	"github.com/shiroha-a/mk/internal/config"
+	"github.com/shiroha-a/mk/internal/queue/driver"
+)
+
+func TestBuildRedisOptions_TCP(t *testing.T) {
+	got := BuildRedisOptions(config.RedisOptions{
+		Host: "redis.example",
+		Port: 16379,
+		Pass: "p",
+		DB:   3,
+	})
+	if len(got.Addrs) != 1 || got.Addrs[0] != "redis.example:16379" {
+		t.Fatalf("Addrs: got %v", got.Addrs)
+	}
+	if got.Password != "p" || got.DB != 3 {
+		t.Fatalf("Auth fields: got %+v", got)
+	}
+}
+
+func TestBuildRedisOptions_UnixSocket(t *testing.T) {
+	got := BuildRedisOptions(config.RedisOptions{
+		Host: "/tmp/redis.sock",
+		Pass: "p",
+	})
+	if len(got.Addrs) != 1 || got.Addrs[0] != "/tmp/redis.sock" {
+		t.Fatalf("Addrs: got %v", got.Addrs)
+	}
+}
+
+func TestToMkqAddOptions_FullSet(t *testing.T) {
+	o := driver.ApplyEnqueueOptions([]driver.EnqueueOption{
+		driver.WithQueue("deliver"),
+		driver.WithMaxRetry(4),
+		driver.WithUnique(time.Hour),
+		driver.WithProcessIn(2 * time.Second),
+	})
+	got := toMkqAddOptions(o, "ap:deliver", []byte("body"))
+	if len(got) < 4 {
+		// 4 options expected: WithJobName, WithAttempts, WithUnique, WithDelay
+		t.Fatalf("expected at least 4 options, got %d", len(got))
+	}
+}
+
+func TestToMkqAddOptions_DefaultsSkipped(t *testing.T) {
+	got := toMkqAddOptions(driver.EnqueueOptions{}, "", nil)
+	if len(got) != 0 {
+		t.Fatalf("expected zero options for default EnqueueOptions, got %d", len(got))
+	}
+}
+
+func TestToMkqAddOptions_JobNameOnly(t *testing.T) {
+	got := toMkqAddOptions(driver.EnqueueOptions{}, "ap:deliver", nil)
+	if len(got) != 1 {
+		// Just WithJobName.
+		t.Fatalf("expected 1 option, got %d", len(got))
+	}
+}
+
+func TestUniqueKey_DistinctPayloads(t *testing.T) {
+	// Two payloads with the same (queue, task type) must produce
+	// different unique keys so deleteAccount-for-userA and
+	// deleteAccount-for-userB don't collapse within the 24h window.
+	a := uniqueKey("deliver", "delete", []byte(`{"userId":"a"}`))
+	b := uniqueKey("deliver", "delete", []byte(`{"userId":"b"}`))
+	if a == b {
+		t.Fatalf("distinct payloads must yield distinct unique keys: %q == %q", a, b)
+	}
+	// Same triple → same key (idempotency).
+	if a != uniqueKey("deliver", "delete", []byte(`{"userId":"a"}`)) {
+		t.Fatalf("equal inputs must yield equal keys")
+	}
+}
+
+func TestUniqueKey_DistinctQueues(t *testing.T) {
+	// Same task type + payload routed to different queues must be
+	// treated as independent dedup scopes (matches asynq's
+	// (queue, type, payload) dedup tuple).
+	a := uniqueKey("deliver", "delete", []byte("p"))
+	b := uniqueKey("maintenance", "delete", []byte("p"))
+	if a == b {
+		t.Fatalf("different queues must yield different keys: %q == %q", a, b)
+	}
+}
+
+func TestUniqueKey_NilPayload(t *testing.T) {
+	// nil and empty payload should be equivalent (both hash to the
+	// SHA-256 of zero bytes), and non-nil payloads must differ.
+	a := uniqueKey("cron", "tick", nil)
+	b := uniqueKey("cron", "tick", []byte{})
+	if a != b {
+		t.Fatalf("nil and empty payload must produce the same key")
+	}
+	c := uniqueKey("cron", "tick", []byte{0})
+	if a == c {
+		t.Fatalf("non-empty payload must yield a distinct key")
+	}
+}
+
+func TestToMkqAddOptions_MaxRetryRequiresExplicit(t *testing.T) {
+	// MaxRetrySet=false → default attempts; no option emitted.
+	got := toMkqAddOptions(driver.EnqueueOptions{MaxRetry: 3}, "task", nil)
+	// 1 option only (WithJobName); MaxRetry must NOT be added.
+	if len(got) != 1 {
+		t.Fatalf("MaxRetry without MaxRetrySet must be skipped, got %d", len(got))
+	}
+}
+
+func TestMkqTask_Wrapper(t *testing.T) {
+	w := mkqTask{taskType: "x", payload: []byte("body")}
+	if w.Type() != "x" {
+		t.Fatalf("Type: got %q", w.Type())
+	}
+	if string(w.Payload()) != "body" {
+		t.Fatalf("Payload: got %q", string(w.Payload()))
+	}
+}
+
+func TestBuildRedisOptions_PoolSize(t *testing.T) {
+	pool := 64
+	got := BuildRedisOptions(config.RedisOptions{
+		Host:     "redis.example",
+		Port:     6379,
+		PoolSize: &pool,
+	})
+	if got.PoolSize != 64 {
+		t.Fatalf("PoolSize: want 64, got %d", got.PoolSize)
+	}
+}
+
+func TestBuildRedisOptions_PoolSizeNilKeepsDefault(t *testing.T) {
+	got := BuildRedisOptions(config.RedisOptions{
+		Host: "redis.example",
+		Port: 6379,
+	})
+	if got.PoolSize != 0 {
+		// 0 = "use go-redis default"
+		t.Fatalf("PoolSize: want 0 (default), got %d", got.PoolSize)
+	}
+}
+
+func TestBuildRedisOptions_PoolSizeZeroIgnored(t *testing.T) {
+	pool := 0
+	got := BuildRedisOptions(config.RedisOptions{
+		Host:     "redis.example",
+		Port:     6379,
+		PoolSize: &pool,
+	})
+	if got.PoolSize != 0 {
+		t.Fatalf("PoolSize: want 0, got %d", got.PoolSize)
+	}
+}
+
+func TestJobToSummary_Nil(t *testing.T) {
+	if got := jobToSummary("q", "wait", nil, nil); got != nil {
+		t.Fatalf("nil job must yield nil summary, got %#v", got)
+	}
+}
+
+func TestJobToSummary_FramedPayload(t *testing.T) {
+	job := &mkq.Job[framedPayload]{
+		ID:           "1",
+		Name:         "ap:deliver",
+		Data:         framedPayload{Type: "ap:deliver", Body: []byte("body")},
+		Timestamp:    time.Unix(1700000000, 0),
+		AttemptsMade: 2,
+	}
+	state := &mkq.JobState{
+		ProcessedOn:  time.Unix(1700000010, 0),
+		FinishedOn:   time.Unix(1700000020, 0),
+		FailedReason: "boom",
+	}
+	got := jobToSummary("deliver", "wait", job, state)
+	if got == nil {
+		t.Fatal("got nil")
+	}
+	if got.Type != "ap:deliver" {
+		t.Fatalf("Type: got %q", got.Type)
+	}
+	if got.Retried != 2 {
+		t.Fatalf("Retried: got %d", got.Retried)
+	}
+	if string(got.Payload) != "body" {
+		t.Fatalf("Payload: got %q", got.Payload)
+	}
+	if got.LastErr != "boom" {
+		t.Fatalf("LastErr: got %q", got.LastErr)
+	}
+	if got.LastFailedAt != state.FinishedOn {
+		t.Fatalf("LastFailedAt: got %v", got.LastFailedAt)
+	}
+	// 失敗ジョブの場合、CompletedAt は zero のまま (asynq 互換)。
+	// 失敗時刻は LastFailedAt 側に出すべきで、CompletedAt 列に出すと
+	// admin UI が「失敗なのに完了した」風に表示されてしまう。
+	if !got.CompletedAt.IsZero() {
+		t.Fatalf("CompletedAt must stay zero for failed jobs, got %v", got.CompletedAt)
+	}
+	// NextProcessAt は asynq の future-time セマンティクスに合わせる
+	// ため意図的に未設定にしている (mkq には next-retry timestamp が
+	// 存在しない)。past-time の ProcessedOn を入れると意味的に逆になる
+	// ので zero のままを保証する。
+	if !got.NextProcessAt.IsZero() {
+		t.Fatalf("NextProcessAt must stay zero, got %v", got.NextProcessAt)
+	}
+}
+
+func TestJobToSummary_CompletedSuccess(t *testing.T) {
+	// 成功完了したジョブだけ CompletedAt が埋まる。
+	job := &mkq.Job[framedPayload]{
+		ID:   "1",
+		Name: "ap:deliver",
+		Data: framedPayload{Type: "ap:deliver"},
+	}
+	finished := time.Unix(1700000020, 0)
+	state := &mkq.JobState{FinishedOn: finished}
+	got := jobToSummary("deliver", "completed", job, state)
+	if got.CompletedAt != finished {
+		t.Fatalf("CompletedAt: got %v want %v", got.CompletedAt, finished)
+	}
+	if !got.LastFailedAt.IsZero() {
+		t.Fatalf("LastFailedAt must stay zero on success, got %v", got.LastFailedAt)
+	}
+}
+
+func TestJobToSummary_TypeFallbackToJobName(t *testing.T) {
+	// Foreign jobs (created by BullMQ TS without our framing) have an
+	// empty Data.Type. The summary must fall back to Job.Name so admin
+	// UIs at least see a non-blank label.
+	job := &mkq.Job[framedPayload]{
+		ID:   "1",
+		Name: "foreign:type",
+		Data: framedPayload{}, // no Type
+	}
+	got := jobToSummary("deliver", "wait", job, nil)
+	if got.Type != "foreign:type" {
+		t.Fatalf("Type fallback: got %q", got.Type)
+	}
+}
+
+func TestJobToSummary_NilState(t *testing.T) {
+	job := &mkq.Job[framedPayload]{ID: "1", Data: framedPayload{Type: "x"}}
+	got := jobToSummary("q", "wait", job, nil)
+	if got == nil {
+		t.Fatal("got nil")
+	}
+	if !got.LastFailedAt.IsZero() {
+		t.Fatalf("LastFailedAt should be zero, got %v", got.LastFailedAt)
+	}
+}
+
+func TestClient_CloseIsNoop(t *testing.T) {
+	// Driver-level Close handles the underlying *mkq.Client; per the
+	// driver split, queue.Client.Close from the layered API forwards
+	// to mkqdriver.Client.Close which must be a clean no-op.
+	c := &Client{driver: nil}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Client.Close: %v", err)
+	}
+}
+
+func TestInspector_CloseIsNoop(t *testing.T) {
+	// Same contract as Client.Close — the underlying client is owned
+	// by Driver.
+	i := &Inspector{driver: nil}
+	if err := i.Close(); err != nil {
+		t.Fatalf("Inspector.Close: %v", err)
+	}
+}
+
+func TestDeriveJobState(t *testing.T) {
+	finished := time.Unix(1700000020, 0)
+	processed := time.Unix(1700000010, 0)
+	tests := []struct {
+		name string
+		st   *mkq.JobState
+		want string
+	}{
+		{"nil → wait", nil, string(mkq.JobBucketWait)},
+		{"empty → wait", &mkq.JobState{}, string(mkq.JobBucketWait)},
+		{"processed only → active", &mkq.JobState{ProcessedOn: processed}, string(mkq.JobBucketActive)},
+		{"finished + no error → completed", &mkq.JobState{ProcessedOn: processed, FinishedOn: finished}, string(mkq.JobBucketCompleted)},
+		{"finished + error → failed", &mkq.JobState{ProcessedOn: processed, FinishedOn: finished, FailedReason: "boom"}, string(mkq.JobBucketFailed)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deriveJobState(tt.st); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewDispatchHandler_NoHandler(t *testing.T) {
+	dispatch := newDispatchHandler(map[string]driver.HandlerFunc{})
+	job := &mkq.Job[framedPayload]{Data: framedPayload{Type: "missing"}}
+	_, err := dispatch(context.Background(), job)
+	if err == nil || !errIs(err, mkq.ErrUnrecoverable) {
+		t.Fatalf("missing handler must wrap mkq.ErrUnrecoverable, got %v", err)
+	}
+}
+
+func TestNewDispatchHandler_SkipRetryConverts(t *testing.T) {
+	called := 0
+	dispatch := newDispatchHandler(map[string]driver.HandlerFunc{
+		"x": func(_ context.Context, _ driver.Task) error {
+			called++
+			return driver.SkipRetry
+		},
+	})
+	_, err := dispatch(context.Background(), &mkq.Job[framedPayload]{Data: framedPayload{Type: "x"}})
+	if err == nil || !errIs(err, mkq.ErrUnrecoverable) || !errIs(err, driver.SkipRetry) {
+		t.Fatalf("SkipRetry must wrap both driver.SkipRetry and mkq.ErrUnrecoverable, got %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("handler called %d times, want 1", called)
+	}
+}
+
+func TestNewDispatchHandler_NormalReturn(t *testing.T) {
+	called := 0
+	dispatch := newDispatchHandler(map[string]driver.HandlerFunc{
+		"x": func(_ context.Context, task driver.Task) error {
+			called++
+			if task.Type() != "x" {
+				t.Errorf("Type: %q", task.Type())
+			}
+			if string(task.Payload()) != "body" {
+				t.Errorf("Payload: %q", task.Payload())
+			}
+			return nil
+		},
+	})
+	_, err := dispatch(context.Background(), &mkq.Job[framedPayload]{Data: framedPayload{Type: "x", Body: []byte("body")}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("handler called %d times", called)
+	}
+}
+
+// errIs aliases errors.Is so the dispatch tests read consistently.
+func errIs(err, target error) bool { return errors.Is(err, target) }

@@ -146,6 +146,12 @@ type Source struct {
 	DeliverJobMaxAttempts      *int `mapstructure:"deliverJobMaxAttempts"`
 	InboxJobMaxAttempts        *int `mapstructure:"inboxJobMaxAttempts"`
 
+	// JobQueueDriver selects the worker / inspector implementation
+	// behind internal/queue. "asynq" (default) uses
+	// hibiken/asynq; "mkq" uses the BullMQ-compatible
+	// shiroha-a/mkq library. Empty / unset = "asynq".
+	JobQueueDriver string `mapstructure:"jobQueueDriver"`
+
 	MediaProxy              string          `mapstructure:"mediaProxy"`
 	MediaProxySecret        string          `mapstructure:"mediaProxySecret"`
 	VideoThumbnailGenerator string          `mapstructure:"videoThumbnailGenerator"`
@@ -243,6 +249,9 @@ type Config struct {
 	RelationshipJobPerSec      *int
 	DeliverJobMaxAttempts      *int
 	InboxJobMaxAttempts        *int
+
+	// JobQueueDriver is one of "asynq" (default) or "mkq".
+	JobQueueDriver string
 
 	MediaProxy                   string
 	ExternalMediaProxyEnabled    bool
@@ -342,6 +351,7 @@ func bindEnvKeys(v *viper.Viper) {
 		"enablePprof",
 		"sentryForBackend.options.dsn",
 		"sentryForBackend.options.environment",
+		"jobQueueDriver",
 	}
 	for _, k := range keys {
 		_ = v.BindEnv(k)
@@ -397,6 +407,11 @@ func resolve(src *Source) (*Config, error) {
 
 	mediaProxySecret := deriveMediaProxySecret(src)
 
+	jobQueueDriver, err := resolveJobQueueDriver(src.JobQueueDriver)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		Version:     MisskeyVersion,
 		URL:         parsedURL.Scheme + "://" + parsedURL.Host,
@@ -449,6 +464,7 @@ func resolve(src *Source) (*Config, error) {
 		RelationshipJobPerSec:      src.RelationshipJobPerSec,
 		DeliverJobMaxAttempts:      src.DeliverJobMaxAttempts,
 		InboxJobMaxAttempts:        src.InboxJobMaxAttempts,
+		JobQueueDriver:             jobQueueDriver,
 
 		MediaProxy:                   mediaProxy,
 		ExternalMediaProxyEnabled:    externalMediaProxyEnabled,
@@ -582,6 +598,25 @@ func resolveRedisOrDefault(opts *RedisOptions, fallback RedisOptions, host strin
 		return fallback
 	}
 	return resolveRedis(*opts, host)
+}
+
+// resolveJobQueueDriver normalises the jobQueueDriver config value.
+// Empty / whitespace falls back to "asynq". Unknown non-empty values
+// return an error: silently swapping a typo (e.g. "mkqq") for asynq
+// hides operator intent, especially given that internal/server/
+// queue_factory.go also rejects unknown driver names — surfacing the
+// failure here keeps the two layers consistent and the boot log
+// readable.
+func resolveJobQueueDriver(raw string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "":
+		return "asynq", nil
+	case "asynq", "mkq":
+		return v, nil
+	default:
+		return "", fmt.Errorf("config: unknown jobQueueDriver %q (expected \"asynq\" or \"mkq\")", raw)
+	}
 }
 
 // DSN returns the PostgreSQL connection string.

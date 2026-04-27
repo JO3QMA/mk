@@ -2,6 +2,7 @@ package asynqdriver
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/hibiken/asynq"
 
@@ -12,10 +13,15 @@ import (
 // driver.Driver. Each call to a getter returns the lazily-built
 // component so a Driver instance can be created without immediately
 // touching Redis.
+//
+// All sub-component getters are safe to call concurrently — the
+// underlying lazy construction is serialised via mu, mirroring the
+// mkq driver's contract.
 type Driver struct {
 	redisOpt  asynq.RedisClientOpt
 	serverCfg ServerConfig
 
+	mu        sync.Mutex
 	client    *Client
 	server    *Server
 	inspector *Inspector
@@ -31,6 +37,8 @@ func New(redisOpt asynq.RedisClientOpt, serverCfg ServerConfig) *Driver {
 
 // Client returns the lazily-constructed driver.Client.
 func (d *Driver) Client() driver.Client {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.client == nil {
 		d.client = NewClient(d.redisOpt)
 	}
@@ -39,6 +47,8 @@ func (d *Driver) Client() driver.Client {
 
 // Server returns the lazily-constructed driver.Server.
 func (d *Driver) Server() driver.Server {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.server == nil {
 		d.server = NewServer(d.redisOpt, d.serverCfg)
 	}
@@ -47,6 +57,8 @@ func (d *Driver) Server() driver.Server {
 
 // Inspector returns the lazily-constructed driver.Inspector.
 func (d *Driver) Inspector() driver.Inspector {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.inspector == nil {
 		d.inspector = NewInspector(d.redisOpt)
 	}
@@ -55,6 +67,8 @@ func (d *Driver) Inspector() driver.Inspector {
 
 // Scheduler returns the lazily-constructed driver.Scheduler.
 func (d *Driver) Scheduler() driver.Scheduler {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.scheduler == nil {
 		d.scheduler = NewScheduler(d.redisOpt)
 	}
@@ -65,14 +79,19 @@ func (d *Driver) Scheduler() driver.Scheduler {
 // have not been built yet are skipped. Errors are aggregated so a
 // failure in one Close does not mask the others.
 func (d *Driver) Close() error {
+	d.mu.Lock()
+	client := d.client
+	inspector := d.inspector
+	d.mu.Unlock()
+
 	var errs []error
-	if d.client != nil {
-		if err := d.client.Close(); err != nil {
+	if client != nil {
+		if err := client.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if d.inspector != nil {
-		if err := d.inspector.Close(); err != nil {
+	if inspector != nil {
+		if err := inspector.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}

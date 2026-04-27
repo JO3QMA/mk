@@ -58,7 +58,11 @@ func main() {
 	defer redisClients.Close()
 
 	// HTTPサーバー起動
-	srv := server.New(cfg, db, redisClients)
+	srv, err := server.New(cfg, db, redisClients)
+	if err != nil {
+		slog.Error("failed to construct server", "error", err)
+		os.Exit(1)
+	}
 
 	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -824,3 +824,64 @@ func TestRedisOptions_KeyPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveJobQueueDriver(t *testing.T) {
+	t.Run("accepted values", func(t *testing.T) {
+		tests := []struct {
+			raw  string
+			want string
+		}{
+			{"", "asynq"},
+			{"asynq", "asynq"},
+			{"mkq", "mkq"},
+			{"  mkq  ", "mkq"},
+			{"MKQ", "mkq"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.raw, func(t *testing.T) {
+				got, err := resolveJobQueueDriver(tt.raw)
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			})
+		}
+	})
+	t.Run("unknown value rejected", func(t *testing.T) {
+		// Unknown values (typos like "mkqq") must error so a YAML
+		// typo does not silently downgrade the operator's intent
+		// to asynq. internal/server/queue_factory.go also rejects
+		// unknown drivers; surfacing the failure here keeps the
+		// two layers consistent.
+		_, err := resolveJobQueueDriver("mkqq")
+		require.Error(t, err)
+	})
+}
+
+func TestLoad_JobQueueDriver_Invalid(t *testing.T) {
+	yml := testYAML + "\njobQueueDriver: not-a-real-driver\n"
+	path := writeTestConfig(t, yml)
+	_, err := Load(path)
+	require.Error(t, err)
+}
+
+func TestLoad_JobQueueDriver_Default(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "asynq", cfg.JobQueueDriver)
+}
+
+func TestLoad_JobQueueDriver_Mkq(t *testing.T) {
+	yml := testYAML + "\njobQueueDriver: mkq\n"
+	path := writeTestConfig(t, yml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "mkq", cfg.JobQueueDriver)
+}
+
+func TestLoad_JobQueueDriver_EnvOverride(t *testing.T) {
+	t.Setenv("MK_JOBQUEUEDRIVER", "mkq")
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "mkq", cfg.JobQueueDriver)
+}
