@@ -2,19 +2,25 @@
 # Misskey-Go configuration (Docker)
 #
 # このファイルは `.config/docker.yml.example` です。
-# `make docker-build` / `docker compose up` 前に以下を実行して
-# docker.yml を作成してください:
-#   cp .config/docker.yml.example .config/docker.yml
+# Dockerfile が build 時に `.config/docker.yml.example` を image 内の
+# `/app/.config/default.yml` として焼き込みます。docker-compose の
+# 既定値 (POSTGRES_USER=misskey / POSTGRES_PASSWORD=misskey) と
+# 整合する内容を初期値にしてあるので、`docker compose up` で out-of-
+# the-box に動作します。
 #
-# Dockerfile が build 時に `.config/docker.yml` を image 内の
-# `/app/.config/default.yml` にコピーします。
+# 設定をカスタマイズする場合:
+#   1. cp .config/docker.yml.example .config/docker.yml
+#   2. .config/docker.yml を編集
+#   3. docker-compose.yml の `volumes:` で
+#        - ./.config/docker.yml:/app/.config/default.yml:ro
+#      を有効化して mount 上書き
 #━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #   ┌─────┐
 #───┘ URL └─────────────────────────────────────────────────────
 
 # Final accessible URL seen by a user.
-url: https://example.tld/
+url: http://localhost:3000
 
 # ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE THE
 # URL SETTINGS AFTER THAT!
@@ -34,9 +40,11 @@ db:
   # Database name
   db: misskey
 
-  # Auth
-  user: example-misskey-user
-  pass: example-misskey-pass
+  # Auth — docker-compose.yml の POSTGRES_USER / POSTGRES_PASSWORD と
+  # 同じ値にしておく (out-of-the-box で接続できるように)。
+  # 本番運用では強いパスワードに変更すること。
+  user: misskey
+  pass: misskey
 
   # Whether disable Caching queries
   #disableCache: true

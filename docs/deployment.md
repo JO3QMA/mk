@@ -8,9 +8,6 @@
 git clone --recursive https://github.com/shiroha-a/mk.git
 cd mk
 
-# 設定ファイルを example から複製 (初回のみ)
-cp .config/docker.yml.example .config/docker.yml
-
 # フロントエンドビルド (初回のみ、3-10分)
 make e2e-frontend-build
 
@@ -18,6 +15,18 @@ make e2e-frontend-build
 docker compose up -d
 
 # http://localhost:3000 でアクセス
+```
+
+`.config/docker.yml.example` が Dockerfile に焼き込まれ、`docker-compose.yml` の DB/Redis 既定値と整合した状態で起動するため、**初期設定なしで `docker compose up` だけで動く**。
+
+設定をカスタマイズしたい場合は example をコピーして編集 + volume mount で上書き:
+
+```bash
+cp .config/docker.yml.example .config/docker.yml
+# .config/docker.yml を編集 (URL / mediaProxy / etc.)
+# docker-compose.yml の volumes コメントを外す:
+#   - ./.config/docker.yml:/app/.config/default.yml:ro
+docker compose up -d
 ```
 
 `docker-compose.yml`の構成:
