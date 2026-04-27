@@ -9,8 +9,9 @@ import (
 
 // parseCustomEmojiReaction extracts the (name, host) pair from a reaction
 // string. Custom emoji reactions are wrapped in colons (`:smile:` for local
-// or `:smile@remote.example.com:` for remote); raw unicode emoji like ❤️ is
-// returned with ok=false. Local reactions return host="".
+// or `:smile@remote.example.com:` for remote); raw unicode reactions (no
+// surrounding colons, e.g. heart) are returned with ok=false. Local
+// reactions return host="".
 //
 // reaction_service.normalizeReaction が local 絵文字を `:name@.:` 形式 (host
 // を `.` で表す TS 互換 canonical 形式) で永続化するため、parser 側でも `@.`
@@ -163,8 +164,8 @@ func (r *EmojiResolver) PopulateNoteEmojis(note *model.Note, entity *NoteEntity)
 // note.Reactions and populates entity.ReactionEmojis with `key → url`
 // where key matches the frontend's lookup format
 // (`reaction.substring(1, length-1)`): `name` for local custom emoji,
-// `name@host` for remote. Raw unicode reactions (`❤️`, etc.) are
-// skipped — frontend renders them directly without map lookup. (#459)
+// `name@host` for remote. Raw unicode reactions are skipped — frontend
+// renders them directly without map lookup. (#459)
 func (r *EmojiResolver) PopulateNoteReactionEmojis(note *model.Note, entity *NoteEntity) {
 	if r == nil || note == nil || entity == nil || len(note.Reactions) == 0 {
 		return

@@ -683,7 +683,7 @@ func (p *Processor) handleLike(act genericActivity) error {
 	// upsert する。Misskey TS の apNoteService.extractEmojis(...) 相当
 	// (#459)。reactionService.Create 自体は emoji 不在でも reaction 文字列
 	// を保存できるので、upsert 失敗で Create を止める必要はなく、UI 表示
-	// 側の reactionEmojis 解決が ❤️ フォールバックするだけにとどめる。
+	// 側の reactionEmojis 解決が FallbackReaction (heart) に落ちる程度。
 	if reactor.Host != nil && len(like.Tag) > 0 {
 		p.resolver.upsertEmojis(extractEmojiTags(like.Tag), *reactor.Host)
 	}
