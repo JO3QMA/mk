@@ -48,13 +48,13 @@ type Config struct {
 	QueueNames []string
 
 	// MaxMetricsDataPoints caps the number of one-minute buckets the
-	// per-queue completed / failed metrics list keeps. 0 disables the
-	// feature (matches mkq's default — no BullMQ metrics keys are
-	// written). The default applied when the field is left zero is
-	// `defaultMaxMetricsDataPoints` (= MetricsTime.ONE_WEEK in
+	// per-queue completed / failed metrics list keeps. The zero value
+	// applies `defaultMaxMetricsDataPoints` (= MetricsTime.ONE_WEEK in
 	// BullMQ TS, what Misskey TS upstream uses), so admin UIs see
 	// drop-in compatible chart data when sharing a Redis with a TS
-	// Misskey instance.
+	// Misskey instance. Set to a negative value to opt out entirely;
+	// no BullMQ metrics keys are written in that case (mkq's default
+	// behaviour pre-v1.0.1).
 	MaxMetricsDataPoints int
 }
 

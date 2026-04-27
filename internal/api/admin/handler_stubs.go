@@ -1814,8 +1814,8 @@ func (h *Handler) fetchQueueMetrics(qname string) (completed, failed *QueueMetri
 	if h.queueInspector == nil {
 		return nil, nil
 	}
-	completed, _ = h.queueInspector.QueueMetrics(qname, "completed")
-	failed, _ = h.queueInspector.QueueMetrics(qname, "failed")
+	completed, _ = h.queueInspector.QueueMetrics(qname, queue.MetricsKindCompleted)
+	failed, _ = h.queueInspector.QueueMetrics(qname, queue.MetricsKindFailed)
 	return
 }
 
