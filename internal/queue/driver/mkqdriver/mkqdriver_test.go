@@ -44,7 +44,7 @@ func TestToMkqAddOptions_FullSet(t *testing.T) {
 		driver.WithUnique(time.Hour),
 		driver.WithProcessIn(2 * time.Second),
 	})
-	got := toMkqAddOptions(o, "ap:deliver")
+	got := toMkqAddOptions(o, "ap:deliver", []byte("body"))
 	if len(got) < 4 {
 		// 4 options expected: WithJobName, WithAttempts, WithUnique, WithDelay
 		t.Fatalf("expected at least 4 options, got %d", len(got))
@@ -52,23 +52,52 @@ func TestToMkqAddOptions_FullSet(t *testing.T) {
 }
 
 func TestToMkqAddOptions_DefaultsSkipped(t *testing.T) {
-	got := toMkqAddOptions(driver.EnqueueOptions{}, "")
+	got := toMkqAddOptions(driver.EnqueueOptions{}, "", nil)
 	if len(got) != 0 {
 		t.Fatalf("expected zero options for default EnqueueOptions, got %d", len(got))
 	}
 }
 
 func TestToMkqAddOptions_JobNameOnly(t *testing.T) {
-	got := toMkqAddOptions(driver.EnqueueOptions{}, "ap:deliver")
+	got := toMkqAddOptions(driver.EnqueueOptions{}, "ap:deliver", nil)
 	if len(got) != 1 {
 		// Just WithJobName.
 		t.Fatalf("expected 1 option, got %d", len(got))
 	}
 }
 
+func TestUniqueKey_DistinctPayloads(t *testing.T) {
+	// Two payloads with the same task type must produce different
+	// unique keys so deleteAccount-for-userA and deleteAccount-for-userB
+	// don't collapse within the 24h dedup window.
+	a := uniqueKey("delete", []byte(`{"userId":"a"}`))
+	b := uniqueKey("delete", []byte(`{"userId":"b"}`))
+	if a == b {
+		t.Fatalf("distinct payloads must yield distinct unique keys: %q == %q", a, b)
+	}
+	// Same payload + same type → same key (idempotency).
+	if a != uniqueKey("delete", []byte(`{"userId":"a"}`)) {
+		t.Fatalf("equal inputs must yield equal keys")
+	}
+}
+
+func TestUniqueKey_NilPayload(t *testing.T) {
+	// nil and empty payload should be equivalent (both hash to the
+	// SHA-256 of zero bytes), and non-nil payloads must differ.
+	a := uniqueKey("cron", nil)
+	b := uniqueKey("cron", []byte{})
+	if a != b {
+		t.Fatalf("nil and empty payload must produce the same key")
+	}
+	c := uniqueKey("cron", []byte{0})
+	if a == c {
+		t.Fatalf("non-empty payload must yield a distinct key")
+	}
+}
+
 func TestToMkqAddOptions_MaxRetryRequiresExplicit(t *testing.T) {
 	// MaxRetrySet=false → default attempts; no option emitted.
-	got := toMkqAddOptions(driver.EnqueueOptions{MaxRetry: 3}, "task")
+	got := toMkqAddOptions(driver.EnqueueOptions{MaxRetry: 3}, "task", nil)
 	// 1 option only (WithJobName); MaxRetry must NOT be added.
 	if len(got) != 1 {
 		t.Fatalf("MaxRetry without MaxRetrySet must be skipped, got %d", len(got))
@@ -158,8 +187,11 @@ func TestJobToSummary_FramedPayload(t *testing.T) {
 	if got.LastFailedAt != state.FinishedOn {
 		t.Fatalf("LastFailedAt: got %v", got.LastFailedAt)
 	}
-	if got.CompletedAt != state.FinishedOn {
-		t.Fatalf("CompletedAt: got %v", got.CompletedAt)
+	// 失敗ジョブの場合、CompletedAt は zero のまま (asynq 互換)。
+	// 失敗時刻は LastFailedAt 側に出すべきで、CompletedAt 列に出すと
+	// admin UI が「失敗なのに完了した」風に表示されてしまう。
+	if !got.CompletedAt.IsZero() {
+		t.Fatalf("CompletedAt must stay zero for failed jobs, got %v", got.CompletedAt)
 	}
 	// NextProcessAt は asynq の future-time セマンティクスに合わせる
 	// ため意図的に未設定にしている (mkq には next-retry timestamp が
@@ -167,6 +199,24 @@ func TestJobToSummary_FramedPayload(t *testing.T) {
 	// ので zero のままを保証する。
 	if !got.NextProcessAt.IsZero() {
 		t.Fatalf("NextProcessAt must stay zero, got %v", got.NextProcessAt)
+	}
+}
+
+func TestJobToSummary_CompletedSuccess(t *testing.T) {
+	// 成功完了したジョブだけ CompletedAt が埋まる。
+	job := &mkq.Job[framedPayload]{
+		ID:   "1",
+		Name: "ap:deliver",
+		Data: framedPayload{Type: "ap:deliver"},
+	}
+	finished := time.Unix(1700000020, 0)
+	state := &mkq.JobState{FinishedOn: finished}
+	got := jobToSummary("deliver", "completed", job, state)
+	if got.CompletedAt != finished {
+		t.Fatalf("CompletedAt: got %v want %v", got.CompletedAt, finished)
+	}
+	if !got.LastFailedAt.IsZero() {
+		t.Fatalf("LastFailedAt must stay zero on success, got %v", got.LastFailedAt)
 	}
 }
 

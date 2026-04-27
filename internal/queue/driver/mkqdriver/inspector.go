@@ -240,7 +240,11 @@ func jobToSummary(queue, state string, job *mkq.Job[framedPayload], st *mkq.JobS
 		EnqueuedAt: job.Timestamp,
 	}
 	if st != nil {
-		if !st.FinishedOn.IsZero() {
+		// CompletedAt は asynq driver と揃えて「成功完了したジョブ」
+		// のみセット。failed (FailedReason != "") の場合は LastFailedAt
+		// 側に出すので、ここでは触らない。admin UI が completedAt 列を
+		// 失敗ジョブにも表示してしまうと operator が混乱するため。
+		if !st.FinishedOn.IsZero() && st.FailedReason == "" {
 			s.CompletedAt = st.FinishedOn
 		}
 		if st.FailedReason != "" {

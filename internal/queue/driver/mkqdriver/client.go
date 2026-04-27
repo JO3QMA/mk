@@ -37,7 +37,7 @@ func (c *Client) Enqueue(ctx context.Context, taskType string, payload []byte, o
 	}
 
 	framed := framedPayload{Type: taskType, Body: payload}
-	addOpts := toMkqAddOptions(o, taskType)
+	addOpts := toMkqAddOptions(o, taskType, payload)
 	if _, err := q.Add(ctx, framed, addOpts...); err != nil {
 		if errors.Is(err, mkq.ErrDuplicateJob) {
 			// asynq.Unique と同様、TTL 内の重複 enqueue は black-hole 扱い。
