@@ -123,7 +123,9 @@ func (i *Inspector) ListRetryTasks(qname string, page, pageSize int) ([]*driver.
 	return i.list(qname, mkq.JobBucketFailed, page, pageSize)
 }
 
-// GetTaskInfo returns the full snapshot for a single task.
+// GetTaskInfo returns the full snapshot for a single task. The
+// state string is derived from the JobState timestamps because mkq's
+// q.Get does not return the bucket directly — see deriveJobState.
 func (i *Inspector) GetTaskInfo(qname, taskID string) (*driver.TaskSummary, error) {
 	q := i.driver.queueFor(qname)
 	if q == nil {
@@ -136,7 +138,31 @@ func (i *Inspector) GetTaskInfo(qname, taskID string) (*driver.TaskSummary, erro
 		}
 		return nil, fmt.Errorf("mkqdriver: get job %q: %w", taskID, err)
 	}
-	return jobToSummary(qname, "", job, state), nil
+	return jobToSummary(qname, deriveJobState(state), job, state), nil
+}
+
+// deriveJobState maps a *mkq.JobState into a BullMQ bucket-name
+// string by inspecting timestamp / error fields. mkq's q.Get does
+// not include the bucket key (delayed / wait / prioritized are not
+// distinguishable from JobState alone), so the heuristic only
+// distinguishes terminal states (failed / completed) from in-flight
+// (active) and the catch-all (wait). Admin UI rendering benefits
+// most from the failed/completed labels — the wait/delayed
+// distinction is rarely actionable from a single-job lookup.
+func deriveJobState(st *mkq.JobState) string {
+	if st == nil {
+		return string(mkq.JobBucketWait)
+	}
+	switch {
+	case !st.FinishedOn.IsZero() && st.FailedReason != "":
+		return string(mkq.JobBucketFailed)
+	case !st.FinishedOn.IsZero():
+		return string(mkq.JobBucketCompleted)
+	case !st.ProcessedOn.IsZero():
+		return string(mkq.JobBucketActive)
+	default:
+		return string(mkq.JobBucketWait)
+	}
 }
 
 // list normalises mkq.ListJobs inputs (1-indexed page/pageSize) into

@@ -107,17 +107,33 @@ func (d *Driver) Client() driver.Client {
 }
 
 // Server returns the lazily-constructed driver.Server.
+//
+// cfg.Concurrency is interpreted as a **total** worker budget across
+// all queues (matching asynq.Config.Concurrency semantics). mkq
+// applies WithConcurrency per queue, so the per-queue value is
+// `total / len(queues)` clamped to a minimum of 1 — without this
+// scaling an operator setting `deliverJobConcurrency: 16` would get
+// 80 goroutines (5 queues × 16) on the mkq driver, vs 16 on the
+// asynq driver, surprising operators migrating between the two.
 func (d *Driver) Server() driver.Server {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.dServer == nil {
-		concurrency := d.cfg.Concurrency
-		if concurrency <= 0 {
-			concurrency = 16
+		total := d.cfg.Concurrency
+		if total <= 0 {
+			total = 16
+		}
+		queues := len(d.queues)
+		if queues < 1 {
+			queues = 1
+		}
+		perQueue := total / queues
+		if perQueue < 1 {
+			perQueue = 1
 		}
 		d.dServer = &Server{
 			driver:      d,
-			concurrency: concurrency,
+			concurrency: perQueue,
 			handlers:    make(map[string]driver.HandlerFunc),
 		}
 	}

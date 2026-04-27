@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"sort"
 	"sync"
 
 	"github.com/shiroha-a/mkq"
@@ -17,6 +19,13 @@ import (
 // that field is not overridable by mkq's schedule API, so framing the
 // payload is the only consistent way to recover the task type for
 // both ad-hoc and scheduled jobs.
+//
+// Locking model: s.mu protects s.started, s.handlers, and s.workers
+// during the registration / shutdown phases. After Start() returns,
+// the dispatch fast-path runs **without** taking s.mu — the handler
+// snapshot is captured at Start time and frozen for the lifetime of
+// the worker. Handle calls after Start panic, so the freeze is
+// maintained.
 type Server struct {
 	driver      *Driver
 	concurrency int
@@ -28,10 +37,9 @@ type Server struct {
 }
 
 // Handle registers a handler for the given task type. Must be called
-// before Start; calls after Start panic — the worker dispatch loop
-// is allowed to assume the registry is frozen and the dispatch
-// fast-path takes s.mu only to read s.handlers (no map mutations
-// after Start).
+// before Start; calls after Start panic. The dispatch fast-path
+// captures a snapshot of the handlers map at Start, so the registry
+// is frozen for the worker's lifetime.
 func (s *Server) Handle(taskType string, h driver.HandlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -46,40 +54,60 @@ func (s *Server) Handle(taskType string, h driver.HandlerFunc) {
 //
 // Failure mode: if a later mkq.Process fails, the workers spawned so
 // far are stopped before bubbling up. Stop is invoked **without**
-// holding s.mu so the dispatch handler (which acquires s.mu) can
-// drain its in-flight job — see Shutdown for the same pattern.
+// holding s.mu so the in-flight job draining is not blocked — see
+// Shutdown for the same pattern.
+//
+// Concurrency: the lock is released before mkq.Process is called for
+// the first queue, so dispatch goroutines spawned by Process do not
+// queue up behind the Start loop. This addresses the brief
+// dispatch-blocking that occurred when the lock was held across all
+// 5 queue creations.
 func (s *Server) Start() error {
 	s.mu.Lock()
 	if s.started {
 		s.mu.Unlock()
 		return errors.New("mkqdriver: Start called twice")
 	}
-	dispatch := s.dispatchHandler()
-
-	var startErr error
-	var startedQueue string
-	for _, q := range s.driver.queues {
-		w, err := mkq.Process(q, dispatch, mkq.WithConcurrency(s.concurrency))
-		if err != nil {
-			startErr = fmt.Errorf("mkqdriver: start worker for %q: %w", q.Name(), err)
-			startedQueue = q.Name()
-			break
-		}
-		s.workers = append(s.workers, w)
-	}
-	if startErr != nil {
-		// Snapshot the workers we managed to start before failure,
-		// then release s.mu so the in-flight handlers can run their
-		// dispatch loop to completion while w.Stop drains them.
-		toStop := s.workers
-		s.workers = nil
-		s.started = false
-		s.mu.Unlock()
-		stopWorkers(toStop)
-		_ = startedQueue // referenced via wrapped error
-		return startErr
+	// Snapshot the handlers map and mark started under the lock; the
+	// closure passed to mkq.Process closes over the snapshot rather
+	// than s, so the dispatch fast-path needs no synchronisation.
+	handlersSnapshot := maps.Clone(s.handlers)
+	if handlersSnapshot == nil {
+		// Clone of empty/nil map → nil; treat the same as empty so
+		// the dispatch closure's lookup branch returns the
+		// no-handler error consistently.
+		handlersSnapshot = map[string]driver.HandlerFunc{}
 	}
 	s.started = true
+	s.mu.Unlock()
+
+	dispatch := newDispatchHandler(handlersSnapshot)
+
+	// Iterate queue names in deterministic order so partial-startup
+	// error messages are reproducible across runs (Go map iteration
+	// is randomized).
+	names := make([]string, 0, len(s.driver.queues))
+	for n := range s.driver.queues {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	started := make([]*mkq.Worker, 0, len(names))
+	for _, name := range names {
+		q := s.driver.queues[name]
+		w, err := mkq.Process(q, dispatch, mkq.WithConcurrency(s.concurrency))
+		if err != nil {
+			stopWorkers(started)
+			s.mu.Lock()
+			s.started = false
+			s.mu.Unlock()
+			return fmt.Errorf("mkqdriver: start worker for %q: %w", name, err)
+		}
+		started = append(started, w)
+	}
+
+	s.mu.Lock()
+	s.workers = started
 	s.mu.Unlock()
 	return nil
 }
@@ -88,10 +116,9 @@ func (s *Server) Start() error {
 // Calls after the first are no-ops.
 //
 // We snapshot the worker list under s.mu and release the lock before
-// invoking blocking w.Stop calls. dispatchHandler acquires s.mu to
-// read the handler map, so holding it during Stop would deadlock:
-// Stop waits for in-flight handlers, the in-flight handler waits on
-// s.mu, neither makes progress.
+// invoking blocking w.Stop calls. dispatchHandler does NOT acquire
+// s.mu (snapshot-based dispatch), but Stop is blocking on in-flight
+// handlers and we want symmetric behaviour with Start's failure path.
 func (s *Server) Shutdown() {
 	s.mu.Lock()
 	toStop := s.workers
@@ -102,8 +129,9 @@ func (s *Server) Shutdown() {
 }
 
 // stopWorkers calls Stop on each worker sequentially with a
-// background context. Must be called WITHOUT holding s.mu (Stop is
-// blocking and dispatchHandler also acquires s.mu).
+// background context. Must be called WITHOUT holding s.mu — Stop is
+// blocking on in-flight handlers and we never want the lock held
+// across that wait.
 //
 // in-flight ジョブが暴走したら mkq 側の lockDuration で自動回収する。
 func stopWorkers(workers []*mkq.Worker) {
@@ -112,17 +140,18 @@ func stopWorkers(workers []*mkq.Worker) {
 	}
 }
 
-// dispatchHandler returns the mkq handler that demuxes incoming jobs
-// to the registered driver.HandlerFunc by inspecting framedPayload.
+// newDispatchHandler builds the mkq handler closure that demuxes
+// incoming jobs to the registered driver.HandlerFunc. The handlers
+// map is captured by reference; callers must guarantee it is not
+// mutated after the closure is created (Server.Start enforces this
+// by snapshotting via maps.Clone before the call).
 //
 // driver.SkipRetry → mkq.ErrUnrecoverable conversion lives here so
 // processors can keep their existing %w-wrap idiom unchanged.
-func (s *Server) dispatchHandler() mkq.Handler[framedPayload] {
+func newDispatchHandler(handlers map[string]driver.HandlerFunc) mkq.Handler[framedPayload] {
 	return func(ctx context.Context, job *mkq.Job[framedPayload]) (any, error) {
 		taskType := job.Data.Type
-		s.mu.Lock()
-		h := s.handlers[taskType]
-		s.mu.Unlock()
+		h := handlers[taskType]
 		if h == nil {
 			// 未登録 task type は SkipRetry 相当 (再 enqueue しても処理者が
 			// いないので無限ループになる)。

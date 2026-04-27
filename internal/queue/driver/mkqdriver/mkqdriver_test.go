@@ -1,6 +1,8 @@
 package mkqdriver
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -208,3 +210,78 @@ func TestInspector_CloseIsNoop(t *testing.T) {
 		t.Fatalf("Inspector.Close: %v", err)
 	}
 }
+
+func TestDeriveJobState(t *testing.T) {
+	finished := time.Unix(1700000020, 0)
+	processed := time.Unix(1700000010, 0)
+	tests := []struct {
+		name string
+		st   *mkq.JobState
+		want string
+	}{
+		{"nil → wait", nil, string(mkq.JobBucketWait)},
+		{"empty → wait", &mkq.JobState{}, string(mkq.JobBucketWait)},
+		{"processed only → active", &mkq.JobState{ProcessedOn: processed}, string(mkq.JobBucketActive)},
+		{"finished + no error → completed", &mkq.JobState{ProcessedOn: processed, FinishedOn: finished}, string(mkq.JobBucketCompleted)},
+		{"finished + error → failed", &mkq.JobState{ProcessedOn: processed, FinishedOn: finished, FailedReason: "boom"}, string(mkq.JobBucketFailed)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deriveJobState(tt.st); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewDispatchHandler_NoHandler(t *testing.T) {
+	dispatch := newDispatchHandler(map[string]driver.HandlerFunc{})
+	job := &mkq.Job[framedPayload]{Data: framedPayload{Type: "missing"}}
+	_, err := dispatch(context.Background(), job)
+	if err == nil || !errIs(err, mkq.ErrUnrecoverable) {
+		t.Fatalf("missing handler must wrap mkq.ErrUnrecoverable, got %v", err)
+	}
+}
+
+func TestNewDispatchHandler_SkipRetryConverts(t *testing.T) {
+	called := 0
+	dispatch := newDispatchHandler(map[string]driver.HandlerFunc{
+		"x": func(_ context.Context, _ driver.Task) error {
+			called++
+			return driver.SkipRetry
+		},
+	})
+	_, err := dispatch(context.Background(), &mkq.Job[framedPayload]{Data: framedPayload{Type: "x"}})
+	if err == nil || !errIs(err, mkq.ErrUnrecoverable) || !errIs(err, driver.SkipRetry) {
+		t.Fatalf("SkipRetry must wrap both driver.SkipRetry and mkq.ErrUnrecoverable, got %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("handler called %d times, want 1", called)
+	}
+}
+
+func TestNewDispatchHandler_NormalReturn(t *testing.T) {
+	called := 0
+	dispatch := newDispatchHandler(map[string]driver.HandlerFunc{
+		"x": func(_ context.Context, task driver.Task) error {
+			called++
+			if task.Type() != "x" {
+				t.Errorf("Type: %q", task.Type())
+			}
+			if string(task.Payload()) != "body" {
+				t.Errorf("Payload: %q", task.Payload())
+			}
+			return nil
+		},
+	})
+	_, err := dispatch(context.Background(), &mkq.Job[framedPayload]{Data: framedPayload{Type: "x", Body: []byte("body")}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("handler called %d times", called)
+	}
+}
+
+// errIs aliases errors.Is so the dispatch tests read consistently.
+func errIs(err, target error) bool { return errors.Is(err, target) }
