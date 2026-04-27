@@ -96,7 +96,11 @@ func TestMain(m *testing.M) {
 	}
 
 	// server.New でEchoサーバー構築
-	srv := server.New(cfg, testDB.DB, redisClients)
+	srv, err := server.New(cfg, testDB.DB, redisClients)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server.New: %v\n", err)
+		os.Exit(1)
+	}
 
 	// 事前確保したlistenerでhttptestサーバー起動
 	ts = &httptest.Server{

@@ -824,3 +824,45 @@ func TestRedisOptions_KeyPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveJobQueueDriver(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{"", "asynq"},
+		{"asynq", "asynq"},
+		{"mkq", "mkq"},
+		{"  mkq  ", "mkq"},
+		{"MKQ", "mkq"},
+		{"unknown", "asynq"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			assert.Equal(t, tt.want, resolveJobQueueDriver(tt.raw))
+		})
+	}
+}
+
+func TestLoad_JobQueueDriver_Default(t *testing.T) {
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "asynq", cfg.JobQueueDriver)
+}
+
+func TestLoad_JobQueueDriver_Mkq(t *testing.T) {
+	yml := testYAML + "\njobQueueDriver: mkq\n"
+	path := writeTestConfig(t, yml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "mkq", cfg.JobQueueDriver)
+}
+
+func TestLoad_JobQueueDriver_EnvOverride(t *testing.T) {
+	t.Setenv("MK_JOBQUEUEDRIVER", "mkq")
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "mkq", cfg.JobQueueDriver)
+}

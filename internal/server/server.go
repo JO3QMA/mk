@@ -14,7 +14,6 @@ import (
 	"github.com/shiroha-a/mk/internal/core/chart"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/queue/driver"
-	"github.com/shiroha-a/mk/internal/queue/driver/asynqdriver"
 	"github.com/shiroha-a/mk/internal/repository"
 	mksentry "github.com/shiroha-a/mk/internal/sentry"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -46,8 +45,10 @@ func (s *Server) registerShutdownHook(fn func()) {
 	s.shutdownHooks = append(s.shutdownHooks, fn)
 }
 
-// New creates a new Server.
-func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
+// New creates a new Server. Returns an error when the queue driver
+// fails to initialise (e.g. mkq driver failing to PING Redis at
+// startup).
+func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) (*Server, error) {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -82,17 +83,13 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	auth := middleware.NewAuthMiddleware(userRepo, accessTokenRepo)
 	e.Use(auth.Authenticate())
 
-	// queue driver セットアップ: redisForJobQueue にぶら下げる。
-	// Host が UNIX domain socket パス ("/" 始まり) なら Network を "unix" に
-	// 切り替える (asynqdriver.BuildRedisOpt が判定する)。
-	concurrency := 16
-	if cfg.DeliverJobConcurrency != nil && *cfg.DeliverJobConcurrency > 0 {
-		concurrency = *cfg.DeliverJobConcurrency
+	// queue driver セットアップ: jobQueueDriver config で asynq / mkq を
+	// 選択。Host が UNIX domain socket パス ("/" 始まり) のときは driver
+	// 内部で Network を unix に切り替える。
+	queueDriver, err := buildQueueDriver(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("server: build queue driver: %w", err)
 	}
-	queueDriver := asynqdriver.New(
-		asynqdriver.BuildRedisOpt(cfg.RedisForJobQueue),
-		asynqdriver.ServerConfig{Concurrency: concurrency},
-	)
 	queueClient := queue.NewClient(queueDriver)
 	queueServer := queue.NewServer(queueDriver)
 	queueScheduler := queue.NewScheduler(queueDriver)
@@ -113,7 +110,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 
 	s.setupRoutes()
 
-	return s
+	return s, nil
 }
 
 // Handler returns the underlying http.Handler for use with httptest.

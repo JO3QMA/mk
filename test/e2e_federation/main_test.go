@@ -127,7 +127,11 @@ func TestMain(m *testing.M) {
 		AllowedPrivateNetworks: []string{"127.0.0.0/8"},
 	}
 
-	srvA := server.New(cfgA, testDB.DB, redisClientsA)
+	srvA, err := server.New(cfgA, testDB.DB, redisClientsA)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server.New A: %v\n", err)
+		os.Exit(1)
+	}
 	tsA := &httptest.Server{
 		Listener: lnA,
 		Config:   &http.Server{Handler: srvA.Handler()},
@@ -169,7 +173,11 @@ func TestMain(m *testing.M) {
 		AllowedPrivateNetworks: []string{"127.0.0.0/8"},
 	}
 
-	srvB := server.New(cfgB, dbB, redisClientsB)
+	srvB, err := server.New(cfgB, dbB, redisClientsB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server.New B: %v\n", err)
+		os.Exit(1)
+	}
 	tsB := &httptest.Server{
 		Listener: lnB,
 		Config:   &http.Server{Handler: srvB.Handler()},
