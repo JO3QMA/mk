@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +52,7 @@ func generateTestKey(t *testing.T) string {
 	return string(pem.EncodeToMemory(block))
 }
 
-func makeTask(t *testing.T, payload queue.DeliverPayload) *asynq.Task {
+func makeTask(t *testing.T, payload queue.DeliverPayload) driver.Task {
 	t.Helper()
 	return queue.NewDeliverTask(payload)
 }
@@ -98,7 +98,7 @@ func TestDeliverProcessor_Gone_SkipsRetry(t *testing.T) {
 	p := processors.NewDeliverProcessor(signer)
 	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeliverProcessor_NotFound_SkipsRetry(t *testing.T) {
@@ -106,7 +106,7 @@ func TestDeliverProcessor_NotFound_SkipsRetry(t *testing.T) {
 	p := processors.NewDeliverProcessor(signer)
 	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeliverProcessor_Forbidden_SkipsRetry(t *testing.T) {
@@ -114,7 +114,7 @@ func TestDeliverProcessor_Forbidden_SkipsRetry(t *testing.T) {
 	p := processors.NewDeliverProcessor(signer)
 	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeliverProcessor_ServerError_RetriesByReturningError(t *testing.T) {
@@ -122,7 +122,7 @@ func TestDeliverProcessor_ServerError_RetriesByReturningError(t *testing.T) {
 	p := processors.NewDeliverProcessor(signer)
 	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, asynq.SkipRetry)
+	assert.NotErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeliverProcessor_NetworkError_Retries(t *testing.T) {
@@ -132,15 +132,15 @@ func TestDeliverProcessor_NetworkError_Retries(t *testing.T) {
 	err := p.Handle(context.Background(), makeTask(t, makePayload(t)))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, netErr)
-	assert.NotErrorIs(t, err, asynq.SkipRetry)
+	assert.NotErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeliverProcessor_BadPayload_SkipsRetry(t *testing.T) {
 	p := processors.NewDeliverProcessor(&stubSigner{})
-	task := asynq.NewTask(queue.TaskTypeDeliver, []byte(`{not json`))
+	task := driver.RawTask{TypeName: queue.TaskTypeDeliver, Body: []byte(`{not json`)}
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeliverProcessor_BadKey_SkipsRetry(t *testing.T) {
@@ -153,7 +153,7 @@ func TestDeliverProcessor_BadKey_SkipsRetry(t *testing.T) {
 	}
 	err := p.Handle(context.Background(), makeTask(t, payload))
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 // stubResponseHook captures host events for assertions.

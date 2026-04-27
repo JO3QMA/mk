@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
@@ -64,8 +64,8 @@ func (p *InstanceRefreshProcessor) SetClock(now func() time.Time) {
 	}
 }
 
-// Handle implements the asynq handler contract.
-func (p *InstanceRefreshProcessor) Handle(ctx context.Context, _ *asynq.Task) error {
+// Handle implements the driver handler contract.
+func (p *InstanceRefreshProcessor) Handle(ctx context.Context, _ driver.Task) error {
 	if p.repo == nil || p.fetcher == nil {
 		return nil
 	}
@@ -94,7 +94,7 @@ func (p *InstanceRefreshProcessor) Handle(ctx context.Context, _ *asynq.Task) er
 	var refreshed, failed int
 	for _, inst := range rows {
 		if err := ctx.Err(); err != nil {
-			// ctx cancellation (shutdown / deadline) は呼び出し側 asynq が
+			// ctx cancellation (shutdown / deadline) は呼び出し側 driver が
 			// リトライするので、ここで中断しても safe。これまでの成果を log。
 			slog.Info("instance refresh: interrupted",
 				"processed", refreshed+failed, "total", len(rows))

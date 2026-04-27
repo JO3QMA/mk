@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/core/webhook"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +25,9 @@ type fakeEnqueuer struct {
 	systemErr   error
 }
 
-func (f *fakeEnqueuer) EnqueueDeliver(_ queue.DeliverPayload, _ ...asynq.Option) error { return nil }
+func (f *fakeEnqueuer) EnqueueDeliver(_ queue.DeliverPayload, _ ...driver.EnqueueOption) error {
+	return nil
+}
 func (f *fakeEnqueuer) EnqueueExport(_ queue.ExportPayload) error                      { return nil }
 func (f *fakeEnqueuer) EnqueueImport(_ queue.ImportPayload) error                      { return nil }
 func (f *fakeEnqueuer) EnqueueWebPush(_ context.Context, _ queue.WebPushPayload) error { return nil }

@@ -1,4 +1,6 @@
-// Package processors contains asynq task handlers used by the queue worker.
+// Package processors contains task handlers used by the queue worker.
+// Handlers are driver-neutral: they accept a driver.Task and return
+// driver.SkipRetry to suppress retries.
 package processors
 
 import (
@@ -10,9 +12,9 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
 // HTTPSigner abstracts the signed POST capability of activitypub.Client so
@@ -105,19 +107,19 @@ func (p *DeliverProcessor) recordError(inbox string) {
 	}
 }
 
-// Handle dispatches a single deliver task. The asynq runtime invokes this for
-// every dequeued task.
-func (p *DeliverProcessor) Handle(_ context.Context, t *asynq.Task) error {
+// Handle dispatches a single deliver task. The driver runtime invokes
+// this for every dequeued task.
+func (p *DeliverProcessor) Handle(_ context.Context, t driver.Task) error {
 	payload, err := queue.DecodeDeliverPayload(t.Payload())
 	if err != nil {
 		// payload が壊れているジョブは何度リトライしても無意味なのでスキップ。
-		return fmt.Errorf("decode deliver payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("decode deliver payload: %w: %w", err, driver.SkipRetry)
 	}
 
 	key, err := activitypub.NewPrivateKey(payload.KeyID, payload.KeyPEM)
 	if err != nil {
 		// 鍵が壊れているジョブも同様にスキップする。
-		return fmt.Errorf("parse private key: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("parse private key: %w: %w", err, driver.SkipRetry)
 	}
 
 	// deliverSuspendedSoftware: 対象インスタンスの software がリストに該当すればスキップ
@@ -153,14 +155,14 @@ func (p *DeliverProcessor) Handle(_ context.Context, t *asynq.Task) error {
 		slog.Info("ap deliver: target gone",
 			"inbox", payload.Inbox, "status", resp.StatusCode)
 		p.recordSuccess(payload.Inbox)
-		return fmt.Errorf("target gone (%d): %w", resp.StatusCode, asynq.SkipRetry)
+		return fmt.Errorf("target gone (%d): %w", resp.StatusCode, driver.SkipRetry)
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		// その他の4xxは受信側の不正リクエスト扱い。HTTP として応答が返って
 		// きているので isNotResponding 状態は解除する。
 		slog.Warn("ap deliver: client error",
 			"inbox", payload.Inbox, "status", resp.StatusCode)
 		p.recordSuccess(payload.Inbox)
-		return fmt.Errorf("client error (%d): %w", resp.StatusCode, asynq.SkipRetry)
+		return fmt.Errorf("client error (%d): %w", resp.StatusCode, driver.SkipRetry)
 	default:
 		// 5xx は受信側の一時的な障害。リトライさせる + 不調状態としてマーク。
 		slog.Warn("ap deliver: server error",

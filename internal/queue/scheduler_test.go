@@ -6,26 +6,34 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/shiroha-a/mk/internal/queue/driver/asynqdriver"
 )
 
+// newSchedulerForTest constructs a Scheduler against a driver that
+// does not require a live Redis (asynq.Scheduler is constructed lazily
+// in NewScheduler — Register validates cron syntax client-side).
+func newSchedulerForTest(t *testing.T) *Scheduler {
+	t.Helper()
+	d := asynqdriver.New(asynq.RedisClientOpt{Addr: "127.0.0.1:6379"}, asynqdriver.ServerConfig{})
+	s := NewScheduler(d)
+	t.Cleanup(s.Shutdown)
+	return s
+}
+
 // TestNewScheduler_NotNil is a simple smoke test that the Scheduler
-// wrapper builds without touching Redis. asynq.Scheduler does not
-// connect on construction, so this can run without a Redis instance.
+// wrapper builds without touching Redis.
 func TestNewScheduler_NotNil(t *testing.T) {
-	s := NewScheduler(asynq.RedisClientOpt{Addr: "127.0.0.1:6379"})
+	s := newSchedulerForTest(t)
 	require.NotNil(t, s)
 	require.NotNil(t, s.inner)
-	// Shutdown を呼んでも Start していなければ no-op で安全。
-	s.Shutdown()
 }
 
 // TestScheduler_RegisterChartJobs_NoErr verifies the cron syntax + queue
-// options are accepted by asynq. Register does not enqueue — it simply
-// records the schedule — so no Redis is required.
+// options are accepted. Register does not enqueue — it simply records
+// the schedule — so no Redis is required.
 func TestScheduler_RegisterChartJobs_NoErr(t *testing.T) {
-	s := NewScheduler(asynq.RedisClientOpt{Addr: "127.0.0.1:6379"})
-	defer s.Shutdown()
-
+	s := newSchedulerForTest(t)
 	require.NoError(t, s.RegisterChartJobs())
 }
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/hibiken/asynq"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
 // RetentionAggregator is the narrow interface the daily retention job needs.
@@ -15,7 +15,7 @@ type RetentionAggregator interface {
 
 // RetentionAggregateProcessor delegates to the retention aggregation
 // service on each scheduled fire (#421)。失敗はログだけ残してジョブとしては
-// success 扱いにする (asynq の retry に任せて雪崩らせる利点が無い)。
+// success 扱いにする (driver の retry に任せて雪崩らせる利点が無い)。
 type RetentionAggregateProcessor struct {
 	svc RetentionAggregator
 }
@@ -26,14 +26,14 @@ func NewRetentionAggregateProcessor(svc RetentionAggregator) *RetentionAggregate
 	return &RetentionAggregateProcessor{svc: svc}
 }
 
-// Handle implements the asynq handler contract.
-func (p *RetentionAggregateProcessor) Handle(ctx context.Context, _ *asynq.Task) error {
+// Handle implements the driver handler contract.
+func (p *RetentionAggregateProcessor) Handle(ctx context.Context, _ driver.Task) error {
 	if p.svc == nil {
 		return nil
 	}
 	if err := p.svc.Aggregate(ctx); err != nil {
 		// 失敗時も nil を返してジョブを success 扱いにする。MaxRetry(0) で
-		// asynq に retry させない方針なので err を返すと dead queue が肥大
+		// driver に retry させない方針なので err を返すと dead queue が肥大
 		// するだけで利点が無い。次回 cron (翌日 0:00 UTC) を待てば自然に
 		// 再アグリゲートされる。
 		slog.Warn("retention aggregate: failed", "err", err)

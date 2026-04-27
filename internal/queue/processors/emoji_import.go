@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/emojiimport"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
 // ImportCustomEmojisProcessor handles `importCustomEmojis` tasks by delegating
@@ -23,16 +23,16 @@ func NewImportCustomEmojisProcessor(importer *emojiimport.Importer) *ImportCusto
 }
 
 // Handle dispatches a single emoji-zip import task.
-func (p *ImportCustomEmojisProcessor) Handle(ctx context.Context, t *asynq.Task) error {
+func (p *ImportCustomEmojisProcessor) Handle(ctx context.Context, t driver.Task) error {
 	if p.importer == nil {
-		return fmt.Errorf("import custom emojis processor not configured: %w", asynq.SkipRetry)
+		return fmt.Errorf("import custom emojis processor not configured: %w", driver.SkipRetry)
 	}
 	payload, err := queue.DecodeImportCustomEmojisPayload(t.Payload())
 	if err != nil {
-		return fmt.Errorf("decode import custom emojis payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("decode import custom emojis payload: %w: %w", err, driver.SkipRetry)
 	}
 	if payload.UserID == "" || payload.FileID == "" {
-		return fmt.Errorf("import custom emojis payload missing fields: %w", asynq.SkipRetry)
+		return fmt.Errorf("import custom emojis payload missing fields: %w", driver.SkipRetry)
 	}
 	if _, err := p.importer.Run(ctx, payload.UserID, payload.FileID); err != nil {
 		// ZIP 破損・meta.json 不在 など恒久的エラーは再試行してもムダ。
@@ -41,7 +41,7 @@ func (p *ImportCustomEmojisProcessor) Handle(ctx context.Context, t *asynq.Task)
 			errors.Is(err, emojiimport.ErrMalformedMeta) ||
 			errors.Is(err, emojiimport.ErrUserNotFound) ||
 			errors.Is(err, emojiimport.ErrDriveFileNotFound) {
-			return fmt.Errorf("%w: %w", err, asynq.SkipRetry)
+			return fmt.Errorf("%w: %w", err, driver.SkipRetry)
 		}
 		return err
 	}

@@ -3,68 +3,67 @@ package queue
 import (
 	"encoding/json"
 
-	"github.com/hibiken/asynq"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
-// TaskTypeDeliver is the asynq task type used for outbound ActivityPub
+// TaskTypeDeliver is the task type used for outbound ActivityPub
 // delivery jobs.
 const TaskTypeDeliver = "ap:deliver"
 
-// TaskTypeExport is the asynq task type for data export jobs.
+// TaskTypeExport is the task type for data export jobs.
 const TaskTypeExport = "export"
 
-// TaskTypeImport is the asynq task type for data import jobs.
+// TaskTypeImport is the task type for data import jobs.
 const TaskTypeImport = "import"
 
-// TaskTypeWebPush is the asynq task type for Web Push delivery jobs.
+// TaskTypeWebPush is the task type for Web Push delivery jobs.
 const TaskTypeWebPush = "webpush:notify"
 
-// TaskTypeImportCustomEmojis is the asynq task type for admin/emoji/import-zip
+// TaskTypeImportCustomEmojis is the task type for admin/emoji/import-zip
 // processing jobs. 本家 Misskey の importCustomEmojis queue job と同名。
 const TaskTypeImportCustomEmojis = "importCustomEmojis"
 
-// TaskTypeUserWebhook is the asynq task type for user webhook delivery jobs.
+// TaskTypeUserWebhook is the task type for user webhook delivery jobs.
 const TaskTypeUserWebhook = "webhook:user"
 
-// TaskTypeSystemWebhook is the asynq task type for system webhook delivery jobs.
+// TaskTypeSystemWebhook is the task type for system webhook delivery jobs.
 const TaskTypeSystemWebhook = "webhook:system"
 
-// TaskTypeCleanRemoteNotes is the asynq task type for the periodic remote
+// TaskTypeCleanRemoteNotes is the task type for the periodic remote
 // notes cleaning job. ペイロードなし (meta から設定を読む)。
 const TaskTypeCleanRemoteNotes = "maintenance:cleanRemoteNotes"
 
-// TaskTypeReactionFlush is the asynq task type for flushing buffered
+// TaskTypeReactionFlush is the task type for flushing buffered
 // reaction counts from Redis to the database.
 const TaskTypeReactionFlush = "maintenance:reactionFlush"
 
-// TaskTypeChartTick is the asynq task type for the hourly tick-charts
-// job. Mirrors upstream `tickCharts` (cron `55 * * * *`).
+// TaskTypeChartTick is the task type for the hourly tick-charts job.
+// Mirrors upstream `tickCharts` (cron `55 * * * *`).
 const TaskTypeChartTick = "chart:tick"
 
-// TaskTypeChartResync is the asynq task type for the daily resync-charts
-// job. Mirrors upstream `resyncCharts` (cron `0 0 * * *`).
+// TaskTypeChartResync is the task type for the daily resync-charts job.
+// Mirrors upstream `resyncCharts` (cron `0 0 * * *`).
 const TaskTypeChartResync = "chart:resync"
 
-// TaskTypeChartClean is the asynq task type for the daily clean-charts
-// job. Mirrors upstream `cleanCharts` (cron `0 0 * * *`).
+// TaskTypeChartClean is the task type for the daily clean-charts job.
+// Mirrors upstream `cleanCharts` (cron `0 0 * * *`).
 const TaskTypeChartClean = "chart:clean"
 
-// TaskTypeDeleteAccount is the asynq task type for the background cascade
-// deletion of a user account's related rows (notes / drive files / follow
-// graph entries etc.). Mirrors upstream `deleteAccount` queue job.
+// TaskTypeDeleteAccount is the task type for the background cascade
+// deletion of a user account's related rows. Mirrors upstream
+// `deleteAccount` queue job.
 const TaskTypeDeleteAccount = "maintenance:deleteAccount"
 
-// TaskTypeInstanceRefresh is the asynq task type for the periodic
+// TaskTypeInstanceRefresh is the task type for the periodic
 // remote-instance metadata refresh (#393). Registered by
 // `Scheduler.RegisterInstanceRefreshJob` at `0 3 * * *` UTC and handled by
 // `processors.InstanceRefreshProcessor`.
 const TaskTypeInstanceRefresh = "maintenance:instanceRefresh"
 
-// TaskTypeRetentionAggregate is the asynq task type for the daily
-// retention aggregation (#421). Registered by
-// `Scheduler.RegisterRetentionJob` at `0 0 * * *` UTC and handled by
-// `processors.RetentionAggregateProcessor`. Mirrors upstream
-// AggregateRetentionProcessorService.
+// TaskTypeRetentionAggregate is the task type for the daily retention
+// aggregation (#421). Registered by `Scheduler.RegisterRetentionJob`
+// at `0 0 * * *` UTC and handled by
+// `processors.RetentionAggregateProcessor`.
 const TaskTypeRetentionAggregate = "maintenance:retentionAggregate"
 
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
@@ -81,13 +80,13 @@ type DeliverPayload struct {
 	KeyPEM string `json:"keyPem"`
 }
 
-// NewDeliverTask serializes the payload into an asynq.Task ready to enqueue.
-// DeliverPayload はすべて marshal 可能な型 (string と []byte) のみで構成される
-// ため json.Marshal は失敗しない。エラー戻り値を取らない方が呼び出し側を簡潔
-// にできる。
-func NewDeliverTask(payload DeliverPayload) *asynq.Task {
+// NewDeliverTask serializes the payload into a driver.Task ready to
+// pass into a HandlerFunc (used in tests). DeliverPayload はすべて
+// marshal 可能な型 (string と []byte) のみで構成されるため
+// json.Marshal は失敗しない。
+func NewDeliverTask(payload DeliverPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeDeliver, body)
+	return driver.RawTask{TypeName: TaskTypeDeliver, Body: body}
 }
 
 // DecodeDeliverPayload extracts a DeliverPayload from a task body.
@@ -105,10 +104,10 @@ type ExportPayload struct {
 	Type   string `json:"type"` // notes, following, blocking, mute, favorites, user-lists, antennas, clips
 }
 
-// NewExportTask creates an asynq.Task for data export.
-func NewExportTask(payload ExportPayload) *asynq.Task {
+// NewExportTask creates a driver.Task for data export.
+func NewExportTask(payload ExportPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeExport, body)
+	return driver.RawTask{TypeName: TaskTypeExport, Body: body}
 }
 
 // DecodeExportPayload extracts an ExportPayload from a task body.
@@ -127,10 +126,10 @@ type ImportPayload struct {
 	FileID string `json:"fileId"`
 }
 
-// NewImportTask creates an asynq.Task for data import.
-func NewImportTask(payload ImportPayload) *asynq.Task {
+// NewImportTask creates a driver.Task for data import.
+func NewImportTask(payload ImportPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeImport, body)
+	return driver.RawTask{TypeName: TaskTypeImport, Body: body}
 }
 
 // DecodeImportPayload extracts an ImportPayload from a task body.
@@ -149,10 +148,10 @@ type ImportCustomEmojisPayload struct {
 	FileID string `json:"fileId"`
 }
 
-// NewImportCustomEmojisTask creates an asynq.Task for emoji-zip imports.
-func NewImportCustomEmojisTask(payload ImportCustomEmojisPayload) *asynq.Task {
+// NewImportCustomEmojisTask creates a driver.Task for emoji-zip imports.
+func NewImportCustomEmojisTask(payload ImportCustomEmojisPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeImportCustomEmojis, body)
+	return driver.RawTask{TypeName: TaskTypeImportCustomEmojis, Body: body}
 }
 
 // DecodeImportCustomEmojisPayload extracts an ImportCustomEmojisPayload.
@@ -164,19 +163,19 @@ func DecodeImportCustomEmojisPayload(body []byte) (ImportCustomEmojisPayload, er
 	return p, nil
 }
 
-// WebPushPayload is the body of a Web Push delivery task. The Body field holds
-// the already-truncated notification payload; the processor does not inspect
-// it and simply forwards it to subscribers.
+// WebPushPayload is the body of a Web Push delivery task. The Body
+// field holds the already-truncated notification payload; the
+// processor does not inspect it and simply forwards it to subscribers.
 type WebPushPayload struct {
 	UserID string          `json:"userId"`
 	Type   string          `json:"type"`
 	Body   json.RawMessage `json:"body,omitempty"`
 }
 
-// NewWebPushTask serializes the payload into an asynq.Task ready to enqueue.
-func NewWebPushTask(payload WebPushPayload) *asynq.Task {
+// NewWebPushTask serializes the payload into a driver.Task.
+func NewWebPushTask(payload WebPushPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeWebPush, body)
+	return driver.RawTask{TypeName: TaskTypeWebPush, Body: body}
 }
 
 // DecodeWebPushPayload extracts a WebPushPayload from a task body.
@@ -189,9 +188,9 @@ func DecodeWebPushPayload(body []byte) (WebPushPayload, error) {
 }
 
 // WebhookPayload carries a single webhook delivery job. Body is the
-// pre-marshalled event payload envelope (see core/webhook for the exact
-// Misskey-compatible structure); the processor forwards it to the endpoint
-// URL without further interpretation.
+// pre-marshalled event payload envelope (see core/webhook for the
+// exact Misskey-compatible structure); the processor forwards it to
+// the endpoint URL without further interpretation.
 type WebhookPayload struct {
 	WebhookID string          `json:"webhookId"`
 	UserID    string          `json:"userId,omitempty"` // user webhooks only
@@ -199,23 +198,23 @@ type WebhookPayload struct {
 	Body      json.RawMessage `json:"body"`
 }
 
-// NewUserWebhookTask serializes the payload into an asynq.Task for user
-// webhook delivery.
-func NewUserWebhookTask(payload WebhookPayload) *asynq.Task {
+// NewUserWebhookTask serializes the payload into a driver.Task for
+// user webhook delivery.
+func NewUserWebhookTask(payload WebhookPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeUserWebhook, body)
+	return driver.RawTask{TypeName: TaskTypeUserWebhook, Body: body}
 }
 
-// NewSystemWebhookTask serializes the payload into an asynq.Task for system
-// webhook delivery.
-func NewSystemWebhookTask(payload WebhookPayload) *asynq.Task {
+// NewSystemWebhookTask serializes the payload into a driver.Task for
+// system webhook delivery.
+func NewSystemWebhookTask(payload WebhookPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeSystemWebhook, body)
+	return driver.RawTask{TypeName: TaskTypeSystemWebhook, Body: body}
 }
 
-// DecodeWebhookPayload extracts a WebhookPayload from a task body. The same
-// encoder/decoder is reused for both user and system webhook tasks since the
-// wire format is identical.
+// DecodeWebhookPayload extracts a WebhookPayload from a task body. The
+// same encoder/decoder is reused for both user and system webhook tasks
+// since the wire format is identical.
 func DecodeWebhookPayload(body []byte) (WebhookPayload, error) {
 	var p WebhookPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -230,10 +229,10 @@ type DeleteAccountPayload struct {
 	UserID string `json:"userId"`
 }
 
-// NewDeleteAccountTask serializes a DeleteAccountPayload into an asynq.Task.
-func NewDeleteAccountTask(payload DeleteAccountPayload) *asynq.Task {
+// NewDeleteAccountTask serializes a DeleteAccountPayload into a driver.Task.
+func NewDeleteAccountTask(payload DeleteAccountPayload) driver.Task {
 	body, _ := json.Marshal(payload)
-	return asynq.NewTask(TaskTypeDeleteAccount, body)
+	return driver.RawTask{TypeName: TaskTypeDeleteAccount, Body: body}
 }
 
 // DecodeDeleteAccountPayload extracts a DeleteAccountPayload from a task body.

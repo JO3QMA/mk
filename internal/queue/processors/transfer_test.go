@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/core/notification"
 	"github.com/shiroha-a/mk/internal/core/transfer"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -112,16 +112,16 @@ func TestExportProcessor_Handle_NilExporter(t *testing.T) {
 	task := queue.NewExportTask(queue.ExportPayload{UserID: "u1", Type: transfer.ExportNotes})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestExportProcessor_Handle_InvalidPayload(t *testing.T) {
 	exporter := newTestExporter(t)
 	p := processors.NewExportProcessor(exporter)
-	task := asynq.NewTask(queue.TaskTypeExport, []byte("not json"))
+	task := driver.RawTask{TypeName: queue.TaskTypeExport, Body: []byte("not json")}
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestExportProcessor_Handle_MissingFields(t *testing.T) {
@@ -130,7 +130,7 @@ func TestExportProcessor_Handle_MissingFields(t *testing.T) {
 	task := queue.NewExportTask(queue.ExportPayload{UserID: "", Type: ""})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestExportProcessor_Handle_UnsupportedType(t *testing.T) {
@@ -139,7 +139,7 @@ func TestExportProcessor_Handle_UnsupportedType(t *testing.T) {
 	task := queue.NewExportTask(queue.ExportPayload{UserID: "u1", Type: "nope"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestExportProcessor_Handle_ExporterError(t *testing.T) {
@@ -167,16 +167,16 @@ func TestImportProcessor_Handle_NilImporter(t *testing.T) {
 	task := queue.NewImportTask(queue.ImportPayload{UserID: "u1", Type: transfer.ImportBlocking, FileID: "f"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestImportProcessor_Handle_InvalidPayload(t *testing.T) {
 	imp := newTestImporter(t, nil)
 	p := processors.NewImportProcessor(imp)
-	task := asynq.NewTask(queue.TaskTypeImport, []byte("not json"))
+	task := driver.RawTask{TypeName: queue.TaskTypeImport, Body: []byte("not json")}
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestImportProcessor_Handle_MissingFields(t *testing.T) {
@@ -185,7 +185,7 @@ func TestImportProcessor_Handle_MissingFields(t *testing.T) {
 	task := queue.NewImportTask(queue.ImportPayload{UserID: "u1", Type: "", FileID: ""})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestImportProcessor_Handle_UnsupportedType(t *testing.T) {
@@ -194,7 +194,7 @@ func TestImportProcessor_Handle_UnsupportedType(t *testing.T) {
 	task := queue.NewImportTask(queue.ImportPayload{UserID: "u1", Type: "nope", FileID: "f"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestImportProcessor_Handle_ImporterError(t *testing.T) {

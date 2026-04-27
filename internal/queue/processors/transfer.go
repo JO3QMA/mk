@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/transfer"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
 // ExportProcessor handles `export` tasks by delegating to transfer.Exporter.
@@ -21,21 +21,21 @@ func NewExportProcessor(exporter *transfer.Exporter) *ExportProcessor {
 }
 
 // Handle dispatches a single export task.
-func (p *ExportProcessor) Handle(ctx context.Context, t *asynq.Task) error {
+func (p *ExportProcessor) Handle(ctx context.Context, t driver.Task) error {
 	if p.exporter == nil {
-		return fmt.Errorf("export processor not configured: %w", asynq.SkipRetry)
+		return fmt.Errorf("export processor not configured: %w", driver.SkipRetry)
 	}
 	payload, err := queue.DecodeExportPayload(t.Payload())
 	if err != nil {
-		return fmt.Errorf("decode export payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("decode export payload: %w: %w", err, driver.SkipRetry)
 	}
 	if payload.UserID == "" || payload.Type == "" {
-		return fmt.Errorf("export payload missing fields: %w", asynq.SkipRetry)
+		return fmt.Errorf("export payload missing fields: %w", driver.SkipRetry)
 	}
 	if _, err := p.exporter.Export(ctx, payload.UserID, payload.Type); err != nil {
 		// 未対応typeはリトライしても通らないので SkipRetry。
 		if errors.Is(err, transfer.ErrUnsupportedType) {
-			return fmt.Errorf("%w: %w", err, asynq.SkipRetry)
+			return fmt.Errorf("%w: %w", err, driver.SkipRetry)
 		}
 		return err
 	}
@@ -53,20 +53,20 @@ func NewImportProcessor(importer *transfer.Importer) *ImportProcessor {
 }
 
 // Handle dispatches a single import task.
-func (p *ImportProcessor) Handle(ctx context.Context, t *asynq.Task) error {
+func (p *ImportProcessor) Handle(ctx context.Context, t driver.Task) error {
 	if p.importer == nil {
-		return fmt.Errorf("import processor not configured: %w", asynq.SkipRetry)
+		return fmt.Errorf("import processor not configured: %w", driver.SkipRetry)
 	}
 	payload, err := queue.DecodeImportPayload(t.Payload())
 	if err != nil {
-		return fmt.Errorf("decode import payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("decode import payload: %w: %w", err, driver.SkipRetry)
 	}
 	if payload.UserID == "" || payload.Type == "" || payload.FileID == "" {
-		return fmt.Errorf("import payload missing fields: %w", asynq.SkipRetry)
+		return fmt.Errorf("import payload missing fields: %w", driver.SkipRetry)
 	}
 	if _, err := p.importer.Import(ctx, payload.UserID, payload.Type, payload.FileID); err != nil {
 		if errors.Is(err, transfer.ErrUnsupportedType) {
-			return fmt.Errorf("%w: %w", err, asynq.SkipRetry)
+			return fmt.Errorf("%w: %w", err, driver.SkipRetry)
 		}
 		return err
 	}

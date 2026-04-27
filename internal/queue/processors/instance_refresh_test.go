@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -51,7 +51,7 @@ func TestInstanceRefreshProcessor_Handle_WalksStaleHosts(t *testing.T) {
 	})
 	p.SetClock(func() time.Time { return now })
 
-	require.NoError(t, p.Handle(context.Background(), &asynq.Task{}))
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{}))
 	// 2 hosts fetched (a and b, in infoUpdatedAt ASC NULLS FIRST order)
 	assert.Len(t, fetcher.calls, 2)
 	assert.Contains(t, fetcher.calls, "a.example")
@@ -70,13 +70,13 @@ func TestInstanceRefreshProcessor_Handle_FetchErrorDoesNotAbort(t *testing.T) {
 		FetchDelay: 1,
 	})
 	p.SetClock(func() time.Time { return now })
-	require.NoError(t, p.Handle(context.Background(), &asynq.Task{}))
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{}))
 	assert.Len(t, fetcher.calls, 2)
 }
 
 func TestInstanceRefreshProcessor_Handle_NilArgsNoOp(t *testing.T) {
 	p := processors.NewInstanceRefreshProcessor(nil, nil, processors.InstanceRefreshConfig{})
-	assert.NoError(t, p.Handle(context.Background(), &asynq.Task{}))
+	assert.NoError(t, p.Handle(context.Background(), driver.RawTask{}))
 }
 
 func TestInstanceRefreshProcessor_Handle_ContextCancellationInterrupts(t *testing.T) {
@@ -93,6 +93,6 @@ func TestInstanceRefreshProcessor_Handle_ContextCancellationInterrupts(t *testin
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 即座に cancel → ctx.Err() でループを抜ける
-	err := p.Handle(ctx, &asynq.Task{})
+	err := p.Handle(ctx, driver.RawTask{})
 	assert.ErrorIs(t, err, context.Canceled)
 }

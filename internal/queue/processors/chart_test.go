@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/chart"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -153,7 +153,7 @@ func TestChartProcessor_HandleClean(t *testing.T) {
 	plain, repo2 := makeChart(t, schemaPlain(), nil)
 	p := processors.NewChartProcessor([]*chart.Chart{withUnique, plain})
 
-	require.NoError(t, p.HandleClean(context.Background(), asynq.NewTask("x", nil)))
+	require.NoError(t, p.HandleClean(context.Background(), driver.RawTask{TypeName: "x"}))
 	// withUnique chart は span hour + day で 2 回 ResetUniqueTempColumns が呼ばれる
 	assert.Equal(t, int64(2), repo1.resetN.Load())
 	// plain chart は uniqueColumn が無いので ResetUniqueTempColumns は呼ばれない
@@ -170,7 +170,7 @@ func TestChartProcessor_HandleTick_SkipsGrouped(t *testing.T) {
 	grouped, _ := makeChart(t, schemaGrouped(), tickFn)
 	p := processors.NewChartProcessor([]*chart.Chart{plain, grouped})
 
-	require.NoError(t, p.HandleTick(context.Background(), asynq.NewTask("x", nil)))
+	require.NoError(t, p.HandleTick(context.Background(), driver.RawTask{TypeName: "x"}))
 	// grouped chart は skip される
 	assert.Equal(t, int64(1), called.Load())
 }
@@ -184,7 +184,7 @@ func TestChartProcessor_HandleResync_PassesMajorTrue(t *testing.T) {
 	plain, _ := makeChart(t, schemaPlain(), tickFn)
 	p := processors.NewChartProcessor([]*chart.Chart{plain})
 
-	require.NoError(t, p.HandleResync(context.Background(), asynq.NewTask("x", nil)))
+	require.NoError(t, p.HandleResync(context.Background(), driver.RawTask{TypeName: "x"}))
 	assert.True(t, gotMajor.Load())
 }
 
@@ -198,13 +198,13 @@ func TestChartProcessor_HandleTick_PassesMajorFalse(t *testing.T) {
 	plain, _ := makeChart(t, schemaPlain(), tickFn)
 	p := processors.NewChartProcessor([]*chart.Chart{plain})
 
-	require.NoError(t, p.HandleTick(context.Background(), asynq.NewTask("x", nil)))
+	require.NoError(t, p.HandleTick(context.Background(), driver.RawTask{TypeName: "x"}))
 	assert.False(t, gotMajor.Load())
 }
 
 func TestChartProcessor_HandleTick_NilTickFuncIsNoop(t *testing.T) {
 	plain, _ := makeChart(t, schemaPlain(), nil)
 	p := processors.NewChartProcessor([]*chart.Chart{plain})
-	require.NoError(t, p.HandleTick(context.Background(), asynq.NewTask("x", nil)))
-	require.NoError(t, p.HandleResync(context.Background(), asynq.NewTask("x", nil)))
+	require.NoError(t, p.HandleTick(context.Background(), driver.RawTask{TypeName: "x"}))
+	require.NoError(t, p.HandleResync(context.Background(), driver.RawTask{TypeName: "x"}))
 }

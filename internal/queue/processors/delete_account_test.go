@@ -6,20 +6,20 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func deleteAccountTask(t *testing.T, payload queue.DeleteAccountPayload) *asynq.Task {
+func deleteAccountTask(t *testing.T, payload queue.DeleteAccountPayload) driver.Task {
 	t.Helper()
 	body, err := json.Marshal(payload)
 	require.NoError(t, err)
-	return asynq.NewTask(queue.TaskTypeDeleteAccount, body)
+	return driver.RawTask{TypeName: queue.TaskTypeDeleteAccount, Body: body}
 }
 
 func TestDeleteAccountProcessor_DeletesAcrossRepos(t *testing.T) {
@@ -60,15 +60,15 @@ func TestDeleteAccountProcessor_EmptyUserIDSkipsRetry(t *testing.T) {
 	task := deleteAccountTask(t, queue.DeleteAccountPayload{})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeleteAccountProcessor_MalformedPayloadSkipsRetry(t *testing.T) {
 	p := processors.NewDeleteAccountProcessor(testutil.NewMockNoteRepository(), testutil.NewMockDriveFileRepository(), testutil.NewMockFollowingRepository())
-	task := asynq.NewTask(queue.TaskTypeDeleteAccount, []byte(`not-json`))
+	task := driver.RawTask{TypeName: queue.TaskTypeDeleteAccount, Body: []byte(`not-json`)}
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestDeleteAccountProcessor_NilReposAreSkipped(t *testing.T) {
@@ -78,7 +78,7 @@ func TestDeleteAccountProcessor_NilReposAreSkipped(t *testing.T) {
 	require.NoError(t, p.Handle(context.Background(), task))
 }
 
-// CanceledContext は asynq に retry させるため ctx.Err() を返す (部分実行で
+// CanceledContext は driver に retry させるため ctx.Err() を返す (部分実行で
 // 成功扱いにしない)。handle が error を返せば MaxRetry 設定が効いて再試行
 // されるので孤立した drive_file / following 行が残り続けない。
 func TestDeleteAccountProcessor_CanceledContextReturnsError(t *testing.T) {

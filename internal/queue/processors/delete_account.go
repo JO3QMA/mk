@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
@@ -34,28 +34,28 @@ func NewDeleteAccountProcessor(noteRepo repository.NoteRepository, driveFileRepo
 }
 
 // deleteAccountNoteBatchSize controls how many notes are deleted per loop
-// iteration. Kept small enough that one batch finishes well within asynq's
-// default per-task timeout and the processor can check ctx.Err() between
-// batches.
+// iteration. Kept small enough that one batch finishes well within the
+// driver's default per-task timeout and the processor can check
+// ctx.Err() between batches.
 const deleteAccountNoteBatchSize = 100
 
 // deleteAccountBatchSleep throttles DB I/O between note batches to avoid
 // saturating the write path for accounts with very large note histories.
 const deleteAccountBatchSleep = 250 * time.Millisecond
 
-// Handle implements asynq.Handler.
+// Handle implements driver.HandlerFunc.
 //
-// 部分実行 (notes だけ消えた等) の状態で nil を返すと asynq は task 成功扱い
+// 部分実行 (notes だけ消えた等) の状態で nil を返すと driver は task 成功扱い
 // で MaxRetry が効かず、さらに Unique(24h) によって admin も 24 時間再エンキュー
 // できない。操作はすべて冪等 (既に消えた行は 0 件影響) なので、ctx 切れ / repo
-// エラーはそのまま返して asynq の retry に任せる。
-func (p *DeleteAccountProcessor) Handle(ctx context.Context, t *asynq.Task) error {
+// エラーはそのまま返して driver の retry に任せる。
+func (p *DeleteAccountProcessor) Handle(ctx context.Context, t driver.Task) error {
 	payload, err := queue.DecodeDeleteAccountPayload(t.Payload())
 	if err != nil {
-		return fmt.Errorf("decode delete-account payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("decode delete-account payload: %w: %w", err, driver.SkipRetry)
 	}
 	if payload.UserID == "" {
-		return fmt.Errorf("delete-account: userId is required: %w", asynq.SkipRetry)
+		return fmt.Errorf("delete-account: userId is required: %w", driver.SkipRetry)
 	}
 
 	if err := p.deleteNotes(ctx, payload.UserID); err != nil {
@@ -99,7 +99,7 @@ func (p *DeleteAccountProcessor) Handle(ctx context.Context, t *asynq.Task) erro
 // deleteNotes loops DeleteByUserBatch so that cancellation checkpoints and
 // throttling live here instead of in the repository. 大量ノート保有ユーザー
 // (10万件規模) に備えて各 batch の後で ctx.Err() を確認し、途中終了した場合は
-// その error を返して asynq に retry させる。
+// その error を返して driver に retry させる。
 func (p *DeleteAccountProcessor) deleteNotes(ctx context.Context, userID string) error {
 	if p.noteRepo == nil {
 		return nil
