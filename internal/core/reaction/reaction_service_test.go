@@ -130,6 +130,21 @@ func TestService_Create_CustomEmojiLocalWithDotHost(t *testing.T) {
 	assert.Equal(t, ":smile@.:", r)
 }
 
+func TestService_Create_CustomEmojiRemoteWithoutHostInString(t *testing.T) {
+	// #459: Misskey TS upstream は :name: 形式 (host 省略) で reaction を
+	// 連合させるが、その emoji は reactor の host に紐付いている。受信側
+	// (mk-go) は文字列 host が空でも actor.host で emoji table を引き
+	// 直し、見つかれば :name@host: に正規化する。
+	svc, repo, _, emojiRepo, _ := newService(t)
+	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)
+	host := "remote.example"
+	emojiRepo.Emojis["smile@remote.example"] = &model.Emoji{Name: "smile", Host: &host}
+
+	r, err := svc.Create(&model.User{ID: "remote-user", Host: &host}, "n1", ":smile:")
+	require.NoError(t, err)
+	assert.Equal(t, ":smile@remote.example:", r, "actor host で emoji を解決して remote canonical 化")
+}
+
 func TestService_Create_CustomEmojiNotFoundFallback(t *testing.T) {
 	svc, repo, _, _, _ := newService(t)
 	seedNote(repo, "n1", "author", model.NoteVisibilityPublic)

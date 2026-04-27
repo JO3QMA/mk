@@ -190,7 +190,7 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 		return "", ErrCannotReactToPureRenote
 	}
 
-	reaction := s.normalizeReaction(rawReaction)
+	reaction := s.normalizeReaction(rawReaction, user.Host)
 
 	// 既存リアクションを確認
 	if existing, err := s.reactionRepo.FindByPair(user.ID, target.ID); err == nil {
@@ -277,7 +277,9 @@ func (s *Service) List(user *model.User, noteID, untilID, sinceID string, limit 
 	}
 	var reactions []string
 	if reaction != "" {
-		reactions = reactionVariants(s.normalizeReaction(reaction))
+		// List はローカルクエリ context (filter 用) なので actor host
+		// 補完は不要。nil で従来挙動を維持する。
+		reactions = reactionVariants(s.normalizeReaction(reaction, nil))
 	}
 	return s.reactionRepo.ListByNoteID(target.ID, untilID, sinceID, limit, reactions)
 }
@@ -288,7 +290,13 @@ func (s *Service) List(user *model.User, noteID, untilID, sinceID string, limit 
 //   - カスタム絵文字 ":name:" は絵文字テーブルで存在確認後 ":name@.:" に正規化
 //   - リモート ":name@host:" はそのまま検証して残す
 //   - その他はそのまま (Unicode絵文字想定)
-func (s *Service) normalizeReaction(raw string) string {
+//
+// actorHost は reaction を投稿した側のホスト。リモートユーザーが
+// `:name:` 形式 (ホスト省略) で送ってきたとき、Misskey TS upstream は
+// reactor のホストで emoji table を引き直すので、本実装でも actorHost
+// にフォールバックする (#459)。actorHost が nil/空なら従来通りローカル
+// として扱う。
+func (s *Service) normalizeReaction(raw string, actorHost *string) string {
 	if raw == "" {
 		return FallbackReaction
 	}
@@ -304,6 +312,13 @@ func (s *Service) normalizeReaction(raw string) string {
 		// "@." はローカルを表すcanonical suffix (TS互換)
 		if host == "." {
 			host = ""
+		}
+		// reaction 文字列に @host が含まれず reactor が remote なら、
+		// 文字列 host が省略されているだけで実体はリモート絵文字。
+		// upstream ReactionService.create がやっているのと同じく
+		// actor.host を採用して emoji table を引く。
+		if host == "" && actorHost != nil && *actorHost != "" {
+			host = *actorHost
 		}
 		var hostPtr *string
 		if host != "" {

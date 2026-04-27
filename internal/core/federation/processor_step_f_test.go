@@ -24,6 +24,7 @@ type fullProcessorEnv struct {
 	userRepo     *testutil.MockUserRepository
 	noteRepo     *testutil.MockNoteRepository
 	reactionRepo *testutil.MockNoteReactionRepository
+	emojiRepo    *testutil.MockEmojiRepository
 }
 
 func newFullProcessor(t *testing.T, fetcherBody string) *fullProcessorEnv {
@@ -36,11 +37,12 @@ func newFullProcessor(t *testing.T, fetcherBody string) *fullProcessorEnv {
 	urls := activitypub.NewURLBuilder("https://example.com")
 	idGen, _ := id.NewGenerator("aidx")
 	resolver := federation.NewResolver(userRepo, noteRepo, urls, &stubFetcher{body: []byte(fetcherBody)}, idGen)
+	resolver.SetEmojiRepo(emojiRepo)
 	followingSvc := corefollowing.NewService(userRepo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
 	reactionSvc := corereaction.NewService(noteRepo, reactionRepo, emojiRepo, followingRepo, idGen)
 	deleteSvc := corenote.NewDeleteService(noteRepo)
 	p := federation.NewProcessor(resolver, followingSvc, reactionSvc, deleteSvc, userRepo, noteRepo)
-	return &fullProcessorEnv{processor: p, userRepo: userRepo, noteRepo: noteRepo, reactionRepo: reactionRepo}
+	return &fullProcessorEnv{processor: p, userRepo: userRepo, noteRepo: noteRepo, reactionRepo: reactionRepo, emojiRepo: emojiRepo}
 }
 
 const noteCreateBody = `{
@@ -202,6 +204,33 @@ func TestProcess_LikeWithMisskeyReaction(t *testing.T) {
 	for _, r := range env.reactionRepo.Reactions {
 		assert.Equal(t, "😀", r.Reaction)
 	}
+}
+
+func TestProcess_LikeWithCustomEmojiTag(t *testing.T) {
+	// #459: カスタム絵文字リアクションが Tag 付きで届いたら emoji table に
+	// upsert されるべき。Misskey TS の apNoteService.extractEmojis 相当。
+	env := newFullProcessor(t, aliceActor)
+	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+	body := []byte(`{
+		"type": "Like",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1",
+		"_misskey_reaction": ":custom@remote.example:",
+		"tag": [{
+			"type": "Emoji",
+			"id": "https://remote.example/emojis/custom",
+			"name": ":custom:",
+			"icon": {"type": "Image", "url": "https://remote.example/files/custom.png"}
+		}]
+	}`)
+	require.NoError(t, env.processor.Process(body))
+	require.Len(t, env.reactionRepo.Reactions, 1)
+	// emoji table に :custom: が remote.example host で upsert されている
+	host := "remote.example"
+	emojis, err := env.emojiRepo.FindManyByNamesAndHost([]string{"custom"}, &host)
+	require.NoError(t, err)
+	require.Len(t, emojis, 1, "custom emoji should be upserted from Like.tag")
+	assert.Equal(t, "https://remote.example/files/custom.png", emojis[0].OriginalURL)
 }
 
 func TestProcess_LikeEmptyContent(t *testing.T) {

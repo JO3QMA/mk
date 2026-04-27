@@ -432,6 +432,103 @@ func TestPopulateUserEmojis_NilUserOrLite(t *testing.T) {
 	})
 }
 
+func TestPopulateNoteReactionEmojis(t *testing.T) {
+	// #459: note.Reactions に :name@host: 形式の custom emoji が含まれる
+	// 場合、batch fetch で URL を解決して entity.ReactionEmojis に詰める。
+	// 同 host の note.Emojis と reaction emoji が混在しても 1 回の fetch で
+	// まとめて取れることも確認する。
+	remoteHost := "remote.example"
+	localHost := ""
+	_ = localHost
+	lookup := &stubEmojiLookup{
+		data: map[string][]*model.Emoji{
+			"remote.example": {
+				{ID: "e1", Name: "smile", Host: strPtr("remote.example"), PublicURL: "https://remote.example/emoji/smile.png"},
+				{ID: "e2", Name: "wave", Host: strPtr("remote.example"), PublicURL: "https://remote.example/emoji/wave.png"},
+			},
+			"": {
+				{ID: "e3", Name: "local", Host: nil, PublicURL: "https://local.example/emoji/local.png"},
+			},
+		},
+	}
+
+	// reactions JSON: ":smile@remote.example:" / ":local:" / "❤️" の 3 種
+	// (生 unicode emoji は reactionEmojis に乗らないことも assert)。
+	reactionsJSON := []byte(`{":smile@remote.example:":2,":local:":1,"❤️":3}`)
+
+	note := &model.Note{
+		ID:        "n1",
+		UserID:    "u1",
+		UserHost:  &remoteHost,
+		Reactions: reactionsJSON,
+	}
+
+	r := NewEmojiResolver(lookup, []*model.Note{note})
+	entity := &NoteEntity{ReactionEmojis: map[string]string{}}
+	r.PopulateNoteReactionEmojis(note, entity)
+
+	require.NotNil(t, entity.ReactionEmojis)
+	// remote: key は frontend lookup `reaction.substring(1, length-1)` 仕様で "smile@remote.example"
+	assert.Equal(t, "https://remote.example/emoji/smile.png", entity.ReactionEmojis["smile@remote.example"])
+	// local: key は host 抜きの "local"
+	assert.Equal(t, "https://local.example/emoji/local.png", entity.ReactionEmojis["local"])
+	// raw unicode は乗らない
+	_, hasHeart := entity.ReactionEmojis["❤️"]
+	assert.False(t, hasHeart, "raw unicode reactions should not appear in reactionEmojis")
+}
+
+func TestPopulateNoteReactionEmojis_NoCustomEmoji(t *testing.T) {
+	// reactions が unicode のみ / 空の場合は ReactionEmojis を populate しない
+	// (空 map で初期化されている前提を維持する)。
+	lookup := &stubEmojiLookup{data: map[string][]*model.Emoji{}}
+
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{"unicode only", []byte(`{"❤️":1,"👍":2}`)},
+		{"empty json", []byte(`{}`)},
+		{"nil reactions", nil},
+		{"malformed json", []byte("not json")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			note := &model.Note{ID: "n1", UserID: "u1", Reactions: tc.raw}
+			r := NewEmojiResolver(lookup, []*model.Note{note})
+			entity := &NoteEntity{ReactionEmojis: map[string]string{"keep": "this"}}
+			r.PopulateNoteReactionEmojis(note, entity)
+			// custom emoji 不在なので元の map をそのまま温存する
+			assert.Equal(t, map[string]string{"keep": "this"}, entity.ReactionEmojis)
+		})
+	}
+}
+
+func TestParseCustomEmojiReaction(t *testing.T) {
+	cases := []struct {
+		input string
+		name  string
+		host  string
+		ok    bool
+	}{
+		{":smile:", "smile", "", true},
+		{":smile@remote.example:", "smile", "remote.example", true},
+		{"❤️", "", "", false},
+		{":invalid_no_close", "", "", false},
+		{"no_open:", "", "", false},
+		{"::", "", "", false}, // len < 3 で parser が早期 return、空 name は不正
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			name, host, ok := parseCustomEmojiReaction(tc.input)
+			assert.Equal(t, tc.ok, ok)
+			if ok {
+				assert.Equal(t, tc.name, name)
+				assert.Equal(t, tc.host, host)
+			}
+		})
+	}
+}
+
 func TestPopulateNoteEmojis_UnresolvedEmojiExcluded(t *testing.T) {
 	remoteHost := "remote.example"
 	lookup := &stubEmojiLookup{

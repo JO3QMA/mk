@@ -199,6 +199,7 @@ func PackNoteWithInstance(n *model.Note, idGen id.Generator, instLookup Instance
 func applyNoteResolvers(n *model.Note, e *NoteEntity, instResolver *InstanceResolver, emojiResolver *EmojiResolver) {
 	instResolver.FillUserLite(&e.User)
 	emojiResolver.PopulateNoteEmojis(n, e)
+	emojiResolver.PopulateNoteReactionEmojis(n, e)
 	if n.User != nil {
 		emojiResolver.PopulateUserEmojis(n.User, &e.User)
 	}

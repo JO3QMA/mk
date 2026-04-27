@@ -244,6 +244,10 @@ type Like struct {
 	Object          string `json:"object"`                      // target note URI
 	Content         string `json:"content,omitempty"`           // reaction emoji (standard)
 	MisskeyReaction string `json:"_misskey_reaction,omitempty"` // Misskey拡張: contentより優先
+	// Tag は Misskey/CherryPick がカスタム絵文字リアクションを連合させる
+	// 際に乗せる Emoji オブジェクト群。Note ingestion と同じ形なので
+	// federation.extractEmojiTags / upsertEmojis でそのまま処理できる。
+	Tag []any `json:"tag,omitempty"`
 }
 
 // Tombstone represents a deleted object placeholder used as the object of a

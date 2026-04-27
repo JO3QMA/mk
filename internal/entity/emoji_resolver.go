@@ -1,6 +1,35 @@
 package entity
 
-import "github.com/shiroha-a/mk/internal/model"
+import (
+	"encoding/json"
+	"strings"
+
+	"github.com/shiroha-a/mk/internal/model"
+)
+
+// parseCustomEmojiReaction extracts the (name, host) pair from a reaction
+// string. Custom emoji reactions are wrapped in colons (`:smile:` for local
+// or `:smile@remote.example.com:` for remote); raw unicode emoji like ❤️ is
+// returned with ok=false. Local reactions return host="".
+func parseCustomEmojiReaction(s string) (name, host string, ok bool) {
+	if len(s) < 3 || s[0] != ':' || s[len(s)-1] != ':' {
+		return "", "", false
+	}
+	inner := s[1 : len(s)-1]
+	if at := strings.Index(inner, "@"); at >= 0 {
+		return inner[:at], inner[at+1:], true
+	}
+	return inner, "", true
+}
+
+// reactionEmojiKey は frontend の lookup (`reaction.substring(1, length-1)`)
+// と一致するキーを返す。local は "smile"、remote は "smile@host"。
+func reactionEmojiKey(name, host string) string {
+	if host == "" {
+		return name
+	}
+	return name + "@" + host
+}
 
 // EmojiLookup is the minimal interface required to batch-fetch emoji rows
 // for populating UserLite.Emojis and NoteEntity.Emojis. 循環依存を避ける
@@ -52,6 +81,18 @@ func NewEmojiResolver(lookup EmojiLookup, notes []*model.Note) *EmojiResolver {
 		if n.User != nil {
 			addNames(n.User.Emojis, n.User.Host)
 		}
+		// note.Reactions の JSON キーから custom emoji を抽出して
+		// host 別 batch fetch のリストに追加する (#459)。reaction 元の
+		// host は note.UserHost と必ずしも一致しないため、reaction
+		// 文字列内の `@host` を信頼する。
+		for name, host := range collectReactionEmojiNames(n.Reactions) {
+			h := host
+			var hostPtr *string
+			if h != "" {
+				hostPtr = &h
+			}
+			addNames([]string{name}, hostPtr)
+		}
 	}
 	// hostごとにbatch fetch
 	for host, nameSet := range hostNames {
@@ -98,6 +139,51 @@ func (r *EmojiResolver) PopulateNoteEmojis(note *model.Note, entity *NoteEntity)
 	if len(emojis) > 0 {
 		entity.Emojis = emojis
 	}
+}
+
+// PopulateNoteReactionEmojis resolves the custom emoji used inside
+// note.Reactions and populates entity.ReactionEmojis with `key → url`
+// where key matches the frontend's lookup format
+// (`reaction.substring(1, length-1)`): `name` for local custom emoji,
+// `name@host` for remote. Raw unicode reactions (`❤️`, etc.) are
+// skipped — frontend renders them directly without map lookup. (#459)
+func (r *EmojiResolver) PopulateNoteReactionEmojis(note *model.Note, entity *NoteEntity) {
+	if r == nil || note == nil || entity == nil || len(note.Reactions) == 0 {
+		return
+	}
+	out := make(map[string]string)
+	for name, host := range collectReactionEmojiNames(note.Reactions) {
+		if url, ok := r.cache[name+"@"+host]; ok {
+			out[reactionEmojiKey(name, host)] = url
+		}
+	}
+	if len(out) > 0 {
+		entity.ReactionEmojis = out
+	}
+}
+
+// collectReactionEmojiNames decodes the per-note Reactions JSON map and
+// returns custom-emoji entries as a `name → host` map. Raw unicode
+// reactions are filtered out; duplicate (name, host) pairs collapse
+// into a single entry. The returned host is empty for local custom
+// emoji.
+func collectReactionEmojiNames(raw []byte) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var counts map[string]int
+	if err := json.Unmarshal(raw, &counts); err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for reaction := range counts {
+		name, host, ok := parseCustomEmojiReaction(reaction)
+		if !ok {
+			continue
+		}
+		out[name] = host
+	}
+	return out
 }
 
 // PopulateUserEmojis resolves emoji names stored in user.Emojis to URLs
