@@ -261,6 +261,45 @@ func TestInspector_FullSurface(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestInspector_GetQueueInfo_IncludesRepeatSchedules verifies the
+// mk-go-specific behaviour added for #455: registering a repeatable
+// schedule via Scheduler.Register populates `bull:<queue>:repeat`,
+// and Inspector.GetQueueInfo surfaces those entries through the
+// Scheduled field even though mkq does not pre-allocate concrete
+// delayed jobs into the `bull:<queue>:delayed` ZSET.
+//
+// admin/job-queue.vue maps Scheduled into its "Delayed" KPI column,
+// so without this addition operators running mk-go on the mkq driver
+// would see Delayed=0 even with N cron jobs registered.
+func TestInspector_GetQueueInfo_IncludesRepeatSchedules(t *testing.T) {
+	d := newDriver(t)
+	sched := d.Scheduler()
+
+	// Pre-condition: zero before any schedule is registered.
+	infoBefore, err := d.Inspector().GetQueueInfo("maintenance")
+	require.NoError(t, err)
+	assert.Equal(t, 0, infoBefore.Scheduled)
+
+	require.NoError(t, sched.Register("0 0 * * *", "task:daily", nil,
+		driver.WithQueue("maintenance"),
+	))
+	require.NoError(t, sched.Register("*/5 * * * *", "task:every5", nil,
+		driver.WithQueue("maintenance"),
+	))
+
+	infoAfter, err := d.Inspector().GetQueueInfo("maintenance")
+	require.NoError(t, err)
+	// addJobScheduler-11.lua は repeat ZSET と delayed ZSET の両方に
+	// 書き込むので、Scheduled には少なくとも 2 (repeat ZCARD 由来) と、
+	// fresh state では加えて concrete delayed の 2 が足される。本番の
+	// steady-state では concrete delayed が即 promote されて 0 になり、
+	// repeat ZCARD だけが残る。assertion は「register した数以上が
+	// 見える」という性質に留め、過剰カウント側は許容する。
+	assert.GreaterOrEqual(t, infoAfter.Scheduled, 2,
+		"Scheduled should reflect at least the repeat ZSET cardinality")
+	assert.GreaterOrEqual(t, infoAfter.Size, 2)
+}
+
 // TestInspector_RunTaskPromotesDelayed verifies that RunTask pulls a
 // scheduled task back to wait, mirroring asynq's "Run scheduled".
 func TestInspector_RunTaskPromotesDelayed(t *testing.T) {

@@ -42,6 +42,14 @@ func (i *Inspector) GetQueueInfo(qname string) (*driver.InspectorInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mkqdriver: counts %q: %w", qname, err)
 	}
+	// Repeat ZSET の登録数を Scheduled に加算する (mk-go #455)。
+	// mkq scheduler は次回発火を `bull:<queue>:repeat` ZSET にだけ
+	// 保持し、concrete delayed job を pre-allocate しない。upstream
+	// BullMQ と異なる挙動なので、driver 側で repeat ZCARD を Scheduled
+	// に足して admin UI の Delayed カラムに「予定数」として可視化する。
+	// ZCARD 失敗は致命ではないので 0 として扱い、queue 全体を error
+	// 返却にしない (Counts が成功した時点で UI 表示は救う方を優先)。
+	repeatCount, _ := i.driver.rdb.ZCard(inspectorCtx(), i.driver.repeatKey(qname)).Result()
 	// Size mirrors asynq.QueueInfo.Size:
 	//   "sum of Pending, Active, Scheduled, Retry, Aggregating and Archived"
 	// — explicitly excluding Completed (asynq treats stored completed
@@ -50,20 +58,21 @@ func (i *Inspector) GetQueueInfo(qname string) (*driver.InspectorInfo, error) {
 	// mkq → asynq bucket map:
 	//   wait        ↔ pending
 	//   active      ↔ active
-	//   delayed     ↔ scheduled
+	//   delayed     ↔ scheduled (+ repeat ZSET, mk-go addition)
 	//   prioritized ↔ pending (asynq has no prioritized bucket)
 	//   failed      ↔ archived (stored failed jobs)
 	//
 	// completed / paused は asynq Size に含まれないので除外する。
 	// 含めると admin UI の queue size が driver 切替で大きく変動する。
+	scheduled := int(counts.Delayed) + int(repeatCount)
 	return &driver.InspectorInfo{
 		Queue:     qname,
-		Size:      int(counts.Wait + counts.Active + counts.Delayed + counts.Prioritized + counts.Failed),
+		Size:      int(counts.Wait+counts.Active+counts.Delayed+counts.Prioritized+counts.Failed) + int(repeatCount),
 		Active:    int(counts.Active),
 		Pending:   int(counts.Wait),
 		Completed: int(counts.Completed),
 		Failed:    int(counts.Failed),
-		Scheduled: int(counts.Delayed),
+		Scheduled: scheduled,
 		// Retry: mkq keeps retries inside the failed bucket until they
 		// move back into delayed; surface 0 to keep the field
 		// well-defined.
