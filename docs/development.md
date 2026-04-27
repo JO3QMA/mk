@@ -29,7 +29,7 @@ git clone --recursive https://github.com/shiroha-a/mk.git
 cd mk
 
 # 設定ファイルを作成
-cp .config/docker.yml .config/default.yml
+cp .config/default.yml.example .config/default.yml
 # default.yml を編集してDB/Redis接続先を設定
 
 # マイグレーション適用

@@ -70,8 +70,12 @@ ENV MISSKEY_REPO_ASSETS_DIR=/app/repo-assets
 COPY --from=builder /app/third_party/misskey/packages/backend/node_modules/@discordapp/twemoji/dist/svg /app/twemoji
 ENV MISSKEY_TWEMOJI_DIR=/app/twemoji
 
-# デフォルト設定ファイルをコピー (docker-compose でマウント上書き可能)
-COPY .config/docker.yml /app/.config/default.yml
+# デフォルト設定ファイルをコピー (docker-compose でマウント上書き可能)。
+# `.config/docker.yml` は gitignored で operator-local なので、image に
+# 焼き込むのは `.example` 側 (placeholder 値を持つテンプレート)。
+# 実際の運用では docker-compose の volume mount などで
+# `/app/.config/default.yml` を上書きする想定。
+COPY .config/docker.yml.example /app/.config/default.yml
 
 EXPOSE 3000
 

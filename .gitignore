@@ -40,8 +40,10 @@ Thumbs.db
 # Temporary files
 .tmp/
 
-# Config (user-specific)
-.config/
+# Config (user-specific). Track example templates only; operator
+# copies them locally (default.yml / docker.yml).
+.config/*
+!.config/*.example
 drive-files/
 /deploy/uds/config/default.yml
 /compose.uds.yaml

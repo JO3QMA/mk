@@ -78,8 +78,10 @@
 │   └── testutil/           # テスト用ヘルパー（testcontainers、モック）
 ├── migration/              # golang-migrate用SQLファイル（`NNNNNN_name.up.sql` / `.down.sql`）
 ├── .config/                # 設定ファイル（Misskey互換YAML）
-│   ├── default.yml         # ローカル開発用
-│   └── docker.yml          # Docker Compose用
+│   ├── default.yml.example # ローカル開発用テンプレート (track 対象)
+│   ├── docker.yml.example  # Docker Compose用テンプレート (track 対象)
+│   ├── default.yml         # operator-local (gitignored)
+│   └── docker.yml          # operator-local (gitignored)
 ├── docs/                   # プロジェクトドキュメント
 ├── Makefile
 ├── Dockerfile
@@ -366,8 +368,10 @@ Issueの作成・操作には`gh`コマンドを使う（`gh issue create`, `gh 
 
 ### 設定ファイル
 
-- デフォルト: `.config/default.yml`（Misskey互換YAML）
-- Docker: `.config/docker.yml`
+- デフォルト: `.config/default.yml`（Misskey互換YAML, gitignored）
+  - 初回は `cp .config/default.yml.example .config/default.yml` で複製
+- Docker: `.config/docker.yml.example` を Dockerfile が image に焼き込む
+  - operator が独自設定したい場合は `cp .config/docker.yml.example .config/docker.yml` してから docker-compose で volume mount で上書き
 - CLIフラグ `-config <path>` でパスを指定。
 
 ### 環境変数オーバーライド

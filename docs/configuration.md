@@ -8,7 +8,19 @@
 ./built/misskey -config .config/default.yml
 ```
 
-Docker環境ではコンテナ内の`.config/docker.yml`がデフォルトで読み込まれる。
+### 初回セットアップ
+
+`.config/` 配下には Misskey 本家流儀で `.example` テンプレートを配布している。初回は以下のいずれかを手元の `.config/default.yml` (および `docker.yml`) として複製してから編集する:
+
+```bash
+# ローカル開発 / バイナリ直起動
+cp .config/default.yml.example .config/default.yml
+
+# Docker / docker-compose
+cp .config/docker.yml.example .config/docker.yml
+```
+
+`.config/default.yml` と `.config/docker.yml` は `.gitignore` 対象 (operator-local) なので、コピーした手元のファイルが履歴に混入することはない。Docker image は build 時に `.config/docker.yml.example` をコンテナ内の `/app/.config/default.yml` として焼き込むので、運用環境では docker-compose 等で実 config を volume mount で上書きする想定。
 
 ## 全設定項目
 

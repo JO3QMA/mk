@@ -18,8 +18,9 @@ services:
       TZ: Asia/Tokyo
     volumes:
       - ./files:/app/drive-files
-      # 設定ファイルを上書きする場合:
-      # - ./.config/default.yml:/app/.config/default.yml:ro
+      # 設定ファイルを上書きする場合 (cp .config/docker.yml.example
+      # .config/docker.yml して編集後にコメントを外す):
+      # - ./.config/docker.yml:/app/.config/default.yml:ro
     restart: unless-stopped
 
   db:

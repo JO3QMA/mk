@@ -35,7 +35,7 @@ git clone --recursive https://github.com/shiroha-a/mk.git
 cd mk
 
 # 設定ファイルを作成 (→ docs/configuration.md 参照)
-cp .config/docker.yml .config/default.yml
+cp .config/default.yml.example .config/default.yml
 # default.yml を環境に合わせて編集
 
 # マイグレーション適用
