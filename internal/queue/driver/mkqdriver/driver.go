@@ -2,6 +2,7 @@ package mkqdriver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -214,15 +215,21 @@ func (d *Driver) Close() error {
 	if srv != nil {
 		srv.Shutdown()
 	}
+	// closed フラグを true にしてから cleanup を始めているため (上の
+	// idempotent ガード)、途中で early return すると残りのリソースが
+	// 永久リークする。client / rdb の両方を必ず Close し、エラーは
+	// errors.Join で集約して返す。
+	var clientErr, rdbErr error
 	if err := d.client.Close(); err != nil {
-		return fmt.Errorf("mkqdriver: close client: %w", err)
+		clientErr = fmt.Errorf("mkqdriver: close client: %w", err)
 	}
 	if d.rdb != nil {
-		// 副 Redis client は GetQueueInfo の ZCARD 専用なので失敗しても
-		// driver.Close 全体を fail させる必要はない。errors.Join 相当の
-		// 戻り値にするほどでもないため、warning ログを出して握り潰す
-		// 設計だが、現状 Driver は logger を持たないので無言で握る。
-		_ = d.rdb.Close()
+		// 副 Redis client は GetQueueInfo の ZCARD 専用。失敗しても
+		// 主要シャットダウン経路を blocking させる必要はないが、リーク
+		// 防止のため errors.Join 経由で呼び出し側に返しておく。
+		if err := d.rdb.Close(); err != nil {
+			rdbErr = fmt.Errorf("mkqdriver: close rdb: %w", err)
+		}
 	}
-	return nil
+	return errors.Join(clientErr, rdbErr)
 }
