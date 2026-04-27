@@ -2,6 +2,7 @@ package mkqdriver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -55,6 +56,17 @@ type Driver struct {
 	cfg    Config
 	queues map[string]*mkq.Queue[framedPayload]
 
+	// rdb is a side-channel redis client used by the Inspector for
+	// ad-hoc reads that mkq's public API does not expose (currently
+	// the per-queue `repeat` ZSET — see Inspector.GetQueueInfo). mkq's
+	// embedded *redis.UniversalClient is unexported, so duplicating
+	// the connection here keeps mkqdriver decoupled from mkq internals.
+	// keyPrefix mirrors mkq.Config.KeyPrefix with the BullMQ default
+	// ("bull") substituted for empty strings, so callers can build keys
+	// without re-checking config.
+	rdb       redis.UniversalClient
+	keyPrefix string
+
 	// Sub-components are constructed lazily on first access.
 	mu      sync.Mutex
 	dClient *Client
@@ -78,6 +90,16 @@ func New(ctx context.Context, cfg Config) (*Driver, error) {
 		return nil, fmt.Errorf("mkqdriver: connect: %w", err)
 	}
 
+	// side-channel redis client (see Driver.rdb doc). PING is verified
+	// implicitly via mkq.NewClient above against the same Addrs, so a
+	// second probe here is redundant — let the first ZCARD surface
+	// connectivity errors instead.
+	rdb := redis.NewUniversalClient(&cfg.Redis)
+	keyPrefix := cfg.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = defaultKeyPrefix
+	}
+
 	names := cfg.QueueNames
 	if len(names) == 0 {
 		names = QueueNames
@@ -88,10 +110,23 @@ func New(ctx context.Context, cfg Config) (*Driver, error) {
 	}
 
 	return &Driver{
-		client: client,
-		cfg:    cfg,
-		queues: queues,
+		client:    client,
+		cfg:       cfg,
+		queues:    queues,
+		rdb:       rdb,
+		keyPrefix: keyPrefix,
 	}, nil
+}
+
+// defaultKeyPrefix mirrors mkq's BullMQ-compatible default. Duplicated
+// here (rather than imported from mkq) because mkq exposes the constant
+// only via Config field semantics, not as a public symbol.
+const defaultKeyPrefix = "bull"
+
+// repeatKey returns the BullMQ ZSET key that holds the "next-fire"
+// schedule for repeat jobs on the named queue. Layout: `{prefix}:{queue}:repeat`.
+func (d *Driver) repeatKey(queue string) string {
+	return d.keyPrefix + ":" + queue + ":repeat"
 }
 
 // queueFor returns the pre-defined queue for the given name, or nil.
@@ -180,8 +215,21 @@ func (d *Driver) Close() error {
 	if srv != nil {
 		srv.Shutdown()
 	}
+	// closed フラグを true にしてから cleanup を始めているため (上の
+	// idempotent ガード)、途中で early return すると残りのリソースが
+	// 永久リークする。client / rdb の両方を必ず Close し、エラーは
+	// errors.Join で集約して返す。
+	var clientErr, rdbErr error
 	if err := d.client.Close(); err != nil {
-		return fmt.Errorf("mkqdriver: close client: %w", err)
+		clientErr = fmt.Errorf("mkqdriver: close client: %w", err)
 	}
-	return nil
+	if d.rdb != nil {
+		// 副 Redis client は GetQueueInfo の ZCARD 専用。失敗しても
+		// 主要シャットダウン経路を blocking させる必要はないが、リーク
+		// 防止のため errors.Join 経由で呼び出し側に返しておく。
+		if err := d.rdb.Close(); err != nil {
+			rdbErr = fmt.Errorf("mkqdriver: close rdb: %w", err)
+		}
+	}
+	return errors.Join(clientErr, rdbErr)
 }
