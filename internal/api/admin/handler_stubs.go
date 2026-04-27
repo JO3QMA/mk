@@ -1697,10 +1697,19 @@ func (h *Handler) QueuePromoteJobs(c echo.Context) error {
 // BullMQ と完全互換のまま Go ネイティブ性能を活かすのは別レイヤ (独立
 // OSS ライブラリ化) で取り組む方針 (#377 参照)。それまでの中継措置として
 // 見た目が壊れないよう未対応 field を 0 固定で stub する。
-func shapeQueueForFrontend(info *QueueInfoResult) map[string]any {
+func shapeQueueForFrontend(info *QueueInfoResult, completed, failed *QueueMetricsResult) map[string]any {
 	// delayed は Misskey 用語で scheduled + retry の合計に相当する
 	// (どちらも「すぐには実行されない」状態)。
 	delayed := info.Scheduled + info.Retry
+
+	// metrics は driver から渡された QueueMetricsResult を採用し、
+	// nil/欠損時は info.Completed / info.Failed の累積値で count を埋め、
+	// data は空配列にフォールバックする。前者は mkq driver で
+	// WithJobMetrics が無効、後者は asynq driver の time-series 非対応
+	// シナリオを想定。
+	completedData, completedCount := metricsToFrontend(completed, int64(info.Completed))
+	failedData, failedCount := metricsToFrontend(failed, int64(info.Failed))
+
 	return map[string]any{
 		"name":          info.Queue,
 		"qualifiedName": info.Queue,
@@ -1713,8 +1722,8 @@ func shapeQueueForFrontend(info *QueueInfoResult) map[string]any {
 			"failed":    info.Failed,
 		},
 		"metrics": map[string]any{
-			"completed": map[string]any{"data": []int{}, "count": info.Completed},
-			"failed":    map[string]any{"data": []int{}, "count": info.Failed},
+			"completed": map[string]any{"data": completedData, "count": completedCount},
+			"failed":    map[string]any{"data": failedData, "count": failedCount},
 		},
 		// asynq にはBull相当のper-queue redis DB statsがないため、frontend
 		// が参照するフィールドを0固定でstubする。
@@ -1727,6 +1736,30 @@ func shapeQueueForFrontend(info *QueueInfoResult) map[string]any {
 			"uptime":    0,
 		},
 	}
+}
+
+// metricsToFrontend normalises a driver-supplied QueueMetricsResult
+// into the (data, count) pair the BullMQ-shaped frontend expects.
+// nil m or empty m.Data both map to an empty []int64 (frontend's
+// XChart treats nil and []) for stable JSON.
+//
+// fallbackCount kicks in when the driver returned no Count (e.g.
+// metrics writer disabled) — admin UI then shows the cumulative
+// Completed/Failed from GetQueueInfo as the headline number even
+// though the chart line stays flat.
+func metricsToFrontend(m *QueueMetricsResult, fallbackCount int64) ([]int64, int64) {
+	if m == nil {
+		return []int64{}, fallbackCount
+	}
+	data := m.Data
+	if data == nil {
+		data = []int64{}
+	}
+	count := m.Count
+	if count == 0 {
+		count = fallbackCount
+	}
+	return data, count
 }
 
 // QueueQueueStats handles POST /api/admin/queue/queue-stats.
@@ -1750,9 +1783,11 @@ func (h *Handler) QueueQueueStats(c echo.Context) error {
 	if req.Queue != "" {
 		info, err := h.queueInspector.GetQueueInfo(req.Queue)
 		if err != nil || info == nil {
-			return c.JSON(http.StatusOK, shapeQueueForFrontend(&QueueInfoResult{Queue: req.Queue}))
+			completed, failed := h.fetchQueueMetrics(req.Queue)
+			return c.JSON(http.StatusOK, shapeQueueForFrontend(&QueueInfoResult{Queue: req.Queue}, completed, failed))
 		}
-		return c.JSON(http.StatusOK, shapeQueueForFrontend(info))
+		completed, failed := h.fetchQueueMetrics(req.Queue)
+		return c.JSON(http.StatusOK, shapeQueueForFrontend(info, completed, failed))
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
@@ -1764,9 +1799,24 @@ func (h *Handler) QueueQueueStats(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		out[q] = shapeQueueForFrontend(info)
+		completed, failed := h.fetchQueueMetrics(q)
+		out[q] = shapeQueueForFrontend(info, completed, failed)
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// fetchQueueMetrics queries the inspector for completed / failed
+// per-minute history. Errors are absorbed and returned as nil so the
+// admin endpoints stay 200 OK — partial chart data is preferable to
+// a hard failure when the metrics writer is opt-in (mkq driver) or
+// absent altogether (asynq driver).
+func (h *Handler) fetchQueueMetrics(qname string) (completed, failed *QueueMetricsResult) {
+	if h.queueInspector == nil {
+		return nil, nil
+	}
+	completed, _ = h.queueInspector.QueueMetrics(qname, queue.MetricsKindCompleted)
+	failed, _ = h.queueInspector.QueueMetrics(qname, queue.MetricsKindFailed)
+	return
 }
 
 // QueueQueues handles POST /api/admin/queue/queues.
@@ -1784,7 +1834,8 @@ func (h *Handler) QueueQueues(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		result = append(result, shapeQueueForFrontend(info))
+		completed, failed := h.fetchQueueMetrics(q)
+		result = append(result, shapeQueueForFrontend(info, completed, failed))
 	}
 	return c.JSON(http.StatusOK, result)
 }

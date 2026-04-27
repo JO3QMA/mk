@@ -217,6 +217,16 @@ type QueueInspector interface {
 	ListScheduledTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
 	ListRetryTasks(qname string, page, pageSize int) ([]*QueueTaskSummary, error)
 	GetTaskInfo(qname, taskID string) (*QueueTaskSummary, error)
+	QueueMetrics(qname, kind string) (*QueueMetricsResult, error)
+}
+
+// QueueMetricsResult is the per-queue completed / failed time-series
+// snapshot returned by QueueInspector.QueueMetrics. Mirrors
+// driver.MetricsResult — duplicated here to keep the admin package
+// free of internal/queue/driver imports.
+type QueueMetricsResult struct {
+	Count int64
+	Data  []int64
 }
 
 // QueueInfoResult holds basic queue statistics.

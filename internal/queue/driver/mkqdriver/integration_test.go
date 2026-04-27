@@ -261,6 +261,63 @@ func TestInspector_FullSurface(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestInspector_QueueMetrics_PopulatesAfterFinalize spins up a worker
+// with WithJobMetrics implicitly enabled (default Driver config), runs
+// jobs to completion, and asserts the BullMQ-spec metrics keys are
+// reflected in Inspector.QueueMetrics. The minute-bucket gating means
+// Data may stay empty inside the first minute, so we only assert
+// Count > 0 and Data being non-nil; the LIST roll is exercised in
+// mkq's own integration tests.
+func TestInspector_QueueMetrics_PopulatesAfterFinalize(t *testing.T) {
+	d := newDriver(t)
+	srv := d.Server()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	srv.Handle("metrics:ok", func(_ context.Context, _ driver.Task) error {
+		defer wg.Done()
+		return nil
+	})
+	require.NoError(t, srv.Start())
+	t.Cleanup(srv.Shutdown)
+
+	require.NoError(t, d.Client().Enqueue(context.Background(), "metrics:ok", nil,
+		driver.WithQueue("deliver")))
+	require.NoError(t, d.Client().Enqueue(context.Background(), "metrics:ok", nil,
+		driver.WithQueue("deliver")))
+	if !waitGroupTimeout(&wg, 5*time.Second) {
+		t.Fatal("handlers did not run")
+	}
+
+	// Wait for finalisation — Lua collectMetrics runs inside the
+	// finalize transaction, so Count should observe the cumulative
+	// total once both jobs roll into the completed bucket.
+	require.Eventually(t, func() bool {
+		m, err := d.Inspector().QueueMetrics("deliver", driver.MetricsKindCompleted)
+		return err == nil && m != nil && m.Count >= 2
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Failed bucket: no failures in this scenario, but the call must
+	// still succeed and return a zero-valued result rather than an
+	// error (no metrics keys yet means the lua HMGET / LRANGE return
+	// empty and mkq.GetMetrics maps that to QueueMetrics{}).
+	failed, err := d.Inspector().QueueMetrics("deliver", driver.MetricsKindFailed)
+	require.NoError(t, err)
+	require.NotNil(t, failed)
+	assert.EqualValues(t, 0, failed.Count)
+}
+
+// TestInspector_QueueMetrics_InvalidArgs covers the validation paths.
+func TestInspector_QueueMetrics_InvalidArgs(t *testing.T) {
+	d := newDriver(t)
+
+	_, err := d.Inspector().QueueMetrics("missing", driver.MetricsKindCompleted)
+	require.Error(t, err)
+
+	_, err = d.Inspector().QueueMetrics("deliver", "weird")
+	require.Error(t, err)
+}
+
 // TestInspector_GetQueueInfo_IncludesRepeatSchedules verifies the
 // mk-go-specific behaviour added for #455: registering a repeatable
 // schedule via Scheduler.Register populates `bull:<queue>:repeat`,

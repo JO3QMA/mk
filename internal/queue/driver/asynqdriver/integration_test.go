@@ -154,6 +154,49 @@ func TestInspector_LiveQueue(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+// TestInspector_QueueMetrics_AsynqStub verifies the driver-neutral
+// QueueMetrics surface for the asynq driver: no native time-series,
+// so Data is always nil and Count is filled from the cumulative
+// Completed / Failed bucket size. Invalid kinds and unknown queues
+// surface as errors so the admin handler's defensive swallowing path
+// (fetchQueueMetrics) gets exercised.
+func TestInspector_QueueMetrics_AsynqStub(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushRedis(t)
+
+	d := newDriver()
+	t.Cleanup(func() { _ = d.Close() })
+
+	// asynq は最初の Enqueue まで queue を作らないので、まず 1 件
+	// 投入して queue を materialize させる。
+	require.NoError(t, d.Client().Enqueue(context.Background(),
+		"metrics:probe", nil,
+		driver.WithQueue("deliver"),
+	))
+
+	completed, err := d.Inspector().QueueMetrics("deliver", driver.MetricsKindCompleted)
+	require.NoError(t, err)
+	require.NotNil(t, completed)
+	// asynq には time-series が無いので Data は常に nil。
+	assert.Nil(t, completed.Data)
+	// Newly-flushed Redis なので累積 Completed = 0 が返る。
+	assert.EqualValues(t, 0, completed.Count)
+
+	failed, err := d.Inspector().QueueMetrics("deliver", driver.MetricsKindFailed)
+	require.NoError(t, err)
+	require.NotNil(t, failed)
+	assert.EqualValues(t, 0, failed.Count)
+
+	_, err = d.Inspector().QueueMetrics("deliver", "unknown")
+	require.Error(t, err)
+
+	// 存在しない queue は asynq が NOT_FOUND を返すので error 経路が
+	// 通る。fetchQueueMetrics 側で握り潰されるので handler 動作は問題
+	// ないが、ここでは driver レイヤの契約として error を保証。
+	_, err = d.Inspector().QueueMetrics("nonexistent", driver.MetricsKindCompleted)
+	require.Error(t, err)
+}
+
 // TestInspector_RunTask promotes a scheduled task using the live
 // Redis. Scheduled enqueueing uses driver.WithProcessIn so the task
 // lands in the scheduled bucket; RunTask then pulls it back to
