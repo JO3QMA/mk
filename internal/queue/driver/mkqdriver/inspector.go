@@ -42,9 +42,23 @@ func (i *Inspector) GetQueueInfo(qname string) (*driver.InspectorInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mkqdriver: counts %q: %w", qname, err)
 	}
+	// Size mirrors asynq.QueueInfo.Size:
+	//   "sum of Pending, Active, Scheduled, Retry, Aggregating and Archived"
+	// — explicitly excluding Completed (asynq treats stored completed
+	// tasks as retention storage, not queue residents).
+	//
+	// mkq → asynq bucket map:
+	//   wait        ↔ pending
+	//   active      ↔ active
+	//   delayed     ↔ scheduled
+	//   prioritized ↔ pending (asynq has no prioritized bucket)
+	//   failed      ↔ archived (stored failed jobs)
+	//
+	// completed / paused は asynq Size に含まれないので除外する。
+	// 含めると admin UI の queue size が driver 切替で大きく変動する。
 	return &driver.InspectorInfo{
 		Queue:     qname,
-		Size:      int(counts.Wait + counts.Active + counts.Delayed + counts.Prioritized),
+		Size:      int(counts.Wait + counts.Active + counts.Delayed + counts.Prioritized + counts.Failed),
 		Active:    int(counts.Active),
 		Pending:   int(counts.Wait),
 		Completed: int(counts.Completed),
