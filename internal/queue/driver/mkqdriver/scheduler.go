@@ -31,8 +31,7 @@ import (
 //     ad-hoc Enqueue path or stay on the asynq driver until upstream
 //     mkq adds an equivalent.
 type Scheduler struct {
-	driver  *Driver
-	started bool
+	driver *Driver
 }
 
 // Register schedules taskType to fire on the given cron pattern. The
@@ -69,14 +68,9 @@ func (s *Scheduler) Register(cronspec, taskType string, payload []byte, opts ...
 // Start is a no-op for mkq — schedules are evaluated lazily by the
 // Worker dispatch loop on every prefetch. The method exists to
 // satisfy the driver.Scheduler interface.
-func (s *Scheduler) Start() error {
-	s.started = true
-	return nil
-}
+func (s *Scheduler) Start() error { return nil }
 
 // Shutdown is a no-op for mkq — scheduled entries are persisted in
 // Redis and survive driver restarts; nothing to release on the
 // scheduler side.
-func (s *Scheduler) Shutdown() {
-	s.started = false
-}
+func (s *Scheduler) Shutdown() {}

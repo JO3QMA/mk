@@ -35,8 +35,11 @@ type Config struct {
 	// multiple BullMQ deployments.
 	KeyPrefix string
 
-	// Concurrency is the per-queue worker concurrency. Zero falls
-	// back to 16, matching the historical asynq default.
+	// Concurrency is the **total** worker budget across all queues,
+	// matching asynq.Config.Concurrency semantics. Driver.Server
+	// divides this by len(QueueNames) (clamped to a minimum of 1)
+	// before passing to mkq.WithConcurrency on a per-queue basis.
+	// Zero falls back to 16, matching the historical asynq default.
 	Concurrency int
 
 	// QueueNames overrides the set of queues to pre-define. Nil/empty

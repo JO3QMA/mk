@@ -161,8 +161,12 @@ func TestJobToSummary_FramedPayload(t *testing.T) {
 	if got.CompletedAt != state.FinishedOn {
 		t.Fatalf("CompletedAt: got %v", got.CompletedAt)
 	}
-	if got.NextProcessAt != state.ProcessedOn {
-		t.Fatalf("NextProcessAt: got %v", got.NextProcessAt)
+	// NextProcessAt は asynq の future-time セマンティクスに合わせる
+	// ため意図的に未設定にしている (mkq には next-retry timestamp が
+	// 存在しない)。past-time の ProcessedOn を入れると意味的に逆になる
+	// ので zero のままを保証する。
+	if !got.NextProcessAt.IsZero() {
+		t.Fatalf("NextProcessAt must stay zero, got %v", got.NextProcessAt)
 	}
 }
 
