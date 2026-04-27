@@ -1,33 +1,252 @@
-# mk-go config for the UDS-only stack (compose.uds.yaml).
+#━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Misskey-Go configuration (UDS-only stack)
 #
-# HTTP / PostgreSQL / Redis すべて UNIX domain socket で接続する。
-# TCP を使わないので host から直接触れるのは nginx の 80 番だけ。
+# このファイルは `deploy/uds/config/default.yml.example` です。
+# `compose.uds.yaml` 系列スタック (HTTP / PostgreSQL / Redis すべて
+# UNIX domain socket で接続) で使用します。初回は以下を実行して
+# default.yml を作成してください:
+#   cp deploy/uds/config/default.yml.example deploy/uds/config/default.yml
+#
+# Misskey 本家 .config/example.yml をベースに、Go 実装 (misskey-go)
+# 固有の項目と UDS スタック特有の設定を加えています。
+#━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#   ┌──────────────────────────────┐
+#───┘ a boring but important thing └────────────────────────────
+
+# Misskey is licensed under the AGPLv3 license. mk-go also adheres
+# to this license. See the upstream Misskey example.yml for the full
+# explanation of license compliance options.
+#
+# publishTarballInsteadOfProvideRepositoryUrl: true
+
+#   ┌────────────────────────┐
+#───┘ Initial Setup Password └─────────────────────────────────────────────────────
+
+# Password to initiate setting up admin account.
+# It will not be used after the initial setup is complete.
+#
+# setupPassword: example_password_please_change_this_or_you_will_get_hacked
+
+#   ┌─────┐
+#───┘ URL └─────────────────────────────────────────────────────
 
 # ブラウザに返す URL。nginx が 80 番でリッスンしている前提。
 url: http://localhost
 
+# ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE THE
+# URL SETTINGS AFTER THAT!
+
+#   ┌───────────────────────┐
+#───┘ Port and TLS settings └───────────────────────────────────
+
+# UDS スタックでは TCP listen は使わないので `port` を意図的に省略する
+# (両方設定すると "both socket and port are set" の warning が起動毎
+# に出る)。下の `socket` で UDS listen に切り替える。
+#port: 3000
+
 # HTTP listen を UNIX domain socket にする (Phase 12-1 で入った経路)。
-# nginx コンテナが同じ named volume (mkgo_sock) を /run/mkgo に mount して
-# この socket を upstream 先にする。
+# nginx コンテナが同じ named volume (mkgo_sock) を /run/mkgo に mount
+# して、この socket を upstream 先にする。
 socket: /run/mkgo/mkgo.sock
-# nginx (alpine image では uid 101, non-root) から読める必要があるので 666 にする。
+
+# nginx (alpine image では uid 101, non-root) から読める必要があるので
+# 666 にする。本番運用では nginx と mk-go を同じグループに入れて 660
+# にする方が望ましい。
 chmodSocket: "666"
 
+# Proxy trust settings.
+#
+# UDS スタックでは upstream は localhost (UDS の peer なので CIDR で
+# 識別できないが、loopback 同等として扱う)。
+#
+#trustProxy:
+#  - '127.0.0.1/32'
+#  - '::1/128'
+
+# Disable HSTS header (default: false). nginx 側で HSTS を付ける場合は
+# ここで mk-go 側を無効化する。
+#disableHsts: true
+
+# Enable internal IP-based rate limiting (default: true).
+# nginx 側で limit_req を使う場合は false にする。
+#enableIpRateLimit: true
+
+#   ┌──────────────────────────┐
+#───┘ PostgreSQL configuration └────────────────────────────────
+
 db:
-  # 絶対パス (/ で始まる) なので Phase 12-1 の IsUnixSocketPath で UDS と判定される。
-  # libpq / pgx は host=<dir> から <dir>/.s.PGSQL.<port> を組み立てるので、
-  # postgres 側が作る socket ファイル名と port を一致させる必要がある。
+  # 絶対パス (/ で始まる) なので Phase 12-1 の IsUnixSocketPath で UDS
+  # と判定される。libpq / pgx は host=<dir> から <dir>/.s.PGSQL.<port>
+  # を組み立てるので、postgres 側が作る socket ファイル名と port を
+  # 一致させる必要がある。
   host: /var/run/postgresql
   port: 5432
+
+  # Database name
   db: mkgo
+
+  # Auth — compose.uds.yaml の POSTGRES_USER / POSTGRES_PASSWORD と
+  # 整合させる。本番運用では強いパスワードに変更すること。
   user: mkgo
   pass: mkgo_dev_pass
 
+  # Whether disable Caching queries
+  #disableCache: true
+
+  # Connection pool tuning (mk-go specific)
+  #maxOpenConns: 25
+  #maxIdleConns: 5
+  #connMaxLifetime: 1800
+  #connMaxIdleTime: 300
+
+dbReplications: false
+
+# You can configure any number of read replicas here
+#dbSlaves:
+#  -
+#    host:
+#    port:
+#    db:
+#    user:
+#    pass:
+
+#   ┌─────────────────────┐
+#───┘ Redis configuration └─────────────────────────────────────
+
 redis:
-  # 同じく絶対パスなので go-redis の Network=unix 経路に入る (internal/core/cache/redis.go)。
+  # 同じく絶対パスなので go-redis の Network=unix 経路に入る
+  # (internal/core/cache/redis.go)。
   host: /run/valkey/valkey.sock
-  # UDS 接続では port は無視されるが、viper の schema 上 int が期待されるので
-  # 6379 を書いておく (実通信では使われない)。
+  # UDS 接続では port は無視されるが、viper の schema 上 int が期待
+  # されるので 6379 を書いておく (実通信では使われない)。
   port: 6379
+  #pass: example-pass
+  #db: 1
+  #poolSize: 32
+
+#redisForPubsub:
+#  host: /run/valkey/valkey.sock
+#  port: 6379
+
+#redisForJobQueue:
+#  host: /run/valkey/valkey.sock
+#  port: 6379
+
+#redisForTimelines:
+#  host: /run/valkey/valkey.sock
+#  port: 6379
+
+#redisForReactions:
+#  host: /run/valkey/valkey.sock
+#  port: 6379
+
+#   ┌───────────────────┐
+#───┘ Job queue driver └────────────────────────────────────────
+
+# mk-go specific: select the job queue runtime.
+#
+#   - 'asynq' (default): hibiken/asynq based runtime.
+#   - 'mkq':              shiroha-a/mkq based, BullMQ wire-compatible
+#                         (makes the admin queue dashboard render
+#                          correctly under the upstream Misskey TS
+#                          frontend).
+#
+#jobQueueDriver: asynq
+
+#   ┌───────────────────────────────┐
+#───┘ Fulltext search configuration └─────────────────────────────
+
+fulltextSearch:
+  # - sqlLike (default): SQL ILIKE search (no extension required).
+  # - sqlPgroonga:       Use pgroonga PostgreSQL extension.
+  # - meilisearch:       Use Meilisearch (configure under `meilisearch:`).
+  provider: sqlLike
+
+#meilisearch:
+#  host: localhost
+#  port: 7700
+#  apiKey: ''
+#  ssl: true
+#  index: ''
+#  scope: local
+
+#   ┌───────────────┐
+#───┘ ID generation └───────────────────────────────────────────
+
+# Available methods: aid, aidx, meid, ulid, objectid
+# ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE.
 
 id: aidx
+
+#   ┌────────────────┐
+#───┘ Error tracking └──────────────────────────────────────────
+
+#sentryForBackend:
+#  enableNodeProfiling: true   # Node-only feature; ignored by Go backend
+#  options:
+#    dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0'
+#    environment: production
+
+#sentryForFrontend:
+#  options:
+#    dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0'
+
+#   ┌─────────────────────┐
+#───┘ Job queue settings └──────────────────────────────────────
+
+#deliverJobConcurrency: 128
+#inboxJobConcurrency: 16
+#relationshipJobConcurrency: 16
+
+#deliverJobPerSec: 128
+#inboxJobPerSec: 32
+#relationshipJobPerSec: 64
+
+#deliverJobMaxAttempts: 12
+#inboxJobMaxAttempts: 8
+
+#   ┌─────────────────────┐
+#───┘ Other configuration └─────────────────────────────────────
+
+#outgoingAddress: 127.0.0.1
+#outgoingAddressFamily: ipv4
+
+#proxy: http://127.0.0.1:3128
+
+proxyBypassHosts:
+  - api.deepl.com
+  - api-free.deepl.com
+  - www.recaptcha.net
+  - hcaptcha.com
+  - challenges.cloudflare.com
+
+#proxySmtp: http://127.0.0.1:3128
+
+#mediaProxy: https://example.com/proxy
+#mediaProxySecret: change-me
+
+#videoThumbnailGenerator: https://example.com
+
+#allowedPrivateNetworks:
+#  - '127.0.0.1/32'
+
+#maxFileSize: 262144000
+
+#pidFile: /tmp/misskey.pid
+
+#logging:
+#  sql:
+#    enableQueryParamLogging: false
+#    disableQueryTruncation: false
+
+#   ┌──────────────────────────────────┐
+#───┘ Test / debug (mk-go specific) └───────────────────────────
+
+# Enable destructive test endpoints such as /api/reset-db.
+# **DO NOT enable in production** — used by e2e tests only.
+#testMode: false
+
+# Mount net/http/pprof handlers at /debug/pprof/* for local
+# profiling. **DO NOT enable in production**.
+#enablePprof: false
