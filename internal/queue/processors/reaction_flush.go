@@ -3,8 +3,8 @@ package processors
 import (
 	"context"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/reaction"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
 // ReactionFlushProcessor handles the periodic reaction buffer flush task.
@@ -18,6 +18,6 @@ func NewReactionFlushProcessor(writer reaction.ReactionCountWriter) *ReactionFlu
 }
 
 // Handle flushes all buffered reaction counts to the database.
-func (p *ReactionFlushProcessor) Handle(ctx context.Context, _ *asynq.Task) error {
+func (p *ReactionFlushProcessor) Handle(ctx context.Context, _ driver.Task) error {
 	return p.writer.Flush(ctx)
 }

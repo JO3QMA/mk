@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/hibiken/asynq"
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/core/cache"
 	"github.com/shiroha-a/mk/internal/core/chart"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
+	"github.com/shiroha-a/mk/internal/queue/driver/asynqdriver"
 	"github.com/shiroha-a/mk/internal/repository"
 	mksentry "github.com/shiroha-a/mk/internal/sentry"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -27,6 +28,7 @@ type Server struct {
 	db             *gorm.DB
 	redis          *cache.RedisClients
 	auth           *middleware.AuthMiddleware
+	queueDriver    driver.Driver
 	queueClient    *queue.Client
 	queueServer    *queue.Server
 	queueScheduler *queue.Scheduler
@@ -80,19 +82,21 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 	auth := middleware.NewAuthMiddleware(userRepo, accessTokenRepo)
 	e.Use(auth.Authenticate())
 
-	// asynq セットアップ: redisForJobQueue にぶら下げる。
+	// queue driver セットアップ: redisForJobQueue にぶら下げる。
 	// Host が UNIX domain socket パス ("/" 始まり) なら Network を "unix" に
-	// 切り替える。asynq.RedisClientOpt はそのまま go-redis v9 に渡されるので
-	// cache 側の buildRedisOptions と同じ判定ルールで十分。
-	redisOpt := buildAsynqRedisOpt(cfg.RedisForJobQueue)
+	// 切り替える (asynqdriver.BuildRedisOpt が判定する)。
 	concurrency := 16
 	if cfg.DeliverJobConcurrency != nil && *cfg.DeliverJobConcurrency > 0 {
 		concurrency = *cfg.DeliverJobConcurrency
 	}
-	queueClient := queue.NewClient(redisOpt)
-	queueServer := queue.NewServer(redisOpt, queue.ServerConfig{Concurrency: concurrency})
-	queueScheduler := queue.NewScheduler(redisOpt)
-	queueInspector := queue.NewInspector(redisOpt)
+	queueDriver := asynqdriver.New(
+		asynqdriver.BuildRedisOpt(cfg.RedisForJobQueue),
+		asynqdriver.ServerConfig{Concurrency: concurrency},
+	)
+	queueClient := queue.NewClient(queueDriver)
+	queueServer := queue.NewServer(queueDriver)
+	queueScheduler := queue.NewScheduler(queueDriver)
+	queueInspector := queue.NewInspector(queueDriver)
 
 	s := &Server{
 		echo:           e,
@@ -100,6 +104,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) *Server {
 		db:             db,
 		redis:          redis,
 		auth:           auth,
+		queueDriver:    queueDriver,
 		queueClient:    queueClient,
 		queueServer:    queueServer,
 		queueScheduler: queueScheduler,
@@ -192,28 +197,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		slog.Warn("failed to remove socket file", "socket", s.config.Socket, "err", rmErr)
 	}
 	return err
-}
-
-// buildAsynqRedisOpt constructs an asynq.RedisClientOpt that understands UNIX
-// domain socket paths. When the host string looks like an absolute path the
-// Network field is set to "unix" so that go-redis (via asynq) dials the socket
-// directly; otherwise the classic host:port TCP form is used.
-func buildAsynqRedisOpt(opts config.RedisOptions) asynq.RedisClientOpt {
-	if config.IsUnixSocketPath(opts.Host) {
-		return asynq.RedisClientOpt{
-			Network:  "unix",
-			Addr:     opts.Host,
-			Password: opts.Pass,
-			DB:       opts.DB,
-			Username: opts.Username,
-		}
-	}
-	return asynq.RedisClientOpt{
-		Addr:     fmt.Sprintf("%s:%d", opts.Host, opts.Port),
-		Password: opts.Pass,
-		DB:       opts.DB,
-		Username: opts.Username,
-	}
 }
 
 // setChartManagement registers the chart management service so its

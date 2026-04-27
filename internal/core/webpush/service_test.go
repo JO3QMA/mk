@@ -6,9 +6,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +19,7 @@ type fakeEnqueuer struct {
 	err   error
 }
 
-func (f *fakeEnqueuer) EnqueueDeliver(_ queue.DeliverPayload, _ ...asynq.Option) error {
+func (f *fakeEnqueuer) EnqueueDeliver(_ queue.DeliverPayload, _ ...driver.EnqueueOption) error {
 	return nil
 }
 func (f *fakeEnqueuer) EnqueueExport(_ queue.ExportPayload) error { return nil }

@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/chart"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
 // ChartProcessor implements the periodic tick / resync / clean handlers
 // that mirror Misskey upstream's tickCharts / resyncCharts / cleanCharts
-// queue processors. それぞれ asynq.Scheduler の cron pattern で起動される。
+// queue processors. それぞれ driver.Scheduler の cron pattern で起動される。
 type ChartProcessor struct {
 	// charts is the ordered list of every chart engine that should be
 	// ticked / resynced / cleaned. Caller passes them in the same order
@@ -28,7 +28,7 @@ func NewChartProcessor(charts []*chart.Chart) *ChartProcessor {
 // charts only — grouped charts (per-user / per-host) cannot be enumerated
 // without an external driver and are skipped, matching the upstream
 // TickChartsProcessorService.process behaviour.
-func (p *ChartProcessor) HandleTick(ctx context.Context, _ *asynq.Task) error {
+func (p *ChartProcessor) HandleTick(ctx context.Context, _ driver.Task) error {
 	return p.runTick(ctx, false)
 }
 
@@ -36,13 +36,13 @@ func (p *ChartProcessor) HandleTick(ctx context.Context, _ *asynq.Task) error {
 // TickFunc returns nil for major are no-ops; per-group charts that
 // require enumeration are skipped (TODO: per-user/per-host resync, same
 // as upstream).
-func (p *ChartProcessor) HandleResync(ctx context.Context, _ *asynq.Task) error {
+func (p *ChartProcessor) HandleResync(ctx context.Context, _ driver.Task) error {
 	return p.runTick(ctx, true)
 }
 
 // HandleClean clears expired uniqueIncrement temp arrays on every
 // registered chart.
-func (p *ChartProcessor) HandleClean(ctx context.Context, _ *asynq.Task) error {
+func (p *ChartProcessor) HandleClean(ctx context.Context, _ driver.Task) error {
 	for _, c := range p.charts {
 		if err := c.Clean(ctx); err != nil {
 			return fmt.Errorf("chart clean %s: %w", c.Name(), err)

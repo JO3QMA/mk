@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	webpushlib "github.com/SherClockHolmes/webpush-go"
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -116,7 +116,7 @@ func metaWithVAPID() *model.Meta {
 	return &model.Meta{EnableServiceWorker: true, SwPublicKey: &pub, SwPrivateKey: &priv}
 }
 
-func taskFromPayload(t *testing.T, p queue.WebPushPayload) *asynq.Task {
+func taskFromPayload(t *testing.T, p queue.WebPushPayload) driver.Task {
 	t.Helper()
 	return queue.NewWebPushTask(p)
 }
@@ -290,19 +290,19 @@ func TestWebPushProcessor_ServerError(t *testing.T) {
 
 func TestWebPushProcessor_InvalidPayloadSkipsRetry(t *testing.T) {
 	p, _ := newProcessor(t, &stubWebPushSender{}, metaWithVAPID(), nil)
-	task := asynq.NewTask(queue.TaskTypeWebPush, []byte("not json"))
+	task := driver.RawTask{TypeName: queue.TaskTypeWebPush, Body: []byte("not json")}
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestWebPushProcessor_MissingUserID(t *testing.T) {
 	p, _ := newProcessor(t, &stubWebPushSender{}, metaWithVAPID(), nil)
 	body, _ := json.Marshal(queue.WebPushPayload{Type: webpush.TypeNotification})
-	task := asynq.NewTask(queue.TaskTypeWebPush, body)
+	task := driver.RawTask{TypeName: queue.TaskTypeWebPush, Body: body}
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestNewWebPushProcessor_DefaultSender(t *testing.T) {

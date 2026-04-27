@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
@@ -64,34 +64,34 @@ func NewWebhookProcessor(
 }
 
 // HandleUser dispatches a user webhook task.
-func (p *WebhookProcessor) HandleUser(ctx context.Context, t *asynq.Task) error {
+func (p *WebhookProcessor) HandleUser(ctx context.Context, t driver.Task) error {
 	return p.handle(ctx, t, true)
 }
 
 // HandleSystem dispatches a system webhook task.
-func (p *WebhookProcessor) HandleSystem(ctx context.Context, t *asynq.Task) error {
+func (p *WebhookProcessor) HandleSystem(ctx context.Context, t driver.Task) error {
 	return p.handle(ctx, t, false)
 }
 
 // handle is the shared delivery implementation. user==true uses user webhooks,
 // user==false uses system webhooks.
-func (p *WebhookProcessor) handle(ctx context.Context, t *asynq.Task, user bool) error {
+func (p *WebhookProcessor) handle(ctx context.Context, t driver.Task, user bool) error {
 	payload, err := queue.DecodeWebhookPayload(t.Payload())
 	if err != nil {
-		return fmt.Errorf("decode webhook payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("decode webhook payload: %w: %w", err, driver.SkipRetry)
 	}
 	if payload.WebhookID == "" {
-		return fmt.Errorf("webhook payload missing webhookId: %w", asynq.SkipRetry)
+		return fmt.Errorf("webhook payload missing webhookId: %w", driver.SkipRetry)
 	}
 
 	url, secret, err := p.resolveTarget(payload.WebhookID, user)
 	if err != nil {
-		return fmt.Errorf("resolve webhook %s: %w: %w", payload.WebhookID, err, asynq.SkipRetry)
+		return fmt.Errorf("resolve webhook %s: %w: %w", payload.WebhookID, err, driver.SkipRetry)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload.Body))
 	if err != nil {
-		return fmt.Errorf("build webhook request: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("build webhook request: %w: %w", err, driver.SkipRetry)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", p.userAgent)
@@ -123,7 +123,7 @@ func (p *WebhookProcessor) handle(ctx context.Context, t *asynq.Task, user bool)
 		return nil
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		// 4xx は受信側の不正リクエスト扱いでリトライしない。
-		return fmt.Errorf("webhook client error (%d): %w", resp.StatusCode, asynq.SkipRetry)
+		return fmt.Errorf("webhook client error (%d): %w", resp.StatusCode, driver.SkipRetry)
 	default:
 		// 5xx 等は一時的障害としてリトライ。
 		return errors.New("webhook server error: " + resp.Status)

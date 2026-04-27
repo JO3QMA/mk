@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/hibiken/asynq"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +24,7 @@ func (s *stubAggregator) Aggregate(_ context.Context) error {
 func TestRetentionAggregateProcessor_Handle_Success(t *testing.T) {
 	agg := &stubAggregator{}
 	p := processors.NewRetentionAggregateProcessor(agg)
-	require.NoError(t, p.Handle(context.Background(), asynq.NewTask("x", nil)))
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{TypeName: "x"}))
 	assert.Equal(t, 1, agg.called)
 }
 
@@ -34,7 +34,7 @@ func TestRetentionAggregateProcessor_Handle_SwallowsError(t *testing.T) {
 	wantErr := errors.New("db boom")
 	agg := &stubAggregator{err: wantErr}
 	p := processors.NewRetentionAggregateProcessor(agg)
-	err := p.Handle(context.Background(), asynq.NewTask("x", nil))
+	err := p.Handle(context.Background(), driver.RawTask{TypeName: "x"})
 	assert.NoError(t, err, "aggregation failures must not surface as job errors")
 	assert.Equal(t, 1, agg.called)
 }
@@ -43,5 +43,5 @@ func TestRetentionAggregateProcessor_Handle_SwallowsError(t *testing.T) {
 // the service is ready in some bootstrap orderings.
 func TestRetentionAggregateProcessor_Handle_NilSvcIsNoop(t *testing.T) {
 	p := processors.NewRetentionAggregateProcessor(nil)
-	require.NoError(t, p.Handle(context.Background(), asynq.NewTask("x", nil)))
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{TypeName: "x"}))
 }

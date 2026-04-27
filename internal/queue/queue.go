@@ -1,31 +1,51 @@
-// Package queue provides a thin wrapper around asynq for the AP delivery
-// pipeline. The wrapper exposes an Enqueuer interface so that callers
-// (DeliverService) can be unit-tested with mocks.
+// Package queue is the driver-neutral facade for mk-go's job queue.
+// Callers depend on this package (Enqueuer, Server, Inspector,
+// Scheduler) without taking a compile-time dependency on the
+// underlying queue runtime — that lives behind queue/driver.
+//
+// AP delivery, webhooks, web push, and maintenance / chart cron
+// jobs all flow through this package. Driver swaps (asynq → mkq)
+// touch only the wiring code that constructs the driver.Driver in
+// internal/server.
 package queue
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
-// QueueName is the asynq queue used for AP delivery jobs.
+// mustMarshal serializes a payload via json.Marshal. mk-go の queue
+// payload は string / []byte / 単純な struct のみで構成されている
+// ため Marshal は失敗しない。エラー戻り値を呼び出し側に伝播させる
+// より panic で wiring バグを早期発見できる方を選んでいる。
+func mustMarshal(v any) []byte {
+	body, err := json.Marshal(v)
+	if err != nil {
+		panic("queue: marshal payload: " + err.Error())
+	}
+	return body
+}
+
+// QueueName is the queue used for AP delivery jobs.
 const QueueName = "deliver"
 
-// ExportQueueName is the asynq queue for export/import jobs.
+// ExportQueueName is the queue for export/import jobs.
 const ExportQueueName = "export"
 
-// PushQueueName is the asynq queue for Web Push delivery jobs.
+// PushQueueName is the queue for Web Push delivery jobs.
 const PushQueueName = "push"
 
-// WebhookQueueName is the asynq queue for user + system webhook delivery jobs.
+// WebhookQueueName is the queue for user + system webhook delivery jobs.
 const WebhookQueueName = "webhook"
 
-// Enqueuer abstracts the asynq client for callers that only need to enqueue
-// tasks. テスト用にmock可能。
+// Enqueuer abstracts task enqueueing for callers (DeliverService,
+// admin handlers, etc.). The interface is driver-neutral so callers
+// can be unit-tested with mocks.
 type Enqueuer interface {
-	EnqueueDeliver(payload DeliverPayload, opts ...asynq.Option) error
+	EnqueueDeliver(payload DeliverPayload, opts ...driver.EnqueueOption) error
 	EnqueueExport(payload ExportPayload) error
 	EnqueueImport(payload ImportPayload) error
 	EnqueueWebPush(ctx context.Context, payload WebPushPayload) error
@@ -34,170 +54,141 @@ type Enqueuer interface {
 	Close() error
 }
 
-// Client wraps asynq.Client and implements Enqueuer.
+// Client wraps a driver.Client and implements Enqueuer.
 type Client struct {
-	inner *asynq.Client
+	inner driver.Client
 }
 
-// NewClient constructs a Client backed by Redis. 渡された RedisClientOpt は
-// asynqがそのまま使う。
-func NewClient(redisOpt asynq.RedisClientOpt) *Client {
-	return &Client{inner: asynq.NewClient(redisOpt)}
+// NewClient constructs a Client backed by the supplied driver.
+func NewClient(d driver.Driver) *Client {
+	return &Client{inner: d.Client()}
 }
 
-// EnqueueDeliver puts a deliver task on the queue. opts には asynq の通常の
-// オプション (MaxRetry, Timeout, ProcessIn 等) を渡せる。Queueは内部で固定。
-func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...asynq.Option) error {
-	task := NewDeliverTask(payload)
-	// 呼び出し側のオプションを優先しつつ、必ずQueueNameに入れる。
-	merged := append([]asynq.Option{asynq.Queue(QueueName)}, opts...)
-	if _, err := c.inner.Enqueue(task, merged...); err != nil {
-		return err
-	}
-	return nil
+// EnqueueDeliver puts a deliver task on the queue. opts override the
+// default queue selection if they include WithQueue, but normal
+// callers should pass payload-only and let the queue routing stay
+// fixed.
+func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...driver.EnqueueOption) error {
+	body := mustMarshal(payload)
+	merged := append([]driver.EnqueueOption{driver.WithQueue(QueueName)}, opts...)
+	return c.inner.Enqueue(context.Background(), TaskTypeDeliver, body, merged...)
 }
 
 // EnqueueExport puts an export task on the queue.
 func (c *Client) EnqueueExport(payload ExportPayload) error {
-	task := NewExportTask(payload)
-	_, err := c.inner.Enqueue(task, asynq.Queue(ExportQueueName))
-	return err
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(context.Background(), TaskTypeExport, body,
+		driver.WithQueue(ExportQueueName),
+	)
 }
 
 // EnqueueImport puts an import task on the queue.
 func (c *Client) EnqueueImport(payload ImportPayload) error {
-	task := NewImportTask(payload)
-	_, err := c.inner.Enqueue(task, asynq.Queue(ExportQueueName))
-	return err
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(context.Background(), TaskTypeImport, body,
+		driver.WithQueue(ExportQueueName),
+	)
 }
 
 // EnqueueImportCustomEmojis puts an admin emoji-zip import task on the
 // export queue. Misskey 本家も同じ "dbQueue" (低優先) に積んでいる。
 func (c *Client) EnqueueImportCustomEmojis(payload ImportCustomEmojisPayload) error {
-	task := NewImportCustomEmojisTask(payload)
-	_, err := c.inner.Enqueue(task, asynq.Queue(ExportQueueName))
-	return err
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(context.Background(), TaskTypeImportCustomEmojis, body,
+		driver.WithQueue(ExportQueueName),
+	)
 }
 
 // EnqueueWebPush puts a Web Push delivery task on the push queue.
 func (c *Client) EnqueueWebPush(ctx context.Context, payload WebPushPayload) error {
-	task := NewWebPushTask(payload)
-	_, err := c.inner.EnqueueContext(ctx, task, asynq.Queue(PushQueueName))
-	return err
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(ctx, TaskTypeWebPush, body,
+		driver.WithQueue(PushQueueName),
+	)
 }
 
-// EnqueueUserWebhook puts a user webhook delivery task on the webhook queue.
-// Retry policy: asynq のデフォルト (25 attempts, exponential backoff) を使う。
-// 4xx は processor 側で SkipRetry として扱うため実際のリトライ対象は 5xx と
-// ネットワークエラーに限られる。
+// EnqueueUserWebhook puts a user webhook delivery task on the webhook
+// queue. Retry policy: 4 attempts (4xx は processor 側で SkipRetry と
+// して扱うため実際のリトライ対象は 5xx とネットワークエラーに限られる)。
 func (c *Client) EnqueueUserWebhook(ctx context.Context, payload WebhookPayload) error {
-	task := NewUserWebhookTask(payload)
-	_, err := c.inner.EnqueueContext(ctx, task,
-		asynq.Queue(WebhookQueueName),
-		asynq.MaxRetry(4),
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(ctx, TaskTypeUserWebhook, body,
+		driver.WithQueue(WebhookQueueName),
+		driver.WithMaxRetry(4),
 	)
-	return err
 }
 
 // EnqueueSystemWebhook puts a system webhook delivery task on the webhook queue.
 func (c *Client) EnqueueSystemWebhook(ctx context.Context, payload WebhookPayload) error {
-	task := NewSystemWebhookTask(payload)
-	_, err := c.inner.EnqueueContext(ctx, task,
-		asynq.Queue(WebhookQueueName),
-		asynq.MaxRetry(4),
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(ctx, TaskTypeSystemWebhook, body,
+		driver.WithQueue(WebhookQueueName),
+		driver.WithMaxRetry(4),
 	)
-	return err
 }
 
 // EnqueueCleanRemoteNotes puts a remote notes cleaning task on the queue.
-// ペイロードなし (processor が meta から設定を読む)。重複排除のため UniqueFor を設定。
+// 重複排除のため UniqueFor を設定。
 func (c *Client) EnqueueCleanRemoteNotes() error {
-	task := asynq.NewTask(TaskTypeCleanRemoteNotes, nil)
-	_, err := c.inner.Enqueue(task,
-		asynq.Queue(QueueName),
-		asynq.MaxRetry(0),
-		asynq.Unique(6*time.Hour),
+	return c.inner.Enqueue(context.Background(), TaskTypeCleanRemoteNotes, nil,
+		driver.WithQueue(QueueName),
+		driver.WithMaxRetry(0),
+		driver.WithUnique(6*time.Hour),
 	)
-	return err
 }
 
 // EnqueueReactionFlush puts a reaction flush task on the queue.
 func (c *Client) EnqueueReactionFlush() error {
-	task := asynq.NewTask(TaskTypeReactionFlush, nil)
-	_, err := c.inner.Enqueue(task,
-		asynq.Queue(QueueName),
-		asynq.MaxRetry(0),
-		asynq.Unique(25*time.Second),
+	return c.inner.Enqueue(context.Background(), TaskTypeReactionFlush, nil,
+		driver.WithQueue(QueueName),
+		driver.WithMaxRetry(0),
+		driver.WithUnique(25*time.Second),
 	)
-	return err
 }
 
-// EnqueueDeleteAccount schedules a cascade deletion of the user's related
-// rows. Uniqueness over a 24h window prevents duplicate jobs if the admin
-// clicks delete multiple times while the previous run is still processing.
+// EnqueueDeleteAccount schedules a cascade deletion of the user's
+// related rows. Uniqueness over a 24h window prevents duplicate jobs
+// if the admin clicks delete multiple times while the previous run is
+// still processing.
 func (c *Client) EnqueueDeleteAccount(payload DeleteAccountPayload) error {
-	task := NewDeleteAccountTask(payload)
-	_, err := c.inner.Enqueue(task,
-		asynq.Queue(QueueName),
-		asynq.MaxRetry(2),
-		asynq.Unique(24*time.Hour),
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(context.Background(), TaskTypeDeleteAccount, body,
+		driver.WithQueue(QueueName),
+		driver.WithMaxRetry(2),
+		driver.WithUnique(24*time.Hour),
 	)
-	return err
 }
 
 // Close releases the underlying client connection.
-func (c *Client) Close() error {
-	return c.inner.Close()
+func (c *Client) Close() error { return c.inner.Close() }
+
+// Server is the worker side facade. It registers HandlerFuncs by
+// task type and starts/stops the worker loop.
+type Server struct {
+	inner driver.Server
 }
 
-// ServerConfig configures the worker process.
+// ServerConfig is kept for backward compatibility with callers that
+// pass a Concurrency value via internal/server. The driver itself
+// gets its own concrete config (e.g. asynqdriver.ServerConfig)
+// at construction time.
 type ServerConfig struct {
-	// Concurrency is the number of worker goroutines.
 	Concurrency int
 }
 
-// Server wraps asynq.Server and a ServeMux. ハンドラの登録を行ってから
-// Start するスタイル。
-type Server struct {
-	inner *asynq.Server
-	mux   *asynq.ServeMux
-}
-
-// NewServer constructs a worker server bound to the given Redis connection
-// options.
-func NewServer(redisOpt asynq.RedisClientOpt, cfg ServerConfig) *Server {
-	concurrency := cfg.Concurrency
-	if concurrency <= 0 {
-		concurrency = 16
-	}
-	inner := asynq.NewServer(redisOpt, asynq.Config{
-		Concurrency: concurrency,
-		// Queue priorities: deliver/push が同重み、export は低優先。
-		// map のキーが登録済み queue として扱われ、未登録の queue は
-		// processor を実行しないので新しい TaskType 追加時は忘れずに足す。
-		Queues: map[string]int{
-			QueueName:            1,
-			PushQueueName:        1,
-			ExportQueueName:      1,
-			WebhookQueueName:     1,
-			MaintenanceQueueName: 1,
-		},
-	})
-	return &Server{inner: inner, mux: asynq.NewServeMux()}
+// NewServer wraps the driver's Server. The driver must already be
+// configured with the desired concurrency / queue weights.
+func NewServer(d driver.Driver) *Server {
+	return &Server{inner: d.Server()}
 }
 
 // Handle registers a handler for the given task type.
-func (s *Server) Handle(taskType string, handler asynq.HandlerFunc) {
-	s.mux.HandleFunc(taskType, handler)
+func (s *Server) Handle(taskType string, handler driver.HandlerFunc) {
+	s.inner.Handle(taskType, handler)
 }
 
-// Start launches the worker in the background. asynq.Server.Start は
-// goroutineで起動するので呼び出し側はブロックされない。
-func (s *Server) Start() error {
-	return s.inner.Start(s.mux)
-}
+// Start launches the worker in the background.
+func (s *Server) Start() error { return s.inner.Start() }
 
 // Shutdown gracefully stops the worker, waiting for in-flight jobs to finish.
-func (s *Server) Shutdown() {
-	s.inner.Shutdown()
-}
+func (s *Server) Shutdown() { s.inner.Shutdown() }

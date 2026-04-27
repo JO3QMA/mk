@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -176,7 +176,7 @@ func TestWebhookProcessor_User_4xxSkipsRetry(t *testing.T) {
 	task := queue.NewUserWebhookTask(queue.WebhookPayload{WebhookID: "h1", EventType: "note", Body: []byte(`{}`)})
 	err := p.HandleUser(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 	assert.Equal(t, http.StatusBadRequest, repo.statusCalled["h1"])
 }
 
@@ -188,7 +188,7 @@ func TestWebhookProcessor_User_5xxRetries(t *testing.T) {
 	task := queue.NewUserWebhookTask(queue.WebhookPayload{WebhookID: "h1", EventType: "note", Body: []byte(`{}`)})
 	err := p.HandleUser(context.Background(), task)
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, asynq.SkipRetry)
+	assert.NotErrorIs(t, err, driver.SkipRetry)
 	assert.Equal(t, http.StatusInternalServerError, repo.statusCalled["h1"])
 }
 
@@ -200,7 +200,7 @@ func TestWebhookProcessor_User_NetworkError(t *testing.T) {
 	task := queue.NewUserWebhookTask(queue.WebhookPayload{WebhookID: "h1", EventType: "note", Body: []byte(`{}`)})
 	err := p.HandleUser(context.Background(), task)
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, asynq.SkipRetry)
+	assert.NotErrorIs(t, err, driver.SkipRetry)
 	// ネットワークエラーは status=0 で記録
 	assert.Equal(t, 0, repo.statusCalled["h1"])
 }
@@ -211,15 +211,15 @@ func TestWebhookProcessor_User_NotFoundSkipsRetry(t *testing.T) {
 	task := queue.NewUserWebhookTask(queue.WebhookPayload{WebhookID: "h1", EventType: "note", Body: []byte(`{}`)})
 	err := p.HandleUser(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestWebhookProcessor_User_InvalidPayloadSkipsRetry(t *testing.T) {
 	p, _, _ := newTestWebhookProcessor(t, &stubHTTPClient{}, nil, nil)
-	task := asynq.NewTask(queue.TaskTypeUserWebhook, []byte("not json"))
+	task := driver.RawTask{TypeName: queue.TaskTypeUserWebhook, Body: []byte("not json")}
 	err := p.HandleUser(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestWebhookProcessor_User_MissingWebhookID(t *testing.T) {
@@ -227,7 +227,7 @@ func TestWebhookProcessor_User_MissingWebhookID(t *testing.T) {
 	task := queue.NewUserWebhookTask(queue.WebhookPayload{})
 	err := p.HandleUser(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestWebhookProcessor_System_Success(t *testing.T) {
@@ -248,7 +248,7 @@ func TestWebhookProcessor_UserRepoMissing(t *testing.T) {
 	task := queue.NewUserWebhookTask(queue.WebhookPayload{WebhookID: "h1", EventType: "note", Body: []byte(`{}`)})
 	err := p.HandleUser(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestWebhookProcessor_SystemRepoMissing(t *testing.T) {
@@ -256,7 +256,7 @@ func TestWebhookProcessor_SystemRepoMissing(t *testing.T) {
 	task := queue.NewSystemWebhookTask(queue.WebhookPayload{WebhookID: "sh1", EventType: "userCreated", Body: []byte(`{}`)})
 	err := p.HandleSystem(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestNewWebhookProcessor_DefaultClient(t *testing.T) {

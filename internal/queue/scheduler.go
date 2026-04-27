@@ -3,30 +3,25 @@ package queue
 import (
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
-// MaintenanceQueueName is the asynq queue used for low-priority
-// maintenance jobs (chart tick / resync / clean etc). Kept separate
-// from the latency-sensitive deliver queue so a long aggregation does
-// not stall federation traffic.
+// MaintenanceQueueName is the queue used for low-priority maintenance
+// jobs (chart tick / resync / clean etc). Kept separate from the
+// latency-sensitive deliver queue so a long aggregation does not stall
+// federation traffic.
 const MaintenanceQueueName = "maintenance"
 
-// Scheduler wraps asynq.Scheduler. It registers cron-style entries
-// once at startup and continuously enqueues tasks per their schedule
-// onto the standard worker queues.
-//
-// asynq.Scheduler は redis 上のロックで重複起動を防ぐので、複数 process
-// で起動しても同時刻に同じジョブを 2 回 enqueue することはない。
+// Scheduler is the driver-neutral facade over driver.Scheduler. It
+// registers cron-style entries once at startup and continuously
+// enqueues tasks per their schedule onto the standard worker queues.
 type Scheduler struct {
-	inner *asynq.Scheduler
+	inner driver.Scheduler
 }
 
-// NewScheduler constructs a Scheduler backed by the given Redis.
-func NewScheduler(redisOpt asynq.RedisClientOpt) *Scheduler {
-	return &Scheduler{
-		inner: asynq.NewScheduler(redisOpt, &asynq.SchedulerOpts{}),
-	}
+// NewScheduler wraps the driver's scheduler.
+func NewScheduler(d driver.Driver) *Scheduler {
+	return &Scheduler{inner: d.Scheduler()}
 }
 
 // RegisterChartJobs registers the 3 chart-related cron jobs.
@@ -36,8 +31,8 @@ func NewScheduler(redisOpt asynq.RedisClientOpt) *Scheduler {
 //   - cleanCharts : 毎日 00:00 UTC
 //
 // 重複 enqueue 防止のため Unique TTL を cron 周期と合わせる。前回の
-// 同種ジョブが処理中のまま次回 cron が発火しても、TTL 内であれば asynq が
-// 重複 enqueue を弾く。
+// 同種ジョブが処理中のまま次回 cron が発火しても、TTL 内であれば
+// driver が重複 enqueue を弾く。
 func (s *Scheduler) RegisterChartJobs() error {
 	jobs := []struct {
 		cron      string
@@ -49,11 +44,10 @@ func (s *Scheduler) RegisterChartJobs() error {
 		{"0 0 * * *", TaskTypeChartClean, 24 * time.Hour},
 	}
 	for _, j := range jobs {
-		task := asynq.NewTask(j.taskType, nil)
-		if _, err := s.inner.Register(j.cron, task,
-			asynq.Queue(MaintenanceQueueName),
-			asynq.MaxRetry(0),
-			asynq.Unique(j.uniqueTTL),
+		if err := s.inner.Register(j.cron, j.taskType, nil,
+			driver.WithQueue(MaintenanceQueueName),
+			driver.WithMaxRetry(0),
+			driver.WithUnique(j.uniqueTTL),
 		); err != nil {
 			return err
 		}
@@ -65,34 +59,26 @@ func (s *Scheduler) RegisterChartJobs() error {
 // refresh cron (#393) at 03:00 UTC. The actual walk + fetch is implemented
 // by processors.InstanceRefreshProcessor.
 func (s *Scheduler) RegisterInstanceRefreshJob() error {
-	task := asynq.NewTask(TaskTypeInstanceRefresh, nil)
-	_, err := s.inner.Register("0 3 * * *", task,
-		asynq.Queue(MaintenanceQueueName),
-		asynq.MaxRetry(0),
-		asynq.Unique(24*time.Hour),
+	return s.inner.Register("0 3 * * *", TaskTypeInstanceRefresh, nil,
+		driver.WithQueue(MaintenanceQueueName),
+		driver.WithMaxRetry(0),
+		driver.WithUnique(24*time.Hour),
 	)
-	return err
 }
 
 // RegisterRetentionJob registers the daily retention aggregation cron
 // (#421) at 00:00 UTC. The actual computation is implemented by
 // processors.RetentionAggregateProcessor.
 func (s *Scheduler) RegisterRetentionJob() error {
-	task := asynq.NewTask(TaskTypeRetentionAggregate, nil)
-	_, err := s.inner.Register("0 0 * * *", task,
-		asynq.Queue(MaintenanceQueueName),
-		asynq.MaxRetry(0),
-		asynq.Unique(24*time.Hour),
+	return s.inner.Register("0 0 * * *", TaskTypeRetentionAggregate, nil,
+		driver.WithQueue(MaintenanceQueueName),
+		driver.WithMaxRetry(0),
+		driver.WithUnique(24*time.Hour),
 	)
-	return err
 }
 
 // Start launches the scheduler in the background. Returns immediately.
-func (s *Scheduler) Start() error {
-	return s.inner.Start()
-}
+func (s *Scheduler) Start() error { return s.inner.Start() }
 
-// Shutdown stops the scheduler and releases its Redis connection.
-func (s *Scheduler) Shutdown() {
-	s.inner.Shutdown()
-}
+// Shutdown stops the scheduler and releases its connection.
+func (s *Scheduler) Shutdown() { s.inner.Shutdown() }

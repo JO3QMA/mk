@@ -13,6 +13,8 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
+	"github.com/shiroha-a/mk/internal/queue/driver/asynqdriver"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +36,13 @@ func TestMain(m *testing.M) {
 
 func redisOpt() asynq.RedisClientOpt {
 	return asynq.RedisClientOpt{Addr: testRedis.Addr}
+}
+
+// newDriver constructs a fresh asynq-backed driver bound to the test
+// Redis. Each call returns an independent driver instance so tests can
+// Close() one without affecting the others.
+func newDriver() driver.Driver {
+	return asynqdriver.New(redisOpt(), asynqdriver.ServerConfig{Concurrency: 2})
 }
 
 func TestNewDeliverTask_RoundTrip(t *testing.T) {
@@ -60,7 +69,7 @@ func TestClient_EnqueueDeliver(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	payload := queue.DeliverPayload{
@@ -69,7 +78,7 @@ func TestClient_EnqueueDeliver(t *testing.T) {
 		KeyID:  "k1",
 		KeyPEM: "PEM",
 	}
-	require.NoError(t, c.EnqueueDeliver(payload, asynq.MaxRetry(3)))
+	require.NoError(t, c.EnqueueDeliver(payload, driver.WithMaxRetry(3)))
 
 	// inspector で実際にキューに入っていることを確認
 	insp := asynq.NewInspector(redisOpt())
@@ -89,7 +98,7 @@ func TestClient_EnqueueDeliver_ClosedClientFails(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	require.NoError(t, c.Close())
 
 	err := c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)})
@@ -100,7 +109,7 @@ func TestServer_HandleAndProcess(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	srv := queue.NewServer(redisOpt(), queue.ServerConfig{Concurrency: 2})
+	srv := queue.NewServer(newDriver())
 
 	var (
 		wg         sync.WaitGroup
@@ -109,7 +118,7 @@ func TestServer_HandleAndProcess(t *testing.T) {
 		mu         sync.Mutex
 	)
 	wg.Add(1)
-	srv.Handle(queue.TaskTypeDeliver, func(_ context.Context, t *asynq.Task) error {
+	srv.Handle(queue.TaskTypeDeliver, func(_ context.Context, t driver.Task) error {
 		defer wg.Done()
 		atomic.AddInt32(&received, 1)
 		p, err := queue.DecodeDeliverPayload(t.Payload())
@@ -124,7 +133,7 @@ func TestServer_HandleAndProcess(t *testing.T) {
 	require.NoError(t, srv.Start())
 	defer srv.Shutdown()
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	payload := queue.DeliverPayload{
@@ -147,12 +156,13 @@ func TestServer_HandleAndProcess(t *testing.T) {
 
 func TestServer_DefaultConcurrency(t *testing.T) {
 	// Concurrency<=0 のとき内部デフォルト16にフォールバックする経路を確認。
-	// asynq Server を作って即 Shutdown するだけで十分。
-	srv := queue.NewServer(redisOpt(), queue.ServerConfig{Concurrency: 0})
-	srv.Handle(queue.TaskTypeDeliver, func(_ context.Context, _ *asynq.Task) error {
+	// driver Server を作って即 Shutdown するだけで十分。
+	d := asynqdriver.New(redisOpt(), asynqdriver.ServerConfig{Concurrency: 0})
+	srv := queue.NewServer(d)
+	srv.Handle(queue.TaskTypeDeliver, func(_ context.Context, _ driver.Task) error {
 		return nil
 	})
-	// Startせずに Shutdownしても asynq は安全に no-op になる。
+	// Startせずに Shutdownしても driver は安全に no-op になる。
 	srv.Shutdown()
 }
 
@@ -227,7 +237,7 @@ func TestClient_EnqueueExport(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueExport(queue.ExportPayload{UserID: "u1", Type: "notes"}))
@@ -245,7 +255,7 @@ func TestClient_EnqueueImport(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueImport(queue.ImportPayload{UserID: "u1", Type: "following", FileID: "f1"}))
@@ -263,7 +273,7 @@ func TestClient_EnqueueImportCustomEmojis(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueImportCustomEmojis(queue.ImportCustomEmojisPayload{UserID: "admin1", FileID: "f1"}))
@@ -282,11 +292,11 @@ func TestInspector_QueuesAndInfo(t *testing.T) {
 	flushTestRedis(t)
 
 	// エンキューしてキューを作成
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p"}))
 
-	insp := queue.NewInspector(redisOpt())
+	insp := queue.NewInspector(newDriver())
 	defer func() { _ = insp.Close() }()
 
 	queues, err := insp.Queues()
@@ -303,7 +313,7 @@ func TestInspector_GetQueueInfo_NotFound(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	insp := queue.NewInspector(redisOpt())
+	insp := queue.NewInspector(newDriver())
 	defer func() { _ = insp.Close() }()
 
 	_, err := insp.GetQueueInfo("nonexistent")
@@ -314,13 +324,13 @@ func TestInspector_ListPendingTasksAndGetTaskInfo(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{
 		Inbox: "https://remote.example/inbox", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p",
 	}))
 
-	insp := queue.NewInspector(redisOpt())
+	insp := queue.NewInspector(newDriver())
 	defer func() { _ = insp.Close() }()
 
 	pending, err := insp.ListPendingTasks(queue.QueueName, 1, 30)
@@ -341,13 +351,13 @@ func TestInspector_ListActiveScheduledRetry_EmptyByDefault(t *testing.T) {
 	flushTestRedis(t)
 
 	// enqueue 後即 list。active/scheduled/retry は空でも err にならない。
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{
 		Inbox: "https://remote.example/inbox", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p",
 	}))
 
-	insp := queue.NewInspector(redisOpt())
+	insp := queue.NewInspector(newDriver())
 	defer func() { _ = insp.Close() }()
 
 	active, err := insp.ListActiveTasks(queue.QueueName, 1, 30)
@@ -367,11 +377,11 @@ func TestInspector_ListTasks_DefaultsClamped(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	insp := queue.NewInspector(redisOpt())
+	insp := queue.NewInspector(newDriver())
 	defer func() { _ = insp.Close() }()
 
 	// page/pageSize が 0 以下でも default に丸められてエラーにならない。
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{
 		Inbox: "https://remote.example/inbox", Body: []byte(`{}`), KeyID: "k", KeyPEM: "p",
@@ -390,7 +400,7 @@ func TestInspector_GetTaskInfo_NotFound(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	insp := queue.NewInspector(redisOpt())
+	insp := queue.NewInspector(newDriver())
 	defer func() { _ = insp.Close() }()
 
 	_, err := insp.GetTaskInfo(queue.QueueName, "nonexistent-id")
@@ -422,7 +432,7 @@ func TestClient_EnqueueWebPush(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueWebPush(context.Background(), queue.WebPushPayload{
@@ -442,7 +452,7 @@ func TestClient_EnqueueWebPush_ClosedClientFails(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	require.NoError(t, c.Close())
 	err := c.EnqueueWebPush(context.Background(), queue.WebPushPayload{UserID: "u1", Type: "notification"})
 	assert.Error(t, err)
@@ -490,7 +500,7 @@ func TestClient_EnqueueUserWebhook(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueUserWebhook(context.Background(), queue.WebhookPayload{
@@ -509,7 +519,7 @@ func TestClient_EnqueueUserWebhook(t *testing.T) {
 func TestClient_EnqueueUserWebhook_ClosedClientFails(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	require.NoError(t, c.Close())
 	err := c.EnqueueUserWebhook(context.Background(), queue.WebhookPayload{WebhookID: "h1"})
 	assert.Error(t, err)
@@ -519,7 +529,7 @@ func TestClient_EnqueueSystemWebhook(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueSystemWebhook(context.Background(), queue.WebhookPayload{
@@ -538,7 +548,7 @@ func TestClient_EnqueueSystemWebhook(t *testing.T) {
 func TestClient_EnqueueSystemWebhook_ClosedClientFails(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	require.NoError(t, c.Close())
 	err := c.EnqueueSystemWebhook(context.Background(), queue.WebhookPayload{WebhookID: "sh1"})
 	assert.Error(t, err)
@@ -548,7 +558,7 @@ func TestClient_EnqueueCleanRemoteNotes(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueCleanRemoteNotes())
@@ -558,7 +568,7 @@ func TestClient_EnqueueReactionFlush(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueReactionFlush())
@@ -568,7 +578,7 @@ func TestClient_EnqueueDeleteAccount(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
-	c := queue.NewClient(redisOpt())
+	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
 
 	require.NoError(t, c.EnqueueDeleteAccount(queue.DeleteAccountPayload{UserID: "u1"}))

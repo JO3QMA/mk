@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/repository"
 )
 
@@ -27,9 +27,9 @@ func NewCleanRemoteNotesProcessor(noteRepo repository.NoteRepository, cfg CleanR
 	return &CleanRemoteNotesProcessor{noteRepo: noteRepo, cfg: cfg}
 }
 
-// Handle implements asynq.Handler. バッチ削除を maxProcessingMinutes の範囲で
-// 繰り返し実行する。100件/バッチで DB 負荷を平準化。
-func (p *CleanRemoteNotesProcessor) Handle(ctx context.Context, _ *asynq.Task) error {
+// Handle implements driver.HandlerFunc. バッチ削除を maxProcessingMinutes の
+// 範囲で繰り返し実行する。100件/バッチで DB 負荷を平準化。
+func (p *CleanRemoteNotesProcessor) Handle(ctx context.Context, _ driver.Task) error {
 	if !p.cfg.Enabled {
 		slog.Debug("clean-remote-notes: disabled, skipping")
 		return nil

@@ -11,12 +11,12 @@ import (
 	"image/png"
 	"testing"
 
-	"github.com/hibiken/asynq"
 	"github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/shiroha-a/mk/internal/core/emojiimport"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -90,16 +90,16 @@ func TestImportCustomEmojisProcessor_NotConfigured(t *testing.T) {
 	task := queue.NewImportCustomEmojisTask(queue.ImportCustomEmojisPayload{UserID: "admin", FileID: "f1"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestImportCustomEmojisProcessor_BadPayload(t *testing.T) {
 	imp := newEmojiImporter(t, &fakeEmojiDriveReader{body: buildEmojiZip(t)})
 	p := processors.NewImportCustomEmojisProcessor(imp)
-	task := asynq.NewTask(queue.TaskTypeImportCustomEmojis, []byte("not json"))
+	task := driver.RawTask{TypeName: queue.TaskTypeImportCustomEmojis, Body: []byte("not json")}
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 }
 
 func TestImportCustomEmojisProcessor_MissingFields(t *testing.T) {
@@ -114,7 +114,7 @@ func TestImportCustomEmojisProcessor_MissingFields(t *testing.T) {
 		task := queue.NewImportCustomEmojisTask(c)
 		err := p.Handle(context.Background(), task)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, asynq.SkipRetry)
+		assert.ErrorIs(t, err, driver.SkipRetry)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestImportCustomEmojisProcessor_InvalidZip_SkipRetry(t *testing.T) {
 	task := queue.NewImportCustomEmojisTask(queue.ImportCustomEmojisPayload{UserID: "admin", FileID: "f1"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 	assert.ErrorIs(t, err, emojiimport.ErrInvalidZip)
 }
 
@@ -141,7 +141,7 @@ func TestImportCustomEmojisProcessor_UserNotFound_SkipRetry(t *testing.T) {
 	task := queue.NewImportCustomEmojisTask(queue.ImportCustomEmojisPayload{UserID: "ghost", FileID: "f1"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 	assert.ErrorIs(t, err, emojiimport.ErrUserNotFound)
 }
 
@@ -151,6 +151,6 @@ func TestImportCustomEmojisProcessor_DriveError_SkipRetry(t *testing.T) {
 	task := queue.NewImportCustomEmojisTask(queue.ImportCustomEmojisPayload{UserID: "admin", FileID: "f1"})
 	err := p.Handle(context.Background(), task)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, asynq.SkipRetry)
+	assert.ErrorIs(t, err, driver.SkipRetry)
 	assert.ErrorIs(t, err, emojiimport.ErrDriveFileNotFound)
 }
