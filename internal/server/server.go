@@ -184,13 +184,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.queueScheduler.Shutdown()
 	}
 	s.queueServer.Shutdown()
-	if err := s.queueClient.Close(); err != nil {
-		slog.Warn("queue client close failed", "err", err)
-	}
-	// queueDriver.Close は基底接続プールを解放する。mkq driver では
-	// Client.Close は no-op で、ここを呼ばないと *mkq.Client が抱える
-	// Redis pool が漏れる。asynq driver でも未参照コンポーネントの
-	// Close を一括処理する側に集約しておく。
+	// queueClient.Close を直接呼ばないこと。queueDriver.Close が
+	// Client / Inspector を含むサブコンポーネントの Close を一括処理
+	// するため、ここで呼ぶと asynq driver では同じ *asynq.Client を
+	// 二重 close して pool.ErrPoolClosed の warn log が毎回出る。
+	// mkq driver は Client.Close が no-op で driver 本体に集約する
+	// 仕様なので、driver.Close 一本に統一する方が両 driver で対称。
 	if s.queueDriver != nil {
 		if err := s.queueDriver.Close(); err != nil {
 			slog.Warn("queue driver close failed", "err", err)

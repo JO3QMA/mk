@@ -43,44 +43,73 @@ func (s *Server) Handle(taskType string, h driver.HandlerFunc) {
 
 // Start spawns one mkq.Worker per pre-defined queue. Returns once the
 // worker goroutines are up.
+//
+// Failure mode: if a later mkq.Process fails, the workers spawned so
+// far are stopped before bubbling up. Stop is invoked **without**
+// holding s.mu so the dispatch handler (which acquires s.mu) can
+// drain its in-flight job — see Shutdown for the same pattern.
 func (s *Server) Start() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.started {
+		s.mu.Unlock()
 		return errors.New("mkqdriver: Start called twice")
 	}
 	dispatch := s.dispatchHandler()
+
+	var startErr error
+	var startedQueue string
 	for _, q := range s.driver.queues {
 		w, err := mkq.Process(q, dispatch, mkq.WithConcurrency(s.concurrency))
 		if err != nil {
-			// Stop any workers we already started before bubbling up.
-			s.stopWorkersLocked()
-			return fmt.Errorf("mkqdriver: start worker for %q: %w", q.Name(), err)
+			startErr = fmt.Errorf("mkqdriver: start worker for %q: %w", q.Name(), err)
+			startedQueue = q.Name()
+			break
 		}
 		s.workers = append(s.workers, w)
 	}
+	if startErr != nil {
+		// Snapshot the workers we managed to start before failure,
+		// then release s.mu so the in-flight handlers can run their
+		// dispatch loop to completion while w.Stop drains them.
+		toStop := s.workers
+		s.workers = nil
+		s.started = false
+		s.mu.Unlock()
+		stopWorkers(toStop)
+		_ = startedQueue // referenced via wrapped error
+		return startErr
+	}
 	s.started = true
+	s.mu.Unlock()
 	return nil
 }
 
 // Shutdown stops every worker, waiting for in-flight jobs to finish.
 // Calls after the first are no-ops.
+//
+// We snapshot the worker list under s.mu and release the lock before
+// invoking blocking w.Stop calls. dispatchHandler acquires s.mu to
+// read the handler map, so holding it during Stop would deadlock:
+// Stop waits for in-flight handlers, the in-flight handler waits on
+// s.mu, neither makes progress.
 func (s *Server) Shutdown() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.stopWorkersLocked()
-}
-
-// stopWorkersLocked must be called with s.mu held.
-func (s *Server) stopWorkersLocked() {
-	for _, w := range s.workers {
-		// Stop が ctx を取るが、graceful shutdown は呼び出し側 (server.go)
-		// から signal で切り出す前提なので background ctx で待つ。
-		// in-flight ジョブが暴走したら mkq 側の lockDuration で自動回収。
-		_ = w.Stop(context.Background())
-	}
+	toStop := s.workers
 	s.workers = nil
 	s.started = false
+	s.mu.Unlock()
+	stopWorkers(toStop)
+}
+
+// stopWorkers calls Stop on each worker sequentially with a
+// background context. Must be called WITHOUT holding s.mu (Stop is
+// blocking and dispatchHandler also acquires s.mu).
+//
+// in-flight ジョブが暴走したら mkq 側の lockDuration で自動回収する。
+func stopWorkers(workers []*mkq.Worker) {
+	for _, w := range workers {
+		_ = w.Stop(context.Background())
+	}
 }
 
 // dispatchHandler returns the mkq handler that demuxes incoming jobs

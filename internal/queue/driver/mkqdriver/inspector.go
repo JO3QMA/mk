@@ -162,7 +162,15 @@ func (i *Inspector) list(qname string, bucket mkq.JobBucket, page, pageSize int)
 	}
 	out := make([]*driver.TaskSummary, 0, len(jobs))
 	for _, lj := range jobs {
-		out = append(out, jobToSummary(qname, string(bucket), lj.Job, lj.State))
+		// jobToSummary returns nil when lj.Job is nil. mkq's current
+		// ListJobs contract returns non-nil entries, but the contract
+		// is not strict — guard here so callers iterating *TaskSummary
+		// never see a nil entry that would NPE downstream.
+		summary := jobToSummary(qname, string(bucket), lj.Job, lj.State)
+		if summary == nil {
+			continue
+		}
+		out = append(out, summary)
 	}
 	return out, nil
 }
