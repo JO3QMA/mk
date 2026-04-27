@@ -1,0 +1,169 @@
+#━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Misskey-Go configuration (Docker)
+#
+# このファイルは `.config/docker.yml.example` です。
+# `make docker-build` / `docker compose up` 前に以下を実行して
+# docker.yml を作成してください:
+#   cp .config/docker.yml.example .config/docker.yml
+#
+# Dockerfile が build 時に `.config/docker.yml` を image 内の
+# `/app/.config/default.yml` にコピーします。
+#━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#   ┌─────┐
+#───┘ URL └─────────────────────────────────────────────────────
+
+# Final accessible URL seen by a user.
+url: https://example.tld/
+
+# ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE THE
+# URL SETTINGS AFTER THAT!
+
+#   ┌───────────────────────┐
+#───┘ Port and TLS settings └───────────────────────────────────
+
+port: 3000
+
+#   ┌──────────────────────────┐
+#───┘ PostgreSQL configuration └────────────────────────────────
+
+db:
+  host: db
+  port: 5432
+
+  # Database name
+  db: misskey
+
+  # Auth
+  user: example-misskey-user
+  pass: example-misskey-pass
+
+  # Whether disable Caching queries
+  #disableCache: true
+
+  # Extra Connection options
+  #extra:
+  #  ssl: true
+
+dbReplications: false
+
+# You can configure any number of read replicas here
+#dbSlaves:
+#  -
+#    host:
+#    port:
+#    db:
+#    user:
+#    pass:
+
+#   ┌─────────────────────┐
+#───┘ Redis configuration └─────────────────────────────────────
+
+redis:
+  host: redis
+  port: 6379
+  #family: 0  # 0=Both, 4=IPv4, 6=IPv6
+  #pass: example-pass
+  #prefix: example-prefix
+  #db: 1
+
+#redisForPubsub:
+#  host: redis
+#  port: 6379
+
+#redisForJobQueue:
+#  host: redis
+#  port: 6379
+
+#redisForTimelines:
+#  host: redis
+#  port: 6379
+
+#redisForReactions:
+#  host: redis
+#  port: 6379
+
+#   ┌───────────────────┐
+#───┘ Job queue driver └────────────────────────────────────────
+
+# mk-go specific: select the job queue runtime.
+#
+#   - 'asynq' (default): hibiken/asynq based runtime.
+#   - 'mkq':              shiroha-a/mkq based, BullMQ wire-compatible
+#                         (makes the admin queue dashboard render
+#                          correctly under the upstream Misskey TS
+#                          frontend).
+#
+#jobQueueDriver: asynq
+
+#   ┌───────────────────────────────┐
+#───┘ Fulltext search configuration └─────────────────────────────
+
+fulltextSearch:
+  # - sqlLike (default), sqlPgroonga, meilisearch
+  provider: sqlLike
+
+#meilisearch:
+#  host: meilisearch
+#  port: 7700
+#  apiKey: ''
+#  ssl: true
+#  index: ''
+#  scope: local
+
+#   ┌───────────────┐
+#───┘ ID generation └───────────────────────────────────────────
+
+# Available methods: aid, aidx, meid, ulid, objectid
+# ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE.
+
+id: 'aidx'
+
+#   ┌────────────────┐
+#───┘ Error tracking └──────────────────────────────────────────
+
+#sentryForBackend:
+#  options:
+#    dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0'
+
+#   ┌─────────────────────┐
+#───┘ Job queue settings └──────────────────────────────────────
+
+#deliverJobConcurrency: 128
+#inboxJobConcurrency: 16
+
+#deliverJobPerSec: 128
+#inboxJobPerSec: 32
+
+#deliverJobMaxAttempts: 12
+#inboxJobMaxAttempts: 8
+
+#   ┌─────────────────────┐
+#───┘ Other configuration └─────────────────────────────────────
+
+#disableHsts: true
+
+#outgoingAddressFamily: ipv4
+
+#proxy: http://127.0.0.1:3128
+
+proxyBypassHosts:
+  - api.deepl.com
+  - api-free.deepl.com
+  - www.recaptcha.net
+  - hcaptcha.com
+  - challenges.cloudflare.com
+
+#proxySmtp: http://127.0.0.1:3128
+
+#mediaProxy: https://example.com/proxy
+
+#allowedPrivateNetworks:
+#  - '127.0.0.1/32'
+
+#maxFileSize: 262144000
+
+#logging:
+#  sql:
+#    enableQueryParamLogging: false
+#    disableQueryTruncation: false

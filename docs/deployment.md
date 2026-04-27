@@ -8,6 +8,9 @@
 git clone --recursive https://github.com/shiroha-a/mk.git
 cd mk
 
+# 設定ファイルを example から複製 (初回のみ)
+cp .config/docker.yml.example .config/docker.yml
+
 # フロントエンドビルド (初回のみ、3-10分)
 make e2e-frontend-build
 
@@ -77,6 +80,10 @@ curl -i http://localhost/
 ## バイナリ直接実行
 
 ```bash
+# 設定ファイルを example から複製 (初回のみ)
+cp .config/default.yml.example .config/default.yml
+# 必要に応じて .config/default.yml を編集
+
 # ビルド
 make build
 

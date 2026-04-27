@@ -1,0 +1,292 @@
+#━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Misskey-Go configuration
+#
+# このファイルは `.config/default.yml.example` です。
+# 初回セットアップ時に以下を実行して default.yml を作成してください:
+#   cp .config/default.yml.example .config/default.yml
+#
+# Misskey 本家 .config/example.yml をベースに、Go 実装 (misskey-go)
+# 固有の項目を追記しています。
+#━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#   ┌──────────────────────────────┐
+#───┘ a boring but important thing └────────────────────────────
+
+# Misskey is licensed under the AGPLv3 license. mk-go also adheres
+# to this license. Please see the upstream Misskey example.yml for
+# the full explanation of license compliance options.
+#
+# If you have made changes to the source code (forks included)
+# and publish a Git repository, set the repository URL via the
+# admin settings page. Otherwise, uncomment the following line so
+# the source tarball is published from /api/meta:
+#
+# publishTarballInsteadOfProvideRepositoryUrl: true
+
+#   ┌────────────────────────┐
+#───┘ Initial Setup Password └─────────────────────────────────────────────────────
+
+# Password to initiate setting up admin account.
+# It will not be used after the initial setup is complete.
+#
+# Be sure to change this when you set up Misskey via the Internet.
+#
+# setupPassword: example_password_please_change_this_or_you_will_get_hacked
+
+#   ┌─────┐
+#───┘ URL └─────────────────────────────────────────────────────
+
+# Final accessible URL seen by a user.
+url: https://example.tld/
+
+# ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE THE
+# URL SETTINGS AFTER THAT!
+
+#   ┌───────────────────────┐
+#───┘ Port and TLS settings └───────────────────────────────────
+
+# The port that your Misskey-Go server should listen on.
+port: 3000
+
+# UNIX domain socket support (mk-go specific).
+# Setting `socket` makes the server listen on a UDS instead of a TCP
+# port. `chmodSocket` controls the permission of the socket file.
+# socket: /run/mk/misskey.sock
+# chmodSocket: '770'
+
+# Proxy trust settings.
+#
+# Specifies the IP addresses that the server treats as trusted
+# reverse proxies. mk-go reads this as a YAML array of CIDR ranges
+# (Misskey TS uses a polymorphic shape; mk-go simplifies it to an
+# array). Defaults to private + loopback ranges.
+#
+#trustProxy:
+#  - '127.0.0.1/32'
+#  - '::1/128'
+#  - '10.0.0.0/8'
+#  - '172.16.0.0/12'
+#  - '192.168.0.0/16'
+#  - 'fc00::/7'
+
+# Disable HSTS header (default: false).
+#disableHsts: true
+
+# Enable internal IP-based rate limiting (default: true).
+# Set to false if you handle rate limiting in the reverse proxy.
+#enableIpRateLimit: true
+
+#   ┌──────────────────────────┐
+#───┘ PostgreSQL configuration └────────────────────────────────
+
+db:
+  host: localhost
+  port: 5432
+
+  # Database name
+  db: misskey
+
+  # Auth
+  user: example-misskey-user
+  pass: example-misskey-pass
+
+  # Whether disable Caching queries
+  #disableCache: true
+
+  # Extra Connection options
+  #extra:
+  #  ssl: true
+
+  # Connection pool tuning (mk-go specific; Misskey TS does not expose these)
+  #maxOpenConns: 25       # default: GORM/database/sql の既定値
+  #maxIdleConns: 5
+  #connMaxLifetime: 1800  # 秒
+  #connMaxIdleTime: 300   # 秒
+
+dbReplications: false
+
+# You can configure any number of read replicas here
+#dbSlaves:
+#  -
+#    host:
+#    port:
+#    db:
+#    user:
+#    pass:
+
+#   ┌─────────────────────┐
+#───┘ Redis configuration └─────────────────────────────────────
+
+redis:
+  host: localhost
+  port: 6379
+  #family: 0  # 0=Both, 4=IPv4, 6=IPv6
+  #pass: example-pass
+  #prefix: example-prefix
+  #db: 1
+  #username: example-username
+  #poolSize: 32   # mk-go specific; nil keeps go-redis default (10*GOMAXPROCS)
+
+#redisForPubsub:
+#  host: localhost
+#  port: 6379
+
+#redisForJobQueue:
+#  host: localhost
+#  port: 6379
+
+#redisForTimelines:
+#  host: localhost
+#  port: 6379
+
+#redisForReactions:
+#  host: localhost
+#  port: 6379
+
+#   ┌───────────────────┐
+#───┘ Job queue driver └────────────────────────────────────────
+
+# mk-go specific: select the job queue runtime.
+#
+#   - 'asynq' (default): historical hibiken/asynq based runtime.
+#                        Battle-tested with mk-go since day one.
+#   - 'mkq':              shiroha-a/mkq based runtime. BullMQ wire-
+#                         compatible, makes the admin queue dashboard
+#                         render correctly under the upstream Misskey
+#                         TS frontend (which assumes BullMQ).
+#
+# Switching between drivers does not migrate in-flight jobs; flush
+# the queue or wait for completion before changing.
+#
+#jobQueueDriver: asynq
+
+#   ┌───────────────────────────────┐
+#───┘ Fulltext search configuration └─────────────────────────────
+
+# These are the setting items for the full-text search provider.
+fulltextSearch:
+  # - sqlLike (default): SQL ILIKE search (no extension required).
+  # - sqlPgroonga:       Use pgroonga PostgreSQL extension.
+  # - meilisearch:       Use Meilisearch (configure under `meilisearch:`).
+  provider: sqlLike
+
+# For Meilisearch settings.
+# If you select "meilisearch" for "fulltextSearch.provider", it must be set.
+#
+#meilisearch:
+#  host: localhost
+#  port: 7700
+#  apiKey: ''
+#  ssl: true
+#  index: ''
+#  scope: local
+
+#   ┌───────────────┐
+#───┘ ID generation └───────────────────────────────────────────
+
+# Available methods:
+# aid     ... Short, Millisecond accuracy
+# aidx    ... Millisecond accuracy
+# meid    ... Similar to ObjectID, Millisecond accuracy
+# ulid    ... Millisecond accuracy
+# objectid ... Backward compatibility
+
+# ONCE YOU HAVE STARTED THE INSTANCE, DO NOT CHANGE THE
+# ID SETTINGS AFTER THAT!
+
+id: 'aidx'
+
+#   ┌────────────────┐
+#───┘ Error tracking └──────────────────────────────────────────
+
+# Sentry is available for error tracking.
+#
+#sentryForBackend:
+#  enableNodeProfiling: true   # Node-only feature; ignored by Go backend
+#  options:
+#    dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0'
+#    environment: production
+#    sampleRate: 1.0
+#    tracesSampleRate: 0.0
+
+#sentryForFrontend:
+#  options:
+#    dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0'
+
+#   ┌─────────────────────┐
+#───┘ Job queue settings └──────────────────────────────────────
+
+# Total job-worker concurrency budget. Both the asynq and mkq
+# drivers honour this as a global pool size; the mkq driver
+# subdivides it across its 5 logical queues.
+#deliverJobConcurrency: 128
+#inboxJobConcurrency: 16
+#relationshipJobConcurrency: 16
+
+# Job rate limiter (asynq driver only — mkq schedules per-queue)
+#deliverJobPerSec: 128
+#inboxJobPerSec: 32
+#relationshipJobPerSec: 64
+
+# Job attempts
+#deliverJobMaxAttempts: 12
+#inboxJobMaxAttempts: 8
+
+#   ┌─────────────────────┐
+#───┘ Other configuration └─────────────────────────────────────
+
+# Local address used for outgoing requests
+#outgoingAddress: 127.0.0.1
+
+# IP address family used for outgoing request (ipv4, ipv6 or dual)
+#outgoingAddressFamily: ipv4
+
+# Proxy for HTTP/HTTPS
+#proxy: http://127.0.0.1:3128
+
+proxyBypassHosts:
+  - api.deepl.com
+  - api-free.deepl.com
+  - www.recaptcha.net
+  - hcaptcha.com
+  - challenges.cloudflare.com
+
+# Proxy for SMTP/SMTPS
+#proxySmtp: http://127.0.0.1:3128
+#proxySmtp: socks4://127.0.0.1:1080
+#proxySmtp: socks5://127.0.0.1:1080
+
+# Media Proxy URL (deliver a common cache between instances).
+#mediaProxy: https://example.com/proxy
+#mediaProxySecret: change-me
+
+# Movie thumbnail generation URL.
+#videoThumbnailGenerator: https://example.com
+
+# For security reasons, uploading attachments from the intranet is
+# prohibited; exceptions can be allowed here. Default is empty.
+#allowedPrivateNetworks:
+#  - '127.0.0.1/32'
+
+# Upload or download file size limits (bytes). Default 250 MB.
+#maxFileSize: 262144000
+
+# PID File of master process
+#pidFile: /tmp/misskey.pid
+
+# Log settings
+#logging:
+#  sql:
+#    enableQueryParamLogging: false
+#    disableQueryTruncation: false
+
+#   ┌──────────────────────────────────┐
+#───┘ Test / debug (mk-go specific) └───────────────────────────
+
+# Enable destructive test endpoints such as /api/reset-db.
+# **DO NOT enable in production** — used by e2e tests only.
+#testMode: false
+
+# Mount net/http/pprof handlers at /debug/pprof/* for local
+# profiling. **DO NOT enable in production**.
+#enablePprof: false
