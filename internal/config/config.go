@@ -407,6 +407,11 @@ func resolve(src *Source) (*Config, error) {
 
 	mediaProxySecret := deriveMediaProxySecret(src)
 
+	jobQueueDriver, err := resolveJobQueueDriver(src.JobQueueDriver)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		Version:     MisskeyVersion,
 		URL:         parsedURL.Scheme + "://" + parsedURL.Host,
@@ -459,7 +464,7 @@ func resolve(src *Source) (*Config, error) {
 		RelationshipJobPerSec:      src.RelationshipJobPerSec,
 		DeliverJobMaxAttempts:      src.DeliverJobMaxAttempts,
 		InboxJobMaxAttempts:        src.InboxJobMaxAttempts,
-		JobQueueDriver:             resolveJobQueueDriver(src.JobQueueDriver),
+		JobQueueDriver:             jobQueueDriver,
 
 		MediaProxy:                   mediaProxy,
 		ExternalMediaProxyEnabled:    externalMediaProxyEnabled,
@@ -595,21 +600,22 @@ func resolveRedisOrDefault(opts *RedisOptions, fallback RedisOptions, host strin
 	return resolveRedis(*opts, host)
 }
 
-// resolveJobQueueDriver normalises and validates the jobQueueDriver
-// config value. Empty / whitespace falls back to "asynq". Unknown
-// values fall back to "asynq" with a warning so a typo in the YAML
-// does not prevent boot.
-func resolveJobQueueDriver(raw string) string {
+// resolveJobQueueDriver normalises the jobQueueDriver config value.
+// Empty / whitespace falls back to "asynq". Unknown non-empty values
+// return an error: silently swapping a typo (e.g. "mkqq") for asynq
+// hides operator intent, especially given that internal/server/
+// queue_factory.go also rejects unknown driver names — surfacing the
+// failure here keeps the two layers consistent and the boot log
+// readable.
+func resolveJobQueueDriver(raw string) (string, error) {
 	v := strings.ToLower(strings.TrimSpace(raw))
 	switch v {
 	case "":
-		return "asynq"
+		return "asynq", nil
 	case "asynq", "mkq":
-		return v
+		return v, nil
 	default:
-		slog.Warn("config: unknown jobQueueDriver, falling back to asynq",
-			"value", raw)
-		return "asynq"
+		return "", fmt.Errorf("config: unknown jobQueueDriver %q (expected \"asynq\" or \"mkq\")", raw)
 	}
 }
 

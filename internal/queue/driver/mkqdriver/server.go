@@ -29,7 +29,9 @@ type Server struct {
 
 // Handle registers a handler for the given task type. Must be called
 // before Start; calls after Start panic — the worker dispatch loop
-// reads the registry without locking on the hot path.
+// is allowed to assume the registry is frozen and the dispatch
+// fast-path takes s.mu only to read s.handlers (no map mutations
+// after Start).
 func (s *Server) Handle(taskType string, h driver.HandlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

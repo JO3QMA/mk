@@ -187,6 +187,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.queueClient.Close(); err != nil {
 		slog.Warn("queue client close failed", "err", err)
 	}
+	// queueDriver.Close は基底接続プールを解放する。mkq driver では
+	// Client.Close は no-op で、ここを呼ばないと *mkq.Client が抱える
+	// Redis pool が漏れる。asynq driver でも未参照コンポーネントの
+	// Close を一括処理する側に集約しておく。
+	if s.queueDriver != nil {
+		if err := s.queueDriver.Close(); err != nil {
+			slog.Warn("queue driver close failed", "err", err)
+		}
+	}
 	err := s.echo.Shutdown(ctx)
 	// UDS listen していた場合、Shutdown で net.Listener.Close() は呼ばれる
 	// が、ソケットファイル自体は残るので明示的に unlink しておく。

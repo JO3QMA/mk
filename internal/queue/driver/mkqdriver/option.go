@@ -27,13 +27,19 @@ func toMkqAddOptions(o driver.EnqueueOptions, taskType string) []mkq.AddOption {
 		out = append(out, mkq.WithAttempts(o.MaxRetry+1))
 	}
 	if o.UniqueTTL > 0 {
-		// asynq.Unique は (queue, type, payload) を key にする。
-		// mkq の WithUnique は明示 ID 必須なので taskType を ID として
-		// 使う。これにより同一 (queue, taskType) の重複 enqueue が
-		// TTL 内で抑止される。payload を絡めない分 asynq よりやや広く
-		// 弾くが、mk-go で WithUnique を使う 4 ケース (cleanRemoteNotes /
-		// reactionFlush / deleteAccount / cron) はすべて payload なし
-		// または payload-uniform なので実害なし。
+		// **意図的な広めの dedup**: asynq.Unique の key は
+		// (queue, type, payload) なので「同じ payload の重複だけ」
+		// を弾く。mkq.WithUnique は明示 ID 必須なので taskType を
+		// 使い、(queue, taskType) で弾く。結果として mkq driver は
+		// payload が違っても同一 taskType を TTL 内で全弾きする —
+		// asynq driver より広い。
+		//
+		// mk-go で WithUnique を呼ぶ 4 経路 (cleanRemoteNotes /
+		// reactionFlush / deleteAccount / cron) はすべて payload
+		// なし or payload-uniform なので意味的差分はゼロ。将来
+		// payload-distinct な uniqueness を要求する経路を追加する
+		// 場合は taskType + hash(payload) のような key 構築に拡張
+		// する必要があり、ここを update する。
 		out = append(out, mkq.WithUnique("queue:"+taskType, o.UniqueTTL))
 	}
 	if o.ProcessIn > 0 {
