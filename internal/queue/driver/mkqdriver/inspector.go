@@ -80,6 +80,38 @@ func (i *Inspector) GetQueueInfo(qname string) (*driver.InspectorInfo, error) {
 	}, nil
 }
 
+// QueueMetrics returns BullMQ-compatible per-minute completed /
+// failed history for the named queue. mkq's Worker writes these on
+// finalise when WithJobMetrics is set (see Server.Start) — without
+// it the lists do not exist and mkq.GetMetrics returns a zero-valued
+// QueueMetrics, which we map to an empty driver.MetricsResult so
+// admin handlers can detect the disabled state.
+func (i *Inspector) QueueMetrics(qname, kind string) (*driver.MetricsResult, error) {
+	q := i.driver.queueFor(qname)
+	if q == nil {
+		return nil, fmt.Errorf("mkqdriver: unknown queue %q", qname)
+	}
+	var bucket mkq.JobBucket
+	switch kind {
+	case driver.MetricsKindCompleted:
+		bucket = mkq.JobBucketCompleted
+	case driver.MetricsKindFailed:
+		bucket = mkq.JobBucketFailed
+	default:
+		return nil, fmt.Errorf("mkqdriver: invalid metrics kind %q", kind)
+	}
+	// LRANGE 0 -1 で全 bucket。Misskey TS フロントは無条件に全件
+	// LRANGE してチャート全体を再描画するので、page 化は不要。
+	m, err := q.GetMetrics(inspectorCtx(), bucket, 0, -1)
+	if err != nil {
+		return nil, fmt.Errorf("mkqdriver: get metrics %q/%s: %w", qname, kind, err)
+	}
+	return &driver.MetricsResult{
+		Count: m.Meta.Count,
+		Data:  m.Data,
+	}, nil
+}
+
 // DeleteTask removes a job from the named queue regardless of its
 // current bucket. Wraps mkq.RemoveJob; missing jobs return an
 // ErrJobNotFound which we translate into a generic error to avoid

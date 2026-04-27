@@ -29,6 +29,10 @@ import (
 type Server struct {
 	driver      *Driver
 	concurrency int
+	// maxMetricsPoints は mkq.WithJobMetrics の引数。0 だと metrics
+	// 書き込みを無効化、正値で BullMQ-spec の metrics LIST に書き込み
+	// が走る。
+	maxMetricsPoints int
 
 	mu       sync.Mutex
 	handlers map[string]driver.HandlerFunc
@@ -95,7 +99,15 @@ func (s *Server) Start() error {
 	started := make([]*mkq.Worker, 0, len(names))
 	for _, name := range names {
 		q := s.driver.queues[name]
-		w, err := mkq.Process(q, dispatch, mkq.WithConcurrency(s.concurrency))
+		opts := []mkq.WorkerOption{mkq.WithConcurrency(s.concurrency)}
+		if s.maxMetricsPoints > 0 {
+			// BullMQ-compatible per-queue metrics opt-in。書き込み有効に
+			// すると finalize 時に Lua が `bull:<q>:metrics:*` を更新し、
+			// admin/job-queue のチャート (frontend が LRANGE する) や
+			// Misskey TS frontend の同 dashboard が使える。
+			opts = append(opts, mkq.WithJobMetrics(s.maxMetricsPoints))
+		}
+		w, err := mkq.Process(q, dispatch, opts...)
 		if err != nil {
 			stopWorkers(started)
 			s.mu.Lock()

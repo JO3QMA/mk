@@ -21,6 +21,7 @@ type stubQueueInspector struct {
 	scheduled     map[string][]*apiadmin.QueueTaskSummary
 	retry         map[string][]*apiadmin.QueueTaskSummary
 	task          map[string]*apiadmin.QueueTaskSummary
+	metrics       map[string]map[string]*apiadmin.QueueMetricsResult // [queue][kind]
 	deleted       []string
 	runCalls      []string
 	deleteAllHits []string
@@ -71,6 +72,14 @@ func (s *stubQueueInspector) GetTaskInfo(_, id string) (*apiadmin.QueueTaskSumma
 		return t, nil
 	}
 	return nil, errors.New("not found")
+}
+func (s *stubQueueInspector) QueueMetrics(q, kind string) (*apiadmin.QueueMetricsResult, error) {
+	if perKind, ok := s.metrics[q]; ok {
+		if m, ok := perKind[kind]; ok {
+			return m, nil
+		}
+	}
+	return &apiadmin.QueueMetricsResult{}, nil
 }
 
 // --- Queue --------------------------------------------------------------------
@@ -210,6 +219,12 @@ func TestQueueQueueStats_WithInspector(t *testing.T) {
 		info: map[string]*apiadmin.QueueInfoResult{
 			"deliver": {Queue: "deliver", Size: 5, Pending: 3, Active: 1, Completed: 10, Failed: 2, Scheduled: 0, Retry: 1},
 		},
+		metrics: map[string]map[string]*apiadmin.QueueMetricsResult{
+			"deliver": {
+				"completed": {Count: 10, Data: []int64{4, 3, 2, 1}},
+				"failed":    {Count: 2, Data: []int64{0, 1, 0, 1}},
+			},
+		},
 	}
 	h.SetQueueInspector(insp)
 	rec := doPost(h.QueueQueueStats, `{}`, adminUser)
@@ -225,6 +240,48 @@ func TestQueueQueueStats_WithInspector(t *testing.T) {
 	assert.EqualValues(t, 3, counts["waiting"])
 	// scheduled(0) + retry(1) がdelayedに集約される。
 	assert.EqualValues(t, 1, counts["delayed"])
+
+	// metrics shape: data 配列と count が driver から伝播。
+	metrics, ok := deliver["metrics"].(map[string]any)
+	require.True(t, ok)
+	completed, ok := metrics["completed"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 10, completed["count"])
+	completedData, ok := completed["data"].([]any)
+	require.True(t, ok)
+	assert.Len(t, completedData, 4)
+	assert.EqualValues(t, 4, completedData[0]) // newest-first
+}
+
+func TestQueueQueueStats_NoMetrics_FallsBackToCumulative(t *testing.T) {
+	// driver が QueueMetrics を実装していても Data 空 / Count 0 を
+	// 返すケース (mkq で WithJobMetrics 無効, asynq の time-series 無し)
+	// では info.Completed / info.Failed の累積値を count にフォール
+	// バックさせ、data は空配列で安定 shape を維持する。
+	h, _, _, _ := newTestHandler(t)
+	insp := &stubQueueInspector{
+		queues: []string{"deliver"},
+		info: map[string]*apiadmin.QueueInfoResult{
+			"deliver": {Queue: "deliver", Completed: 7, Failed: 3},
+		},
+		// metrics map を空にすると stub は zero-valued QueueMetricsResult を返す
+	}
+	h.SetQueueInspector(insp)
+	rec := doPost(h.QueueQueueStats, `{"queue":"deliver"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	metrics, ok := got["metrics"].(map[string]any)
+	require.True(t, ok)
+	completed, ok := metrics["completed"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 7, completed["count"])
+	completedData, ok := completed["data"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, completedData)
+	failed, ok := metrics["failed"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 3, failed["count"])
 }
 
 func TestQueueQueueStats_SingleQueueQuery(t *testing.T) {

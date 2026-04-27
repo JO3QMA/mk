@@ -93,6 +93,17 @@ func (a *queueInspectorAdapter) GetTaskInfo(qname, taskID string) (*apiadmin.Que
 	return taskSummaryToAdmin(t), nil
 }
 
+func (a *queueInspectorAdapter) QueueMetrics(qname, kind string) (*apiadmin.QueueMetricsResult, error) {
+	m, err := a.inner.QueueMetrics(qname, kind)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, nil
+	}
+	return &apiadmin.QueueMetricsResult{Count: m.Count, Data: m.Data}, nil
+}
+
 func taskSummariesToAdmin(rows []*queue.TaskSummary) []*apiadmin.QueueTaskSummary {
 	out := make([]*apiadmin.QueueTaskSummary, 0, len(rows))
 	for _, r := range rows {

@@ -11,6 +11,16 @@ type InspectorInfo = driver.InspectorInfo
 // TaskSummary aliases driver.TaskSummary for the same reason.
 type TaskSummary = driver.TaskSummary
 
+// MetricsResult aliases driver.MetricsResult.
+type MetricsResult = driver.MetricsResult
+
+// MetricsKindCompleted / MetricsKindFailed re-export driver constants
+// so callers can avoid importing the driver package directly.
+const (
+	MetricsKindCompleted = driver.MetricsKindCompleted
+	MetricsKindFailed    = driver.MetricsKindFailed
+)
+
 // Inspector is the driver-neutral facade over driver.Inspector.
 type Inspector struct {
 	inner driver.Inspector
@@ -71,4 +81,10 @@ func (i *Inspector) ListRetryTasks(qname string, page, pageSize int) ([]*TaskSum
 // GetTaskInfo returns full info for a single task.
 func (i *Inspector) GetTaskInfo(qname, taskID string) (*TaskSummary, error) {
 	return i.inner.GetTaskInfo(qname, taskID)
+}
+
+// QueueMetrics returns BullMQ-spec per-minute completed / failed
+// history for the given queue. See driver.Inspector.QueueMetrics.
+func (i *Inspector) QueueMetrics(qname, kind string) (*MetricsResult, error) {
+	return i.inner.QueueMetrics(qname, kind)
 }

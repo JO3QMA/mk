@@ -1,6 +1,8 @@
 package asynqdriver
 
 import (
+	"fmt"
+
 	"github.com/hibiken/asynq"
 
 	"github.com/shiroha-a/mk/internal/queue/driver"
@@ -51,6 +53,26 @@ func (i *Inspector) DeleteAllPendingTasks(qname string) (int, error) {
 // RunTask promotes a scheduled / retry task to run immediately.
 func (i *Inspector) RunTask(qname, taskID string) error {
 	return i.inner.RunTask(qname, taskID)
+}
+
+// QueueMetrics returns a stub MetricsResult: asynq does not expose
+// BullMQ-style per-minute time-series, so Data is left nil and Count
+// is filled from the cumulative bucket cardinality (Completed /
+// Failed). The admin chart degrades gracefully (empty plot) but the
+// numeric labels stay accurate.
+func (i *Inspector) QueueMetrics(qname, kind string) (*driver.MetricsResult, error) {
+	info, err := i.inner.GetQueueInfo(qname)
+	if err != nil {
+		return nil, err
+	}
+	switch kind {
+	case driver.MetricsKindCompleted:
+		return &driver.MetricsResult{Count: int64(info.Completed)}, nil
+	case driver.MetricsKindFailed:
+		return &driver.MetricsResult{Count: int64(info.Failed)}, nil
+	default:
+		return nil, fmt.Errorf("asynqdriver: invalid metrics kind %q", kind)
+	}
 }
 
 // Close releases the underlying inspector.

@@ -46,7 +46,24 @@ type Config struct {
 	// QueueNames overrides the set of queues to pre-define. Nil/empty
 	// keeps the package default (QueueNames).
 	QueueNames []string
+
+	// MaxMetricsDataPoints caps the number of one-minute buckets the
+	// per-queue completed / failed metrics list keeps. 0 disables the
+	// feature (matches mkq's default — no BullMQ metrics keys are
+	// written). The default applied when the field is left zero is
+	// `defaultMaxMetricsDataPoints` (= MetricsTime.ONE_WEEK in
+	// BullMQ TS, what Misskey TS upstream uses), so admin UIs see
+	// drop-in compatible chart data when sharing a Redis with a TS
+	// Misskey instance.
+	MaxMetricsDataPoints int
 }
+
+// defaultMaxMetricsDataPoints mirrors BullMQ TS's
+// `MetricsTime.ONE_WEEK = 10080` and is the value Misskey TS upstream
+// applies via baseWorkerOptions. Keeping the same retention here
+// preserves chart history across drop-in TS↔mk-go swaps that share
+// the Redis instance.
+const defaultMaxMetricsDataPoints = 10080
 
 // Driver bundles the Client / Server / Inspector / Scheduler that
 // share one *mkq.Client instance. New connects + script-loads against
@@ -169,10 +186,15 @@ func (d *Driver) Server() driver.Server {
 		if perQueue < 1 {
 			perQueue = 1
 		}
+		metricsPoints := d.cfg.MaxMetricsDataPoints
+		if metricsPoints == 0 {
+			metricsPoints = defaultMaxMetricsDataPoints
+		}
 		d.dServer = &Server{
-			driver:      d,
-			concurrency: perQueue,
-			handlers:    make(map[string]driver.HandlerFunc),
+			driver:           d,
+			concurrency:      perQueue,
+			maxMetricsPoints: metricsPoints,
+			handlers:         make(map[string]driver.HandlerFunc),
 		}
 	}
 	return d.dServer

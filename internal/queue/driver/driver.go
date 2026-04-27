@@ -39,6 +39,27 @@ type InspectorInfo struct {
 	Retry     int
 }
 
+// MetricsResult is the BullMQ-compatible per-minute history of
+// finalised jobs (completed or failed) for a queue. Drivers that do
+// not natively track time-series data return Data nil and only
+// populate Count from the cumulative bucket size — admin UIs that
+// only display the chart will simply render empty in that case.
+//
+// Data ordering follows BullMQ's `Queue.getMetrics` contract: newest
+// minute first. Entries are int64 to keep the field representable on
+// 32-bit platforms despite the underlying minute counts staying small.
+type MetricsResult struct {
+	Count int64
+	Data  []int64
+}
+
+// MetricsKindCompleted / MetricsKindFailed name the only kinds
+// Inspector.QueueMetrics accepts. Other strings return an error.
+const (
+	MetricsKindCompleted = "completed"
+	MetricsKindFailed    = "failed"
+)
+
 // TaskSummary is the driver-neutral projection of a task used by the
 // admin/queue list APIs.
 type TaskSummary struct {
@@ -73,6 +94,13 @@ type Inspector interface {
 	ListRetryTasks(qname string, page, pageSize int) ([]*TaskSummary, error)
 
 	GetTaskInfo(qname, taskID string) (*TaskSummary, error)
+
+	// QueueMetrics returns the BullMQ-spec per-minute history for the
+	// given queue. kind must be MetricsKindCompleted or
+	// MetricsKindFailed; other values return an error. Drivers without
+	// native time-series support return MetricsResult.Data == nil but
+	// still populate Count from the cumulative bucket cardinality.
+	QueueMetrics(qname, kind string) (*MetricsResult, error)
 
 	Close() error
 }
