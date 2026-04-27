@@ -11,15 +11,32 @@ import (
 // string. Custom emoji reactions are wrapped in colons (`:smile:` for local
 // or `:smile@remote.example.com:` for remote); raw unicode emoji like ❤️ is
 // returned with ok=false. Local reactions return host="".
+//
+// reaction_service.normalizeReaction が local 絵文字を `:name@.:` 形式 (host
+// を `.` で表す TS 互換 canonical 形式) で永続化するため、parser 側でも `@.`
+// を空 host に正規化する。これを忘れると DB lookup が host="." vs DB の
+// host IS NULL で空振りし、reactionEmojis が空のままになる。
 func parseCustomEmojiReaction(s string) (name, host string, ok bool) {
 	if len(s) < 3 || s[0] != ':' || s[len(s)-1] != ':' {
 		return "", "", false
 	}
 	inner := s[1 : len(s)-1]
 	if at := strings.Index(inner, "@"); at >= 0 {
-		return inner[:at], inner[at+1:], true
+		host = inner[at+1:]
+		if host == "." {
+			host = ""
+		}
+		return inner[:at], host, true
 	}
 	return inner, "", true
+}
+
+// emojiNameHost is a (name, host) pair preserving distinct hosts when a
+// single note's reactions contain the same emoji name from multiple
+// remote hosts. Keying solely by name would collapse such cases.
+type emojiNameHost struct {
+	name string
+	host string
 }
 
 // reactionEmojiKey は frontend の lookup (`reaction.substring(1, length-1)`)
@@ -84,14 +101,15 @@ func NewEmojiResolver(lookup EmojiLookup, notes []*model.Note) *EmojiResolver {
 		// note.Reactions の JSON キーから custom emoji を抽出して
 		// host 別 batch fetch のリストに追加する (#459)。reaction 元の
 		// host は note.UserHost と必ずしも一致しないため、reaction
-		// 文字列内の `@host` を信頼する。
-		for name, host := range collectReactionEmojiNames(n.Reactions) {
-			h := host
+		// 文字列内の `@host` を信頼する。同名の絵文字が複数 host から
+		// 届くケースを失わないよう slice で受け取る。
+		for _, pair := range collectReactionEmojiNames(n.Reactions) {
+			h := pair.host
 			var hostPtr *string
 			if h != "" {
 				hostPtr = &h
 			}
-			addNames([]string{name}, hostPtr)
+			addNames([]string{pair.name}, hostPtr)
 		}
 	}
 	// hostごとにbatch fetch
@@ -152,9 +170,9 @@ func (r *EmojiResolver) PopulateNoteReactionEmojis(note *model.Note, entity *Not
 		return
 	}
 	out := make(map[string]string)
-	for name, host := range collectReactionEmojiNames(note.Reactions) {
-		if url, ok := r.cache[name+"@"+host]; ok {
-			out[reactionEmojiKey(name, host)] = url
+	for _, pair := range collectReactionEmojiNames(note.Reactions) {
+		if url, ok := r.cache[pair.name+"@"+pair.host]; ok {
+			out[reactionEmojiKey(pair.name, pair.host)] = url
 		}
 	}
 	if len(out) > 0 {
@@ -163,11 +181,11 @@ func (r *EmojiResolver) PopulateNoteReactionEmojis(note *model.Note, entity *Not
 }
 
 // collectReactionEmojiNames decodes the per-note Reactions JSON map and
-// returns custom-emoji entries as a `name → host` map. Raw unicode
-// reactions are filtered out; duplicate (name, host) pairs collapse
-// into a single entry. The returned host is empty for local custom
-// emoji.
-func collectReactionEmojiNames(raw []byte) map[string]string {
+// returns custom-emoji entries as a slice of (name, host) pairs. Raw
+// unicode reactions are filtered out. Same-name-different-host pairs
+// are preserved as separate entries (a name-keyed map would collapse
+// them and lose remote emoji URLs).
+func collectReactionEmojiNames(raw []byte) []emojiNameHost {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -175,13 +193,13 @@ func collectReactionEmojiNames(raw []byte) map[string]string {
 	if err := json.Unmarshal(raw, &counts); err != nil {
 		return nil
 	}
-	out := map[string]string{}
+	var out []emojiNameHost
 	for reaction := range counts {
 		name, host, ok := parseCustomEmojiReaction(reaction)
 		if !ok {
 			continue
 		}
-		out[name] = host
+		out = append(out, emojiNameHost{name: name, host: host})
 	}
 	return out
 }
