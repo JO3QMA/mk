@@ -305,6 +305,73 @@ func TestUpdateMeta_SwPublickeyAliasIsTranslated(t *testing.T) {
 	assert.Equal(t, "KEY", *metaRepo.Meta.SwPublicKey)
 }
 
+// Service Worker を有効化する request で keys が空なら backend が
+// auto-generate して DB に persist すること (#492)。frontend からは
+// toggle ON + 空欄保存で完結し、リロードすると生成済の鍵が表示される
+// 想定。
+func TestUpdateMeta_VAPIDAutoGenerateOnEnable(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	rec := doPost(h.UpdateMeta, `{"enableServiceWorker":true,"swPublicKey":"","swPrivateKey":""}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, metaRepo.Meta.SwPublicKey)
+	require.NotNil(t, metaRepo.Meta.SwPrivateKey)
+	pub, priv := *metaRepo.Meta.SwPublicKey, *metaRepo.Meta.SwPrivateKey
+	assert.NotEmpty(t, pub)
+	assert.NotEmpty(t, priv)
+	// VAPID public key は base64url(65 byte) ≒ 87 文字。少なくとも
+	// 「なんらかの長い rand 値」になっていることを sanity check する。
+	assert.GreaterOrEqual(t, len(pub), 80)
+	assert.GreaterOrEqual(t, len(priv), 40)
+	assert.NotEqual(t, pub, priv)
+}
+
+// 既に運用者が外部生成した鍵を持っている場合は触らないこと
+// (上書きすると push subscription が無効化されるため)。
+func TestUpdateMeta_VAPIDDoesNotOverwriteExistingKeys(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	existingPub := "EXISTING_PUB"
+	existingPriv := "EXISTING_PRIV"
+	metaRepo.Meta.EnableServiceWorker = true
+	metaRepo.Meta.SwPublicKey = &existingPub
+	metaRepo.Meta.SwPrivateKey = &existingPriv
+
+	rec := doPost(h.UpdateMeta, `{"enableServiceWorker":true}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, metaRepo.Meta.SwPublicKey)
+	assert.Equal(t, existingPub, *metaRepo.Meta.SwPublicKey)
+	assert.Equal(t, existingPriv, *metaRepo.Meta.SwPrivateKey)
+}
+
+// 明示的な JSON null で既存鍵をクリアしつつ enable=true を送ってきた
+// 場合も auto-generate を発火させる (= null も "" と同じく empty 扱い)。
+func TestUpdateMeta_VAPIDAutoGenerateOnNullClear(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	existingPub := "old_pub"
+	existingPriv := "old_priv"
+	metaRepo.Meta.EnableServiceWorker = true
+	metaRepo.Meta.SwPublicKey = &existingPub
+	metaRepo.Meta.SwPrivateKey = &existingPriv
+
+	rec := doPost(h.UpdateMeta, `{"enableServiceWorker":true,"swPublicKey":null,"swPrivateKey":null}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, metaRepo.Meta.SwPublicKey)
+	require.NotNil(t, metaRepo.Meta.SwPrivateKey)
+	pub, priv := *metaRepo.Meta.SwPublicKey, *metaRepo.Meta.SwPrivateKey
+	assert.NotEqual(t, "old_pub", pub)
+	assert.NotEqual(t, "old_priv", priv)
+	assert.GreaterOrEqual(t, len(pub), 80)
+}
+
+// SW 無効のまま (enable=false) で keys が空でも何も生成しない
+// (= 不要な鍵をぶら下げない)。
+func TestUpdateMeta_VAPIDSkipWhenSWDisabled(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	rec := doPost(h.UpdateMeta, `{"enableServiceWorker":false}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Nil(t, metaRepo.Meta.SwPublicKey)
+	assert.Nil(t, metaRepo.Meta.SwPrivateKey)
+}
+
 func TestAccountsCreate_EmptyUsername(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	rec := doPost(h.AccountsCreate, `{"username":"","password":"pass"}`, nil)

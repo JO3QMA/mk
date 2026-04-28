@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
+	"github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -796,10 +797,83 @@ func (h *Handler) UpdateMeta(c echo.Context) error {
 	// alias が frontend から来たら DB カラム名に translate して渡す。
 	renameUpdateMetaFields(fields)
 
+	// VAPID 鍵 auto-generate (#492): Service Worker 有効化時に
+	// swPublicKey / swPrivateKey が両方空のとき backend で生成して詰める。
+	// 既存鍵 (片方だけ欠けの中途状態 含む) は触らないことで、運用者が
+	// 外部生成した鍵を保持できるようにする。
+	if err := h.maybeAutoGenerateVAPID(fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
 	if err := h.metaRepo.Update(fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// maybeAutoGenerateVAPID inspects the update-meta field map and, when
+// Service Worker is being enabled (or is already enabled) and both the
+// public and private VAPID keys would end up empty, generates a fresh
+// key pair and injects it into fields. Skips key generation when:
+//   - SW is being disabled or is already disabled (no-op)
+//   - at least one key is already set (respects operator-supplied keys)
+func (h *Handler) maybeAutoGenerateVAPID(fields map[string]any) error {
+	current, err := h.metaRepo.Fetch()
+	if err != nil {
+		return err
+	}
+	enable := metaBoolAfterUpdate(fields, "enableServiceWorker", current.EnableServiceWorker)
+	if !enable {
+		return nil
+	}
+	pub := metaStringAfterUpdate(fields, "swPublicKey", strDeref(current.SwPublicKey))
+	priv := metaStringAfterUpdate(fields, "swPrivateKey", strDeref(current.SwPrivateKey))
+	if pub != "" || priv != "" {
+		return nil
+	}
+	newPub, newPriv, err := webpush.GenerateVAPIDKeys()
+	if err != nil {
+		return err
+	}
+	fields["swPublicKey"] = newPub
+	fields["swPrivateKey"] = newPriv
+	return nil
+}
+
+// metaBoolAfterUpdate returns the effective bool value of key after the
+// update would be applied — incoming value if present and bool-typed,
+// otherwise the current DB value.
+func metaBoolAfterUpdate(fields map[string]any, key string, current bool) bool {
+	if v, ok := fields[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return current
+}
+
+// metaStringAfterUpdate returns the effective string value of key after the
+// update would be applied. Empty string, JSON null, and absence are all
+// treated as "empty" so that an admin clearing a key with null still
+// triggers the auto-generate path.
+func metaStringAfterUpdate(fields map[string]any, key, current string) string {
+	if v, ok := fields[key]; ok {
+		switch s := v.(type) {
+		case string:
+			return s
+		case nil:
+			// JSON null は明示的に空にしたい意図と解釈する
+			return ""
+		}
+	}
+	return current
+}
+
+func strDeref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // updateMetaFieldAliases maps frontend API names to DB column names for
