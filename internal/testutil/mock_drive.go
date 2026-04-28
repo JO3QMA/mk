@@ -286,22 +286,28 @@ func (m *MockDriveFolderRepository) HasChildren(folderID string) (bool, error) {
 	return false, nil
 }
 
-func (m *MockDriveFileRepository) ListForAdmin(origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
+func (m *MockDriveFileRepository) ListForAdmin(userID, origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
 	rows := make([]*model.DriveFile, 0, len(m.Files))
 	for _, f := range m.Files {
-		switch origin {
-		case "local":
-			if f.UserHost != nil {
+		if userID != "" {
+			if f.UserID == nil || *f.UserID != userID {
 				continue
 			}
-		case "remote":
-			if f.UserHost == nil {
-				continue
+		} else {
+			switch origin {
+			case "local":
+				if f.UserHost != nil {
+					continue
+				}
+			case "remote":
+				if f.UserHost == nil {
+					continue
+				}
 			}
-		}
-		if host != "" {
-			if f.UserHost == nil || *f.UserHost != host {
-				continue
+			if host != "" {
+				if f.UserHost == nil || *f.UserHost != host {
+					continue
+				}
 			}
 		}
 		if fileType != "" && !strings.HasPrefix(f.Type, fileType) {

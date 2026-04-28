@@ -191,7 +191,7 @@ func TestErrorPaths_CancelledContext(t *testing.T) {
 	assert.Error(t, err)
 	_, err = dfr.UsageByUser("x")
 	assert.Error(t, err)
-	_, err = dfr.ListForAdmin("local", "", "", "", "", 10)
+	_, err = dfr.ListForAdmin("", "local", "", "", "", "", 10)
 	assert.Error(t, err)
 
 	// drive_folder

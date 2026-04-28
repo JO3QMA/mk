@@ -106,12 +106,15 @@ func TestDriveFileRepository_ListForAdmin_Branches(t *testing.T) {
 	r := NewDriveFileRepository(testDB)
 
 	// limit default + remote + host指定 + fileType + since/until
-	_, err := r.ListForAdmin("remote", "host.example", "image/", "since_x", "until_x", 0)
+	_, err := r.ListForAdmin("", "remote", "host.example", "image/", "since_x", "until_x", 0)
 	require.NoError(t, err)
-	_, err = r.ListForAdmin("remote", "host.example", "image/", "since_x", "until_x", 999)
+	_, err = r.ListForAdmin("", "remote", "host.example", "image/", "since_x", "until_x", 999)
 	require.NoError(t, err)
 	// origin="" (no userHost filter)
-	_, err = r.ListForAdmin("", "", "", "", "", 10)
+	_, err = r.ListForAdmin("", "", "", "", "", "", 10)
+	require.NoError(t, err)
+	// userId 指定 (origin / host が無視されるルートを通す)
+	_, err = r.ListForAdmin("nonexistent_user", "remote", "host.example", "", "", "", 10)
 	require.NoError(t, err)
 }
 

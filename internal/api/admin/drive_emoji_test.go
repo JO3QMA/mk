@@ -42,6 +42,33 @@ func TestDriveFiles_FiltersByOrigin(t *testing.T) {
 	assert.Equal(t, "d2", rows[0]["id"])
 }
 
+func TestDriveFiles_FiltersByUserID(t *testing.T) {
+	// admin/user/<id> のドライブタブは userId だけを送ってくる (#471)。
+	// upstream は userId 指定時に origin / hostname を読まないので、それに
+	// 合わせて他ユーザーの remote ファイルが混ざらないことを確認する。
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockDriveFileRepository()
+	target := "u_target"
+	other := "u_other"
+	otherHost := "remote.example"
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "d_t1", UserID: &target, Type: "image/png"}))
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "d_t2", UserID: &target, UserHost: &otherHost, Type: "image/jpeg"}))
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "d_o1", UserID: &other, UserHost: &otherHost, Type: "image/png"}))
+	h.SetDriveFileRepo(repo)
+
+	rec := doPost(h.DriveFiles, `{"userId":"u_target","limit":10}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	gotIDs := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		gotIDs[r["id"].(string)] = true
+	}
+	assert.True(t, gotIDs["d_t1"])
+	assert.True(t, gotIDs["d_t2"])
+	assert.False(t, gotIDs["d_o1"])
+}
+
 func TestDriveFiles_FiltersByTypePrefix(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	repo := testutil.NewMockDriveFileRepository()

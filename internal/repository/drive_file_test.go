@@ -149,7 +149,7 @@ func TestDriveFileRepository_ListForAdmin(t *testing.T) {
 	defer cleanupDriveFile(t, videoFile.ID)
 
 	// origin = remote → only the remote-host file
-	rows, err := repo.ListForAdmin("remote", "", "", "", "", 10)
+	rows, err := repo.ListForAdmin("", "remote", "", "", "", "", 10)
 	require.NoError(t, err)
 	ids := make(map[string]bool)
 	for _, r := range rows {
@@ -159,7 +159,7 @@ func TestDriveFileRepository_ListForAdmin(t *testing.T) {
 	assert.False(t, ids[localFile.ID])
 
 	// type = image/ prefix
-	rows, err = repo.ListForAdmin("", "", "image/", "", "", 10)
+	rows, err = repo.ListForAdmin("", "", "", "image/", "", "", 10)
 	require.NoError(t, err)
 	ids = make(map[string]bool)
 	for _, r := range rows {
@@ -169,7 +169,7 @@ func TestDriveFileRepository_ListForAdmin(t *testing.T) {
 	assert.False(t, ids[videoFile.ID])
 
 	// host exact match
-	rows, err = repo.ListForAdmin("", remoteHost, "", "", "", 10)
+	rows, err = repo.ListForAdmin("", "", remoteHost, "", "", "", 10)
 	require.NoError(t, err)
 	found := false
 	for _, r := range rows {
@@ -179,10 +179,23 @@ func TestDriveFileRepository_ListForAdmin(t *testing.T) {
 	}
 	assert.True(t, found)
 
-	// default limit / clamp
-	_, err = repo.ListForAdmin("", "", "", "", "", 0)
+	// userId narrows to that user's files only and ignores origin/host (#471)
+	otherUser := insertTestUser(t, "u_adm_lst2", "adlf2")
+	defer cleanupUser(t, otherUser.ID)
+	otherFile := newTestDriveFile("adl_other", otherUser.ID, "md5other", nil)
+	require.NoError(t, repo.Create(otherFile))
+	defer cleanupDriveFile(t, otherFile.ID)
+	rows, err = repo.ListForAdmin(user.ID, "remote", "", "", "", "", 10)
 	require.NoError(t, err)
-	_, err = repo.ListForAdmin("", "", "", "", "", 1000)
+	for _, r := range rows {
+		require.NotNil(t, r.UserID)
+		assert.Equal(t, user.ID, *r.UserID)
+	}
+
+	// default limit / clamp
+	_, err = repo.ListForAdmin("", "", "", "", "", "", 0)
+	require.NoError(t, err)
+	_, err = repo.ListForAdmin("", "", "", "", "", "", 1000)
 	require.NoError(t, err)
 }
 
