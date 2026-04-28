@@ -486,4 +486,11 @@ func TestShow_BatchFetchesNotifierAndNote(t *testing.T) {
 		"note の per-row FindByIDWithRelations は呼ばれてはならない")
 	assert.Equal(t, 1, noteRepo.findManyByIDsWithUserCalls,
 		"note は batch FindManyByIDsWithUser を 1 回だけ呼ぶこと")
+
+	// Devin #516 INFO-3: batch fetch しても resolved user / note が response
+	// に正しく入ることを self-contained で担保する。
+	for i, item := range resp {
+		assert.NotNilf(t, item["user"], "item[%d].user must be present", i)
+		assert.NotNilf(t, item["note"], "item[%d].note must be present", i)
+	}
 }
