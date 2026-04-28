@@ -88,6 +88,34 @@ func TestProbeImageDimensions_NilClientReturnsFalse(t *testing.T) {
 	assert.Equal(t, 0, h)
 }
 
+func TestProbeImageDimensions_Success(t *testing.T) {
+	body := renderTestPNG(t, 800, 600)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	w, h, ok := probeImageDimensions(server.Client(), server.URL+"/cat.png")
+	require.True(t, ok)
+	assert.Equal(t, 800, w)
+	assert.Equal(t, 600, h)
+}
+
+func TestProbeImageDimensions_FailureReturnsFalse(t *testing.T) {
+	// HTTP error 経路 → fetchImageDimensions が err を返し probe は
+	// WARN ログを残して (0, 0, false) を返す。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	w, h, ok := probeImageDimensions(server.Client(), server.URL+"/x.png")
+	assert.False(t, ok)
+	assert.Equal(t, 0, w)
+	assert.Equal(t, 0, h)
+}
+
 func TestFetchImageDimensions_NilClientUsesDefault(t *testing.T) {
 	body := renderTestPNG(t, 10, 20)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

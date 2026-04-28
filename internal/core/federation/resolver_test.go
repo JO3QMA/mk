@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -2184,6 +2185,21 @@ func TestUpsertAttachments(t *testing.T) {
 		)
 		// Create が失敗した attachment は ID リストに含まれない
 		assert.Empty(t, ids)
+	})
+
+	// SetImageProbeClient setter が無 panic で呼べることを確認 (SSRF
+	// 対策 #464)。実際の probe 経路は image_dimensions_test.go で
+	// カバー済。
+	t.Run("SetImageProbeClient does not panic", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		client := &http.Client{Timeout: 1 * time.Second}
+		r.SetImageProbeClient(client)
+		// nil 渡しでも panic しない (= invalidate 相当)
+		r.SetImageProbeClient(nil)
 	})
 
 	// #460/#461: width / height / icon.url / _misskey_blurhash が AP

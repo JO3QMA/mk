@@ -106,18 +106,19 @@ func (p *NotePublisher) packNote(n *model.Note, author *model.User) []byte {
 
 	pn := entity.PackNoteWithInstance(&noteForPack, p.idGen, p.instanceLookup, p.emojiLookup)
 	// REST 経路と同じ後段 resolver を通して Files / Channel を埋める。
-	// 未配線なら no-op (従来挙動)。viewer 引数は streaming fanout の
-	// 性質上「自分宛て」が複数の subscriber に展開されるため特定不能で、
-	// MyReaction の正確な解決は subscriber 側の per-connection state
-	// に任せて、ResolveFiles のみ呼ぶ。
+	// viewer 引数は streaming fanout の性質上「自分宛て」が複数 subscriber
+	// に展開されるため特定不能。viewer=nil で Apply を呼ぶと
+	// MyReaction はスキップされ Files / Channel (= viewer-independent な
+	// fields) のみ解決される。MyReaction は subscriber 側の
+	// per-connection state に任せる。
 	//
-	// ResolveFiles は []NoteEntity (値型 slice) を受け取り内部で
-	// `&notes[i]` 経由で要素を mutate するので、いったん 1-element の
-	// slice にしてから書き戻さないと Files が pn に反映されない (Go の
-	// slice literal がコピーを作るため pn 自体は更新されない)。
+	// Apply は []NoteEntity (値型 slice) を受け取り内部で `&notes[i]`
+	// 経由で要素を mutate するので、いったん 1-element slice にして
+	// から書き戻さないと反映されない (Go の slice literal がコピーを
+	// 作るため pn 自体は更新されない)。
 	if p.fieldResolver != nil {
 		batch := []entity.NoteEntity{pn}
-		p.fieldResolver.ResolveFiles(batch)
+		p.fieldResolver.Apply(batch, nil)
 		pn = batch[0]
 	}
 

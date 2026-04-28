@@ -116,8 +116,6 @@ func isImageMime(t string) bool {
 	return t[:6] == "image/"
 }
 
-// (resolveThumbnailURL / isImageMime are defined above.)
-
 // PackDriveFileWithRelations is PackDriveFile + optional folder/user
 // embedding. The caller is responsible for fetching the related rows (so
 // batch/cached access is possible). Pass nil for fields you do not want to
