@@ -188,6 +188,27 @@ func TestShowUsers_WithFilter(t *testing.T) {
 	assert.Len(t, resp, 1)
 }
 
+// frontend (instance-info.vue) は admin/show-users に hostname を渡して
+// 「特定リモートサーバーに属するユーザー」だけを取りに来る (#469)。
+// 過去はこのフィールドが handler の req struct に無く、無視されて全
+// remote が返るバグがあった。回帰防止に hostname narrowing を検証する。
+func TestShowUsers_FilterByHostname(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	hostA := "a.example"
+	hostB := "b.example"
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice", Host: &hostA}
+	userRepo.Users["u2"] = &model.User{ID: "u2", Username: "bob", Host: &hostB}
+	userRepo.Users["u3"] = &model.User{ID: "u3", Username: "local"}
+
+	rec := doPost(h.ShowUsers, `{"origin":"remote","hostname":"a.example","limit":10}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "alice", resp[0]["username"])
+}
+
 // --- SuspendUser / UnsuspendUser ---
 
 func TestSuspendUser_Success(t *testing.T) {
