@@ -389,12 +389,14 @@ func TestCreate_RenoteTargetInvisible(t *testing.T) {
 	assert.Equal(t, apierr.UUIDCannotRenoteDueToVisibility, errObj["id"])
 }
 
-// TestShow_NoQueryServiceRejects は queryService が wire されていない
-// (= production の wiring が壊れた) 状態で Show が visibility check を
-// バイパスせず NO_SUCH_NOTE を返すことを保証する (#445)。過去はここで
-// fallback 経路が走り followers / specified visibility のノートが
-// 任意の閲覧者に漏洩する security regression risk があった。
+// TestShow_NoQueryServiceRejects verifies Show returns NO_SUCH_NOTE when
+// queryService is not wired, ensuring the visibility check is never
+// bypassed (#445).
 func TestShow_NoQueryServiceRejects(t *testing.T) {
+	// 過去はここで fallback 経路が走り、followers / specified visibility の
+	// ノートが任意の閲覧者に漏洩する security regression risk があった。
+	// fallback を消したので、queryService nil なら public note でも
+	// NO_SUCH_NOTE で蹴られる。production でこの経路を踏むことは無い。
 	noteRepo := testutil.NewMockNoteRepository()
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
@@ -405,9 +407,6 @@ func TestShow_NoQueryServiceRejects(t *testing.T) {
 	seedPublicNote(noteRepo, "n1")
 	c, rec := newJSONRequest(t, "/api/notes/show", `{"noteId":"n1"}`)
 	require.NoError(t, h.Show(c))
-	// fallback を消したので、queryService nil なら public note でも
-	// NO_SUCH_NOTE で蹴られる。production でこの経路を踏むことは無い
-	// が、wiring 不整合に対する防御として安全側に倒す。
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Contains(t, rec.Body.String(), "NO_SUCH_NOTE")
 }
