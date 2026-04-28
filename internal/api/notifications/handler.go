@@ -116,9 +116,16 @@ func (h *Handler) Show(c echo.Context) error {
 		excludeSet[t] = true
 	}
 
-	// 1 ページ分の通知を filter してから entity.PackNotifications に渡し、
-	// InstanceResolver / EmojiResolver を 1 回だけ構築する (#428 N+1 解消)。
-	items := make([]entity.NotificationItem, 0, len(rows))
+	// 2-pass で組み立てる:
+	//   pass 1: cursor / type / followReq filter を通して残った rows と、
+	//           その notifierID / noteID を集約
+	//   pass 2: userRepo.FindManyByIDs / noteRepo.FindManyByIDsWithUser で
+	//           まとめて引き、map で O(1) 解決して PackNotifications に渡す
+	// (旧実装は 1 通知ごとに FindByID + FindByIDWithRelations を呼んで最大
+	// 600 round-trip の N+1 を出していた。#515)。
+	filtered := make([]*notification.Notification, 0, len(rows))
+	notifierIDSet := make(map[string]struct{})
+	noteIDSet := make(map[string]struct{})
 	for _, n := range rows {
 		// カーソルベースページネーション
 		if req.SinceID != "" && n.ID <= req.SinceID {
@@ -142,21 +149,47 @@ func (h *Handler) Show(c echo.Context) error {
 				continue
 			}
 		}
-		// user/note 取得は handler 側で repo が wire されていれば best-effort。
-		// 外側の認証ユーザー (`user`) を shadow しないよう notifier 名で受ける。
-		var notifier *model.User
-		if h.userRepo != nil && n.NotifierID != "" {
-			if u, err := h.userRepo.FindByID(n.NotifierID); err == nil {
-				notifier = u
+		filtered = append(filtered, n)
+		if n.NotifierID != "" {
+			notifierIDSet[n.NotifierID] = struct{}{}
+		}
+		if n.NoteID != "" {
+			noteIDSet[n.NoteID] = struct{}{}
+		}
+	}
+
+	notifierByID := make(map[string]*model.User, len(notifierIDSet))
+	if h.userRepo != nil && len(notifierIDSet) > 0 {
+		ids := make([]string, 0, len(notifierIDSet))
+		for id := range notifierIDSet {
+			ids = append(ids, id)
+		}
+		if users, err := h.userRepo.FindManyByIDs(ids); err == nil {
+			for _, u := range users {
+				notifierByID[u.ID] = u
 			}
 		}
-		var note *model.Note
-		if h.noteRepo != nil && n.NoteID != "" {
-			if nn, err := h.noteRepo.FindByIDWithRelations(n.NoteID); err == nil {
-				note = nn
+	}
+	noteByID := make(map[string]*model.Note, len(noteIDSet))
+	if h.noteRepo != nil && len(noteIDSet) > 0 {
+		ids := make([]string, 0, len(noteIDSet))
+		for id := range noteIDSet {
+			ids = append(ids, id)
+		}
+		if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
+			for _, nn := range notes {
+				noteByID[nn.ID] = nn
 			}
 		}
-		items = append(items, entity.NotificationItem{N: n, User: notifier, Note: note})
+	}
+
+	items := make([]entity.NotificationItem, 0, len(filtered))
+	for _, n := range filtered {
+		items = append(items, entity.NotificationItem{
+			N:    n,
+			User: notifierByID[n.NotifierID],
+			Note: noteByID[n.NoteID],
+		})
 	}
 	out := entity.PackNotifications(items, h.idGen, h.instanceLookup(), h.emojiLookup())
 	// 本家 i/notifications と互換: markAsRead 未指定または true なら通知一覧
