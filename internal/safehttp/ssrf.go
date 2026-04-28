@@ -102,11 +102,14 @@ func NewSSRFSafeTransport(allowedCIDRs []string, opts ...Option) *http.Transport
 			proxyAddr = u.Host
 			// URL に明示ポートが無い場合は scheme 既定を補う。後段の
 			// addr 比較で `host:80` のような正規化形と一致させるため。
+			// IPv6 host は u.Host が "[::1]" のように bracket 付きで
+			// 返るため net.JoinHostPort には bracket を剥がした
+			// u.Hostname() を渡す (二重 bracket を避ける)。
 			if _, _, splitErr := net.SplitHostPort(proxyAddr); splitErr != nil {
 				if u.Scheme == "https" {
-					proxyAddr = net.JoinHostPort(u.Host, "443")
+					proxyAddr = net.JoinHostPort(u.Hostname(), "443")
 				} else {
-					proxyAddr = net.JoinHostPort(u.Host, "80")
+					proxyAddr = net.JoinHostPort(u.Hostname(), "80")
 				}
 			}
 		}

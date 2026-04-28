@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -227,4 +228,27 @@ func TestNewSSRFSafeTransport_InvalidProxyURLFallsBack(t *testing.T) {
 func TestNewSSRFSafeTransport_EmptyProxyURLNoOp(t *testing.T) {
 	tr := NewSSRFSafeTransport(nil, WithProxy("", []string{"example.com"}))
 	assert.Nil(t, tr.Proxy, "empty proxy URL must not enable Transport.Proxy")
+}
+
+// IPv6 host の proxy URL に明示 port が無いとき、u.Host は "[::1]"
+// のように bracket 付きで返る。これを net.JoinHostPort にそのまま渡すと
+// "[[::1]]:80" の二重 bracket になり、後段の DialContext 比較で proxy
+// 一致と判定されず SSRF check が走る → loopback (::1) として block
+// されてしまう。u.Hostname() で剥がしてから net.JoinHostPort に渡す
+// ことで http.Transport が dial する正規形 ("[::1]:80") と一致する。
+//
+// 直接 proxyAddr を assert できないので、実 dial を試して
+// ErrSSRFBlocked が返らない (= proxy 一致判定が機能している) ことで
+// 間接的に検証する。dial 自体はループバック上の閉じた port なので
+// "connection refused" 系のエラーになるが、それは bug fix の対象外。
+func TestNewSSRFSafeTransport_IPv6ProxyDefaultPort(t *testing.T) {
+	tr := NewSSRFSafeTransport(nil, WithProxy("http://[::1]", nil))
+	require.NotNil(t, tr)
+	require.NotNil(t, tr.Proxy)
+
+	client := &http.Client{Transport: tr, Timeout: 2 * time.Second}
+	_, err := client.Get("http://example.com/")
+	require.Error(t, err, "dial to ::1:80 will fail (no listener) but must not be SSRF-blocked")
+	assert.NotErrorIs(t, err, ErrSSRFBlocked,
+		"proxy connection must skip SSRF check even when proxy host is IPv6 loopback without explicit port")
 }
