@@ -22,6 +22,16 @@ type AnnouncementRepository interface {
 	// for unauthenticated /api/announcements requests so targeted
 	// announcements are never exposed.
 	ListGlobal(activeOnly bool, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error)
+	// ListForAdmin returns announcements for the admin/announcements/list
+	// endpoint. When userID is non-empty, restricts to "userId" = ? (per-
+	// user announcements only). When empty, restricts to "userId" IS NULL
+	// (global only), matching upstream Misskey's semantics. status is one
+	// of "all" / "active" / "archived"; empty defaults to "active".
+	ListForAdmin(userID, status string, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error)
+	// CountReadsByAnnouncementIDs returns reads count keyed by
+	// announcementId. IDs not present have count 0 (caller should default
+	// to 0 when absent).
+	CountReadsByAnnouncementIDs(ids []string) (map[string]int64, error)
 	UpdateFields(id string, fields map[string]any) error
 	Delete(id string) error
 	// Read management
@@ -136,6 +146,72 @@ func (r *announcementRepository) ListForUser(userID string, activeOnly bool, lim
 		return nil, err
 	}
 	return announcements, nil
+}
+
+func (r *announcementRepository) ListForAdmin(userID, status string, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error) {
+	q := r.db.Order(paginationOrder(sinceID, untilID, "id"))
+	// upstreamはuserId指定時にannouncement.userId = ?を、未指定時に
+	// announcement.userId IS NULLを当てる。前者がユーザーモデレーション画面
+	// の「お知らせ」タブで対象ユーザー宛のannouncementのみを引くルート。
+	if userID != "" {
+		q = q.Where(`"userId" = ?`, userID)
+	} else {
+		q = q.Where(`"userId" IS NULL`)
+	}
+	switch status {
+	case "archived":
+		q = q.Where(`"isActive" = false`)
+	case "all":
+		// no filter
+	default:
+		// "" / "active" / unknownはupstreamと同じくactiveのみ
+		q = q.Where(`"isActive" = true`)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q = q.Limit(limit)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
+	var announcements []*model.Announcement
+	if err := q.Find(&announcements).Error; err != nil {
+		return nil, err
+	}
+	return announcements, nil
+}
+
+func (r *announcementRepository) CountReadsByAnnouncementIDs(ids []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	type row struct {
+		AnnouncementID string `gorm:"column:announcementId"`
+		C              int64  `gorm:"column:c"`
+	}
+	var rows []row
+	err := r.db.Model(&model.AnnouncementRead{}).
+		Select(`"announcementId", COUNT(*) AS c`).
+		Where(`"announcementId" IN ?`, ids).
+		Group(`"announcementId"`).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.AnnouncementID] = row.C
+	}
+	return out, nil
 }
 
 func (r *announcementRepository) UpdateFields(id string, fields map[string]any) error {
