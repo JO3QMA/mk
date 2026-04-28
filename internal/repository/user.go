@@ -15,6 +15,13 @@ type UserRepository interface {
 	FindByURI(uri string) (*model.User, error)
 	FindByUsernameLower(username string, host *string) (*model.User, error)
 	FindProfileByUserID(userID string) (*model.UserProfile, error)
+	// FindManyByIDs returns users for the given ID set in a single query.
+	// Order is unspecified; missing rows are skipped silently. Pair with
+	// FindProfilesByUserIDs to replace the user/show bulk N+1 (#503).
+	FindManyByIDs(ids []string) ([]*model.User, error)
+	// FindProfilesByUserIDs returns user_profile rows for the given userId
+	// set in a single query. Order is unspecified; missing rows are skipped.
+	FindProfilesByUserIDs(userIDs []string) ([]*model.UserProfile, error)
 	IncrementFollowingCount(userID string, delta int) error
 	IncrementFollowersCount(userID string, delta int) error
 	SearchByUsername(query string, limit, offset int) ([]*model.User, error)
@@ -104,6 +111,34 @@ func (r *userRepository) FindProfileByUserID(userID string) (*model.UserProfile,
 		return nil, err
 	}
 	return &profile, nil
+}
+
+// FindManyByIDs returns users for the given ID set with a single IN query.
+// Used together with FindProfilesByUserIDs by core/user.Service.ShowManyByIDs
+// to eliminate the user/show bulk N+1 (#503).
+func (r *userRepository) FindManyByIDs(ids []string) ([]*model.User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var users []*model.User
+	if err := r.db.Where("id IN ?", ids).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// FindProfilesByUserIDs returns user_profile rows for the given userId set
+// with a single IN query. Missing profiles are skipped (the DB allows users
+// without a profile, and ShowByID treats profile lookup as best-effort).
+func (r *userRepository) FindProfilesByUserIDs(userIDs []string) ([]*model.UserProfile, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	var profiles []*model.UserProfile
+	if err := r.db.Where(`"userId" IN ?`, userIDs).Find(&profiles).Error; err != nil {
+		return nil, err
+	}
+	return profiles, nil
 }
 
 func (r *userRepository) IncrementFollowingCount(userID string, delta int) error {

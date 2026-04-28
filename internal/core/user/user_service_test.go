@@ -57,6 +57,59 @@ func TestService_ShowByID_NoProfile(t *testing.T) {
 	assert.Nil(t, bundle.Profile)
 }
 
+func TestService_ShowManyByIDs_PreservesOrderAndSkipsMissing(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	repo.Users["u2"] = &model.User{ID: "u2", Username: "bob"}
+	d1 := "d1"
+	d2 := "d2"
+	repo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Description: &d1}
+	repo.Profiles["u2"] = &model.UserProfile{UserID: "u2", Description: &d2}
+	svc := user.NewService(repo, nil, nil, nil)
+
+	out, err := svc.ShowManyByIDs([]string{"u2", "ghost", "u1"})
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	// Order should follow input list; the missing "ghost" is dropped.
+	assert.Equal(t, "u2", out[0].User.ID)
+	assert.Equal(t, "u1", out[1].User.ID)
+	require.NotNil(t, out[0].Profile)
+	assert.Equal(t, "d2", *out[0].Profile.Description)
+	require.NotNil(t, out[1].Profile)
+	assert.Equal(t, "d1", *out[1].Profile.Description)
+}
+
+func TestService_ShowManyByIDs_EmptyInput(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+
+	out, err := svc.ShowManyByIDs(nil)
+	require.NoError(t, err)
+	assert.Nil(t, out)
+}
+
+func TestService_ShowManyByIDs_AllMissing(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+
+	out, err := svc.ShowManyByIDs([]string{"x", "y"})
+	require.NoError(t, err)
+	assert.Nil(t, out)
+}
+
+func TestService_ShowManyByIDs_NoProfileSilentlyOmitted(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	// Profile 行が無くても User は返る
+	svc := user.NewService(repo, nil, nil, nil)
+
+	out, err := svc.ShowManyByIDs([]string{"u1"})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, "u1", out[0].User.ID)
+	assert.Nil(t, out[0].Profile)
+}
+
 func TestService_ShowByUsername_Success(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
 	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}

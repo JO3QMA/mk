@@ -87,6 +87,14 @@ func (m *mockUserRepo) FindProfileByVerifyCode(string) (*model.UserProfile, erro
 	return nil, errMock
 }
 
+func (m *mockUserRepo) FindManyByIDs([]string) ([]*model.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserRepo) FindProfilesByUserIDs([]string) ([]*model.UserProfile, error) {
+	return nil, nil
+}
+
 func (m *mockUserRepo) FindProfileByEmail(string) (*model.UserProfile, error) {
 	return nil, errMock
 }

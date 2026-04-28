@@ -68,6 +68,8 @@ func (s *stubUserRepo) CountLocalUsersActiveSince(time.Time) (int64, error)   { 
 func (s *stubUserRepo) ListUserRecommendations(string, time.Time, int, int) ([]*model.User, error) {
 	return nil, nil
 }
+func (s *stubUserRepo) FindManyByIDs([]string) ([]*model.User, error)                { return nil, nil }
+func (s *stubUserRepo) FindProfilesByUserIDs([]string) ([]*model.UserProfile, error) { return nil, nil }
 
 type stubRetentionRepo struct {
 	rows            map[string]*model.RetentionAggregation // dateKey -> row
