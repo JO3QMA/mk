@@ -1061,15 +1061,60 @@ func extractAttachments(rawAttachments []any) []activitypub.Document {
 		mediaType, _ := m["mediaType"].(string)
 		name, _ := m["name"].(string)
 		sensitive, _ := m["sensitive"].(bool)
+		// width / height / blurhash / icon は省略実装が多いので欠落時は
+		// zero value のまま。upsertAttachments 側で 0/空チェックして
+		// DriveFile に書き込むかを判断する (#460/#461)。
+		width := numberAsInt(m["width"])
+		height := numberAsInt(m["height"])
+		blurhash, _ := m["_misskey_blurhash"].(string)
+		var icon *activitypub.Image
+		if iconMap, ok := m["icon"].(map[string]any); ok {
+			iconURL, _ := iconMap["url"].(string)
+			iconType, _ := iconMap["type"].(string)
+			if iconURL != "" {
+				icon = &activitypub.Image{Type: iconType, URL: iconURL}
+			}
+		}
 		out = append(out, activitypub.Document{
 			Type:      typ,
 			MediaType: mediaType,
 			URL:       urlStr,
 			Name:      name,
 			Sensitive: sensitive,
+			Width:     width,
+			Height:    height,
+			Icon:      icon,
+			Blurhash:  blurhash,
 		})
 	}
 	return out
+}
+
+// numberAsInt は JSON unmarshal 後の `any` を int に丸めて返す。
+// encoding/json は数値を float64 でデコードするため、width/height の
+// ような integer 想定 field を取り出すときに毎回 type switch するのを
+// 避けるためのヘルパー。NaN / 負値は 0 として扱い、後段の `> 0`
+// ガードで弾く。
+func numberAsInt(v any) int {
+	switch x := v.(type) {
+	case float64:
+		if x <= 0 {
+			return 0
+		}
+		return int(x)
+	case int:
+		if x <= 0 {
+			return 0
+		}
+		return x
+	case int64:
+		if x <= 0 {
+			return 0
+		}
+		return int(x)
+	default:
+		return 0
+	}
 }
 
 // upsertAttachments persists each AP Document as a drive_file row (link
@@ -1121,6 +1166,49 @@ func (r *Resolver) upsertAttachments(docs []activitypub.Document, userID, host *
 			IsSensitive:    doc.Sensitive,
 			MaybeSensitive: doc.Sensitive,
 			StoredInternal: false,
+		}
+		// AP Document に乗ってきた metadata を可能な限り永続化する
+		// (#460 thumbnail / #461 properties)。link-format なので実体
+		// 画像解析はしないが、remote 側が宣言している width/height/
+		// icon/blurhash を信頼してそのまま保存する。
+		if doc.Icon != nil && doc.Icon.URL != "" {
+			thumb := doc.Icon.URL
+			f.ThumbnailURL = &thumb
+		}
+		width := doc.Width
+		height := doc.Height
+		// 上流 Misskey TS の renderDocument は width/height を AP に
+		// 載せないため、image MIME の場合は best-effort で URL を
+		// fetch して画像ヘッダから dimensions を復元する。失敗時は
+		// 0/0 のまま属性 JSON を空にしておき、表示側のフォールバック
+		// に任せる。タイムアウト 3s で inbox 全体は止めない。
+		if (width == 0 || height == 0) && strings.HasPrefix(mediaType, "image/") {
+			if w, h, ok := probeImageDimensions(doc.URL); ok {
+				if width == 0 {
+					width = w
+				}
+				if height == 0 {
+					height = h
+				}
+			}
+		}
+		if width > 0 || height > 0 {
+			// upstream Misskey は properties JSON を `{width, height}` で
+			// 持つ。orientation は EXIF 由来で AP には来ないので省略。
+			props := map[string]int{}
+			if width > 0 {
+				props["width"] = width
+			}
+			if height > 0 {
+				props["height"] = height
+			}
+			if encoded, err := json.Marshal(props); err == nil {
+				f.Properties = encoded
+			}
+		}
+		if doc.Blurhash != "" {
+			bh := doc.Blurhash
+			f.Blurhash = &bh
 		}
 		if err := r.driveFileRepo.Create(f); err != nil {
 			slog.Warn("upsertAttachments: create failed",

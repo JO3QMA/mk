@@ -1373,6 +1373,7 @@ func (s *Server) setupRoutes() {
 	notePublisher := stream.NewNotePublisher(streamPubSub, idGen)
 	notePublisher.SetEmojiLookup(emojiRepo)
 	notePublisher.SetInstanceLookup(instanceRepo)
+	notePublisher.SetFieldResolver(noteFieldResolver)
 	notificationPublisher := stream.NewNotificationPublisher(streamPubSub)
 	notificationPublisher.SetRepos(userRepo, noteRepo, idGen)
 	notificationPublisher.SetInstanceLookup(instanceRepo)

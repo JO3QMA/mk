@@ -10,8 +10,10 @@ import (
 
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	corenotification "github.com/shiroha-a/mk/internal/core/notification"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -98,6 +100,48 @@ func TestNotePublisher_PopulatesAuthorInstance(t *testing.T) {
 	inst, ok := user["instance"].(map[string]any)
 	require.True(t, ok, "user.instance must be present on streaming payload")
 	assert.Equal(t, themeColor, inst["themeColor"])
+}
+
+// FieldResolver が配線されている場合、ストリーミング payload に Files が
+// 乗る (#460/#461 follow-up)。配線無しでは files が空配列のままなので、
+// frontend が画像を表示できずリロードが必要になる。
+func TestNotePublisher_FieldResolverPopulatesFiles(t *testing.T) {
+	pub := &stubPublisher{}
+	idGen, _ := id.NewGenerator("aidx")
+	np := NewNotePublisher(pub, idGen)
+
+	driveRepo := testutil.NewMockDriveFileRepository()
+	noteID := idGen.Generate(time.Now())
+	fileID := idGen.Generate(time.Now())
+	driveRepo.Files[fileID] = &model.DriveFile{
+		ID:   fileID,
+		Name: "remote.png",
+		Type: "image/png",
+		URL:  "https://r/remote.png",
+	}
+	resolver := entity.NewNoteFieldResolver(driveRepo, nil, nil, nil, nil, idGen)
+	np.SetFieldResolver(resolver)
+
+	n := &model.Note{
+		ID:         noteID,
+		UserID:     "u1",
+		FileIDs:    []string{fileID},
+		Visibility: model.NoteVisibilityPublic,
+	}
+	np.PublishNote("homeTimeline:u1", n, &model.User{ID: "u1", Username: "alice"})
+
+	require.Len(t, pub.payloads, 1)
+	raw := pub.payloads[0].(json.RawMessage)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+	files, ok := body["files"].([]any)
+	require.True(t, ok, "files key must be present in streaming payload")
+	require.Len(t, files, 1, "files array must contain the resolved drive file")
+	first := files[0].(map[string]any)
+	assert.Equal(t, fileID, first["id"])
+	// PackDriveFile fallback で thumbnailUrl が url にフォールバックする
+	// ことも合わせて確認する (#460)。
+	assert.Equal(t, "https://r/remote.png", first["thumbnailUrl"])
 }
 
 // n.Renote が preload 済みならストリーミング payload に renote オブジェクトが

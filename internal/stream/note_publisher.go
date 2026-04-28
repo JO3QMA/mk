@@ -30,6 +30,10 @@ type NotePublisher struct {
 	idGen          id.Generator
 	emojiLookup    entity.EmojiLookup
 	instanceLookup entity.InstanceLookup
+	// fieldResolver は Files / Channel など PackNoteWithInstance では
+	// 解決されない後段 field を埋める。未設定時は従来通り Files が
+	// 空配列のまま publish される (旧挙動)。SetFieldResolver で配線。
+	fieldResolver *entity.NoteFieldResolver
 
 	mu         sync.Mutex
 	cachedID   string
@@ -54,6 +58,16 @@ func (p *NotePublisher) SetEmojiLookup(lookup entity.EmojiLookup) {
 // visual flicker on page reload.
 func (p *NotePublisher) SetInstanceLookup(lookup entity.InstanceLookup) {
 	p.instanceLookup = lookup
+}
+
+// SetFieldResolver attaches a NoteFieldResolver so that streaming payloads
+// include Files / Channel / MyReaction equivalent to the REST GET path.
+// Without it, fanout payloads carry an empty `files` array and frontend
+// renders the note without attached media until the user reloads
+// (#460/#461 follow-up). The resolver is shared with the REST handler
+// path so call sites only construct one. nil 配線時は従来通り files 空。
+func (p *NotePublisher) SetFieldResolver(r *entity.NoteFieldResolver) {
+	p.fieldResolver = r
 }
 
 // PublishNote implements core/timeline.StreamingPublisher.
@@ -91,6 +105,21 @@ func (p *NotePublisher) packNote(n *model.Note, author *model.User) []byte {
 	noteForPack.User = author
 
 	pn := entity.PackNoteWithInstance(&noteForPack, p.idGen, p.instanceLookup, p.emojiLookup)
+	// REST 経路と同じ後段 resolver を通して Files / Channel を埋める。
+	// 未配線なら no-op (従来挙動)。viewer 引数は streaming fanout の
+	// 性質上「自分宛て」が複数の subscriber に展開されるため特定不能で、
+	// MyReaction の正確な解決は subscriber 側の per-connection state
+	// に任せて、ResolveFiles のみ呼ぶ。
+	//
+	// ResolveFiles は []NoteEntity (値型 slice) を受け取り内部で
+	// `&notes[i]` 経由で要素を mutate するので、いったん 1-element の
+	// slice にしてから書き戻さないと Files が pn に反映されない (Go の
+	// slice literal がコピーを作るため pn 自体は更新されない)。
+	if p.fieldResolver != nil {
+		batch := []entity.NoteEntity{pn}
+		p.fieldResolver.ResolveFiles(batch)
+		pn = batch[0]
+	}
 
 	body, err := json.Marshal(pn)
 	if err != nil {

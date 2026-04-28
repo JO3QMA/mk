@@ -2024,6 +2024,45 @@ func TestExtractAttachments(t *testing.T) {
 	}
 }
 
+// TestExtractAttachments_MetadataFields covers #460/#461: width / height /
+// icon / _misskey_blurhash が remote から届いたときに Document に展開される
+// ことを確認する。JSON unmarshal 後 width/height は float64 で来るので
+// numberAsInt 経由で int に丸められる必要がある。
+func TestExtractAttachments_MetadataFields(t *testing.T) {
+	raw := []any{
+		map[string]any{
+			"type":              "Document",
+			"mediaType":         "image/png",
+			"url":               "https://r/cat.png",
+			"width":             float64(640),
+			"height":            float64(480),
+			"_misskey_blurhash": "L6PZfSi_.AyE_3t7t7R**0o#DgR4",
+			"icon": map[string]any{
+				"type": "Image",
+				"url":  "https://r/cat-thumb.png",
+			},
+		},
+		map[string]any{
+			// width/height/icon/blurhash いずれも欠落しても zero value で
+			// 通過する (旧来 ingestion との互換)。
+			"type": "Document",
+			"url":  "https://r/no-meta.bin",
+		},
+	}
+	got := federation.ExtractAttachments(raw)
+	require.Len(t, got, 2)
+	assert.Equal(t, 640, got[0].Width)
+	assert.Equal(t, 480, got[0].Height)
+	assert.Equal(t, "L6PZfSi_.AyE_3t7t7R**0o#DgR4", got[0].Blurhash)
+	require.NotNil(t, got[0].Icon)
+	assert.Equal(t, "https://r/cat-thumb.png", got[0].Icon.URL)
+	// 欠落側
+	assert.Equal(t, 0, got[1].Width)
+	assert.Equal(t, 0, got[1].Height)
+	assert.Empty(t, got[1].Blurhash)
+	assert.Nil(t, got[1].Icon)
+}
+
 func TestUpsertAttachments(t *testing.T) {
 	t.Run("creates new drive_file as link", func(t *testing.T) {
 		repo := testutil.NewMockUserRepository()
@@ -2145,6 +2184,94 @@ func TestUpsertAttachments(t *testing.T) {
 		)
 		// Create が失敗した attachment は ID リストに含まれない
 		assert.Empty(t, ids)
+	})
+
+	// #460/#461: width / height / icon.url / _misskey_blurhash が AP
+	// Document に乗ってきた場合、drive_file の properties / thumbnailUrl
+	// / blurhash に永続化される。
+	t.Run("persists width/height/thumbnail/blurhash from AP Document", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+
+		userID := "u1"
+		host := "remote.example"
+		ids := r.UpsertAttachments(
+			[]activitypub.Document{{
+				Type:      "Document",
+				MediaType: "image/png",
+				URL:       "https://r/cat.png",
+				Width:     1280,
+				Height:    720,
+				Icon:      &activitypub.Image{Type: "Image", URL: "https://r/cat-thumb.png"},
+				Blurhash:  "L6PZfSi_.AyE_3t7t7R**0o#DgR4",
+			}},
+			&userID, &host,
+		)
+		require.Len(t, ids, 1)
+		f, err := drive.FindByURI("https://r/cat.png")
+		require.NoError(t, err)
+		require.NotNil(t, f.ThumbnailURL)
+		assert.Equal(t, "https://r/cat-thumb.png", *f.ThumbnailURL)
+		require.NotNil(t, f.Blurhash)
+		assert.Equal(t, "L6PZfSi_.AyE_3t7t7R**0o#DgR4", *f.Blurhash)
+		assert.JSONEq(t, `{"width":1280,"height":720}`, string(f.Properties))
+	})
+
+	// metadata が一部しか乗ってこないケース (width のみ等) でも、その
+	// 部分だけ properties に入れて、抜けている方は埋めない。
+	t.Run("partial metadata: width only persists width", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+
+		userID := "u1"
+		host := "remote.example"
+		_ = r.UpsertAttachments(
+			[]activitypub.Document{{
+				Type: "Document", URL: "https://r/half.png", Width: 100,
+			}},
+			&userID, &host,
+		)
+		f, err := drive.FindByURI("https://r/half.png")
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"width":100}`, string(f.Properties))
+		assert.Nil(t, f.ThumbnailURL)
+		assert.Nil(t, f.Blurhash)
+	})
+
+	// 全 metadata 欠落 (旧来 attachment と互換) では properties 空、
+	// thumbnailUrl / blurhash 共に nil のまま。
+	t.Run("no metadata leaves properties empty and thumbnail/blurhash nil", func(t *testing.T) {
+		repo := testutil.NewMockUserRepository()
+		noteRepo := testutil.NewMockNoteRepository()
+		urls := activitypub.NewURLBuilder("https://example.com")
+		idGen, _ := id.NewGenerator("aidx")
+		r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{}, idGen)
+		drive := testutil.NewMockDriveFileRepository()
+		r.SetDriveFileRepo(drive)
+
+		userID := "u1"
+		host := "remote.example"
+		_ = r.UpsertAttachments(
+			[]activitypub.Document{{Type: "Document", URL: "https://r/bare.png"}},
+			&userID, &host,
+		)
+		f, err := drive.FindByURI("https://r/bare.png")
+		require.NoError(t, err)
+		// Properties は zero value (nil JSON) のまま、DB default の `{}`
+		// が DB 側で適用される
+		assert.Empty(t, f.Properties)
+		assert.Nil(t, f.ThumbnailURL)
+		assert.Nil(t, f.Blurhash)
 	})
 }
 
