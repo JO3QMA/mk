@@ -2137,6 +2137,13 @@ func (s *Server) setupRoutes() {
 	// false なら 1x1 透明 PNG にフォールバック)
 	s.echo.GET("/identicon/:x", identiconHandler(metaRepo))
 
+	// /avatar/@:acct — frontend の MkMention.vue が <img src="/avatar/@user@host">
+	// で直接読みに来るので、対応する handler が無いと mention chip が
+	// アイコン無しで描画される (#462)。upstream Misskey TS の同名 endpoint
+	// と互換: 見つかった user の avatarUrl にリダイレクトし、未設定なら
+	// identicon、未存在なら /static-assets/user-unknown.png にフォールバック。
+	s.echo.GET("/avatar/@:acct", avatarHandler(userRepo, localHost))
+
 	// manifest.json — PWA用
 	s.echo.GET("/manifest.json", manifestJSON(s.config, metaRepo))
 
