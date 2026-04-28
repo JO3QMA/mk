@@ -291,7 +291,9 @@ func TestGetChart_BasicWindow(t *testing.T) {
 
 	out, err := c.GetChart(context.Background(), SpanHour, 3, nil, "")
 	require.NoError(t, err)
-	assert.Equal(t, []int64{1, 2, 3}, out["local.inc"])
+	// upstream の getChartRaw と同じく newest-first で返す (#470 / #473)。
+	// hour12=3 → idx0, hour11=2 → idx1, hour10=1 → idx2。
+	assert.Equal(t, []int64{3, 2, 1}, out["local.inc"])
 }
 
 func TestGetChart_InterpolatesGapsForAccumulate(t *testing.T) {
@@ -346,7 +348,8 @@ func TestGetChart_SpanDay(t *testing.T) {
 	clk.set(time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC))
 	out, err := c.GetChart(context.Background(), SpanDay, 3, nil, "")
 	require.NoError(t, err)
-	assert.Equal(t, []int64{10, 11, 12}, out["local.inc"])
+	// newest-first: 04-09=12 → idx0, 04-08=11 → idx1, 04-07=10 → idx2。
+	assert.Equal(t, []int64{12, 11, 10}, out["local.inc"])
 }
 
 func TestGetChart_RepoErrorBubbles(t *testing.T) {
@@ -705,10 +708,11 @@ func TestGetChart_FindBeforeAnchorAppended(t *testing.T) {
 	clk.set(time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC))
 	out, err := c.GetChart(context.Background(), SpanHour, 3, nil, "")
 	require.NoError(t, err)
-	// hour10 (interpolated from anchor) → 4
-	// hour11 (real)                       → 4 + 7 = 11
-	// hour12 (interpolated, accumulate keeps 11)
-	assert.Equal(t, []int64{4, 11, 11}, out["local.total"])
+	// newest-first:
+	//   idx0 = hour12 (interpolated, accumulate keeps 11)
+	//   idx1 = hour11 (real)                         → 4 + 7 = 11
+	//   idx2 = hour10 (interpolated from anchor)     → 4
+	assert.Equal(t, []int64{11, 11, 4}, out["local.total"])
 }
 
 func TestGetChart_FindLatestNotFoundLeavesEmpty(t *testing.T) {
