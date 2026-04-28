@@ -381,11 +381,19 @@ func (h *Handler) Search(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
+	// users/search が検索結果 N 件ぶん per-row GetProfile を呼んでいた N+1 を
+	// 1 batch query に置換する (#517)。Profile が見つからない user は
+	// PackUserDetailed が nil profile を許容するのでそのまま渡る。
+	ids := make([]string, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	profiles := h.userService.GetProfilesByUserIDs(ids)
+
 	resolver := entity.NewInstanceResolver(h.instanceLookup(), users...)
 	out := make([]entity.UserDetailed, 0, len(users))
 	for _, u := range users {
-		profile := h.userService.GetProfile(u.ID)
-		d := entity.PackUserDetailed(u, profile, h.idGen)
+		d := entity.PackUserDetailed(u, profiles[u.ID], h.idGen)
 		resolver.FillUserLite(&d.UserLite)
 		h.populateUserEmojis(u, &d.UserLite)
 		out = append(out, d)
