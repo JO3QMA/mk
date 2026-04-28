@@ -14,12 +14,11 @@ import (
 //
 // Public key is the uncompressed P-256 point (65 bytes, leading 0x04)
 // base64url-encoded. Private key is the 32-byte raw scalar.
-//
-// crypto/ecdh の P256 を使う。crypto/ecdsa + elliptic.Marshal は Go 1.22 で
-// deprecated になっているが、ecdh.PublicKey.Bytes() / PrivateKey.Bytes()
-// が同じ wire format (65 byte uncompressed point / 32 byte scalar) を
-// 返してくれるのでそのまま web push 用途に使える。
 func GenerateVAPIDKeys() (publicKey, privateKey string, err error) {
+	// crypto/ecdh の P256 を使う。crypto/ecdsa + elliptic.Marshal は Go 1.22
+	// で deprecated になっているが、ecdh.PublicKey.Bytes() /
+	// PrivateKey.Bytes() が同じ wire format (65 byte uncompressed point /
+	// 32 byte scalar) を返してくれるのでそのまま web push 用途に使える。
 	priv, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		return "", "", fmt.Errorf("webpush: generate ECDH P-256 key: %w", err)

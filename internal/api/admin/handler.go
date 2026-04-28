@@ -811,12 +811,12 @@ func (h *Handler) UpdateMeta(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// maybeAutoGenerateVAPID は update-meta の field map を見て、Service
-// Worker が有効化される (= 既存有効 or 今 true に切り替わる) かつ
-// 公開鍵 / 秘密鍵が両方空のときに新規 VAPID 鍵対を生成して fields に
-// 詰め直す。生成しない条件:
-//   - SW が無効化される / 元から無効 で keys も空のまま (no-op)
-//   - 片方の key が既に設定済 (運用者が外部生成した鍵を尊重)
+// maybeAutoGenerateVAPID inspects the update-meta field map and, when
+// Service Worker is being enabled (or is already enabled) and both the
+// public and private VAPID keys would end up empty, generates a fresh
+// key pair and injects it into fields. Skips key generation when:
+//   - SW is being disabled or is already disabled (no-op)
+//   - at least one key is already set (respects operator-supplied keys)
 func (h *Handler) maybeAutoGenerateVAPID(fields map[string]any) error {
 	current, err := h.metaRepo.Fetch()
 	if err != nil {
@@ -853,12 +853,17 @@ func metaBoolAfterUpdate(fields map[string]any, key string, current bool) bool {
 }
 
 // metaStringAfterUpdate returns the effective string value of key after the
-// update would be applied. Empty string and absence are equivalent for the
-// purpose of "should we auto-generate".
+// update would be applied. Empty string, JSON null, and absence are all
+// treated as "empty" so that an admin clearing a key with null still
+// triggers the auto-generate path.
 func metaStringAfterUpdate(fields map[string]any, key, current string) string {
 	if v, ok := fields[key]; ok {
-		if s, ok := v.(string); ok {
+		switch s := v.(type) {
+		case string:
 			return s
+		case nil:
+			// JSON null は明示的に空にしたい意図と解釈する
+			return ""
 		}
 	}
 	return current
