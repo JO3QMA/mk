@@ -77,6 +77,17 @@ func TestFetchImageDimensions_BadURL(t *testing.T) {
 	require.Error(t, err)
 }
 
+// SSRF 対策 (PR #464 review): probeImageDimensions に nil client を渡すと
+// http.DefaultClient へフォールバックせず即座に skip する。fetchImageDimensions
+// 単体は test 用に DefaultClient フォールバックを残しているが、production
+// 経路の probeImageDimensions では required にする。
+func TestProbeImageDimensions_NilClientReturnsFalse(t *testing.T) {
+	w, h, ok := probeImageDimensions(nil, "https://attacker.example/x.png")
+	assert.False(t, ok, "nil client should not perform any HTTP request")
+	assert.Equal(t, 0, w)
+	assert.Equal(t, 0, h)
+}
+
 func TestFetchImageDimensions_NilClientUsesDefault(t *testing.T) {
 	body := renderTestPNG(t, 10, 20)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

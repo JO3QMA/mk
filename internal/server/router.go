@@ -412,6 +412,15 @@ func (s *Server) setupRoutes() {
 	federationResolver.SetPollRepo(pollRepo)
 	federationResolver.SetEmojiRepo(emojiRepo)
 	federationResolver.SetDriveFileRepo(driveFileRepo)
+	// AP attachment dimension probe (#461) 用 outbound HTTP client。
+	// SSRF-safe transport で内部 IP / cloud metadata エンドポイントへの
+	// アクセスを拒否する。timeout は単発 image fetch なので apHTTPClient
+	// (30s) より短めの 10s にする。
+	imageProbeClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+	}
+	federationResolver.SetImageProbeClient(imageProbeClient)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 	federationProcessor.SetLocalBaseURL(s.config.URL)
 

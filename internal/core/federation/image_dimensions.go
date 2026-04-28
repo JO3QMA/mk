@@ -86,10 +86,20 @@ func fetchImageDimensions(ctx context.Context, httpClient *http.Client, rawURL s
 
 // probeImageDimensions wraps fetchImageDimensions with logging at WARN
 // for failed probes (operator visibility) and DEBUG for success.
-// Returns zero values on any failure, never panics. ctx を Background
-// にした内側で timeout を貼る。
-func probeImageDimensions(rawURL string) (width, height int, ok bool) {
-	w, h, err := fetchImageDimensions(context.Background(), http.DefaultClient, rawURL)
+// Returns zero values on any failure, never panics.
+//
+// httpClient は SSRF-safe transport を持つ *http.Client (典型的には
+// resolver.imageProbeClient = router.go で safehttp.NewSSRFSafeTransport
+// を適用したもの) を渡すこと。 untrusted な URL を fetch する経路なので
+// http.DefaultClient で呼ぶと SSRF 脆弱性になる (#464 review)。nil 渡しは
+// 呼び出し側で gate されている前提だが、安全側に倒して probe 自体を
+// 止める。
+func probeImageDimensions(httpClient *http.Client, rawURL string) (width, height int, ok bool) {
+	if httpClient == nil {
+		// SSRF 対策: 未配線時は probe しない (defaultClient フォールバック禁止)
+		return 0, 0, false
+	}
+	w, h, err := fetchImageDimensions(context.Background(), httpClient, rawURL)
 	if err != nil {
 		slog.Warn("federation: image dimension probe failed",
 			"url", rawURL, "err", err)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -91,6 +92,12 @@ type Resolver struct {
 	pollRepo        repository.PollRepository      // optional: Question(投票)のPoll作成
 	emojiRepo       repository.EmojiRepository     // optional: リモート絵文字の永続化
 	driveFileRepo   repository.DriveFileRepository // optional: リモート添付の link 化
+	// imageProbeClient は image attachment の dimension probe (#461) で
+	// 使う outbound HTTP client。SSRF-safe transport (router.go で
+	// safehttp.NewSSRFSafeTransport を適用したもの) を渡す前提で、
+	// 未設定なら probe 自体をスキップする (安全側に倒す: SSRF リスクを
+	// 起こすくらいなら properties 空のまま運用)。
+	imageProbeClient *http.Client
 }
 
 // NewResolver constructs a Resolver.
@@ -158,6 +165,16 @@ func (r *Resolver) SetPollRepo(repo repository.PollRepository) {
 // remote custom emoji from AP Person/Note Tag arrays (#330).
 func (r *Resolver) SetEmojiRepo(repo repository.EmojiRepository) {
 	r.emojiRepo = repo
+}
+
+// SetImageProbeClient attaches an SSRF-safe *http.Client used by the
+// attachment dimension probe (#461). The supplied client must wrap a
+// transport with safehttp.NewSSRFSafeTransport(...) — otherwise a
+// malicious remote can point a Document URL at internal addresses
+// (cloud metadata, localhost services). nil 渡しは無効化と同義で、
+// その場合 dimension probe はスキップされ properties は空のまま。
+func (r *Resolver) SetImageProbeClient(client *http.Client) {
+	r.imageProbeClient = client
 }
 
 // SetDriveFileRepo attaches a DriveFileRepository for ingesting AP
@@ -1182,8 +1199,8 @@ func (r *Resolver) upsertAttachments(docs []activitypub.Document, userID, host *
 		// fetch して画像ヘッダから dimensions を復元する。失敗時は
 		// 0/0 のまま属性 JSON を空にしておき、表示側のフォールバック
 		// に任せる。タイムアウト 3s で inbox 全体は止めない。
-		if (width == 0 || height == 0) && strings.HasPrefix(mediaType, "image/") {
-			if w, h, ok := probeImageDimensions(doc.URL); ok {
+		if (width == 0 || height == 0) && strings.HasPrefix(mediaType, "image/") && r.imageProbeClient != nil {
+			if w, h, ok := probeImageDimensions(r.imageProbeClient, doc.URL); ok {
 				if width == 0 {
 					width = w
 				}
