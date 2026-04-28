@@ -477,15 +477,15 @@ func TestShow_BatchFetchesNotifierAndNote(t *testing.T) {
 	require.Len(t, resp, 5)
 
 	assert.Equal(t, 0, userRepo.findByIDCalls,
-		"user の per-row FindByID は呼ばれてはならない (N+1 解消)")
+		"per-row userRepo.FindByID must not be called (N+1 must be eliminated)")
 	assert.Equal(t, 1, userRepo.findManyByIDsCalls,
-		"user は batch FindManyByIDs を 1 回だけ呼ぶこと")
+		"userRepo.FindManyByIDs should be called exactly once per request")
 	assert.Equal(t, 5, userRepo.findManyByIDsCallSize,
-		"5 通知すべての notifierID が 1 回の batch にまとまっていること")
+		"all 5 notifier IDs should be coalesced into a single batch")
 	assert.Equal(t, 0, noteRepo.findByIDWithRelationsCalls,
-		"note の per-row FindByIDWithRelations は呼ばれてはならない")
+		"per-row noteRepo.FindByIDWithRelations must not be called")
 	assert.Equal(t, 1, noteRepo.findManyByIDsWithUserCalls,
-		"note は batch FindManyByIDsWithUser を 1 回だけ呼ぶこと")
+		"noteRepo.FindManyByIDsWithUser should be called exactly once per request")
 
 	// Devin #516 INFO-3: batch fetch しても resolved user / note が response
 	// に正しく入ることを self-contained で担保する。
