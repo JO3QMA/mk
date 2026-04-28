@@ -2147,6 +2147,15 @@ func (s *Server) setupRoutes() {
 	// identicon、未存在なら /static-assets/user-unknown.png にフォールバック。
 	s.echo.GET("/avatar/@:acct", avatarHandler(userRepo, localHost))
 
+	// /emoji/:path — frontend の MkCustomEmoji が `:emojiUrl` プロップを
+	// 受け取らないとき (典型: 通知 reaction icon) に <img src="/emoji/<name>@<host>.webp">
+	// で直接 fetch するので、handler が無いと SPA catchall に流れて画像が
+	// 読めず fallback 画像になる (#468)。upstream Misskey TS の
+	// ServerService.ts:153 と互換に: name + host を抜いて emoji table を
+	// lookup → publicUrl に 302 redirect、見つからなければ ?fallback クエリ
+	// 付きなら user-unknown.png 相当の static asset、無ければ 404。
+	s.echo.GET("/emoji/:path", emojiRedirectHandler(emojiRepo))
+
 	// manifest.json — PWA用
 	s.echo.GET("/manifest.json", manifestJSON(s.config, metaRepo))
 
