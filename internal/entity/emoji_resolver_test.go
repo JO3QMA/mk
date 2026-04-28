@@ -432,6 +432,140 @@ func TestPopulateUserEmojis_NilUserOrLite(t *testing.T) {
 	})
 }
 
+func TestPopulateNoteReactionEmojis(t *testing.T) {
+	// #459: note.Reactions に :name@host: / :name@.: (canonical local) /
+	// raw unicode が混在するケースで batch fetch + populate が動くこと。
+	// mk-go の reaction_service.normalizeReaction は local emoji を
+	// `:name@.:` (TS 互換 canonical) で永続化するため、parser は `@.`
+	// を空 host に正規化しなければならない (PR #463 review BUG-0001)。
+	remoteHost := "remote.example"
+	lookup := &stubEmojiLookup{
+		data: map[string][]*model.Emoji{
+			"remote.example": {
+				{ID: "e1", Name: "smile", Host: strPtr("remote.example"), PublicURL: "https://remote.example/emoji/smile.png"},
+				{ID: "e2", Name: "wave", Host: strPtr("remote.example"), PublicURL: "https://remote.example/emoji/wave.png"},
+			},
+			"": {
+				{ID: "e3", Name: "local", Host: nil, PublicURL: "https://local.example/emoji/local.png"},
+			},
+		},
+	}
+
+	// canonical local (`:local@.:`) を含めて、本番で実際に DB に書かれる
+	// 形式を網羅する。レガシー `:legacy_local:` (host 省略) も 1 件混ぜて
+	// 後方互換が壊れていないことを確認する。
+	reactionsJSON := []byte(`{":smile@remote.example:":2,":local@.:":1,":wave@remote.example:":1,"❤️":3}`)
+
+	note := &model.Note{
+		ID:        "n1",
+		UserID:    "u1",
+		UserHost:  &remoteHost,
+		Reactions: reactionsJSON,
+	}
+
+	r := NewEmojiResolver(lookup, []*model.Note{note})
+	entity := &NoteEntity{ReactionEmojis: map[string]string{}}
+	r.PopulateNoteReactionEmojis(note, entity)
+
+	require.NotNil(t, entity.ReactionEmojis)
+	// remote: key は frontend lookup `reaction.substring(1, length-1)` 仕様で "smile@remote.example"
+	assert.Equal(t, "https://remote.example/emoji/smile.png", entity.ReactionEmojis["smile@remote.example"])
+	assert.Equal(t, "https://remote.example/emoji/wave.png", entity.ReactionEmojis["wave@remote.example"])
+	// canonical local (`:local@.:`) は frontend lookup で "local@." に
+	// なるが、parser が `.` を空に戻すので map のキーは "local"
+	assert.Equal(t, "https://local.example/emoji/local.png", entity.ReactionEmojis["local"])
+	// raw unicode は乗らない
+	_, hasHeart := entity.ReactionEmojis["❤️"]
+	assert.False(t, hasHeart, "raw unicode reactions should not appear in reactionEmojis")
+}
+
+func TestPopulateNoteReactionEmojis_SameNameDifferentHosts(t *testing.T) {
+	// PR #463 review BUG-0002: 同名カスタム絵文字が複数 remote host から
+	// 一つの note の reactions に含まれる場合、両方とも解決されること。
+	// collectReactionEmojiNames が name 単独でキー化していると後勝ちで
+	// 一方が消える。
+	lookup := &stubEmojiLookup{
+		data: map[string][]*model.Emoji{
+			"alpha.example": {
+				{ID: "ea", Name: "smile", Host: strPtr("alpha.example"), PublicURL: "https://alpha.example/emoji/smile.png"},
+			},
+			"beta.example": {
+				{ID: "eb", Name: "smile", Host: strPtr("beta.example"), PublicURL: "https://beta.example/emoji/smile.png"},
+			},
+		},
+	}
+	reactionsJSON := []byte(`{":smile@alpha.example:":1,":smile@beta.example:":2}`)
+	note := &model.Note{
+		ID:        "n1",
+		UserID:    "u1",
+		Reactions: reactionsJSON,
+	}
+
+	r := NewEmojiResolver(lookup, []*model.Note{note})
+	entity := &NoteEntity{ReactionEmojis: map[string]string{}}
+	r.PopulateNoteReactionEmojis(note, entity)
+
+	require.NotNil(t, entity.ReactionEmojis)
+	// 両 host の URL が共存する
+	assert.Equal(t, "https://alpha.example/emoji/smile.png", entity.ReactionEmojis["smile@alpha.example"])
+	assert.Equal(t, "https://beta.example/emoji/smile.png", entity.ReactionEmojis["smile@beta.example"])
+	assert.Len(t, entity.ReactionEmojis, 2)
+}
+
+func TestPopulateNoteReactionEmojis_NoCustomEmoji(t *testing.T) {
+	// reactions が unicode のみ / 空の場合は ReactionEmojis を populate しない
+	// (空 map で初期化されている前提を維持する)。
+	lookup := &stubEmojiLookup{data: map[string][]*model.Emoji{}}
+
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{"unicode only", []byte(`{"❤️":1,"👍":2}`)},
+		{"empty json", []byte(`{}`)},
+		{"nil reactions", nil},
+		{"malformed json", []byte("not json")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			note := &model.Note{ID: "n1", UserID: "u1", Reactions: tc.raw}
+			r := NewEmojiResolver(lookup, []*model.Note{note})
+			entity := &NoteEntity{ReactionEmojis: map[string]string{"keep": "this"}}
+			r.PopulateNoteReactionEmojis(note, entity)
+			// custom emoji 不在なので元の map をそのまま温存する
+			assert.Equal(t, map[string]string{"keep": "this"}, entity.ReactionEmojis)
+		})
+	}
+}
+
+func TestParseCustomEmojiReaction(t *testing.T) {
+	cases := []struct {
+		input string
+		name  string
+		host  string
+		ok    bool
+	}{
+		{":smile:", "smile", "", true},
+		{":smile@remote.example:", "smile", "remote.example", true},
+		// canonical local form (mk-go reaction_service.normalizeReaction 出力)
+		{":smile@.:", "smile", "", true},
+		{"❤️", "", "", false},
+		{":invalid_no_close", "", "", false},
+		{"no_open:", "", "", false},
+		{"::", "", "", false}, // len < 3 で parser が早期 return、空 name は不正
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			name, host, ok := parseCustomEmojiReaction(tc.input)
+			assert.Equal(t, tc.ok, ok)
+			if ok {
+				assert.Equal(t, tc.name, name)
+				assert.Equal(t, tc.host, host)
+			}
+		})
+	}
+}
+
 func TestPopulateNoteEmojis_UnresolvedEmojiExcluded(t *testing.T) {
 	remoteHost := "remote.example"
 	lookup := &stubEmojiLookup{

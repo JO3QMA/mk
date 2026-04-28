@@ -679,6 +679,14 @@ func (p *Processor) handleLike(act genericActivity) error {
 	if err != nil {
 		return err
 	}
+	// Like activity に乗ってきたカスタム絵文字メタデータを emoji table に
+	// upsert する。Misskey TS の apNoteService.extractEmojis(...) 相当
+	// (#459)。reactionService.Create 自体は emoji 不在でも reaction 文字列
+	// を保存できるので、upsert 失敗で Create を止める必要はなく、UI 表示
+	// 側の reactionEmojis 解決が FallbackReaction (heart) に落ちる程度。
+	if reactor.Host != nil && len(like.Tag) > 0 {
+		p.resolver.upsertEmojis(extractEmojiTags(like.Tag), *reactor.Host)
+	}
 	if _, err := p.reactionService.Create(reactor, target.ID, reaction); err != nil {
 		if errors.Is(err, corereaction.ErrAlreadyReacted) {
 			return nil
