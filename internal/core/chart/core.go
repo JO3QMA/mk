@@ -451,7 +451,9 @@ func filterByGroup(diffs []bufferedDiff, group string) []bufferedDiff {
 //   - Missing buckets are interpolated from the most recent prior log
 //     so accumulate columns appear continuous.
 //   - The result is keyed by dot-notation column names; values are
-//     ordered oldest-first.
+//     ordered newest-first (index 0 = end, last index = oldest), matching
+//     upstream Misskey TS so the frontend's `data.slice().reverse()` lines
+//     up with its oldest-first axis labels.
 func (c *Chart) GetChart(ctx context.Context, span Span, amount int, cursor *time.Time, group string) (Result, error) {
 	if amount <= 0 {
 		amount = 1

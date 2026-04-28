@@ -181,7 +181,8 @@ func SQLTypeOf(r ColRange) string {
 type Diff map[string]any
 
 // Result is the response shape returned by GetChart(). Each dot-notation
-// key maps to a slice of length `amount` ordered oldest-first.
+// key maps to a slice of length `amount` ordered newest-first
+// (index 0 = the most recent bucket, last index = the oldest).
 type Result map[string][]int64
 
 // ErrSchemaName is returned when a Schema is constructed with an empty
