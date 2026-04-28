@@ -644,8 +644,9 @@ func TestDelete_FiresChartHook(t *testing.T) {
 }
 
 // failingFindByIDRepo wraps the mock to make FindByID fail when called the
-// second time (after the initial create succeeds in Update). 1 回目の Show ()
-// は成功させ、2 回目 (Update 後の reload) で失敗させる。
+// second time (after the initial create succeeds in Update). 1 回目の
+// findOwnedFile() (#499 で Show() から差し替え済) は成功させ、2 回目
+// (Update 後の reload) で失敗させる。
 type failingFindByIDRepo struct {
 	*testutil.MockDriveFileRepository
 	calls int
