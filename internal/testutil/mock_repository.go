@@ -892,7 +892,9 @@ func (m *MockNoteRepository) SearchByTag(tag string, limit int, sinceID, untilID
 	}, untilID, sinceID, limit), nil
 }
 
-func (m *MockNoteRepository) ListByFileID(_ string) ([]*model.Note, error)  { return nil, nil }
+func (m *MockNoteRepository) ListByFileID(_, _, _ string, _ int) ([]*model.Note, error) {
+	return nil, nil
+}
 func (m *MockNoteRepository) IncrementUserNotesCount(_ string, _ int) error { return nil }
 
 // ListHomeTimeline / ListLocalTimeline / ListGlobalTimeline return public or
@@ -2155,43 +2157,50 @@ func (m *MockClipRepository) Delete(c *model.Clip) error {
 	return nil
 }
 
-func (m *MockClipRepository) ListByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+func (m *MockClipRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Clip, error) {
 	var rows []*model.Clip
 	for _, c := range m.Clips {
-		if c.UserID == userID {
-			rows = append(rows, c)
+		if c.UserID != userID {
+			continue
 		}
-	}
-	for i := 0; i < len(rows); i++ {
-		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
-				rows[i], rows[j] = rows[j], rows[i]
-			}
+		if sinceID != "" && c.ID <= sinceID {
+			continue
 		}
+		if untilID != "" && c.ID >= untilID {
+			continue
+		}
+		rows = append(rows, c)
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 30
-	}
-	if offset >= len(rows) {
-		return nil, nil
-	}
-	end := offset + limit
-	if end > len(rows) {
-		end = len(rows)
-	}
-	return rows[offset:end], nil
+	return paginateClips(rows, sinceID, untilID, limit, offset), nil
 }
 
-func (m *MockClipRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+func (m *MockClipRepository) ListPublicByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Clip, error) {
 	var rows []*model.Clip
 	for _, c := range m.Clips {
-		if c.UserID == userID && c.IsPublic {
-			rows = append(rows, c)
+		if c.UserID != userID || !c.IsPublic {
+			continue
 		}
+		if sinceID != "" && c.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && c.ID >= untilID {
+			continue
+		}
+		rows = append(rows, c)
 	}
+	return paginateClips(rows, sinceID, untilID, limit, offset), nil
+}
+
+// paginateClips applies the same ordering / limit / cursor-vs-offset rules as
+// the real clipRepository so mock-based tests exercise the upstream
+// makePaginationQuery semantics. ASC ordering kicks in when sinceID is set
+// without untilID (matches paginationOrder helper in repository package).
+func paginateClips(rows []*model.Clip, sinceID, untilID string, limit, offset int) []*model.Clip {
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
+			less := rows[i].ID < rows[j].ID
+			if (asc && !less) || (!asc && less) {
 				rows[i], rows[j] = rows[j], rows[i]
 			}
 		}
@@ -2199,14 +2208,17 @@ func (m *MockClipRepository) ListPublicByUser(userID string, limit, offset int) 
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
-	if offset >= len(rows) {
-		return nil, nil
+	if sinceID == "" && untilID == "" {
+		if offset >= len(rows) {
+			return nil
+		}
+		end := min(offset+limit, len(rows))
+		return rows[offset:end]
 	}
-	end := offset + limit
-	if end > len(rows) {
-		end = len(rows)
+	if limit > len(rows) {
+		limit = len(rows)
 	}
-	return rows[offset:end], nil
+	return rows[:limit]
 }
 
 func (m *MockClipRepository) IncrementCount(clipID, column string, delta int) error {

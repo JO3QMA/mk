@@ -114,15 +114,15 @@ func TestClipRepository_ListPublicByUser(t *testing.T) {
 	).Error)
 	defer testDB.Exec(`DELETE FROM "clip" WHERE id IN (?, ?)`, "cl_pub_1", "cl_priv_1")
 
-	rows, err := repo.ListPublicByUser(u.ID, 10, 0)
+	rows, err := repo.ListPublicByUser(u.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "cl_pub_1", rows[0].ID)
 
 	// limit=0 → default, limit>100 → cap
-	_, err = repo.ListPublicByUser(u.ID, 0, 0)
+	_, err = repo.ListPublicByUser(u.ID, "", "", 0, 0)
 	require.NoError(t, err)
-	_, err = repo.ListPublicByUser(u.ID, 999, 0)
+	_, err = repo.ListPublicByUser(u.ID, "", "", 999, 0)
 	require.NoError(t, err)
 }
 

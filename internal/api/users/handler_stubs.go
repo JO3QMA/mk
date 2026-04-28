@@ -58,11 +58,17 @@ func (h *Handler) Achievements(c echo.Context) error {
 // 非所有者視点では public のみ返す。LIMIT は絞り込み後に適用されるよう SQL
 // 側で WHERE isPublic = true を通す (ListPublicByUser) — 古い post-fetch
 // filter 方式だと private が多いユーザーで空の結果を返してしまう bug になる。
+//
+// frontend Paginator が cursor mode で投げてくる sinceId / untilId を
+// 拾って repo に渡し、Paginator が次ページ取得で同じ row 集合を返さない
+// ようにする (#487 兄弟ケース)。
 func (h *Handler) Clips(c echo.Context) error {
 	var req struct {
-		UserID string `json:"userId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		UserID  string `json:"userId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -76,9 +82,9 @@ func (h *Handler) Clips(c echo.Context) error {
 	var rows []*model.Clip
 	var err error
 	if isSelf {
-		rows, err = h.clipRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.clipRepo.ListByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	} else {
-		rows, err = h.clipRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.clipRepo.ListPublicByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	}
 	if err != nil {
 		return apierr.JSONInternalError(c)

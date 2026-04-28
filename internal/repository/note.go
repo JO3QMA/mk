@@ -65,7 +65,10 @@ type NoteRepository interface {
 	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
 	ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error)
-	ListByFileID(fileID string) ([]*model.Note, error)
+	// ListByFileID returns notes whose fileIds array contains fileID, with
+	// cursor (sinceID/untilID) pagination matching upstream Misskey's
+	// makePaginationQuery. limit <= 0 defaults to 10.
+	ListByFileID(fileID, sinceID, untilID string, limit int) ([]*model.Note, error)
 	IncrementUserNotesCount(userID string, delta int) error
 	ListHomeTimeline(userID string, limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
 	ListLocalTimeline(limit int, sinceID, untilID string, filter model.TimelineDBFilter) ([]*model.Note, error)
@@ -443,9 +446,22 @@ func (r *noteRepository) SearchByTag(tag string, limit int, sinceID, untilID str
 	return notes, nil
 }
 
-func (r *noteRepository) ListByFileID(fileID string) ([]*model.Note, error) {
+func (r *noteRepository) ListByFileID(fileID, sinceID, untilID string, limit int) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q := preloadNoteRelations(r.db).Where(`"fileIds" @> ARRAY[?]::varchar[]`, fileID)
+	if sinceID != "" {
+		q = q.Where(`"id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"id" < ?`, untilID)
+	}
 	var notes []*model.Note
-	if err := preloadNoteRelations(r.db).Where(`"fileIds" @> ARRAY[?]::varchar[]`, fileID).Order(`"id" DESC`).Limit(20).Find(&notes).Error; err != nil {
+	if err := q.Order(paginationOrder(sinceID, untilID, `"id"`)).Limit(limit).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	return notes, nil

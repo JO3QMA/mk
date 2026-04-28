@@ -178,18 +178,23 @@ func (h *Handler) Delete(c echo.Context) error {
 
 // ListRequest is the request body for clips/list.
 type ListRequest struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // List handles POST /api/clips/list.
+//
+// frontend Paginator は cursor mode (untilId / sinceId) で叩いてくる。
+// upstream Misskey TS と同じく cursor 指定時は offset を無視する。
 func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.ListByUser(user.ID, req.Limit, req.Offset)
+	rows, err := h.svc.ListByUser(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}

@@ -11,11 +11,13 @@ type ClipRepository interface {
 	FindByID(id string) (*model.Clip, error)
 	UpdateFields(clipID string, fields map[string]any) error
 	Delete(c *model.Clip) error
-	ListByUser(userID string, limit, offset int) ([]*model.Clip, error)
+	// ListByUser returns clips owned by userID with cursor (sinceID/untilID)
+	// or offset pagination. Empty cursors fall back to offset.
+	ListByUser(userID string, sinceID, untilID string, limit, offset int) ([]*model.Clip, error)
 	// ListPublicByUser returns only public clips owned by userID. Used by
 	// users/clips when the viewer is not the owner so LIMIT applies to the
-	// already-filtered set.
-	ListPublicByUser(userID string, limit, offset int) ([]*model.Clip, error)
+	// already-filtered set. Same cursor semantics as ListByUser.
+	ListPublicByUser(userID string, sinceID, untilID string, limit, offset int) ([]*model.Clip, error)
 	IncrementCount(clipID, column string, delta int) error
 }
 
@@ -51,38 +53,53 @@ func (r *clipRepository) Delete(c *model.Clip) error {
 	return r.db.Delete(c).Error
 }
 
-// ListByUser returns clips owned by userID, ordered by id desc.
-func (r *clipRepository) ListByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+// ListByUser returns clips owned by userID with cursor or offset pagination.
+func (r *clipRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Clip, error) {
 	if limit <= 0 {
 		limit = 30
 	}
 	if limit > 100 {
 		limit = 100
 	}
+	q := r.db.Where(`"userId" = ?`, userID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	// cursor 指定時は offset 無視 (本家 makePaginationQuery と同じ)
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
 	var rows []*model.Clip
-	if err := r.db.Where("\"userId\" = ?", userID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *clipRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Clip, error) {
+func (r *clipRepository) ListPublicByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Clip, error) {
 	if limit <= 0 {
 		limit = 30
 	}
 	if limit > 100 {
 		limit = 100
 	}
+	q := r.db.Where(`"userId" = ? AND "isPublic" = true`, userID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
 	var rows []*model.Clip
-	if err := r.db.Where("\"userId\" = ? AND \"isPublic\" = true", userID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

@@ -966,13 +966,49 @@ func TestNoteRepository_ListByFileID(t *testing.T) {
 	require.NoError(t, repo.Create(n))
 	defer cleanupNote(t, n.ID)
 
-	got, err := repo.ListByFileID("file_abc")
+	got, err := repo.ListByFileID("file_abc", "", "", 10)
 	require.NoError(t, err)
 	assert.NotEmpty(t, got)
 
-	empty, err := repo.ListByFileID("file_nonexistent")
+	empty, err := repo.ListByFileID("file_nonexistent", "", "", 10)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
+}
+
+// frontend Paginator (cursor mode) との互換性確認: untilID 指定で
+// id < untilID DESC, sinceID 指定で id > sinceID ASC を返すこと (#488)。
+func TestNoteRepository_ListByFileID_Cursor(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "u_lbfi_2", "lbfiuser2")
+	defer cleanupUser(t, user.ID)
+
+	text := "with file cursor"
+	for _, id := range []string{"n_lbfi_a", "n_lbfi_b", "n_lbfi_c", "n_lbfi_d"} {
+		n := &model.Note{
+			ID:         id,
+			UserID:     user.ID,
+			Text:       &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+			FileIDs:    pq.StringArray{"file_pg"},
+		}
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, n.ID)
+	}
+
+	// untilID="n_lbfi_c" → id < "n_lbfi_c" を DESC 2 件 = [b, a]
+	rows, err := repo.ListByFileID("file_pg", "", "n_lbfi_c", 2)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "n_lbfi_b", rows[0].ID)
+	assert.Equal(t, "n_lbfi_a", rows[1].ID)
+
+	// sinceID="n_lbfi_b" → id > "n_lbfi_b" を ASC 2 件 = [c, d]
+	rows, err = repo.ListByFileID("file_pg", "n_lbfi_b", "", 2)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "n_lbfi_c", rows[0].ID)
+	assert.Equal(t, "n_lbfi_d", rows[1].ID)
 }
 
 func TestNoteRepository_IncrementUserNotesCount(t *testing.T) {

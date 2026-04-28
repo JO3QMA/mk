@@ -308,6 +308,10 @@ func (s *Server) setupRoutes() {
 		driveStorage = coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
 	}
 	driveService := coredrive.NewService(driveFileRepo, driveFolderRepo, driveStorage, idGen)
+	// drive/files/show は moderator なら他人 / リモートユーザー所有の file
+	// も返せるようにする (upstream Misskey の roleService.isModerator 経路
+	// と一致)。リモート添付メディアの詳細閲覧に必要。
+	driveService.SetRoleChecker(roleService)
 
 	// Image processing (Phase 4.8)
 	imgProcessor := coredrive.NewDefaultImageProcessor()

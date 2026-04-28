@@ -277,12 +277,40 @@ func TestList_BadJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// frontend Paginator (cursor mode) が untilId / sinceId を渡した時に
+// 行が絞り込まれること (#487 回帰防止)。bind 漏れだと無限スクロールに
+// なるので、untilId 未満 / sinceId 超過の row だけ返ることを assert する。
+func TestList_CursorPagination(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", Name: "alpha"}
+	repo.Clips["c2"] = &model.Clip{ID: "c2", UserID: "alice", Name: "bravo"}
+	repo.Clips["c3"] = &model.Clip{ID: "c3", UserID: "alice", Name: "charlie"}
+
+	// untilId=c3 → id < "c3" を DESC = [c2, c1]
+	c, rec := newReq(t, `{"untilId":"c3","limit":10}`)
+	setUser(c, "alice")
+	require.NoError(t, h.List(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"c2"`)
+	assert.Contains(t, rec.Body.String(), `"c1"`)
+	assert.NotContains(t, rec.Body.String(), `"c3"`)
+
+	// sinceId=c1 → id > "c1" を ASC = [c2, c3]
+	c, rec = newReq(t, `{"sinceId":"c1","limit":10}`)
+	setUser(c, "alice")
+	require.NoError(t, h.List(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"c2"`)
+	assert.Contains(t, rec.Body.String(), `"c3"`)
+	assert.NotContains(t, rec.Body.String(), `"c1"`)
+}
+
 // listFailRepo causes ListByUser to fail.
 type listFailRepo struct {
 	*testutil.MockClipRepository
 }
 
-func (r *listFailRepo) ListByUser(_ string, _, _ int) ([]*model.Clip, error) {
+func (r *listFailRepo) ListByUser(_, _, _ string, _, _ int) ([]*model.Clip, error) {
 	return nil, errors.New("boom")
 }
 
