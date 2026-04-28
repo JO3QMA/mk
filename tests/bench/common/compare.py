@@ -77,7 +77,64 @@ def fmt(v, decimals=1) -> str:
     return f"{v:.{decimals}f}"
 
 
-def generate_report(mkgo: dict, misskey: dict) -> str:
+def collect_profiles(profiles_dir: str | None) -> list[Path]:
+    """Return sorted .pb.gz pprof files written by profile-collector.
+
+    profile-collector.sh writes per-scenario CPU profiles plus heap / allocs /
+    goroutine snapshots into $OUT (defaults to /output/profiles in compose).
+    存在しない or 空のディレクトリは静かにスキップ (#413 #7)。
+    """
+    if not profiles_dir:
+        return []
+    p = Path(profiles_dir)
+    if not p.is_dir():
+        return []
+    return sorted(p.glob("*.pb.gz"))
+
+
+def render_profiles_section(profiles: list[Path], profiles_dir: str | None) -> list[str]:
+    if not profiles:
+        return []
+    rel_dir = Path(profiles_dir).name if profiles_dir else "profiles"
+    lines = [
+        "",
+        "## pprof profiles (mk-go)",
+        "",
+        f"`profile-collector` が k6-mkgo と並走して採取した profile (場所: `{rel_dir}/`)。",
+        "",
+        "| File | Size | 用途 |",
+        "|------|------|------|",
+    ]
+    purpose = {
+        "heap-pre": "ベンチ開始直前の heap snapshot (baseline)",
+        "heap-post": "ベンチ終了直後の heap (leak / steady-state を見る)",
+        "allocs-post": "ベンチ全体の累積 allocation (alloc hot path)",
+        "goroutine-pre": "ベンチ開始直前の goroutine 状態",
+        "goroutine-post": "ベンチ終了直後の goroutine 状態 (leak 検出)",
+    }
+    for f in profiles:
+        size = f.stat().st_size
+        stem = f.name.removesuffix(".pb.gz")
+        if stem.startswith("cpu-"):
+            scenario = stem[len("cpu-"):]
+            note = f"`{scenario}` シナリオ steady-state 25s の CPU profile"
+        else:
+            note = purpose.get(stem, "")
+        lines.append(f"| `{f.name}` | {size:,} B | {note} |")
+    lines.extend([
+        "",
+        "解析例:",
+        "",
+        "```sh",
+        f"go tool pprof -http :8080 tests/bench/results/{rel_dir}/cpu-users-show.pb.gz",
+        f"go tool pprof -http :8080 tests/bench/results/{rel_dir}/heap-post.pb.gz",
+        "```",
+    ])
+    return lines
+
+
+def generate_report(mkgo: dict, misskey: dict, profiles: list[Path] | None = None,
+                    profiles_dir: str | None = None) -> str:
     lines = [
         "# Benchmark: mk-go vs Misskey (TypeScript)",
         "",
@@ -128,6 +185,9 @@ def generate_report(mkgo: dict, misskey: dict) -> str:
         "- Results may vary depending on host machine load",
     ])
 
+    if profiles:
+        lines.extend(render_profiles_section(profiles, profiles_dir))
+
     return "\n".join(lines)
 
 
@@ -136,12 +196,15 @@ def main() -> None:
     parser.add_argument("--mkgo", required=True, help="Path to mk-go summary JSON")
     parser.add_argument("--misskey", required=True, help="Path to Misskey summary JSON")
     parser.add_argument("--output", default="/output/report.md", help="Output markdown path")
+    parser.add_argument("--profiles-dir", default=None,
+                        help="Directory containing pprof .pb.gz files captured during the bench")
     args = parser.parse_args()
 
     mkgo_metrics = extract_metrics(load_summary(args.mkgo))
     misskey_metrics = extract_metrics(load_summary(args.misskey))
 
-    report = generate_report(mkgo_metrics, misskey_metrics)
+    profiles = collect_profiles(args.profiles_dir)
+    report = generate_report(mkgo_metrics, misskey_metrics, profiles, args.profiles_dir)
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w") as f:

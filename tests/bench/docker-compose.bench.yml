@@ -50,6 +50,8 @@ services:
       TZ: Asia/Tokyo
       # レートリミット実装時(#273)にベンチが壊れないよう無効化しておく
       MK_ENABLEIPRATELIMIT: "false"
+      # bench で profile-collector が /debug/pprof/* に到達できるようにする (#500 / #413 #7)
+      MK_ENABLEPPROF: "true"
     depends_on:
       postgres-mkgo: { condition: service_healthy }
       redis-mkgo: { condition: service_healthy }
@@ -223,6 +225,26 @@ services:
       k6-mkgo: { condition: service_completed_successfully }
     networks: [bench]
 
+  # ── Profile Collector (mk-go only, #413 #7) ────────────────
+  # k6-mkgo と並走して /debug/pprof/* を curl で取得する。
+  # k6-misskey は別シナリオで走るため、CPU profile が混ざらないように
+  # mk-go run window 内に閉じ込める。
+  profile-collector-mkgo:
+    profiles: [bench]
+    image: alpine:3.21
+    environment:
+      HOST: app-mkgo:3000
+      SCENARIO_DURATION: "31"
+      PROFILE_SECONDS: "25"
+    volumes:
+      - ./common/profile-collector.sh:/profile-collector.sh:ro
+      - ./results:/output
+    command: sh -c "apk add --no-cache curl >/dev/null 2>&1 && sh /profile-collector.sh"
+    depends_on:
+      seed-mkgo: { condition: service_completed_successfully }
+      app-mkgo: { condition: service_healthy }
+    networks: [bench]
+
   # ── Report Generator ──────────────────────────────────────
   compare:
     profiles: [bench]
@@ -236,8 +258,10 @@ services:
         --mkgo /results/mkgo-summary.json
         --misskey /results/misskey-summary.json
         --output /output/report.md
+        --profiles-dir /output/profiles
     depends_on:
       k6-misskey: { condition: service_completed_successfully }
+      profile-collector-mkgo: { condition: service_completed_successfully }
 
 volumes:
   certs:
