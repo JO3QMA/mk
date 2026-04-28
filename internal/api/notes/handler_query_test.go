@@ -396,7 +396,8 @@ func TestShow_NoQueryServiceRejects(t *testing.T) {
 	// 過去はここで fallback 経路が走り、followers / specified visibility の
 	// ノートが任意の閲覧者に漏洩する security regression risk があった。
 	// fallback を消したので、queryService nil なら public note でも
-	// NO_SUCH_NOTE で蹴られる。production でこの経路を踏むことは無い。
+	// NO_SUCH_NOTE で蹴られる。production でこの経路を踏むことは無いが、
+	// wiring 不整合に対する防御として安全側に倒す。
 	noteRepo := testutil.NewMockNoteRepository()
 	pollRepo := testutil.NewMockPollRepository()
 	idGen, _ := id.NewGenerator("aidx")
