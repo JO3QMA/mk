@@ -326,6 +326,23 @@ func (m *MockUserRepository) UpdateProfile(userID string, fields map[string]any)
 }
 
 // applyUserFields は単純な型の代表例にだけ対応する。新しいフィールドを使う場合はここに追加する。
+// ptrOrNilString normalises a fields-map value (which can be plain
+// string, *string, or untyped nil — the production UpdateProfile call
+// site passes any of these depending on the SET / CLEAR / pre-validated
+// path) into the *string form used by model.User. Unrecognised types
+// fall through to leaving the column unchanged.
+func ptrOrNilString(v any) *string {
+	switch s := v.(type) {
+	case nil:
+		return nil
+	case string:
+		return &s
+	case *string:
+		return s
+	}
+	return nil
+}
+
 func applyUserFields(u *model.User, fields map[string]any) {
 	for k, v := range fields {
 		switch k {
@@ -402,13 +419,17 @@ func applyUserFields(u *model.User, fields map[string]any) {
 				u.AlsoKnownAs = &s
 			}
 		case "avatarUrl":
-			if s, ok := v.(*string); ok {
-				u.AvatarURL = s
-			}
+			u.AvatarURL = ptrOrNilString(v)
 		case "bannerUrl":
-			if s, ok := v.(*string); ok {
-				u.BannerURL = s
-			}
+			u.BannerURL = ptrOrNilString(v)
+		case "avatarId":
+			u.AvatarID = ptrOrNilString(v)
+		case "bannerId":
+			u.BannerID = ptrOrNilString(v)
+		case "avatarBlurhash":
+			u.AvatarBlurhash = ptrOrNilString(v)
+		case "bannerBlurhash":
+			u.BannerBlurhash = ptrOrNilString(v)
 		}
 	}
 }

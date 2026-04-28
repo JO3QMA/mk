@@ -36,6 +36,8 @@ type UserLite struct {
 // UserDetailed includes additional fields for detailed user views.
 type UserDetailed struct {
 	UserLite
+	AvatarID            *string        `json:"avatarId"`
+	BannerID            *string        `json:"bannerId"`
 	BannerURL           *string        `json:"bannerUrl"`
 	BannerBlurhash      *string        `json:"bannerBlurhash"`
 	IsLocked            bool           `json:"isLocked"`
@@ -142,6 +144,8 @@ func PackUserLite(u *model.User) UserLite {
 func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Generator) UserDetailed {
 	d := UserDetailed{
 		UserLite:            PackUserLite(u),
+		AvatarID:            u.AvatarID,
+		BannerID:            u.BannerID,
 		BannerURL:           u.BannerURL,
 		BannerBlurhash:      u.BannerBlurhash,
 		IsLocked:            u.IsLocked,
