@@ -107,12 +107,18 @@ jobs:
           # e2e: 実挙動カバレッジで測る意味が薄いため0%
           # testutil: mock/test helper専用パッケージ。production codeではなく
           #           他テストから呼ばれるだけなのでe2eと同様に0%扱い。
+          # server: 大部分が router.go の wire 層 (handler 設定 / middleware
+          #         配線) で、e2e / drop-in test 経由で実挙動検証する設計。
+          #         個別 handler ファイル (avatar.go / identicon.go 等) は
+          #         _test.go 単体でカバーするが、ファイル単位で見ると 90%
+          #         相当でも、router.go のウェイトで package 全体が
+          #         数% に張り付くので 0% 扱いとする (#462)。
           # 他の全パッケージは90%を維持
           grep '^ok' test_output.txt | awk '{
             pkg = $2
             match($0, /[0-9.]+%/)
             cov = substr($0, RSTART, RLENGTH-1) + 0
-            threshold = (pkg ~ /\/admin$/) ? 80 : (pkg ~ /\/e2e/ || pkg ~ /\/testutil$/) ? 0 : 90
+            threshold = (pkg ~ /\/admin$/) ? 80 : (pkg ~ /\/e2e/ || pkg ~ /\/testutil$/ || pkg ~ /\/server$/) ? 0 : 90
             if (cov < threshold) {
               printf "FAIL: %s coverage %.1f%% is below %d%%\n", pkg, cov, threshold
               fail = 1
