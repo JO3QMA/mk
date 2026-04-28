@@ -121,6 +121,23 @@ func TestFeatured_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// channelId 指定時は当該チャンネルに属するノートだけが返ること (#489)。
+// handler が channelId を bind せずに repo に渡し忘れると、ハイライト
+// タブで他チャンネル / グローバルのノートが混入する。
+func TestFeatured_ChannelFilter(t *testing.T) {
+	h, noteRepo, _ := newExtraHandler(t)
+	chID := "ch1"
+	noteRepo.Notes["n_ch"] = &model.Note{ID: "n_ch", UserID: "u1", Visibility: "public", ChannelID: &chID, User: &model.User{ID: "u1"}}
+	noteRepo.Notes["n_glb"] = &model.Note{ID: "n_glb", UserID: "u1", Visibility: "public", User: &model.User{ID: "u1"}}
+
+	rec := postExtra(h.Featured, `{"channelId":"ch1"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "n_ch", resp[0]["id"])
+}
+
 // --- Unrenote ---
 
 func TestUnrenote_Success(t *testing.T) {
@@ -360,7 +377,7 @@ func TestFavoritesDelete_Error(t *testing.T) {
 
 type failingFeaturedRepo struct{ *testutil.MockNoteRepository }
 
-func (f *failingFeaturedRepo) ListFeatured(_, _ int) ([]*model.Note, error) {
+func (f *failingFeaturedRepo) ListFeatured(_, _ string, _, _ int) ([]*model.Note, error) {
 	return nil, testutil.ErrNotFound
 }
 

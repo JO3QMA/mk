@@ -68,11 +68,17 @@ func (h *Handler) FavoritesDelete(c echo.Context) error {
 }
 
 // Featured handles POST /api/notes/featured.
+//
+// 注目ノート — renoteCount + repliesCount が高いノートを返す簡易版。
+// channelId 指定時は該当チャンネル内のノートだけを返す (channel.vue の
+// ハイライトタブから叩かれる経路)。過去はこの絞り込みが無く、無関係な
+// グローバルノートが混ざっていた (#489)。untilId は cursor pagination 用。
 func (h *Handler) Featured(c echo.Context) error {
-	// 注目ノート — renoteCount + repliesCount が高いノートを返す簡易版
 	var req struct {
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
+		Limit     int    `json:"limit"`
+		Offset    int    `json:"offset"`
+		ChannelID string `json:"channelId"`
+		UntilID   string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -80,7 +86,7 @@ func (h *Handler) Featured(c echo.Context) error {
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
-	notes, err := h.noteRepo.ListFeatured(req.Limit, req.Offset)
+	notes, err := h.noteRepo.ListFeatured(req.ChannelID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}

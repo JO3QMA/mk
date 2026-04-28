@@ -838,21 +838,36 @@ func (m *MockNoteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note,
 	return out, nil
 }
 
-func (m *MockNoteRepository) ListFeatured(limit, offset int) ([]*model.Note, error) {
+func (m *MockNoteRepository) ListFeatured(channelID, untilID string, limit, offset int) ([]*model.Note, error) {
 	var result []*model.Note
 	for _, n := range m.Notes {
-		if string(n.Visibility) == "public" {
-			result = append(result, n)
+		if string(n.Visibility) != "public" {
+			continue
 		}
+		if channelID != "" {
+			if n.ChannelID == nil || *n.ChannelID != channelID {
+				continue
+			}
+		}
+		if untilID != "" && n.ID >= untilID {
+			continue
+		}
+		result = append(result, n)
 	}
 	if limit <= 0 {
 		limit = 10
 	}
-	if offset >= len(result) {
-		return nil, nil
+	if untilID == "" && offset > 0 {
+		if offset >= len(result) {
+			return nil, nil
+		}
+		end := min(offset+limit, len(result))
+		return result[offset:end], nil
 	}
-	end := min(offset+limit, len(result))
-	return result[offset:end], nil
+	if limit > len(result) {
+		limit = len(result)
+	}
+	return result[:limit], nil
 }
 
 func (m *MockNoteRepository) FindRenoteByUser(userID, renoteID string) (*model.Note, error) {
