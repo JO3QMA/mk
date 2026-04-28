@@ -236,10 +236,16 @@ services:
       HOST: app-mkgo:3000
       SCENARIO_DURATION: "31"
       PROFILE_SECONDS: "25"
+      # k6/all-scenarios.js のシナリオ列と一致させる。
+      # script 側で SCENARIO_COUNT は dynamic に算出するので、ここを変えれば
+      # 何個でも対応できる (Devin #501 INFO-3)。
+      SCENARIOS: "ping meta local-timeline users-show i notes-create"
     volumes:
       - ./common/profile-collector.sh:/profile-collector.sh:ro
       - ./results:/output
-    command: sh -c "apk add --no-cache curl >/dev/null 2>&1 && sh /profile-collector.sh"
+    # busybox wget で済ませて apk add を避ける。ネット失敗で bench 全体が
+    # block しないようにする (Devin #501 FLAG-2)。
+    command: sh /profile-collector.sh
     depends_on:
       seed-mkgo: { condition: service_completed_successfully }
       app-mkgo: { condition: service_healthy }
