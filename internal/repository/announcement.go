@@ -208,8 +208,8 @@ func (r *announcementRepository) CountReadsByAnnouncementIDs(ids []string) (map[
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range rows {
-		out[r.AnnouncementID] = r.C
+	for _, row := range rows {
+		out[row.AnnouncementID] = row.C
 	}
 	return out, nil
 }
