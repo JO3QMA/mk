@@ -2153,7 +2153,7 @@ func (s *Server) setupRoutes() {
 	// 読めず fallback 画像になる (#468)。upstream Misskey TS の
 	// ServerService.ts:153 と互換に: name + host を抜いて emoji table を
 	// lookup → publicUrl に 302 redirect、見つからなければ ?fallback クエリ
-	// 付きなら user-unknown.png 相当の static asset、無ければ 404。
+	// 付きなら /static-assets/emoji-unknown.png、無ければ 404。
 	s.echo.GET("/emoji/:path", emojiRedirectHandler(emojiRepo))
 
 	// manifest.json — PWA用

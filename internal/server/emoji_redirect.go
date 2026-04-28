@@ -8,7 +8,13 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 )
+
+// 静的アサーション: repository.EmojiRepository が emojiLookup を満たすこと
+// を build 時に検証する (avatar.go の同パターンと揃える)。配線時の型
+// 不一致 (interface 拡張 / signature 変更) を早期に検出。
+var _ emojiLookup = (repository.EmojiRepository)(nil)
 
 // emojiRedirectFallback is the path the frontend treats as the
 // "emoji not found" placeholder. Misskey TS upstream redirects to
