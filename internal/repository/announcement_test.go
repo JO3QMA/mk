@@ -461,18 +461,27 @@ func TestAnnouncementRepository_ListForAdmin_FiltersByUserID(t *testing.T) {
 func TestAnnouncementRepository_ListForAdmin_StatusBranches(t *testing.T) {
 	repo := NewAnnouncementRepository(testDB)
 	active := &model.Announcement{ID: "ann_lfa_act", Title: "a", Text: "a", Icon: "info", Display: "normal", IsActive: true}
-	archived := &model.Announcement{ID: "ann_lfa_arc", Title: "x", Text: "x", Icon: "info", Display: "normal", IsActive: false}
+	// GORM の `default:true` tag により bool の zero value は DB default
+	// (true) が適用される (`internal/model/announcement.go:15` 参照)。
+	// archived row を作るときは一度 true で insert してから UpdateFields
+	// で false に落とすのが既存パターン。
+	archived := &model.Announcement{ID: "ann_lfa_arc", Title: "x", Text: "x", Icon: "info", Display: "normal", IsActive: true}
 	require.NoError(t, repo.Create(active))
 	require.NoError(t, repo.Create(archived))
+	require.NoError(t, repo.UpdateFields(archived.ID, map[string]any{"isActive": false}))
 	defer cleanupAnnouncement(t, active.ID)
 	defer cleanupAnnouncement(t, archived.ID)
 
-	// archived
+	// archived: archived row が含まれ active row が含まれないこと。
 	rows, err := repo.ListForAdmin("", "archived", 10, 0, "", "")
 	require.NoError(t, err)
+	archivedIDs := make(map[string]bool)
 	for _, r := range rows {
 		assert.False(t, r.IsActive)
+		archivedIDs[r.ID] = true
 	}
+	assert.True(t, archivedIDs[archived.ID])
+	assert.False(t, archivedIDs[active.ID])
 	// all (両方含む)
 	rows, err = repo.ListForAdmin("", "all", 10, 0, "", "")
 	require.NoError(t, err)
