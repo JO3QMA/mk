@@ -10,6 +10,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAuthenticate_NoToken(t *testing.T) {
@@ -84,6 +85,103 @@ func TestAuthenticate_QueryParam(t *testing.T) {
 
 	err := handler(c)
 	assert.NoError(t, err)
+}
+
+// countingUserRepo wraps the mock to count FindByToken calls so we can
+// assert that the resolved user came from the in-memory cache and not DB
+// on the second hit (#512).
+type countingUserRepo struct {
+	*testutil.MockUserRepository
+	findByTokenCalls int
+}
+
+func (c *countingUserRepo) FindByToken(token string) (*model.User, error) {
+	c.findByTokenCalls++
+	return c.MockUserRepository.FindByToken(token)
+}
+
+func TestAuthenticate_TokenCacheAvoidsDBOnRepeatedHit(t *testing.T) {
+	repo := &countingUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	tokenRepo := testutil.NewMockAccessTokenRepository()
+	user := &model.User{ID: "u_cache_1", Username: "cacheuser"}
+	const tok = "cache-tok-aaaa"
+	repo.Tokens[tok] = user
+
+	auth := NewAuthMiddleware(repo, tokenRepo)
+	e := echo.New()
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		_ = auth.Authenticate()(func(c echo.Context) error {
+			u := GetUser(c)
+			assert.NotNil(t, u)
+			assert.Equal(t, "u_cache_1", u.ID)
+			return c.String(http.StatusOK, "ok")
+		})(c)
+		return rec
+	}
+
+	for i := 0; i < 5; i++ {
+		assert.Equal(t, http.StatusOK, send().Code)
+	}
+	assert.Equal(t, 1, repo.findByTokenCalls,
+		"FindByToken should be called only on the cache miss; subsequent hits use the in-memory cache")
+}
+
+// orphaned access_token (User 削除済み) は anonymous request 扱いに落ちて
+// dereference panic を起こさないこと (Devin #514 FLAG-1)。
+func TestAuthenticate_OrphanedAccessTokenFallsBackToAnonymous(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	tokenRepo := testutil.NewMockAccessTokenRepository()
+	const tok = "orphan-tok"
+	tokenRepo.Tokens[sha256Hash(tok)] = &model.AccessToken{
+		ID: "at_orphan",
+		// User intentionally nil to simulate the orphaned row.
+	}
+
+	auth := NewAuthMiddleware(repo, tokenRepo)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	// 旧実装ではここで panic していた。Authenticate が anonymous で next に
+	// 渡すこと、ハンドラ内 GetUser が nil を返すことを確認する。
+	require.NotPanics(t, func() {
+		err := auth.Authenticate()(func(c echo.Context) error {
+			assert.Nil(t, GetUser(c), "orphaned access_token must not produce a user")
+			return c.String(http.StatusOK, "ok")
+		})(c)
+		assert.NoError(t, err)
+	})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAuthenticate_TokenCacheNotFoundIsNotPoisoned(t *testing.T) {
+	repo := &countingUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	tokenRepo := testutil.NewMockAccessTokenRepository()
+	auth := NewAuthMiddleware(repo, tokenRepo)
+
+	send := func() {
+		e := echo.New()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer ghost-tok")
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		_ = auth.Authenticate()(func(c echo.Context) error {
+			assert.Nil(t, GetUser(c))
+			return c.String(http.StatusOK, "ok")
+		})(c)
+	}
+
+	send()
+	send()
+	// 不在 token は cache に積まないので 2 回とも DB を引くこと。
+	assert.Equal(t, 2, repo.findByTokenCalls,
+		"not-found tokens must not be cached so token revoke / DB recovery is reflected immediately")
 }
 
 func TestAuthenticate_InvalidToken(t *testing.T) {
