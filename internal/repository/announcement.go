@@ -25,7 +25,7 @@ type AnnouncementRepository interface {
 	// ListForAdmin returns announcements for the admin/announcements/list
 	// endpoint. When userID is non-empty, restricts to "userId" = ? (per-
 	// user announcements only). When empty, restricts to "userId" IS NULL
-	// (global only) — upstream Misskey の semantics と一致。status is one
+	// (global only), matching upstream Misskey's semantics. status is one
 	// of "all" / "active" / "archived"; empty defaults to "active".
 	ListForAdmin(userID, status string, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error)
 	// CountReadsByAnnouncementIDs returns reads count keyed by
@@ -150,9 +150,9 @@ func (r *announcementRepository) ListForUser(userID string, activeOnly bool, lim
 
 func (r *announcementRepository) ListForAdmin(userID, status string, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error) {
 	q := r.db.Order(paginationOrder(sinceID, untilID, "id"))
-	// upstream は userId 指定時に announcement.userId = ? を、未指定時に
-	// announcement.userId IS NULL を当てる。前者がユーザーモデレーション画面
-	// の「お知らせ」タブで対象ユーザー宛の announcement のみを引くルート。
+	// upstreamはuserId指定時にannouncement.userId = ?を、未指定時に
+	// announcement.userId IS NULLを当てる。前者がユーザーモデレーション画面
+	// の「お知らせ」タブで対象ユーザー宛のannouncementのみを引くルート。
 	if userID != "" {
 		q = q.Where(`"userId" = ?`, userID)
 	} else {
@@ -164,7 +164,7 @@ func (r *announcementRepository) ListForAdmin(userID, status string, limit, offs
 	case "all":
 		// no filter
 	default:
-		// "" / "active" / unknown は upstream と同じく active のみ
+		// "" / "active" / unknownはupstreamと同じくactiveのみ
 		q = q.Where(`"isActive" = true`)
 	}
 	if limit <= 0 {

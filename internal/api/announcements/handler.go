@@ -212,13 +212,13 @@ func (h *Handler) AdminDelete(c echo.Context) error {
 
 // AdminList handles POST /api/admin/announcements/list.
 //
-// upstream Misskey TS の semantics:
-//   - userId 指定時: announcement.userId = ? のみ返す (ユーザーモデレーション
-//     画面の「お知らせ」タブはこのルート)
-//   - userId 未指定時: announcement.userId IS NULL のみ返す (全体お知らせ
-//     管理 UI)
-//   - status: "active" / "archived" / "all" (default "active")
-//   - 各 row に reads (announcement_read の対応行数) を埋める
+// Mirrors upstream Misskey TS semantics:
+//   - When userId is set, returns only announcements with that userId
+//     (the "announcements" tab on the admin user moderation page).
+//   - When userId is empty, returns only global announcements
+//     (userId IS NULL).
+//   - status: "active" / "archived" / "all" (default "active").
+//   - Each row carries a reads count (announcement_read row count).
 func (h *Handler) AdminList(c echo.Context) error {
 	var req struct {
 		Limit   int    `json:"limit"`
