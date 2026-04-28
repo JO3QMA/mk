@@ -87,6 +87,36 @@ func (m *MockUserRepository) FindProfileByUserID(userID string) (*model.UserProf
 	return p, nil
 }
 
+// FindManyByIDs mirrors the production repo: missing rows are skipped silently.
+// Order is unspecified (production does not guarantee it either).
+func (m *MockUserRepository) FindManyByIDs(ids []string) ([]*model.User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]*model.User, 0, len(ids))
+	for _, id := range ids {
+		if u, ok := m.Users[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+// FindProfilesByUserIDs mirrors the production repo. Missing profiles are
+// skipped (matching the DB schema where profile rows are optional).
+func (m *MockUserRepository) FindProfilesByUserIDs(userIDs []string) ([]*model.UserProfile, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	out := make([]*model.UserProfile, 0, len(userIDs))
+	for _, id := range userIDs {
+		if p, ok := m.Profiles[id]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 func (m *MockUserRepository) FindProfileByVerifyCode(code string) (*model.UserProfile, error) {
 	for _, p := range m.Profiles {
 		if p.EmailVerifyCode != nil && *p.EmailVerifyCode == code {

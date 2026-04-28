@@ -170,6 +170,83 @@ func TestUserRepository_FindProfileByUserID_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestUserRepository_FindManyByIDs(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u1 := insertTestUser(t, "u_fmid_1", "fmid1")
+	u2 := insertTestUser(t, "u_fmid_2", "fmid2")
+	defer cleanupUser(t, u1.ID)
+	defer cleanupUser(t, u2.ID)
+
+	out, err := repo.FindManyByIDs([]string{u1.ID, "ghost", u2.ID})
+	require.NoError(t, err)
+	got := map[string]bool{}
+	for _, u := range out {
+		got[u.ID] = true
+	}
+	assert.True(t, got[u1.ID], "u1 should be returned")
+	assert.True(t, got[u2.ID], "u2 should be returned")
+	assert.False(t, got["ghost"], "missing rows are skipped silently")
+}
+
+func TestUserRepository_FindManyByIDs_Empty(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	out, err := repo.FindManyByIDs(nil)
+	require.NoError(t, err)
+	assert.Nil(t, out)
+}
+
+func TestUserRepository_FindProfilesByUserIDs(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u1 := insertTestUser(t, "u_fpu_1", "fpu1")
+	u2 := insertTestUser(t, "u_fpu_2", "fpu2")
+	defer cleanupUser(t, u1.ID)
+	defer cleanupUser(t, u2.ID)
+
+	desc1 := "p1"
+	desc2 := "p2"
+	require.NoError(t, testDB.Create(&model.UserProfile{
+		UserID: u1.ID, Description: &desc1, Fields: datatypes.JSON([]byte("[]")),
+	}).Error)
+	require.NoError(t, testDB.Create(&model.UserProfile{
+		UserID: u2.ID, Description: &desc2, Fields: datatypes.JSON([]byte("[]")),
+	}).Error)
+
+	out, err := repo.FindProfilesByUserIDs([]string{u1.ID, "ghost", u2.ID})
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, p := range out {
+		if p.Description != nil {
+			got[p.UserID] = *p.Description
+		}
+	}
+	assert.Equal(t, "p1", got[u1.ID])
+	assert.Equal(t, "p2", got[u2.ID])
+	assert.NotContains(t, got, "ghost")
+}
+
+func TestUserRepository_FindProfilesByUserIDs_Empty(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	out, err := repo.FindProfilesByUserIDs(nil)
+	require.NoError(t, err)
+	assert.Nil(t, out)
+}
+
+func TestUserRepository_FindManyByIDs_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	_, err := repo.FindManyByIDs([]string{"x"})
+	assert.Error(t, err)
+}
+
+func TestUserRepository_FindProfilesByUserIDs_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	_, err := repo.FindProfilesByUserIDs([]string{"x"})
+	assert.Error(t, err)
+}
+
 func TestUserRepository_FindByUsernameLower_NotFound(t *testing.T) {
 	repo := NewUserRepository(testDB)
 
