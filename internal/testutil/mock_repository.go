@@ -170,6 +170,11 @@ func (m *MockUserRepository) ListUsers(filter model.UserListFilter) ([]*model.Us
 				continue
 			}
 		}
+		if filter.Hostname != "" {
+			if u.Host == nil || *u.Host != filter.Hostname {
+				continue
+			}
+		}
 		result = append(result, u)
 	}
 	limit := filter.Limit
