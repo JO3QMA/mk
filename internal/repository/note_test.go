@@ -691,26 +691,52 @@ func TestNoteRepository_ListFeatured(t *testing.T) {
 	require.NoError(t, testDB.Create(n).Error)
 	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
 
-	notes, err := repo.ListFeatured(10, 0)
+	notes, err := repo.ListFeatured("", "", 10, 0)
 	require.NoError(t, err)
 	assert.NotEmpty(t, notes)
 
 	// default limit
-	notes, err = repo.ListFeatured(0, 0)
+	notes, err = repo.ListFeatured("", "", 0, 0)
 	require.NoError(t, err)
 	assert.NotEmpty(t, notes)
 
 	// offset
-	notes, err = repo.ListFeatured(10, 1)
+	notes, err = repo.ListFeatured("", "", 10, 1)
 	require.NoError(t, err)
 	_ = notes
+}
+
+// channelId 指定時は当該チャンネルに属するノートだけが返ること (#489)。
+// 過去はこの絞り込みが無く、ハイライトに無関係ノートが混入していた。
+func TestNoteRepository_ListFeatured_ChannelFilter(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	user := insertTestUser(t, "feat_chu", "featchu")
+	defer cleanupUser(t, user.ID)
+
+	chID := "feat_ch1"
+	require.NoError(t, testDB.Exec(`INSERT INTO channel (id, name, "userId") VALUES (?, ?, ?)`, chID, "feat-ch", user.ID).Error)
+	defer testDB.Exec(`DELETE FROM channel WHERE id = ?`, chID)
+
+	chPtr := chID
+	chNote := &model.Note{ID: "feat_chn1", UserID: user.ID, Visibility: "public", RenoteCount: 5, ChannelID: &chPtr}
+	require.NoError(t, testDB.Create(chNote).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, chNote.ID)
+
+	otherNote := &model.Note{ID: "feat_othn", UserID: user.ID, Visibility: "public", RenoteCount: 10}
+	require.NoError(t, testDB.Create(otherNote).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, otherNote.ID)
+
+	rows, err := repo.ListFeatured(chID, "", 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, chNote.ID, rows[0].ID)
 }
 
 func TestNoteRepository_ListFeatured_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	repo := NewNoteRepository(testDB.WithContext(ctx))
-	_, err := repo.ListFeatured(10, 0)
+	_, err := repo.ListFeatured("", "", 10, 0)
 	assert.Error(t, err)
 }
 

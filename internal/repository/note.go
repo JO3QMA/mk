@@ -61,7 +61,12 @@ type NoteRepository interface {
 	ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
 	SearchByFilter(filter model.NoteSearchFilter) ([]*model.Note, error)
-	ListFeatured(limit, offset int) ([]*model.Note, error)
+	// ListFeatured returns ranked public notes (renote+reply count). When
+	// channelID is non-empty restricts to that channel, mirroring upstream
+	// FeaturedService.getInChannelNotesRanking. untilID enables cursor
+	// pagination (id < untilID). offset is honoured only when no cursor
+	// is given.
+	ListFeatured(channelID, untilID string, limit, offset int) ([]*model.Note, error)
 	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
 	ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error)
 	SearchByTag(tag string, limit int, sinceID, untilID string) ([]*model.Note, error)
@@ -379,15 +384,24 @@ func (r *noteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note, err
 	return ordered, nil
 }
 
-func (r *noteRepository) ListFeatured(limit, offset int) ([]*model.Note, error) {
+func (r *noteRepository) ListFeatured(channelID, untilID string, limit, offset int) ([]*model.Note, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	q := preloadNoteRelations(r.db).
-		Where("visibility = 'public'").
-		Order("(\"renoteCount\" + \"repliesCount\") DESC, id DESC").
-		Limit(limit)
-	if offset > 0 {
+	q := preloadNoteRelations(r.db).Where("visibility = 'public'")
+	if channelID != "" {
+		// チャンネル指定時は当該チャンネル内のノートだけを返す
+		// (upstream FeaturedService.getInChannelNotesRanking と一致)。
+		// 過去はこの WHERE 節が無く、グローバル featured が混ざってチャンネル
+		// ハイライトに無関係ノートが出ていた (#489)。
+		q = q.Where(`"channelId" = ?`, channelID)
+	}
+	if untilID != "" {
+		q = q.Where(`id < ?`, untilID)
+	}
+	q = q.Order(`("renoteCount" + "repliesCount") DESC, id DESC`).Limit(limit)
+	// cursor 指定時は offset を無視 (upstream makePaginationQuery と一致)
+	if untilID == "" && offset > 0 {
 		q = q.Offset(offset)
 	}
 	var notes []*model.Note
