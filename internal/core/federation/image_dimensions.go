@@ -39,11 +39,16 @@ const imageFetchMaxBytes int64 = 64 * 1024
 // surfaced so callers can decide whether to log; in this package the
 // upsertAttachments call site simply skips the property update.
 //
-// httpClient is taken as a parameter so tests can inject a mock client
-// without touching package globals. Pass http.DefaultClient in
-// production.
+// httpClient is taken as a parameter so tests can inject a mock client.
+// In production, callers MUST pass an SSRF-safe *http.Client (see
+// probeImageDimensions / router.go's safehttp.NewSSRFSafeTransport
+// wiring). nil は test convenience として http.DefaultClient に
+// フォールバックするのみで、production 経路は probeImageDimensions が
+// nil を弾くので到達しない。
 func fetchImageDimensions(ctx context.Context, httpClient *http.Client, rawURL string) (width, height int, err error) {
 	if httpClient == nil {
+		// nil fallback は test convenience のみ。production の SSRF
+		// 経路は probeImageDimensions の nil-guard で塞がれている。
 		httpClient = http.DefaultClient
 	}
 	ctx, cancel := context.WithTimeout(ctx, imageFetchTimeout)
