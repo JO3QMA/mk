@@ -273,6 +273,31 @@ func TestUpdate_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, drive.ErrFileNotFound)
 }
 
+// moderator は他ユーザーの file を Update できない (#499 privilege
+// escalation 回帰防止)。Show() は moderator bypass を許す一方で、
+// write 経路は owner-only に保たれていることを保証する。
+func TestUpdate_ModeratorCannotEditOthersFile(t *testing.T) {
+	svc, fileRepo, _ := newSvc(t)
+	other := "other"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &other}
+	svc.SetRoleChecker(&fakeMod{moderators: map[string]bool{"u1": true}})
+
+	newName := "renamed.png"
+	_, err := svc.Update(&model.User{ID: "u1"}, "f1", drive.UpdateInput{Name: &newName})
+	require.ErrorIs(t, err, drive.ErrAccessDenied)
+}
+
+// 同様に Delete も moderator bypass の対象外。
+func TestDelete_ModeratorCannotDeleteOthersFile(t *testing.T) {
+	svc, fileRepo, _ := newSvc(t)
+	other := "other"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &other}
+	svc.SetRoleChecker(&fakeMod{moderators: map[string]bool{"u1": true}})
+
+	err := svc.Delete(&model.User{ID: "u1"}, "f1")
+	require.ErrorIs(t, err, drive.ErrAccessDenied)
+}
+
 func TestUpdate_FolderNotFound(t *testing.T) {
 	svc, fileRepo, _ := newSvc(t)
 	uid := "u1"

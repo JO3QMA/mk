@@ -376,6 +376,13 @@ func (s *Service) processImage(body []byte, mimeType string) *generateAltsResult
 // (when a roleChecker is wired) can read any file. Matches upstream Misskey
 // drive/files/show.ts semantics so admin moderation surfaces and remote-media
 // detail views work without 403.
+//
+// 注意: write 経路 (Update / Delete) では moderator bypass を意図的に
+// 適用しない。他ユーザーの file への moderator 経由の write/delete を
+// 許してしまう privilege escalation を避けるため、それらは
+// findOwnedFile() を使って owner-only ガードする (#499)。moderator が
+// 他ユーザーの file を編集 / 削除する正規経路は admin/drive/* 側に
+// 別途存在する。
 func (s *Service) Show(user *model.User, id string) (*model.DriveFile, error) {
 	if user == nil {
 		return nil, errors.New("user is required")
@@ -387,6 +394,23 @@ func (s *Service) Show(user *model.User, id string) (*model.DriveFile, error) {
 	owner := f.UserID != nil && *f.UserID == user.ID
 	moderator := s.roleChecker != nil && s.roleChecker.IsModerator(user.ID)
 	if !owner && !moderator {
+		return nil, ErrAccessDenied
+	}
+	return f, nil
+}
+
+// findOwnedFile is the strict owner-only equivalent of Show, used by write
+// paths (Update / Delete). It never honours the moderator bypass so that
+// drive write/delete operations can never escalate via moderator role.
+func (s *Service) findOwnedFile(user *model.User, id string) (*model.DriveFile, error) {
+	if user == nil {
+		return nil, errors.New("user is required")
+	}
+	f, err := s.fileRepo.FindByID(id)
+	if err != nil {
+		return nil, ErrFileNotFound
+	}
+	if f.UserID == nil || *f.UserID != user.ID {
 		return nil, ErrAccessDenied
 	}
 	return f, nil
@@ -413,8 +437,10 @@ type UpdateInput struct {
 }
 
 // Update applies the non-nil fields to a drive file owned by the user.
+// Owner-only: moderator が他ユーザーの file を編集できないよう
+// findOwnedFile() を使う (#499)。
 func (s *Service) Update(user *model.User, id string, in UpdateInput) (*model.DriveFile, error) {
-	f, err := s.Show(user, id)
+	f, err := s.findOwnedFile(user, id)
 	if err != nil {
 		return nil, err
 	}
@@ -453,8 +479,10 @@ func (s *Service) Update(user *model.User, id string, in UpdateInput) (*model.Dr
 }
 
 // Delete removes a file from storage and the database.
+// Owner-only: moderator が他ユーザーの file を削除できないよう
+// findOwnedFile() を使う (#499)。
 func (s *Service) Delete(user *model.User, id string) error {
-	f, err := s.Show(user, id)
+	f, err := s.findOwnedFile(user, id)
 	if err != nil {
 		return err
 	}
