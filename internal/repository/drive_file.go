@@ -17,10 +17,12 @@ type DriveFileRepository interface {
 	Update(id string, fields map[string]any) error
 	Delete(f *model.DriveFile) error
 	ListByUser(userID string, folderID *string, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
-	// ListForAdmin returns drive files across all users with optional origin
-	// / host / type filters. origin is "local" / "remote" / "combined"
-	// ("combined" is the default). Empty host / type are no-ops.
-	ListForAdmin(origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
+	// ListForAdmin returns drive files across all users with optional
+	// userID / origin / host / type filters. When userID is non-empty,
+	// origin / host are ignored (upstream Misskey の semantics と一致)。
+	// origin is "local" / "remote" / "combined" ("combined" is the
+	// default). Empty host / type are no-ops.
+	ListForAdmin(userID, origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error)
 	FindByName(userID, name string, folderID *string) ([]*model.DriveFile, error)
 	ExistsByMD5(userID, md5 string) (bool, error)
 	ListByFileIDs(fileIDs []string) ([]*model.DriveFile, error)
@@ -169,16 +171,24 @@ func (r *driveFileRepository) UpdateBulkFolder(fileIDs []string, folderID *strin
 	return r.db.Model(&model.DriveFile{}).Where("id IN ?", fileIDs).Update("folderId", folderID).Error
 }
 
-func (r *driveFileRepository) ListForAdmin(origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
+func (r *driveFileRepository) ListForAdmin(userID, origin, host, fileType, untilID, sinceID string, limit int) ([]*model.DriveFile, error) {
 	q := r.db.Model(&model.DriveFile{})
-	switch origin {
-	case "local":
-		q = q.Where(`"userHost" IS NULL`)
-	case "remote":
-		q = q.Where(`"userHost" IS NOT NULL`)
-	}
-	if host != "" {
-		q = q.Where(`"userHost" = ?`, host)
+	if userID != "" {
+		// upstream は userId 指定時に origin / hostname を読まないので
+		// それに合わせる。`/admin/user/<id>` のドライブタブが userId 単独で
+		// 引いてくるが、handler 経由で origin="combined" が落ちてくると
+		// 全 remote が混ざるバグになるため (#471)。
+		q = q.Where(`"userId" = ?`, userID)
+	} else {
+		switch origin {
+		case "local":
+			q = q.Where(`"userHost" IS NULL`)
+		case "remote":
+			q = q.Where(`"userHost" IS NOT NULL`)
+		}
+		if host != "" {
+			q = q.Where(`"userHost" = ?`, host)
+		}
 	}
 	if fileType != "" {
 		// type is mimetype prefix match (e.g. "image/" matches image/png)

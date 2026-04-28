@@ -428,12 +428,14 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	var req struct {
-		Limit   int    `json:"limit"`
-		SinceID string `json:"sinceId"`
-		UntilID string `json:"untilId"`
-		Origin  string `json:"origin"`
-		Host    string `json:"host"`
-		Type    string `json:"type"`
+		Limit    int    `json:"limit"`
+		SinceID  string `json:"sinceId"`
+		UntilID  string `json:"untilId"`
+		UserID   string `json:"userId"`
+		Origin   string `json:"origin"`
+		Host     string `json:"host"`
+		Hostname string `json:"hostname"`
+		Type     string `json:"type"`
 	}
 	_ = c.Bind(&req)
 	if req.Limit <= 0 || req.Limit > 100 {
@@ -444,7 +446,13 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 	default:
 		req.Origin = "combined"
 	}
-	files, err := h.driveFileRepo.ListForAdmin(req.Origin, req.Host, req.Type, req.UntilID, req.SinceID, req.Limit)
+	// upstream は host も hostname もどちらも受けて同じ意味で扱う。
+	// frontend (admin/instance-info) が hostname で投げるため互換上両方サポート。
+	host := req.Host
+	if host == "" {
+		host = req.Hostname
+	}
+	files, err := h.driveFileRepo.ListForAdmin(req.UserID, req.Origin, host, req.Type, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
