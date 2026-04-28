@@ -27,7 +27,7 @@ type cachedAuthEntry struct {
 // tokenCache is a sync.Map-backed cache for token → resolved user, with
 // lazy TTL eviction on read and probabilistic full sweep on write. Negative
 // results (token not found) are *not* cached: not-found queries should fail
-// fast through DB so token revoke takes effect immediately (#512)。
+// fast through DB so token revoke takes effect immediately (#512).
 type tokenCache struct {
 	m          sync.Map // string → *cachedAuthEntry
 	storeCount atomic.Uint64

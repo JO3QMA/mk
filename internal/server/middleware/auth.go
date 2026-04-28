@@ -270,7 +270,13 @@ func (a *AuthMiddleware) resolveUser(token string) (*model.User, error) {
 		return nil, err
 	}
 
-	a.tokenCache.put(token, accessToken.User)
+	// orphaned access_token (User 行が削除済み) のとき GORM の Preload は
+	// User を nil にする。nil を 30 秒間キャッシュすると後続リクエストでも
+	// 同じ orphan を参照してしまうので、cache に積まないだけにして既存の
+	// 戻り値挙動はそのまま保つ (Devin #514 INFO-3 / 既存挙動互換)。
+	if accessToken.User != nil {
+		a.tokenCache.put(token, accessToken.User)
+	}
 	return accessToken.User, nil
 }
 
