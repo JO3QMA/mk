@@ -95,45 +95,45 @@ func TestEmojiRepository_ListWithFilter(t *testing.T) {
 	require.NoError(t, repo.Create(e))
 	defer cleanupEmoji(t, e.ID)
 
-	emojis, err := repo.ListWithFilter("filter", "", true, 10, 0)
+	emojis, err := repo.ListWithFilter("filter", "", true, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.NotEmpty(t, emojis)
 
 	// category filter
-	emojis, err = repo.ListWithFilter("", "nonexistent", true, 10, 0)
+	emojis, err = repo.ListWithFilter("", "nonexistent", true, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Empty(t, emojis)
 
 	// pagination
-	emojis, err = repo.ListWithFilter("", "", true, 1, 0)
+	emojis, err = repo.ListWithFilter("", "", true, "", "", 1, 0)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(emojis), 1)
 }
 
 func TestEmojiRepository_ListWithFilter_DefaultLimit(t *testing.T) {
 	repo := NewEmojiRepository(testDB)
-	emojis, err := repo.ListWithFilter("", "", true, 0, 0) // limit=0 → default 50
+	emojis, err := repo.ListWithFilter("", "", true, "", "", 0, 0) // limit=0 → default 50
 	require.NoError(t, err)
 	_ = emojis
 }
 
 func TestEmojiRepository_ListWithFilter_LimitCap(t *testing.T) {
 	repo := NewEmojiRepository(testDB)
-	emojis, err := repo.ListWithFilter("", "", true, 999, 0)
+	emojis, err := repo.ListWithFilter("", "", true, "", "", 999, 0)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(emojis), 500)
 }
 
 func TestEmojiRepository_ListWithFilter_Offset(t *testing.T) {
 	repo := NewEmojiRepository(testDB)
-	emojis, err := repo.ListWithFilter("", "", true, 10, 99999)
+	emojis, err := repo.ListWithFilter("", "", true, "", "", 10, 99999)
 	require.NoError(t, err)
 	assert.Empty(t, emojis)
 }
 
 func TestEmojiRepository_ListWithFilter_NonLocal(t *testing.T) {
 	repo := NewEmojiRepository(testDB)
-	emojis, err := repo.ListWithFilter("", "", false, 10, 0)
+	emojis, err := repo.ListWithFilter("", "", false, "", "", 10, 0)
 	require.NoError(t, err)
 	_ = emojis // ローカルフィルタなし
 }
@@ -142,7 +142,7 @@ func TestEmojiRepository_ListWithFilter_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	repo := NewEmojiRepository(testDB.WithContext(ctx))
-	_, err := repo.ListWithFilter("", "", true, 10, 0)
+	_, err := repo.ListWithFilter("", "", true, "", "", 10, 0)
 	assert.Error(t, err)
 }
 
@@ -269,19 +269,19 @@ func TestEmojiRepository_ListRemoteWithFilter(t *testing.T) {
 	defer cleanupEmoji(t, e1.ID)
 	defer cleanupEmoji(t, e2.ID)
 
-	rows, err := repo.ListRemoteWithFilter("", host, 10, 0)
+	rows, err := repo.ListRemoteWithFilter("", host, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(rows), 2)
 
-	filtered, err := repo.ListRemoteWithFilter("cat", host, 10, 0)
+	filtered, err := repo.ListRemoteWithFilter("cat", host, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, filtered, 1)
 	assert.Equal(t, e1.ID, filtered[0].ID)
 
 	// limit default / cap
-	_, err = repo.ListRemoteWithFilter("", host, 0, 0) // default 30
+	_, err = repo.ListRemoteWithFilter("", host, "", "", 0, 0) // default 30
 	require.NoError(t, err)
-	_, err = repo.ListRemoteWithFilter("", host, 1000, 0) // clamped to 100
+	_, err = repo.ListRemoteWithFilter("", host, "", "", 1000, 0) // clamped to 100
 	require.NoError(t, err)
 }
 

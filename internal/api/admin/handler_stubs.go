@@ -638,23 +638,31 @@ func (h *Handler) EmojiListRemote(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	var req struct {
-		Query  string `json:"query"`
-		Host   string `json:"host"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		Query   string `json:"query"`
+		Host    string `json:"host"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
 	}
 	_ = c.Bind(&req)
 	if req.Limit <= 0 || req.Limit > 100 {
 		req.Limit = 30
 	}
-	emojis, err := h.emojiRepo.ListRemoteWithFilter(req.Query, req.Host, req.Limit, req.Offset)
+	emojis, err := h.emojiRepo.ListRemoteWithFilter(req.Query, req.Host, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
 	if emojis == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	return c.JSON(http.StatusOK, emojis)
+	// upstream Misskey の admin/emoji/list-remote は EmojiDetailed schema を
+	// 返す (= `url` field、`publicUrl` ではない)。frontend の旧
+	// custom-emojis-manager.vue は emoji.url を読み込んで <img> を組み立てる
+	// ため、raw model.Emoji (publicUrl / originalUrl 持ち、url 無し) を返すと
+	// 画像が壊れて表示そのものが空に見える (#466)。entity.PackEmojiDetailedList
+	// で publicUrl → url 変換した shape にする。
+	return c.JSON(http.StatusOK, entity.PackEmojiDetailedList(emojis))
 }
 
 // EmojiRemoveAliasesBulk handles POST /api/admin/emoji/remove-aliases-bulk.

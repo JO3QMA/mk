@@ -201,7 +201,7 @@ func TestErrorPaths_CancelledContext(t *testing.T) {
 	// emoji
 	_, err = NewEmojiRepository(db).FindManyByIDs([]string{"x"})
 	assert.Error(t, err)
-	_, err = NewEmojiRepository(db).ListRemoteWithFilter("", "x", 10, 0)
+	_, err = NewEmojiRepository(db).ListRemoteWithFilter("", "x", "", "", 10, 0)
 	assert.Error(t, err)
 
 	// following

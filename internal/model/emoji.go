@@ -50,4 +50,10 @@ type EmojiV2Query struct {
 	UpdatedAtFrom string
 	UpdatedAtTo   string
 	RoleIDs       []string
+	// URI / PublicURL / OriginalURL は admin v2 emoji 検索の追加 filter
+	// (#466)。frontend が remote emoji 一覧の検索ボックスから渡してくる
+	// ので、空文字列でなければ ILIKE 部分一致で WHERE に展開する。
+	URI         string
+	PublicURL   string
+	OriginalURL string
 }
