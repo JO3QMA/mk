@@ -261,6 +261,116 @@ func TestService_UpdateProfile_Success(t *testing.T) {
 	assert.True(t, bundle.User.IsBot)
 }
 
+// #467: avatarId に SET / CLEAR / 不明 ID / 他人ファイル / 非画像 MIME を
+// 与えたときの挙動を確認する。banner も同経路 (applyMediaUpdate を共有)
+// なので avatar 側で代表させる。
+func TestService_UpdateProfile_AvatarSet(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	driveRepo := testutil.NewMockDriveFileRepository()
+	owner := "u1"
+	bh := "L6PZfSi_.AyE_3t7t7R**0o#DgR4"
+	driveRepo.Files["f1"] = &model.DriveFile{
+		ID: "f1", UserID: &owner, Type: "image/png",
+		URL: "https://cdn.example/avatar.png", Blurhash: &bh,
+	}
+	svc.SetDriveFileRepository(driveRepo)
+
+	id := "f1"
+	bundle, err := svc.UpdateProfile("u1", user.UpdateInput{AvatarID: &id})
+	require.NoError(t, err)
+	require.NotNil(t, bundle.User.AvatarID)
+	assert.Equal(t, "f1", *bundle.User.AvatarID)
+	require.NotNil(t, bundle.User.AvatarURL)
+	assert.Equal(t, "https://cdn.example/avatar.png", *bundle.User.AvatarURL)
+	require.NotNil(t, bundle.User.AvatarBlurhash)
+	assert.Equal(t, bh, *bundle.User.AvatarBlurhash)
+}
+
+func TestService_UpdateProfile_AvatarClear(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	existingID := "f0"
+	existingURL := "https://cdn.example/old.png"
+	existingBh := "old"
+	userRepo.Users["u1"] = &model.User{
+		ID: "u1", Username: "alice",
+		AvatarID:       &existingID,
+		AvatarURL:      &existingURL,
+		AvatarBlurhash: &existingBh,
+	}
+	driveRepo := testutil.NewMockDriveFileRepository()
+	svc.SetDriveFileRepository(driveRepo)
+
+	empty := ""
+	bundle, err := svc.UpdateProfile("u1", user.UpdateInput{AvatarID: &empty})
+	require.NoError(t, err)
+	assert.Nil(t, bundle.User.AvatarID)
+	assert.Nil(t, bundle.User.AvatarURL)
+	assert.Nil(t, bundle.User.AvatarBlurhash)
+}
+
+func TestService_UpdateProfile_AvatarNotFound(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	svc.SetDriveFileRepository(testutil.NewMockDriveFileRepository())
+
+	id := "missing"
+	_, err := svc.UpdateProfile("u1", user.UpdateInput{AvatarID: &id})
+	assert.True(t, errors.Is(err, user.ErrAvatarNotFound))
+}
+
+func TestService_UpdateProfile_AvatarNotOwned(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	driveRepo := testutil.NewMockDriveFileRepository()
+	otherOwner := "u2"
+	driveRepo.Files["f1"] = &model.DriveFile{
+		ID: "f1", UserID: &otherOwner, Type: "image/png", URL: "https://x/x",
+	}
+	svc.SetDriveFileRepository(driveRepo)
+
+	id := "f1"
+	_, err := svc.UpdateProfile("u1", user.UpdateInput{AvatarID: &id})
+	// owner mismatch も notFound で扱う (upstream 互換 + 列挙攻撃避け)。
+	assert.True(t, errors.Is(err, user.ErrAvatarNotFound))
+}
+
+func TestService_UpdateProfile_AvatarNotImage(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	driveRepo := testutil.NewMockDriveFileRepository()
+	owner := "u1"
+	driveRepo.Files["f1"] = &model.DriveFile{
+		ID: "f1", UserID: &owner, Type: "video/mp4", URL: "https://x/v.mp4",
+	}
+	svc.SetDriveFileRepository(driveRepo)
+
+	id := "f1"
+	_, err := svc.UpdateProfile("u1", user.UpdateInput{AvatarID: &id})
+	assert.True(t, errors.Is(err, user.ErrAvatarNotImage))
+}
+
+func TestService_UpdateProfile_BannerSet(t *testing.T) {
+	// banner は avatar と applyMediaUpdate 共有なので smoke test 1 件のみ。
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	driveRepo := testutil.NewMockDriveFileRepository()
+	owner := "u1"
+	driveRepo.Files["b1"] = &model.DriveFile{
+		ID: "b1", UserID: &owner, Type: "image/jpeg",
+		URL: "https://cdn.example/banner.jpg",
+	}
+	svc.SetDriveFileRepository(driveRepo)
+
+	id := "b1"
+	bundle, err := svc.UpdateProfile("u1", user.UpdateInput{BannerID: &id})
+	require.NoError(t, err)
+	require.NotNil(t, bundle.User.BannerID)
+	assert.Equal(t, "b1", *bundle.User.BannerID)
+	require.NotNil(t, bundle.User.BannerURL)
+	assert.Equal(t, "https://cdn.example/banner.jpg", *bundle.User.BannerURL)
+}
+
 func TestService_UpdateProfile_NoFields(t *testing.T) {
 	svc, repo, _, _ := newFullSvc(t)
 	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}

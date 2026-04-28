@@ -37,6 +37,15 @@ var (
 	ErrPinLimitExceeded = errors.New("pin limit exceeded")
 	// ErrPinNotFound is returned when unpinning a note that is not pinned.
 	ErrPinNotFound = errors.New("pin not found")
+	// ErrAvatarNotFound is returned when avatarId points to a missing or
+	// non-owned drive_file. Mirrors upstream Misskey's NO_SUCH_AVATAR.
+	ErrAvatarNotFound = errors.New("avatar drive file not found")
+	// ErrAvatarNotImage is returned when avatarId points to a non-image
+	// drive_file. Mirrors upstream's AVATAR_NOT_AN_IMAGE.
+	ErrAvatarNotImage = errors.New("avatar drive file is not an image")
+	// ErrBannerNotFound / ErrBannerNotImage are the banner counterparts.
+	ErrBannerNotFound = errors.New("banner drive file not found")
+	ErrBannerNotImage = errors.New("banner drive file is not an image")
 )
 
 // MainStreamPublisher emits real-time events to a single target user's `main`
@@ -63,6 +72,10 @@ type Service struct {
 	idGen               id.Generator
 	mainStreamPublisher MainStreamPublisher
 	remoteResolver      RemoteUserResolver
+	// driveFileRepo は avatar / banner SET 時に drive_file 行を引いて
+	// 所有者検証 + image MIME チェックするのに使う。未配線時は media
+	// 更新経路全体を skip して旧来挙動 (avatar / banner 不変) に戻す。
+	driveFileRepo repository.DriveFileRepository
 }
 
 // NewService creates a new user Service.
@@ -86,6 +99,16 @@ func NewService(
 // events (currently `meUpdated`). Optional — nil disables emit.
 func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
 	s.mainStreamPublisher = p
+}
+
+// SetDriveFileRepository attaches a DriveFileRepository used by
+// UpdateProfile to resolve avatarId / bannerId into the corresponding
+// drive_file row (for ownership and image-MIME validation, plus
+// avatarUrl / avatarBlurhash population). Optional — nil leaves the
+// avatar / banner update paths inert (the input fields are silently
+// ignored, matching pre-#467 behaviour).
+func (s *Service) SetDriveFileRepository(repo repository.DriveFileRepository) {
+	s.driveFileRepo = repo
 }
 
 // SetRemoteUserResolver attaches a resolver for remote (non-local) users.
@@ -189,6 +212,17 @@ type UpdateInput struct {
 	// Room は jsonb 列に書き込む生バイト列。nil の場合は更新しない。
 	// 呼び出し側で JSON として妥当であることを保証する必要がある。
 	Room *json.RawMessage
+	// AvatarID / BannerID は drive_file の ID。
+	//   nil       → 不変 (no change)
+	//   &"<id>"   → SET (drive_file 行を引いて所有権 + image MIME 検証)
+	//   &""       → CLEAR (avatarId / avatarUrl / avatarBlurhash を NULL に)
+	//
+	// JSON `null` を CLEAR として扱う semantic はサポートしない (Go の
+	// *string では null と omitted を区別できないため #467 では空文字列
+	// を CLEAR の sentinel にする)。frontend が null clear を要求する
+	// ようになったら json.RawMessage ベースに昇格させる別 issue。
+	AvatarID *string
+	BannerID *string
 }
 
 // UpdateProfile applies the non-nil fields to the user and user_profile rows.
@@ -254,6 +288,17 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 		profileFields["room"] = string(*in.Room)
 	}
 
+	// avatarId / bannerId 更新 (#467)。driveFileRepo 未配線時は media
+	// 更新経路を skip して旧 behaviour に戻す (テスト互換維持)。
+	if s.driveFileRepo != nil {
+		if err := s.applyMediaUpdate(userID, in.AvatarID, "avatar", userFields, ErrAvatarNotFound, ErrAvatarNotImage); err != nil {
+			return nil, err
+		}
+		if err := s.applyMediaUpdate(userID, in.BannerID, "banner", userFields, ErrBannerNotFound, ErrBannerNotImage); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := s.userRepo.UpdateUser(userID, userFields); err != nil {
 		return nil, err
 	}
@@ -270,6 +315,52 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 	// ため)。body は packed UserDetailed full object。
 	s.publishMeUpdated(bundle)
 	return bundle, nil
+}
+
+// applyMediaUpdate writes prefix+"Id" / prefix+"Url" / prefix+"Blurhash"
+// onto userFields based on idPtr's tri-state semantics:
+//
+//   - nil pointer       → no change (skip)
+//   - &""               → CLEAR: set all three columns to NULL
+//   - &"<drive_file_id>" → SET: lookup drive_file, validate ownership +
+//     image MIME, copy URL / Blurhash to user.
+//
+// `prefix` is "avatar" or "banner". notFoundErr / notImageErr are the
+// specific sentinel errors callers want surfaced (handler maps them to
+// distinct API error codes).
+func (s *Service) applyMediaUpdate(userID string, idPtr *string, prefix string, userFields map[string]any, notFoundErr, notImageErr error) error {
+	if idPtr == nil {
+		return nil
+	}
+	if *idPtr == "" {
+		// CLEAR — frontend が "" を送った想定 (JSON null は Go の *string
+		// で omitted と区別できないため空文字列を sentinel にする)。
+		userFields[prefix+"Id"] = nil
+		userFields[prefix+"Url"] = nil
+		userFields[prefix+"Blurhash"] = nil
+		return nil
+	}
+	file, err := s.driveFileRepo.FindByID(*idPtr)
+	if err != nil || file == nil {
+		return notFoundErr
+	}
+	// 他人の drive_file を avatar / banner に勝手に指定できないように
+	// 所有権を検証する (upstream Misskey と同じ)。userId が NULL
+	// (未紐付け) も拒否対象。
+	if file.UserID == nil || *file.UserID != userID {
+		return notFoundErr
+	}
+	if !strings.HasPrefix(file.Type, "image/") {
+		return notImageErr
+	}
+	userFields[prefix+"Id"] = file.ID
+	userFields[prefix+"Url"] = file.URL
+	if file.Blurhash != nil {
+		userFields[prefix+"Blurhash"] = *file.Blurhash
+	} else {
+		userFields[prefix+"Blurhash"] = nil
+	}
+	return nil
 }
 
 // publishMeUpdated emits `meUpdated` to the user's main channel with the

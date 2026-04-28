@@ -606,6 +606,10 @@ type UpdateRequest struct {
 	// Room は frontend の「部屋」機能用の任意スキーマ jsonb。
 	// 本家も object をそのまま受け取って上書き保存する (部分マージはしない)。
 	Room json.RawMessage `json:"room"`
+	// AvatarID / BannerID — drive_file の ID。`null` / 省略は不変、空文字列
+	// は CLEAR、文字列値は SET。詳細は user.UpdateInput の docコメント参照。
+	AvatarID *string `json:"avatarId"`
+	BannerID *string `json:"bannerId"`
 }
 
 // jsonbObject normalizes a raw jsonb byte slice into map[string]any for the
@@ -719,11 +723,28 @@ func (h *Handler) Update(c echo.Context) error {
 		room := append(json.RawMessage(nil), req.Room...)
 		in.Room = &room
 	}
+	if req.AvatarID != nil {
+		in.AvatarID = req.AvatarID
+	}
+	if req.BannerID != nil {
+		in.BannerID = req.BannerID
+	}
 
 	bundle, err := h.userService.UpdateProfile(me.ID, in)
 	if err != nil {
-		if errors.Is(err, user.ErrUserNotFound) {
+		switch {
+		case errors.Is(err, user.ErrUserNotFound):
 			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
+		case errors.Is(err, user.ErrAvatarNotFound):
+			// upstream Misskey の NO_SUCH_AVATAR error UUID を流用 (frontend
+			// がコード固有の locale 表示をしているため一致が望ましい)。
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_AVATAR", "No such avatar file.", "539f3a45-f215-4f81-a9a8-31293640207f"))
+		case errors.Is(err, user.ErrAvatarNotImage):
+			return c.JSON(http.StatusBadRequest, apierr.Error("AVATAR_NOT_AN_IMAGE", "The file specified as an avatar is not an image.", "f419f9f8-2f4d-46b1-9fb4-49d3a2fd7191"))
+		case errors.Is(err, user.ErrBannerNotFound):
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_BANNER", "No such banner file.", "0d8f5629-f210-41c2-9433-735831a58595"))
+		case errors.Is(err, user.ErrBannerNotImage):
+			return c.JSON(http.StatusBadRequest, apierr.Error("BANNER_NOT_AN_IMAGE", "The file specified as a banner is not an image.", "75aedb19-2afd-4e6d-87fc-67941256fa60"))
 		}
 		return apierr.JSONInternalError(c)
 	}

@@ -195,6 +195,9 @@ func (s *Server) setupRoutes() {
 	noteQueryService.SetFavoriteRepo(noteFavoriteRepo)
 	noteQueryService.SetThreadMutingRepo(noteThreadMutingRepo)
 	userService := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)
+	// /api/i/update の avatarId / bannerId 経路 (#467) で drive_file の
+	// 所有権検証 + URL コピーが必要なため、driveFileRepo を配線する。
+	userService.SetDriveFileRepository(driveFileRepo)
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
 
 	// Timeline services (Redis-backed fanout)
