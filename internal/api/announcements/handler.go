@@ -211,21 +211,46 @@ func (h *Handler) AdminDelete(c echo.Context) error {
 }
 
 // AdminList handles POST /api/admin/announcements/list.
+//
+// upstream Misskey TS の semantics:
+//   - userId 指定時: announcement.userId = ? のみ返す (ユーザーモデレーション
+//     画面の「お知らせ」タブはこのルート)
+//   - userId 未指定時: announcement.userId IS NULL のみ返す (全体お知らせ
+//     管理 UI)
+//   - status: "active" / "archived" / "all" (default "active")
+//   - 各 row に reads (announcement_read の対応行数) を埋める
 func (h *Handler) AdminList(c echo.Context) error {
 	var req struct {
 		Limit   int    `json:"limit"`
 		Offset  int    `json:"offset"`
 		SinceID string `json:"sinceId"`
 		UntilID string `json:"untilId"`
+		UserID  string `json:"userId"`
+		Status  string `json:"status"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	items, err := h.repo.List(false, req.Limit, req.Offset, req.SinceID, req.UntilID)
+	items, err := h.repo.ListForAdmin(req.UserID, req.Status, req.Limit, req.Offset, req.SinceID, req.UntilID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	return c.JSON(http.StatusOK, items)
+	ids := make([]string, 0, len(items))
+	for _, a := range items {
+		ids = append(ids, a.ID)
+	}
+	reads, err := h.repo.CountReadsByAnnouncementIDs(ids)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, a := range items {
+		row := packAnnouncement(a, h.idGen)
+		row["userId"] = a.UserID
+		row["reads"] = reads[a.ID]
+		out = append(out, row)
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // packAnnouncement wraps entity.PackAnnouncement for handler use. isRead

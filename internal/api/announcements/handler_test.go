@@ -339,9 +339,73 @@ func TestAdminDelete_InvalidParam(t *testing.T) {
 
 func TestAdminList_Success(t *testing.T) {
 	h, repo := newTestHandler(t)
-	repo.Items["a1"] = &model.Announcement{ID: "a1"}
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}
 	rec := doPost(h.AdminList, `{}`, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// /admin/user/<id> のお知らせタブが userId で narrow したときに、対象
+// ユーザー宛 announcement のみ返り、サーバー全体 announcement (userId
+// IS NULL) が混ざらないこと (#472)。
+func TestAdminList_UserScopeExcludesGlobal(t *testing.T) {
+	h, repo := newTestHandler(t)
+	target := "u_target"
+	other := "u_other"
+	repo.Items["a_global"] = &model.Announcement{ID: "a_global", IsActive: true}
+	repo.Items["a_target"] = &model.Announcement{ID: "a_target", IsActive: true, UserID: &target}
+	repo.Items["a_other"] = &model.Announcement{ID: "a_other", IsActive: true, UserID: &other}
+
+	rec := doPost(h.AdminList, `{"userId":"u_target","status":"active"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "a_target", rows[0]["id"])
+	assert.Equal(t, "u_target", rows[0]["userId"])
+}
+
+// userId 未指定なら upstream 通り userId IS NULL の global only を返す。
+func TestAdminList_NoUserIDReturnsGlobalOnly(t *testing.T) {
+	h, repo := newTestHandler(t)
+	target := "u_target"
+	repo.Items["a_global"] = &model.Announcement{ID: "a_global", IsActive: true}
+	repo.Items["a_target"] = &model.Announcement{ID: "a_target", IsActive: true, UserID: &target}
+
+	rec := doPost(h.AdminList, `{"status":"active"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "a_global", rows[0]["id"])
+}
+
+// status="archived" を指定すると isActive=false のみ返る。
+func TestAdminList_StatusArchived(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Items["a_active"] = &model.Announcement{ID: "a_active", IsActive: true}
+	repo.Items["a_archived"] = &model.Announcement{ID: "a_archived", IsActive: false}
+
+	rec := doPost(h.AdminList, `{"status":"archived"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "a_archived", rows[0]["id"])
+}
+
+// reads count が announcement_read 行数で埋まること。
+func TestAdminList_ReadsCount(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Items["a1"] = &model.Announcement{ID: "a1", IsActive: true}
+	require.NoError(t, repo.MarkRead(&model.AnnouncementRead{ID: "r1", UserID: "u1", AnnouncementID: "a1"}))
+	require.NoError(t, repo.MarkRead(&model.AnnouncementRead{ID: "r2", UserID: "u2", AnnouncementID: "a1"}))
+
+	rec := doPost(h.AdminList, `{"status":"active"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.EqualValues(t, 2, rows[0]["reads"])
 }
 
 func TestAdminList_InvalidJSON(t *testing.T) {
@@ -365,6 +429,10 @@ func (f *failingListAnnouncementRepo) ListGlobal(_ bool, _, _ int, _, _ string) 
 }
 
 func (f *failingListAnnouncementRepo) ListForUser(_ string, _ bool, _, _ int, _, _ string) ([]*model.Announcement, error) {
+	return nil, assert.AnError
+}
+
+func (f *failingListAnnouncementRepo) ListForAdmin(_, _ string, _, _ int, _, _ string) ([]*model.Announcement, error) {
 	return nil, assert.AnError
 }
 

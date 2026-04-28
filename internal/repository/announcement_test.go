@@ -413,3 +413,105 @@ func TestAnnouncementRepository_IsRead_Error(t *testing.T) {
 	_, err := repo.IsRead("x", "y")
 	assert.Error(t, err)
 }
+
+func TestAnnouncementRepository_ListForAdmin_FiltersByUserID(t *testing.T) {
+	repo := NewAnnouncementRepository(testDB)
+
+	// 念のため、過去 run の残骸を消してから始める。同名 fixture を使う
+	// と FK / pkey 違反になりやすい。
+	testDB.Exec(`DELETE FROM "announcement" WHERE id IN (?, ?, ?)`, "ann_lfa_g", "ann_lfa_t", "ann_lfa_o")
+
+	tu := insertTestUser(t, "u_ann_tgt", "annt")
+	defer cleanupUser(t, tu.ID)
+	ou := insertTestUser(t, "u_ann_oth", "anno")
+	defer cleanupUser(t, ou.ID)
+	global := &model.Announcement{ID: "ann_lfa_g", Title: "g", Text: "g", Icon: "info", Display: "normal", IsActive: true}
+	tUser := &model.Announcement{ID: "ann_lfa_t", Title: "t", Text: "t", Icon: "info", Display: "normal", IsActive: true, UserID: &tu.ID}
+	oUser := &model.Announcement{ID: "ann_lfa_o", Title: "o", Text: "o", Icon: "info", Display: "normal", IsActive: true, UserID: &ou.ID}
+	require.NoError(t, repo.Create(global))
+	require.NoError(t, repo.Create(tUser))
+	require.NoError(t, repo.Create(oUser))
+	defer cleanupAnnouncement(t, global.ID)
+	defer cleanupAnnouncement(t, tUser.ID)
+	defer cleanupAnnouncement(t, oUser.ID)
+
+	// userId 指定 → そのユーザー宛のみ
+	rows, err := repo.ListForAdmin(tu.ID, "active", 10, 0, "", "")
+	require.NoError(t, err)
+	ids := make(map[string]bool)
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[tUser.ID])
+	assert.False(t, ids[global.ID])
+	assert.False(t, ids[oUser.ID])
+
+	// userId 未指定 → global only
+	rows, err = repo.ListForAdmin("", "active", 10, 0, "", "")
+	require.NoError(t, err)
+	ids = make(map[string]bool)
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[global.ID])
+	assert.False(t, ids[tUser.ID])
+	assert.False(t, ids[oUser.ID])
+}
+
+func TestAnnouncementRepository_ListForAdmin_StatusBranches(t *testing.T) {
+	repo := NewAnnouncementRepository(testDB)
+	active := &model.Announcement{ID: "ann_lfa_act", Title: "a", Text: "a", Icon: "info", Display: "normal", IsActive: true}
+	archived := &model.Announcement{ID: "ann_lfa_arc", Title: "x", Text: "x", Icon: "info", Display: "normal", IsActive: false}
+	require.NoError(t, repo.Create(active))
+	require.NoError(t, repo.Create(archived))
+	defer cleanupAnnouncement(t, active.ID)
+	defer cleanupAnnouncement(t, archived.ID)
+
+	// archived
+	rows, err := repo.ListForAdmin("", "archived", 10, 0, "", "")
+	require.NoError(t, err)
+	for _, r := range rows {
+		assert.False(t, r.IsActive)
+	}
+	// all (両方含む)
+	rows, err = repo.ListForAdmin("", "all", 10, 0, "", "")
+	require.NoError(t, err)
+	ids := make(map[string]bool)
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[active.ID])
+	assert.True(t, ids[archived.ID])
+
+	// limit / offset / since / until / clamp paths
+	_, err = repo.ListForAdmin("", "active", 0, 0, "", "")
+	require.NoError(t, err)
+	_, err = repo.ListForAdmin("", "active", 1000, 5, "", "")
+	require.NoError(t, err)
+	_, err = repo.ListForAdmin("", "active", 10, 0, "since_x", "until_x")
+	require.NoError(t, err)
+}
+
+func TestAnnouncementRepository_CountReadsByAnnouncementIDs(t *testing.T) {
+	repo := NewAnnouncementRepository(testDB)
+	u1 := insertTestUser(t, "u_ann_cr1", "annc1")
+	defer cleanupUser(t, u1.ID)
+	u2 := insertTestUser(t, "u_ann_cr2", "annc2")
+	defer cleanupUser(t, u2.ID)
+	a := &model.Announcement{ID: "ann_cnt_1", Title: "t", Text: "t", Icon: "info", Display: "normal", IsActive: true}
+	require.NoError(t, repo.Create(a))
+	defer cleanupAnnouncement(t, a.ID)
+	require.NoError(t, repo.MarkRead(&model.AnnouncementRead{ID: "ar_cnt_1", UserID: u1.ID, AnnouncementID: a.ID}))
+	require.NoError(t, repo.MarkRead(&model.AnnouncementRead{ID: "ar_cnt_2", UserID: u2.ID, AnnouncementID: a.ID}))
+
+	out, err := repo.CountReadsByAnnouncementIDs([]string{a.ID, "ann_no_such"})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, out[a.ID])
+	_, missing := out["ann_no_such"]
+	assert.False(t, missing)
+
+	// empty input は早期 return
+	out, err = repo.CountReadsByAnnouncementIDs(nil)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}

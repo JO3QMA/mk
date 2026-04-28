@@ -3880,6 +3880,74 @@ func (m *MockAnnouncementRepository) ListForUser(userID string, activeOnly bool,
 	return result[:limit], nil
 }
 
+func (m *MockAnnouncementRepository) ListForAdmin(userID, status string, limit, offset int, sinceID, untilID string) ([]*model.Announcement, error) {
+	var result []*model.Announcement
+	for _, a := range m.Items {
+		if userID != "" {
+			if a.UserID == nil || *a.UserID != userID {
+				continue
+			}
+		} else {
+			if a.UserID != nil {
+				continue
+			}
+		}
+		switch status {
+		case "archived":
+			if a.IsActive {
+				continue
+			}
+		case "all":
+			// no filter
+		default:
+			if !a.IsActive {
+				continue
+			}
+		}
+		if sinceID != "" && a.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && a.ID >= untilID {
+			continue
+		}
+		result = append(result, a)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if sinceID == "" && untilID == "" {
+		if offset >= len(result) {
+			return nil, nil
+		}
+		end := min(offset+limit, len(result))
+		return result[offset:end], nil
+	}
+	if limit > len(result) {
+		limit = len(result)
+	}
+	return result[:limit], nil
+}
+
+func (m *MockAnnouncementRepository) CountReadsByAnnouncementIDs(ids []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(ids))
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
+	}
+	for key := range m.Reads {
+		// key 形式: userID + ":" + announcementID (MarkRead 参照)
+		idx := strings.LastIndex(key, ":")
+		if idx < 0 {
+			continue
+		}
+		aid := key[idx+1:]
+		if _, ok := idSet[aid]; ok {
+			out[aid]++
+		}
+	}
+	return out, nil
+}
+
 func (m *MockAnnouncementRepository) UpdateFields(id string, fields map[string]any) error {
 	a, ok := m.Items[id]
 	if !ok {
