@@ -97,6 +97,47 @@ func TestService_ShowManyByIDs_AllMissing(t *testing.T) {
 	assert.Nil(t, out)
 }
 
+func TestService_GetProfilesByUserIDs_BatchOK(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	d1, d2 := "p1", "p2"
+	repo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Description: &d1}
+	repo.Profiles["u2"] = &model.UserProfile{UserID: "u2", Description: &d2}
+	svc := user.NewService(repo, nil, nil, nil)
+
+	out := svc.GetProfilesByUserIDs([]string{"u1", "u2", "ghost"})
+	require.Len(t, out, 2)
+	require.NotNil(t, out["u1"])
+	require.NotNil(t, out["u2"])
+	assert.Equal(t, "p1", *out["u1"].Description)
+	assert.Equal(t, "p2", *out["u2"].Description)
+	assert.NotContains(t, out, "ghost", "missing profiles must not appear in the map")
+}
+
+func TestService_GetProfilesByUserIDs_EmptyInput(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	svc := user.NewService(repo, nil, nil, nil)
+	out := svc.GetProfilesByUserIDs(nil)
+	assert.Empty(t, out)
+}
+
+// failingProfileRepo wraps the mock to make FindProfilesByUserIDs return an
+// error, so we can exercise the service-side fallback (returns empty map,
+// never nil).
+type failingProfileRepo struct {
+	*testutil.MockUserRepository
+}
+
+func (failingProfileRepo) FindProfilesByUserIDs(_ []string) ([]*model.UserProfile, error) {
+	return nil, errors.New("db error")
+}
+
+func TestService_GetProfilesByUserIDs_RepoErrorYieldsEmptyMap(t *testing.T) {
+	svc := user.NewService(failingProfileRepo{testutil.NewMockUserRepository()}, nil, nil, nil)
+	out := svc.GetProfilesByUserIDs([]string{"u1"})
+	require.NotNil(t, out, "must return a non-nil map even on repository error")
+	assert.Empty(t, out)
+}
+
 func TestService_ShowManyByIDs_NoProfileSilentlyOmitted(t *testing.T) {
 	repo := testutil.NewMockUserRepository()
 	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
