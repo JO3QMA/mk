@@ -451,7 +451,9 @@ func filterByGroup(diffs []bufferedDiff, group string) []bufferedDiff {
 //   - Missing buckets are interpolated from the most recent prior log
 //     so accumulate columns appear continuous.
 //   - The result is keyed by dot-notation column names; values are
-//     ordered oldest-first.
+//     ordered newest-first (index 0 = end, last index = oldest), matching
+//     upstream Misskey TS so the frontend's `data.slice().reverse()` lines
+//     up with its oldest-first axis labels.
 func (c *Chart) GetChart(ctx context.Context, span Span, amount int, cursor *time.Time, group string) (Result, error) {
 	if amount <= 0 {
 		amount = 1
@@ -486,13 +488,20 @@ func (c *Chart) GetChart(ctx context.Context, span Span, amount int, cursor *tim
 		}
 	}
 
-	// バケット時刻 (=希望する時刻列) を生成。oldest-first の順序で詰める。
+	// バケット時刻 (=希望する時刻列) を生成。upstream Misskey TS の
+	// `getChartRaw` は `for i := amount-1; i >= 0; i--` + `chart.unshift`
+	// で **newest-first** (index 0 = 最新, 末尾 = 最古) の配列を組み立てる。
+	// frontend (`MkChart.vue` の `data.slice().reverse()`) はその newest-first
+	// 配列を反転して oldest-first labels に揃えるため、API レスポンスが
+	// oldest-first で返ると最新値が左端 (90 日前側) に流れて X 軸末端
+	// (現在時刻) に届かない症状になる (#470 / #473)。
 	out := make(Result, len(c.schema.Columns))
 	for _, col := range c.schema.Columns {
 		out[col.Name] = make([]int64, amount)
 	}
 	for i := 0; i < amount; i++ {
-		bucket := stepBack(end, amount-1-i, span)
+		// i=0 → end (最新), i=amount-1 → end-(amount-1)*span (最古)
+		bucket := stepBack(end, i, span)
 		row := pickRowAt(rows, bucket.Unix())
 		if row == nil {
 			row = pickFallback(rows, bucket.Unix())
