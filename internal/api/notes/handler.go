@@ -281,14 +281,17 @@ func (h *Handler) Show(c echo.Context) error {
 	return c.JSON(http.StatusOK, s[0])
 }
 
-// lookupVisible fetches the note via QueryService when available, otherwise
-// falls back to a direct repository lookup. テストでQueryServiceなしで初期化
-// された場合の後方互換のためにフォールバックを残している。
+// lookupVisible fetches the note via QueryService, which applies the
+// visibility check (followers / specified visibility / blocks).
+// QueryService が wire されていない場合は visibility check を経ない
+// fallback で followers/specified の note が漏洩する security regression
+// risk があるため、nil なら ErrNoteNotFound を返して安全側に倒す (#445)。
+// production では router.go で常に wire されるのでこの分岐は通らない。
 func (h *Handler) lookupVisible(viewer *model.User, noteID string) (*model.Note, error) {
-	if h.queryService != nil {
-		return h.queryService.Show(viewer, noteID)
+	if h.queryService == nil {
+		return nil, note.ErrNoteNotFound
 	}
-	return h.noteRepo.FindByIDWithRelations(noteID)
+	return h.queryService.Show(viewer, noteID)
 }
 
 // DeleteRequest is the request body for notes/delete.
