@@ -24,13 +24,15 @@ type EmojiRepository interface {
 	// DeleteMany removes rows matching any id in ids.
 	DeleteMany(ids []string) error
 	// ListWithFilter returns emojis matching search/category/host filters.
-	ListWithFilter(query, category string, local bool, limit, offset int) ([]*model.Emoji, error)
+	// sinceID / untilID は cursor-based pagination 用で、空文字列なら無視。
+	// frontend Paginator (cursor 方式) と offset 方式の両方を受け付ける。
+	ListWithFilter(query, category string, local bool, sinceID, untilID string, limit, offset int) ([]*model.Emoji, error)
 	// FindManyByNamesAndHost returns emojis matching any of the given names for
 	// a specific host. host=nil searches local emojis (host IS NULL).
 	FindManyByNamesAndHost(names []string, host *string) ([]*model.Emoji, error)
 	// ListRemoteWithFilter mirrors ListWithFilter for remote emojis. host empty
 	// matches any remote host.
-	ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error)
+	ListRemoteWithFilter(query, host, sinceID, untilID string, limit, offset int) ([]*model.Emoji, error)
 	// ListV2 returns emojis matching v2 filters with sorting + pagination.
 	ListV2(filter model.EmojiV2Filter) ([]*model.Emoji, error)
 	// CountV2 returns total count of emojis matching v2 filters (pagination ignored).
@@ -116,13 +118,19 @@ func (r *emojiRepository) FindManyByNamesAndHost(names []string, host *string) (
 	return emojis, nil
 }
 
-func (r *emojiRepository) ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error) {
+func (r *emojiRepository) ListRemoteWithFilter(query, host, sinceID, untilID string, limit, offset int) ([]*model.Emoji, error) {
 	q := r.db.Where("host IS NOT NULL").Order("id DESC")
 	if query != "" {
 		q = q.Where("name ILIKE ?", "%"+query+"%")
 	}
 	if host != "" {
 		q = q.Where("host = ?", host)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
 	}
 	if limit <= 0 {
 		limit = 30
@@ -141,7 +149,7 @@ func (r *emojiRepository) ListRemoteWithFilter(query, host string, limit, offset
 	return emojis, nil
 }
 
-func (r *emojiRepository) ListWithFilter(query, category string, local bool, limit, offset int) ([]*model.Emoji, error) {
+func (r *emojiRepository) ListWithFilter(query, category string, local bool, sinceID, untilID string, limit, offset int) ([]*model.Emoji, error) {
 	q := r.db.Order("id ASC")
 	if local {
 		q = q.Where("host IS NULL")
@@ -151,6 +159,12 @@ func (r *emojiRepository) ListWithFilter(query, category string, local bool, lim
 	}
 	if category != "" {
 		q = q.Where("category = ?", category)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
 	}
 	if limit <= 0 {
 		limit = 50
@@ -213,6 +227,15 @@ func (r *emojiRepository) buildV2Query(filter model.EmojiV2Filter) *gorm.DB {
 		}
 		if fq.License != "" {
 			q = q.Where("license ILIKE ?", "%"+fq.License+"%")
+		}
+		if fq.URI != "" {
+			q = q.Where("uri ILIKE ?", "%"+fq.URI+"%")
+		}
+		if fq.PublicURL != "" {
+			q = q.Where(`"publicUrl" ILIKE ?`, "%"+fq.PublicURL+"%")
+		}
+		if fq.OriginalURL != "" {
+			q = q.Where(`"originalUrl" ILIKE ?`, "%"+fq.OriginalURL+"%")
 		}
 		if fq.IsSensitive != nil {
 			q = q.Where(`"isSensitive" = ?`, *fq.IsSensitive)

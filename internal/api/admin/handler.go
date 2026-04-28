@@ -1088,6 +1088,8 @@ func (h *Handler) EmojiList(c echo.Context) error {
 	var req struct {
 		Query    string `json:"query"`
 		Category string `json:"category"`
+		SinceID  string `json:"sinceId"`
+		UntilID  string `json:"untilId"`
 		Limit    int    `json:"limit"`
 		Offset   int    `json:"offset"`
 	}
@@ -1097,7 +1099,7 @@ func (h *Handler) EmojiList(c echo.Context) error {
 	if h.emojiRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	emojis, err := h.emojiRepo.ListWithFilter(req.Query, req.Category, true, req.Limit, req.Offset)
+	emojis, err := h.emojiRepo.ListWithFilter(req.Query, req.Category, true, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
@@ -1156,6 +1158,9 @@ func (h *Handler) EmojiListV2(c echo.Context) error {
 			UpdatedAtFrom: req.Query.UpdatedAtFrom,
 			UpdatedAtTo:   req.Query.UpdatedAtTo,
 			RoleIDs:       req.Query.RoleIDs,
+			URI:           req.Query.URI,
+			PublicURL:     req.Query.PublicURL,
+			OriginalURL:   req.Query.OriginalURL,
 		}
 	}
 
@@ -1196,6 +1201,13 @@ type emojiV2QueryReq struct {
 	UpdatedAtFrom string   `json:"updatedAtFrom"`
 	UpdatedAtTo   string   `json:"updatedAtTo"`
 	RoleIDs       []string `json:"roleIds"`
+	// URI / PublicURL / OriginalURL は upstream Misskey の v2 検索 schema
+	// で受け付けている filter (#466)。frontend (custom-emojis-manager.remote
+	// .vue) の検索ボックスから送られてくるため、handler 側で受けないと
+	// silently 無視される。受信したら repo の WHERE 句に展開する。
+	URI         string `json:"uri"`
+	PublicURL   string `json:"publicUrl"`
+	OriginalURL string `json:"originalUrl"`
 }
 
 type emojiListV2Response struct {

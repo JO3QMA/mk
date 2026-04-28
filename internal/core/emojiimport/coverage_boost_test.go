@@ -172,8 +172,8 @@ func (r *failingEmojiRepo) UpdateFields(id string, fields map[string]any) error 
 
 func (r *failingEmojiRepo) Delete(id string) error { return r.inner.Delete(id) }
 
-func (r *failingEmojiRepo) ListWithFilter(q, c string, l bool, lim, off int) ([]*model.Emoji, error) {
-	return r.inner.ListWithFilter(q, c, l, lim, off)
+func (r *failingEmojiRepo) ListWithFilter(q, c string, l bool, sinceID, untilID string, lim, off int) ([]*model.Emoji, error) {
+	return r.inner.ListWithFilter(q, c, l, sinceID, untilID, lim, off)
 }
 
 func (r *failingEmojiRepo) ListLocal() ([]*model.Emoji, error) { return r.inner.ListLocal() }
@@ -190,8 +190,8 @@ func (r *failingEmojiRepo) DeleteMany(ids []string) error {
 	return r.inner.DeleteMany(ids)
 }
 
-func (r *failingEmojiRepo) ListRemoteWithFilter(q, host string, limit, offset int) ([]*model.Emoji, error) {
-	return r.inner.ListRemoteWithFilter(q, host, limit, offset)
+func (r *failingEmojiRepo) ListRemoteWithFilter(q, host, sinceID, untilID string, limit, offset int) ([]*model.Emoji, error) {
+	return r.inner.ListRemoteWithFilter(q, host, sinceID, untilID, limit, offset)
 }
 
 func (r *failingEmojiRepo) ListV2(filter model.EmojiV2Filter) ([]*model.Emoji, error) {

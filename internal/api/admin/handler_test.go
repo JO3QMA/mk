@@ -972,7 +972,7 @@ type failingListEmojiRepo struct {
 	*testutil.MockEmojiRepository
 }
 
-func (f *failingListEmojiRepo) ListWithFilter(_, _ string, _ bool, _, _ int) ([]*model.Emoji, error) {
+func (f *failingListEmojiRepo) ListWithFilter(_, _ string, _ bool, _, _ string, _, _ int) ([]*model.Emoji, error) {
 	return nil, assert.AnError
 }
 

@@ -382,6 +382,57 @@ func TestEmojiListV2_QueryFilter(t *testing.T) {
 	assert.EqualValues(t, 2, resp["allCount"])
 }
 
+// #466: frontend が remote emoji 検索ボックスから uri / publicUrl /
+// originalUrl filter を渡してくる。handler / model / repo がこれらを
+// 受けないと silent ignore で「検索しても全件出る」状態になる。
+func TestEmojiListV2_URIFilter(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	hostA := "alpha.example"
+	hostB := "beta.example"
+	uriA := "https://alpha.example/emojis/x"
+	uriB := "https://beta.example/emojis/y"
+	require.NoError(t, repo.Create(&model.Emoji{
+		ID: "e1", Name: "x", Host: &hostA, URI: &uriA,
+		OriginalURL: "https://alpha-cdn.example/x.png",
+		PublicURL:   "https://alpha-cdn.example/x.png",
+	}))
+	require.NoError(t, repo.Create(&model.Emoji{
+		ID: "e2", Name: "y", Host: &hostB, URI: &uriB,
+		OriginalURL: "https://beta-cdn.example/y.png",
+		PublicURL:   "https://beta-cdn.example/y.png",
+	}))
+	h.SetEmojiRepo(repo)
+
+	t.Run("uri filter narrows to alpha", func(t *testing.T) {
+		rec := doPost(h.EmojiListV2, `{"query":{"uri":"alpha.example"}}`, adminUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		emojis := resp["emojis"].([]any)
+		require.Len(t, emojis, 1)
+		assert.Equal(t, "e1", emojis[0].(map[string]any)["id"])
+	})
+	t.Run("publicUrl filter narrows to beta", func(t *testing.T) {
+		rec := doPost(h.EmojiListV2, `{"query":{"publicUrl":"beta-cdn"}}`, adminUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		emojis := resp["emojis"].([]any)
+		require.Len(t, emojis, 1)
+		assert.Equal(t, "e2", emojis[0].(map[string]any)["id"])
+	})
+	t.Run("originalUrl filter narrows to alpha", func(t *testing.T) {
+		rec := doPost(h.EmojiListV2, `{"query":{"originalUrl":"alpha-cdn"}}`, adminUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		emojis := resp["emojis"].([]any)
+		require.Len(t, emojis, 1)
+		assert.Equal(t, "e1", emojis[0].(map[string]any)["id"])
+	})
+}
+
 func TestEmojiListV2_Pagination(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	repo := testutil.NewMockEmojiRepository()

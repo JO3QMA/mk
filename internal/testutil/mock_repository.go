@@ -1260,10 +1260,16 @@ func (m *MockEmojiRepository) Delete(id string) error {
 	return nil
 }
 
-func (m *MockEmojiRepository) ListWithFilter(query, category string, local bool, limit, offset int) ([]*model.Emoji, error) {
+func (m *MockEmojiRepository) ListWithFilter(query, category string, local bool, sinceID, untilID string, limit, offset int) ([]*model.Emoji, error) {
 	var result []*model.Emoji
 	for _, e := range m.Emojis {
 		if local && e.Host != nil {
+			continue
+		}
+		if sinceID != "" && e.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && e.ID >= untilID {
 			continue
 		}
 		result = append(result, e)
@@ -1367,7 +1373,7 @@ func (m *MockEmojiRepository) DeleteMany(ids []string) error {
 	return nil
 }
 
-func (m *MockEmojiRepository) ListRemoteWithFilter(query, host string, limit, offset int) ([]*model.Emoji, error) {
+func (m *MockEmojiRepository) ListRemoteWithFilter(query, host, sinceID, untilID string, limit, offset int) ([]*model.Emoji, error) {
 	out := make([]*model.Emoji, 0)
 	seen := make(map[string]bool)
 	for _, e := range m.Emojis {
@@ -1381,6 +1387,12 @@ func (m *MockEmojiRepository) ListRemoteWithFilter(query, host string, limit, of
 			continue
 		}
 		if query != "" && !strings.Contains(strings.ToLower(e.Name), strings.ToLower(query)) {
+			continue
+		}
+		if sinceID != "" && e.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && e.ID >= untilID {
 			continue
 		}
 		seen[e.ID] = true
@@ -1481,6 +1493,17 @@ func (m *MockEmojiRepository) filterV2(filter model.EmojiV2Filter) []*model.Emoj
 				if e.License == nil || !mockILIKE(*e.License, fq.License) {
 					continue
 				}
+			}
+			if fq.URI != "" {
+				if e.URI == nil || !mockILIKE(*e.URI, fq.URI) {
+					continue
+				}
+			}
+			if fq.PublicURL != "" && !mockILIKE(e.PublicURL, fq.PublicURL) {
+				continue
+			}
+			if fq.OriginalURL != "" && !mockILIKE(e.OriginalURL, fq.OriginalURL) {
+				continue
 			}
 			if fq.IsSensitive != nil && e.IsSensitive != *fq.IsSensitive {
 				continue

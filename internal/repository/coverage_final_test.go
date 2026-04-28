@@ -119,9 +119,9 @@ func TestDriveFileRepository_ListForAdmin_Branches(t *testing.T) {
 
 func TestEmojiRepository_ListRemoteWithFilter_Clamp(t *testing.T) {
 	r := NewEmojiRepository(testDB)
-	_, err := r.ListRemoteWithFilter("", "remote.example", 0, 0)
+	_, err := r.ListRemoteWithFilter("", "remote.example", "", "", 0, 0)
 	require.NoError(t, err)
-	_, err = r.ListRemoteWithFilter("", "remote.example", 999, 0)
+	_, err = r.ListRemoteWithFilter("", "remote.example", "", "", 999, 0)
 	require.NoError(t, err)
 }
 
@@ -399,7 +399,7 @@ func TestChatRepository_ListHistory_WithData(t *testing.T) {
 // emoji.ListRemoteWithFilter: querystring指定 (substring filter) 分岐
 func TestEmojiRepository_ListRemoteWithFilter_Query(t *testing.T) {
 	r := NewEmojiRepository(testDB)
-	_, err := r.ListRemoteWithFilter("cat", "remote.example", 10, 0)
+	_, err := r.ListRemoteWithFilter("cat", "remote.example", "", "", 10, 0)
 	require.NoError(t, err)
 }
 
@@ -468,7 +468,7 @@ func TestMetaRepository_EnsureInitial_DBError(t *testing.T) {
 // emoji.ListRemoteWithFilter: offset > 0 分岐
 func TestEmojiRepository_ListRemoteWithFilter_Offset(t *testing.T) {
 	r := NewEmojiRepository(testDB)
-	_, err := r.ListRemoteWithFilter("", "remote.example", 10, 5)
+	_, err := r.ListRemoteWithFilter("", "remote.example", "", "", 10, 5)
 	require.NoError(t, err)
 }
 
