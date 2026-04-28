@@ -156,12 +156,22 @@ type Source struct {
 }
 
 // Document represents an attached file (image/video/audio/...) in a Note.
+//
+// Width / Height は `as:width` / `as:height` (ActivityStreams 拡張)。
+// Icon は Document を表示する際のサムネイル候補で、Misskey TS 系が
+// 連合させる。Blurhash は Misskey の `_misskey_blurhash` カスタム拡張で、
+// frontend がメディアロード前にぼかし背景を表示するために使う。
+// いずれも欠落している remote 実装も多いので omitempty で受ける。
 type Document struct {
 	Type      string `json:"type"` // "Document"
 	MediaType string `json:"mediaType"`
 	URL       string `json:"url"`
 	Name      string `json:"name,omitempty"`
 	Sensitive bool   `json:"sensitive,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Icon      *Image `json:"icon,omitempty"`
+	Blurhash  string `json:"_misskey_blurhash,omitempty"`
 }
 
 // PropertyValue represents a profile field (schema.org PropertyValue).

@@ -208,6 +208,72 @@ func TestPackDriveFileWithRelations_BothSet(t *testing.T) {
 	assert.Equal(t, "alice", out.User.Username)
 }
 
+// #460: link-format remote files have no stored thumbnailUrl. The
+// upstream frontend (`MkMediaImage.vue:100`) accesses
+// `image.thumbnailUrl!` with a non-null assertion, so a NULL value
+// breaks timeline thumbnail rendering. PackDriveFile must mirror
+// upstream's getThumbnailUrl fallback chain (thumbnailUrl ??
+// webpublicUrl ?? url) for image MIME types.
+func TestPackDriveFile_FallbackThumbnailFromURL(t *testing.T) {
+	idGen := newTestIDGen(t)
+	f := &model.DriveFile{
+		ID:   idGen.Generate(time.Now()),
+		Name: "remote.png",
+		Type: "image/png",
+		URL:  "https://r/remote.png",
+		// ThumbnailURL / WebpublicURL は nil (link-format で生成され
+		// ていない remote attachment を想定)
+	}
+	out := PackDriveFile(f, idGen)
+	require.NotNil(t, out.ThumbnailURL)
+	assert.Equal(t, "https://r/remote.png", *out.ThumbnailURL)
+}
+
+func TestPackDriveFile_FallbackThumbnailFromWebpublic(t *testing.T) {
+	idGen := newTestIDGen(t)
+	web := "https://r/remote-webpublic.webp"
+	f := &model.DriveFile{
+		ID:           idGen.Generate(time.Now()),
+		Name:         "remote.webp",
+		Type:         "image/webp",
+		URL:          "https://r/remote.webp",
+		WebpublicURL: &web,
+	}
+	out := PackDriveFile(f, idGen)
+	require.NotNil(t, out.ThumbnailURL)
+	// webpublicUrl が優先される (upstream getThumbnailUrl と一致)
+	assert.Equal(t, web, *out.ThumbnailURL)
+}
+
+func TestPackDriveFile_NoFallbackForNonImage(t *testing.T) {
+	idGen := newTestIDGen(t)
+	f := &model.DriveFile{
+		ID:   idGen.Generate(time.Now()),
+		Name: "video.mp4",
+		Type: "video/mp4",
+		URL:  "https://r/video.mp4",
+	}
+	out := PackDriveFile(f, idGen)
+	// video など非 image MIME はフォールバックさせない (frontend が
+	// thumbnail として動画を読み込んでしまうのを避ける)
+	assert.Nil(t, out.ThumbnailURL)
+}
+
+func TestPackDriveFile_PreservesExistingThumbnailUrl(t *testing.T) {
+	idGen := newTestIDGen(t)
+	thumb := "https://r/explicit-thumb.png"
+	f := &model.DriveFile{
+		ID:           idGen.Generate(time.Now()),
+		Name:         "x",
+		Type:         "image/png",
+		URL:          "https://r/x.png",
+		ThumbnailURL: &thumb,
+	}
+	out := PackDriveFile(f, idGen)
+	require.NotNil(t, out.ThumbnailURL)
+	assert.Equal(t, thumb, *out.ThumbnailURL)
+}
+
 func TestPackDriveFileWithRelations_NilRelations(t *testing.T) {
 	idGen := newTestIDGen(t)
 	f := &model.DriveFile{ID: idGen.Generate(time.Now()), Name: "a", URL: "x"}

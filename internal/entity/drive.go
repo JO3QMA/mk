@@ -70,11 +70,50 @@ func PackDriveFile(f *model.DriveFile, idGen id.Generator) DriveFileEntity {
 		Properties:   props,
 		Comment:      f.Comment,
 		URL:          f.URL,
-		ThumbnailURL: f.ThumbnailURL,
+		ThumbnailURL: resolveThumbnailURL(f),
 		WebpublicURL: f.WebpublicURL,
 		FolderID:     f.FolderID,
 		UserID:       f.UserID,
 	}
+}
+
+// resolveThumbnailURL emulates upstream Misskey's
+// DriveFileEntityService.getThumbnailUrl fallback: when the row's
+// thumbnailUrl column is NULL (typical for link-format remote files
+// since mk-go doesn't generate thumbnails for unfetched remote
+// originals), fall back to webpublicUrl, then to the original url for
+// image MIME types. Frontend (`MkMediaImage.vue:100`) accesses
+// `image.thumbnailUrl!` with a non-null assertion, so returning null
+// for an image breaks the timeline thumbnail rendering entirely
+// (#460). For non-image types we keep null — frontend skips the
+// thumbnail render path for those.
+func resolveThumbnailURL(f *model.DriveFile) *string {
+	if f.ThumbnailURL != nil && *f.ThumbnailURL != "" {
+		return f.ThumbnailURL
+	}
+	if !isImageMime(f.Type) {
+		return nil
+	}
+	if f.WebpublicURL != nil && *f.WebpublicURL != "" {
+		return f.WebpublicURL
+	}
+	if f.URL != "" {
+		u := f.URL
+		return &u
+	}
+	return nil
+}
+
+// isImageMime reports whether `type` field denotes a still image. The
+// upstream check (`isMimeImage(type, 'sharp-convertible-image')`) maps
+// to this set when ignoring server-side image processing capability —
+// for the thumbnail fallback path we just need a "browser will render
+// this as <img>" predicate.
+func isImageMime(t string) bool {
+	if len(t) < 6 {
+		return false
+	}
+	return t[:6] == "image/"
 }
 
 // PackDriveFileWithRelations is PackDriveFile + optional folder/user
