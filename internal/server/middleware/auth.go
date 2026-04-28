@@ -31,6 +31,11 @@ type AuthMiddleware struct {
 	userRepo        repository.UserRepository
 	accessTokenRepo repository.AccessTokenRepository
 
+	// tokenCache は token → resolved user の短命キャッシュ (#512 / #413 #3)。
+	// 認証要リクエストの DB hit を 30 秒 TTL で消す。logout/token revoke の
+	// 反映遅延は許容範囲内 (TTL 以内)。
+	tokenCache *tokenCache
+
 	// lastActiveSeen はユーザー ID → 直近で lastActiveDate を更新した時刻。
 	// 認証済みリクエストごとに DB に書き込むと負荷が高くなるので、
 	// lastActiveUpdateInterval で gating する (#421)。
@@ -43,6 +48,7 @@ func NewAuthMiddleware(userRepo repository.UserRepository, accessTokenRepo repos
 	return &AuthMiddleware{
 		userRepo:        userRepo,
 		accessTokenRepo: accessTokenRepo,
+		tokenCache:      newTokenCache(),
 		lastActiveSeen:  make(map[string]time.Time),
 	}
 }
@@ -242,9 +248,15 @@ func extractToken(c echo.Context) string {
 }
 
 func (a *AuthMiddleware) resolveUser(token string) (*model.User, error) {
+	// hot path: TTL 内なら DB を引かずに cached user を返す (#512)。
+	if u, ok := a.tokenCache.get(token); ok {
+		return u, nil
+	}
+
 	// まずnative tokenで検索
 	user, err := a.userRepo.FindByToken(token)
 	if err == nil {
+		a.tokenCache.put(token, user)
 		return user, nil
 	}
 
@@ -252,9 +264,13 @@ func (a *AuthMiddleware) resolveUser(token string) (*model.User, error) {
 	hash := sha256Hash(token)
 	accessToken, err := a.accessTokenRepo.FindByHash(hash)
 	if err != nil {
+		// not-found 系は cache に積まない: 失効後 30 秒間 stale を返さない
+		// ようにするのと、未知 token 連打への DDoS を rate limiter 側に任せる
+		// 設計のため (#512 scope)。
 		return nil, err
 	}
 
+	a.tokenCache.put(token, accessToken.User)
 	return accessToken.User, nil
 }
 

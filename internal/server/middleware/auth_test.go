@@ -86,6 +86,73 @@ func TestAuthenticate_QueryParam(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// countingUserRepo wraps the mock to count FindByToken calls so we can
+// assert that the resolved user came from the in-memory cache and not DB
+// on the second hit (#512).
+type countingUserRepo struct {
+	*testutil.MockUserRepository
+	findByTokenCalls int
+}
+
+func (c *countingUserRepo) FindByToken(token string) (*model.User, error) {
+	c.findByTokenCalls++
+	return c.MockUserRepository.FindByToken(token)
+}
+
+func TestAuthenticate_TokenCacheAvoidsDBOnRepeatedHit(t *testing.T) {
+	repo := &countingUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	tokenRepo := testutil.NewMockAccessTokenRepository()
+	user := &model.User{ID: "u_cache_1", Username: "cacheuser"}
+	const tok = "cache-tok-aaaa"
+	repo.Tokens[tok] = user
+
+	auth := NewAuthMiddleware(repo, tokenRepo)
+	e := echo.New()
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		_ = auth.Authenticate()(func(c echo.Context) error {
+			u := GetUser(c)
+			assert.NotNil(t, u)
+			assert.Equal(t, "u_cache_1", u.ID)
+			return c.String(http.StatusOK, "ok")
+		})(c)
+		return rec
+	}
+
+	for i := 0; i < 5; i++ {
+		assert.Equal(t, http.StatusOK, send().Code)
+	}
+	assert.Equal(t, 1, repo.findByTokenCalls,
+		"FindByToken should be called only on the cache miss; subsequent hits use the in-memory cache")
+}
+
+func TestAuthenticate_TokenCacheNotFoundIsNotPoisoned(t *testing.T) {
+	repo := &countingUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	tokenRepo := testutil.NewMockAccessTokenRepository()
+	auth := NewAuthMiddleware(repo, tokenRepo)
+
+	send := func() {
+		e := echo.New()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer ghost-tok")
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		_ = auth.Authenticate()(func(c echo.Context) error {
+			assert.Nil(t, GetUser(c))
+			return c.String(http.StatusOK, "ok")
+		})(c)
+	}
+
+	send()
+	send()
+	// 不在 token は cache に積まないので 2 回とも DB を引くこと。
+	assert.Equal(t, 2, repo.findByTokenCalls,
+		"not-found tokens must not be cached so token revoke / DB recovery is reflected immediately")
+}
+
 func TestAuthenticate_InvalidToken(t *testing.T) {
 	userRepo := testutil.NewMockUserRepository()
 	tokenRepo := testutil.NewMockAccessTokenRepository()

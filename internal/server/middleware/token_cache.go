@@ -1,0 +1,105 @@
+package middleware
+
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/shiroha-a/mk/internal/model"
+)
+
+// authCacheTTL は token → User を hot path でキャッシュする寿命。
+// 短い TTL は logout / token revoke の反映遅延を 30 秒以内に抑えつつ、
+// 高頻度の認証リクエストで DB の `FindByToken` 呼び出しをほぼ消す (#512 / #413 #3)。
+const authCacheTTL = 30 * time.Second
+
+// authCacheSweepEvery はキャッシュ growth が unbounded にならないように
+// `put` 1 回ごとに sweep を掛ける確率の分母 (1/N の確率で full sweep)。
+// hot path での余分な O(N) 走査を抑える妥協値。
+const authCacheSweepEvery uint64 = 64
+
+// cachedAuthEntry holds a resolved user and its cache expiry time.
+type cachedAuthEntry struct {
+	user      *model.User
+	expiresAt time.Time
+}
+
+// tokenCache is a sync.Map-backed cache for token → resolved user, with
+// lazy TTL eviction on read and probabilistic full sweep on write. Negative
+// results (token not found) are *not* cached: not-found queries should fail
+// fast through DB so token revoke takes effect immediately (#512)。
+type tokenCache struct {
+	m          sync.Map // string → *cachedAuthEntry
+	storeCount atomic.Uint64
+	ttl        time.Duration
+	sweepEvery uint64
+	now        func() time.Time // injected clock for test
+}
+
+// newTokenCache returns a tokenCache with default TTL / sweep cadence and
+// the wall clock as the now function.
+func newTokenCache() *tokenCache {
+	return &tokenCache{
+		ttl:        authCacheTTL,
+		sweepEvery: authCacheSweepEvery,
+		now:        time.Now,
+	}
+}
+
+// get returns the cached user if present and not expired. Expired entries
+// are deleted lazily on read.
+func (c *tokenCache) get(token string) (*model.User, bool) {
+	v, ok := c.m.Load(token)
+	if !ok {
+		return nil, false
+	}
+	entry, ok := v.(*cachedAuthEntry)
+	if !ok || c.now().After(entry.expiresAt) {
+		c.m.Delete(token)
+		return nil, false
+	}
+	return entry.user, true
+}
+
+// put stores token → user with TTL. Triggers a full sweep every sweepEvery
+// stores so the cache size stays bounded by "active tokens within the TTL
+// window" rather than "every token ever seen".
+func (c *tokenCache) put(token string, user *model.User) {
+	c.m.Store(token, &cachedAuthEntry{
+		user:      user,
+		expiresAt: c.now().Add(c.ttl),
+	})
+	if c.sweepEvery > 0 && c.storeCount.Add(1)%c.sweepEvery == 0 {
+		c.sweep()
+	}
+}
+
+// invalidate removes a single entry. Useful when an explicit logout /
+// token revoke needs to drop a cached user immediately.
+func (c *tokenCache) invalidate(token string) {
+	c.m.Delete(token)
+}
+
+// sweep walks the entire cache and removes expired entries. Cheap when the
+// cache is small (which is the steady state thanks to the periodic sweep
+// cadence on `put`).
+func (c *tokenCache) sweep() {
+	now := c.now()
+	c.m.Range(func(k, v any) bool {
+		if entry, ok := v.(*cachedAuthEntry); ok && now.After(entry.expiresAt) {
+			c.m.Delete(k)
+		}
+		return true
+	})
+}
+
+// len returns the current number of entries (test-only). The returned
+// value is a snapshot and may be stale immediately under concurrent access.
+func (c *tokenCache) len() int {
+	n := 0
+	c.m.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
