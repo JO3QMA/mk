@@ -30,18 +30,21 @@ type avatarUserLookup interface {
 //
 // Behaviour mirrors Misskey TS upstream `ServerService.ts:211`:
 //   - acct = "username" → local user (host == nil filter)
-//   - acct = "username@host" → remote user, host=this instance を
-//     localhost と等価に扱う
-//   - user 行が見つかれば user.avatarUrl にリダイレクト、無ければ
-//     identicon (mk-go の /identicon/:x) にフォールバック
-//   - user 行が無ければ /static-assets/user-unknown.png
+//   - acct = "username@host" → remote user; if the host matches the
+//     running instance's host it is treated as local (host == nil)
+//     since upstream stores local users with host=NULL.
+//   - User found → 302 redirect to user.avatarUrl, or to the
+//     identicon endpoint (/identicon/:userID) when avatarUrl is unset.
+//   - User missing or suspended → 302 redirect to
+//     /static-assets/user-unknown.png so the existence of an account
+//     is not leaked via mention probes.
 //
-// Cache-Control: public, max-age=86400 を付けて、frontend が同じ
-// mention を多数描画するときに毎回 lookup 走らないようにする。
+// Sets Cache-Control: public, max-age=86400 so browsers do not run
+// the DB lookup for every mention chip (matches upstream).
 func avatarHandler(userRepo avatarUserLookup, localHost string) echo.HandlerFunc {
 	localHost = strings.ToLower(localHost)
 	return func(c echo.Context) error {
-		// 304/cache hit でも返したい header なので Redirect 前に書く。
+		// 304 / cache-hit でも返したい header なので Redirect 前に書く。
 		c.Response().Header().Set(echo.HeaderCacheControl, "public, max-age=86400")
 
 		acct := c.Param("acct")
@@ -76,8 +79,8 @@ func avatarHandler(userRepo avatarUserLookup, localHost string) echo.HandlerFunc
 // (returned nil) to align with upstream Misskey storing local users
 // with host=NULL.
 //
-// 入力が空 or `@` 単独などで username が取れない場合は空文字列を
-// 返し、caller 側でリダイレクトを早期に決めさせる。
+// Empty input or pathological forms like "@" return ("", nil) so the
+// caller can short-circuit to the static fallback redirect.
 func parseAcct(acct, localHost string) (username string, host *string) {
 	acct = strings.TrimSpace(acct)
 	acct = strings.TrimPrefix(acct, "@")
