@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,12 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
+
+// errOrphanedAccessToken は access_token 行は残っているが Preload した
+// User が nil (= ユーザー削除済み) のケース。Authenticate はこれを「認証
+// 失敗扱い」(anonymous request 継続) として扱い、後続 dereference panic
+// を避ける (Devin #514 FLAG-1)。
+var errOrphanedAccessToken = errors.New("auth: access_token references a deleted user")
 
 type contextKey string
 
@@ -271,12 +278,13 @@ func (a *AuthMiddleware) resolveUser(token string) (*model.User, error) {
 	}
 
 	// orphaned access_token (User 行が削除済み) のとき GORM の Preload は
-	// User を nil にする。nil を 30 秒間キャッシュすると後続リクエストでも
-	// 同じ orphan を参照してしまうので、cache に積まないだけにして既存の
-	// 戻り値挙動はそのまま保つ (Devin #514 INFO-3 / 既存挙動互換)。
-	if accessToken.User != nil {
-		a.tokenCache.put(token, accessToken.User)
+	// User を nil にする。そのまま (nil, nil) を返すと Authenticate 側で
+	// user.ID dereference panic になるので、専用 error を返して anonymous
+	// request 扱いに落とす (Devin #514 FLAG-1)。cache にも積まない。
+	if accessToken.User == nil {
+		return nil, errOrphanedAccessToken
 	}
+	a.tokenCache.put(token, accessToken.User)
 	return accessToken.User, nil
 }
 

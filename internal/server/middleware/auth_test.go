@@ -10,6 +10,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAuthenticate_NoToken(t *testing.T) {
@@ -127,6 +128,36 @@ func TestAuthenticate_TokenCacheAvoidsDBOnRepeatedHit(t *testing.T) {
 	}
 	assert.Equal(t, 1, repo.findByTokenCalls,
 		"FindByToken should be called only on the cache miss; subsequent hits use the in-memory cache")
+}
+
+// orphaned access_token (User 削除済み) は anonymous request 扱いに落ちて
+// dereference panic を起こさないこと (Devin #514 FLAG-1)。
+func TestAuthenticate_OrphanedAccessTokenFallsBackToAnonymous(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	tokenRepo := testutil.NewMockAccessTokenRepository()
+	const tok = "orphan-tok"
+	tokenRepo.Tokens[sha256Hash(tok)] = &model.AccessToken{
+		ID: "at_orphan",
+		// User intentionally nil to simulate the orphaned row.
+	}
+
+	auth := NewAuthMiddleware(repo, tokenRepo)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	// 旧実装ではここで panic していた。Authenticate が anonymous で next に
+	// 渡すこと、ハンドラ内 GetUser が nil を返すことを確認する。
+	require.NotPanics(t, func() {
+		err := auth.Authenticate()(func(c echo.Context) error {
+			assert.Nil(t, GetUser(c), "orphaned access_token must not produce a user")
+			return c.String(http.StatusOK, "ok")
+		})(c)
+		assert.NoError(t, err)
+	})
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestAuthenticate_TokenCacheNotFoundIsNotPoisoned(t *testing.T) {
