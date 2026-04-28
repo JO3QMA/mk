@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
+	"github.com/shiroha-a/mk/internal/core/webpush"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -796,10 +797,78 @@ func (h *Handler) UpdateMeta(c echo.Context) error {
 	// alias が frontend から来たら DB カラム名に translate して渡す。
 	renameUpdateMetaFields(fields)
 
+	// VAPID 鍵 auto-generate (#492): Service Worker 有効化時に
+	// swPublicKey / swPrivateKey が両方空のとき backend で生成して詰める。
+	// 既存鍵 (片方だけ欠けの中途状態 含む) は触らないことで、運用者が
+	// 外部生成した鍵を保持できるようにする。
+	if err := h.maybeAutoGenerateVAPID(fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
 	if err := h.metaRepo.Update(fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// maybeAutoGenerateVAPID は update-meta の field map を見て、Service
+// Worker が有効化される (= 既存有効 or 今 true に切り替わる) かつ
+// 公開鍵 / 秘密鍵が両方空のときに新規 VAPID 鍵対を生成して fields に
+// 詰め直す。生成しない条件:
+//   - SW が無効化される / 元から無効 で keys も空のまま (no-op)
+//   - 片方の key が既に設定済 (運用者が外部生成した鍵を尊重)
+func (h *Handler) maybeAutoGenerateVAPID(fields map[string]any) error {
+	current, err := h.metaRepo.Fetch()
+	if err != nil {
+		return err
+	}
+	enable := metaBoolAfterUpdate(fields, "enableServiceWorker", current.EnableServiceWorker)
+	if !enable {
+		return nil
+	}
+	pub := metaStringAfterUpdate(fields, "swPublicKey", strDeref(current.SwPublicKey))
+	priv := metaStringAfterUpdate(fields, "swPrivateKey", strDeref(current.SwPrivateKey))
+	if pub != "" || priv != "" {
+		return nil
+	}
+	newPub, newPriv, err := webpush.GenerateVAPIDKeys()
+	if err != nil {
+		return err
+	}
+	fields["swPublicKey"] = newPub
+	fields["swPrivateKey"] = newPriv
+	return nil
+}
+
+// metaBoolAfterUpdate returns the effective bool value of key after the
+// update would be applied — incoming value if present and bool-typed,
+// otherwise the current DB value.
+func metaBoolAfterUpdate(fields map[string]any, key string, current bool) bool {
+	if v, ok := fields[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return current
+}
+
+// metaStringAfterUpdate returns the effective string value of key after the
+// update would be applied. Empty string and absence are equivalent for the
+// purpose of "should we auto-generate".
+func metaStringAfterUpdate(fields map[string]any, key, current string) string {
+	if v, ok := fields[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return current
+}
+
+func strDeref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // updateMetaFieldAliases maps frontend API names to DB column names for

@@ -1690,6 +1690,14 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 			if s, ok := v.(string); ok {
 				m.Meta.SwPublicKey = &s
 			}
+		case "swPrivateKey":
+			if s, ok := v.(string); ok {
+				m.Meta.SwPrivateKey = &s
+			}
+		case "enableServiceWorker":
+			if b, ok := v.(bool); ok {
+				m.Meta.EnableServiceWorker = b
+			}
 		case "name":
 			if s, ok := v.(string); ok {
 				m.Meta.Name = &s
