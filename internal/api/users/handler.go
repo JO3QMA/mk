@@ -200,13 +200,12 @@ func (h *Handler) Show(c echo.Context) error {
 		if len(req.UserIDs) > 100 {
 			req.UserIDs = req.UserIDs[:100]
 		}
-		// bulk fetch してから 1 回の batch で instance を resolve する (#277)。
-		// single-user path と同じ UserLite.instance 表示互換を維持する。
-		bundles := make([]*user.UserWithProfile, 0, len(req.UserIDs))
-		for _, uid := range req.UserIDs {
-			if bundle, err := h.userService.ShowByID(uid); err == nil {
-				bundles = append(bundles, bundle)
-			}
+		// 旧実装は ShowByID をループで呼んで最大 200 round-trip の N+1 を
+		// 出していた (#503)。ShowManyByIDs は 2 batch query で済む。
+		// instance は #277 と同じく 1 回の batch で resolve する。
+		bundles, err := h.userService.ShowManyByIDs(req.UserIDs)
+		if err != nil {
+			return apierr.JSONInternalError(c)
 		}
 		users := make([]*model.User, 0, len(bundles))
 		for _, b := range bundles {

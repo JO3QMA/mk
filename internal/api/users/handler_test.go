@@ -2,6 +2,7 @@ package users
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -648,6 +649,41 @@ func TestShow_BulkUserIDs_Empty(t *testing.T) {
 	rec := post(h.Show, `{"userIds":[]}`)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "[]\n", rec.Body.String())
+}
+
+// users/show bulk path は ShowManyByIDs に切り替えた (#503) ので、入力順が
+// レスポンスにも保持されることを担保する。
+func TestShow_BulkUserIDs_PreservesOrder(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["u2"] = &model.User{ID: "u2", Username: "bob", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["u3"] = &model.User{ID: "u3", Username: "carol", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+
+	rec := post(h.Show, `{"userIds":["u3","ghost","u1","u2"]}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out, 3)
+	assert.Equal(t, "u3", out[0]["id"])
+	assert.Equal(t, "u1", out[1]["id"])
+	assert.Equal(t, "u2", out[2]["id"])
+}
+
+// 100 件を超えた userIds は先頭 100 件に切り捨てる動作を担保する (TS 互換)。
+func TestShow_BulkUserIDs_Truncates100(t *testing.T) {
+	h, repo := newTestHandler(t)
+	ids := make([]string, 0, 105)
+	for i := 0; i < 105; i++ {
+		uid := fmt.Sprintf("ub%03d", i)
+		repo.Users[uid] = &model.User{ID: uid, Username: uid, AvatarDecorations: datatypes.JSON([]byte("[]"))}
+		ids = append(ids, fmt.Sprintf("%q", uid))
+	}
+	body := `{"userIds":[` + strings.Join(ids, ",") + `]}`
+	rec := post(h.Show, body)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 100, "userIds は 100 件で切り捨てられるはず")
 }
 
 // --- Internal error paths via failing repos ---

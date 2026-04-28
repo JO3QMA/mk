@@ -136,6 +136,50 @@ func (s *Service) ShowByID(id string) (*UserWithProfile, error) {
 	return &UserWithProfile{User: u, Profile: profile}, nil
 }
 
+// ShowManyByIDs returns the users (and their profiles) for the given ID set
+// in a constant number of queries (1 user batch + 1 profile batch). Order
+// matches `ids`; missing rows are skipped silently. Replaces the per-ID
+// ShowByID loop in the users/show bulk path (#503).
+func (s *Service) ShowManyByIDs(ids []string) ([]*UserWithProfile, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	users, err := s.userRepo.FindManyByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, nil
+	}
+	foundIDs := make([]string, 0, len(users))
+	for _, u := range users {
+		foundIDs = append(foundIDs, u.ID)
+	}
+	profiles, err := s.userRepo.FindProfilesByUserIDs(foundIDs)
+	if err != nil {
+		// Profile fetch 失敗は ShowByID と挙動を合わせて非致命にする
+		// (個別 ShowByID も err を握りつぶしている)。
+		profiles = nil
+	}
+	profileByUser := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileByUser[p.UserID] = p
+	}
+	userByID := make(map[string]*model.User, len(users))
+	for _, u := range users {
+		userByID[u.ID] = u
+	}
+	out := make([]*UserWithProfile, 0, len(ids))
+	for _, id := range ids {
+		u, ok := userByID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, &UserWithProfile{User: u, Profile: profileByUser[u.ID]})
+	}
+	return out, nil
+}
+
 // ShowByUsername returns the user (and profile) for the given username and host.
 //
 // host が nil もしくは空の場合はローカルユーザーとして DB を参照するのみ。
