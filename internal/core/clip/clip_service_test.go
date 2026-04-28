@@ -158,7 +158,7 @@ func TestListByUser(t *testing.T) {
 	svc, repo, _, _ := newSvc(t)
 	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "u1"}
 	repo.Clips["c2"] = &model.Clip{ID: "c2", UserID: "u1"}
-	rows, err := svc.ListByUser("u1", 10, 0)
+	rows, err := svc.ListByUser("u1", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }

@@ -55,6 +55,13 @@ type ChartHook interface {
 	OnFileDeleted(file *model.DriveFile)
 }
 
+// RoleChecker abstracts moderator-role lookup so Show can match upstream
+// Misskey's "moderators can view any file" semantics without taking a
+// hard dep on core/role (avoids circular imports).
+type RoleChecker interface {
+	IsModerator(userID string) bool
+}
+
 // Service manages drive files and folders.
 type Service struct {
 	fileRepo            repository.DriveFileRepository
@@ -69,7 +76,15 @@ type Service struct {
 	// Sensitive media detection
 	sensitiveDetector SensitiveDetector
 	sensitiveCfg      SensitiveConfig
+	// Optional moderator bypass for Show. Nil keeps the default "owner-only"
+	// guard.
+	roleChecker RoleChecker
 }
+
+// SetRoleChecker wires a moderator role lookup so Show allows moderators to
+// inspect any file (matching upstream Misskey's drive/files/show behaviour).
+// Nil keeps the existing owner-only check.
+func (s *Service) SetRoleChecker(rc RoleChecker) { s.roleChecker = rc }
 
 // SetSensitiveDetection attaches the sensitive media detector and config.
 func (s *Service) SetSensitiveDetection(detector SensitiveDetector, cfg SensitiveConfig) {
@@ -357,7 +372,10 @@ func (s *Service) processImage(body []byte, mimeType string) *generateAltsResult
 	return result
 }
 
-// Show returns the file with id, ensuring the requesting user owns it.
+// Show returns the file with id. Owners can read their own files; moderators
+// (when a roleChecker is wired) can read any file. Matches upstream Misskey
+// drive/files/show.ts semantics so admin moderation surfaces and remote-media
+// detail views work without 403.
 func (s *Service) Show(user *model.User, id string) (*model.DriveFile, error) {
 	if user == nil {
 		return nil, errors.New("user is required")
@@ -366,7 +384,9 @@ func (s *Service) Show(user *model.User, id string) (*model.DriveFile, error) {
 	if err != nil {
 		return nil, ErrFileNotFound
 	}
-	if f.UserID == nil || *f.UserID != user.ID {
+	owner := f.UserID != nil && *f.UserID == user.ID
+	moderator := s.roleChecker != nil && s.roleChecker.IsModerator(user.ID)
+	if !owner && !moderator {
 		return nil, ErrAccessDenied
 	}
 	return f, nil

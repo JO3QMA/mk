@@ -679,6 +679,40 @@ func TestFilesAttachedNotes_NilRepo(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// frontend Paginator から渡される sinceId / untilId / limit が
+// noteRepo.ListByFileID に正しく forward されることを確認 (#488 回帰
+// 防止)。bind 漏れがあると同じ note が無限スクロールで何度も返る。
+type spyNoteRepo struct {
+	*testutil.MockNoteRepository
+	gotFileID  string
+	gotSinceID string
+	gotUntilID string
+	gotLimit   int
+}
+
+func (s *spyNoteRepo) ListByFileID(fileID, sinceID, untilID string, limit int) ([]*model.Note, error) {
+	s.gotFileID = fileID
+	s.gotSinceID = sinceID
+	s.gotUntilID = untilID
+	s.gotLimit = limit
+	return nil, nil
+}
+
+func TestFilesAttachedNotes_ForwardsCursorParams(t *testing.T) {
+	h, fileRepo, folderRepo := newHandler(t)
+	spy := &spyNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	h.SetRepos(fileRepo, folderRepo, spy)
+
+	c, rec := newJSONReq(t, `{"fileId":"f1","untilId":"u_xxx","limit":7}`)
+	setUser(c, "u1")
+	require.NoError(t, h.FilesAttachedNotes(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "f1", spy.gotFileID)
+	assert.Equal(t, "u_xxx", spy.gotUntilID)
+	assert.Equal(t, "", spy.gotSinceID)
+	assert.Equal(t, 7, spy.gotLimit)
+}
+
 func TestFilesAttachedChatMessages(t *testing.T) {
 	h, _, _ := newHandler(t)
 	c, rec := newJSONReq(t, `{"fileId":"f1"}`)

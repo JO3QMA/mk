@@ -89,7 +89,7 @@ func (e *Exporter) exportAntennas(userID string) ([]byte, error) {
 // exportClips emits a JSON array of the user's clips, each with the packed
 // notes contained in the clip. 各 clip 内の note は単純な配列 (本家互換)。
 func (e *Exporter) exportClips(userID string) ([]byte, error) {
-	clips, err := e.deps.ClipRepo.ListByUser(userID, 1000, 0)
+	clips, err := e.deps.ClipRepo.ListByUser(userID, "", "", 1000, 0)
 	if err != nil {
 		return nil, err
 	}

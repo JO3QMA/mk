@@ -452,9 +452,17 @@ func (h *Handler) FilesCheckExistence(c echo.Context) error {
 }
 
 // FilesAttachedNotes handles POST /api/drive/files/attached-notes.
+//
+// frontend Paginator (cursor mode) は { sinceId / untilId / limit } を投げて
+// くる。upstream Misskey TS と同じく cursor で keyset pagination する。
+// 過去はページング非対応で同じ note を返し続ける無限スクロール bug が
+// 出ていた (#488)。
 func (h *Handler) FilesAttachedNotes(c echo.Context) error {
 	var req struct {
-		FileID string `json:"fileId"`
+		FileID  string `json:"fileId"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.FileID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -463,7 +471,7 @@ func (h *Handler) FilesAttachedNotes(c echo.Context) error {
 	if h.noteRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	notes, err := h.noteRepo.ListByFileID(req.FileID)
+	notes, err := h.noteRepo.ListByFileID(req.FileID, req.SinceID, req.UntilID, req.Limit)
 	if err != nil {
 		return c.JSON(http.StatusOK, []any{})
 	}

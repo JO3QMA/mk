@@ -172,7 +172,7 @@ func TestErrorPaths_CancelledContext(t *testing.T) {
 	assert.Error(t, err)
 
 	// clip / flash / page (ListPublicByUser)
-	_, err = NewClipRepository(db).ListPublicByUser("x", 10, 0)
+	_, err = NewClipRepository(db).ListPublicByUser("x", "", "", 10, 0)
 	assert.Error(t, err)
 	_, err = NewFlashRepository(db).ListPublicByUser("x", 10, 0)
 	assert.Error(t, err)
@@ -218,7 +218,7 @@ func TestErrorPaths_CancelledContext(t *testing.T) {
 
 	// note
 	nr := NewNoteRepository(db)
-	_, err = nr.ListByFileID("x")
+	_, err = nr.ListByFileID("x", "", "", 10)
 	assert.Error(t, err)
 	_, err = nr.ListHomeTimeline("x", 10, "", "", model.TimelineDBFilter{})
 	assert.Error(t, err)

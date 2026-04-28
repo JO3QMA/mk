@@ -107,17 +107,17 @@ func TestClipRepository_ListByUser(t *testing.T) {
 		defer cleanupClip(t, c.ID)
 	}
 
-	rows, err := repo.ListByUser(user.ID, 10, 0)
+	rows, err := repo.ListByUser(user.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 3)
 }
 
 func TestClipRepository_ListByUser_LimitClamp(t *testing.T) {
 	repo := NewClipRepository(testDB)
-	rows, err := repo.ListByUser("nobody", 9999, 0)
+	rows, err := repo.ListByUser("nobody", "", "", 9999, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
-	rows, err = repo.ListByUser("nobody", -1, 0)
+	rows, err = repo.ListByUser("nobody", "", "", -1, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 }
@@ -127,6 +127,35 @@ func TestClipRepository_ListByUser_QueryError(t *testing.T) {
 	cancel()
 	db := testDB.WithContext(ctx)
 	repo := NewClipRepository(db)
-	_, err := repo.ListByUser("nobody", 10, 0)
+	_, err := repo.ListByUser("nobody", "", "", 10, 0)
 	assert.Error(t, err)
+}
+
+// frontend Paginator (cursor mode) との互換性確認: untilID < clip ID 群
+// のうち、id < untilID で DESC で limit 件返ること、sinceID 単独だと ASC
+// (paginationOrder の挙動)。#487 回帰防止。
+func TestClipRepository_ListByUser_CursorPagination(t *testing.T) {
+	repo := NewClipRepository(testDB)
+	user := insertTestUser(t, "u_clr_pag", "clippag")
+	defer cleanupUser(t, user.ID)
+
+	for _, id := range []string{"clp_pg_a", "clp_pg_b", "clp_pg_c", "clp_pg_d"} {
+		c := newTestClip(id, user.ID, id)
+		require.NoError(t, repo.Create(c))
+		defer cleanupClip(t, c.ID)
+	}
+
+	// untilID="clp_pg_c" → id < "clp_pg_c" を DESC 2 件 = [b, a]
+	rows, err := repo.ListByUser(user.ID, "", "clp_pg_c", 2, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "clp_pg_b", rows[0].ID)
+	assert.Equal(t, "clp_pg_a", rows[1].ID)
+
+	// sinceID="clp_pg_b" → id > "clp_pg_b" を ASC 2 件 = [c, d]
+	rows, err = repo.ListByUser(user.ID, "clp_pg_b", "", 2, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "clp_pg_c", rows[0].ID)
+	assert.Equal(t, "clp_pg_d", rows[1].ID)
 }

@@ -153,9 +153,10 @@ func (s *Service) Delete(ownerID, clipID string) error {
 	return s.repo.Delete(c)
 }
 
-// ListByUser returns the clips owned by userID.
-func (s *Service) ListByUser(userID string, limit, offset int) ([]*model.Clip, error) {
-	return s.repo.ListByUser(userID, limit, offset)
+// ListByUser returns the clips owned by userID with cursor (sinceID/untilID)
+// or offset pagination. cursor 指定時は offset 無視。
+func (s *Service) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Clip, error) {
+	return s.repo.ListByUser(userID, sinceID, untilID, limit, offset)
 }
 
 // AddNote attaches a note to the clip. ownerID 以外は AccessDenied。

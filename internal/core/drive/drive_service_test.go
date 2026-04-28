@@ -198,6 +198,34 @@ func TestShow_OtherUserDenied(t *testing.T) {
 	require.ErrorIs(t, err, drive.ErrAccessDenied)
 }
 
+// moderator なら所有者でなくても見られる (upstream Misskey と一致)。
+// リモート添付メディアの詳細表示は file.userId が remote user ID 固定
+// になるので、この経路がないと管理者でも 403 で見られない。
+type fakeMod struct{ moderators map[string]bool }
+
+func (f *fakeMod) IsModerator(userID string) bool { return f.moderators[userID] }
+
+func TestShow_ModeratorBypass(t *testing.T) {
+	svc, fileRepo, _ := newSvc(t)
+	other := "other"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &other}
+	svc.SetRoleChecker(&fakeMod{moderators: map[string]bool{"u1": true}})
+	got, err := svc.Show(&model.User{ID: "u1"}, "f1")
+	require.NoError(t, err)
+	assert.Equal(t, "f1", got.ID)
+}
+
+// moderator でない一般ユーザーは roleChecker が wire されていても
+// 引き続き 403。
+func TestShow_NonModeratorStillDenied(t *testing.T) {
+	svc, fileRepo, _ := newSvc(t)
+	other := "other"
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", UserID: &other}
+	svc.SetRoleChecker(&fakeMod{moderators: map[string]bool{}})
+	_, err := svc.Show(&model.User{ID: "u1"}, "f1")
+	require.ErrorIs(t, err, drive.ErrAccessDenied)
+}
+
 func TestFindByHash_NilUser(t *testing.T) {
 	svc, _, _ := newSvc(t)
 	_, err := svc.FindByHash(nil, "x")

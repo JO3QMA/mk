@@ -54,7 +54,7 @@ type failingClipRepo struct {
 	*testutil.MockClipRepository
 }
 
-func (f *failingClipRepo) ListByUser(_ string, _, _ int) ([]*model.Clip, error) {
+func (f *failingClipRepo) ListByUser(_, _, _ string, _, _ int) ([]*model.Clip, error) {
 	return nil, errors.New("db boom")
 }
 
