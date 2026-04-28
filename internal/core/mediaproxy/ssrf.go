@@ -13,6 +13,7 @@ var ErrSSRFBlocked = safehttp.ErrSSRFBlocked
 // NewSSRFSafeTransport returns an *http.Transport with a custom DialContext
 // that resolves DNS first and rejects connections to private/reserved IPs.
 // Thin wrapper over safehttp.NewSSRFSafeTransport (#323 で共通化した)。
-func NewSSRFSafeTransport(allowedCIDRs []string) *http.Transport {
-	return safehttp.NewSSRFSafeTransport(allowedCIDRs)
+// opts は forward proxy などの追加 transport 設定を渡す経路。
+func NewSSRFSafeTransport(allowedCIDRs []string, opts ...safehttp.Option) *http.Transport {
+	return safehttp.NewSSRFSafeTransport(allowedCIDRs, opts...)
 }

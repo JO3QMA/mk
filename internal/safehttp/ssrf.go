@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -49,10 +50,38 @@ func init() {
 // ErrSSRFBlocked is returned when a connection to a private/reserved IP is blocked.
 var ErrSSRFBlocked = fmt.Errorf("safehttp: connection to private IP blocked")
 
+// transportOptions accumulates state from functional Option values.
+type transportOptions struct {
+	proxyURL    string
+	bypassHosts []string
+}
+
+// Option configures NewSSRFSafeTransport. Use WithProxy to enable forward
+// proxy support; pass no options for the default SSRF-safe direct transport.
+type Option func(*transportOptions)
+
+// WithProxy wires a forward HTTP proxy and an optional bypass list. proxyURL
+// must be a full URL parseable by url.Parse (e.g. http://127.0.0.1:3128). When
+// proxyURL is empty the option is a no-op so callers can pass config values
+// straight through. bypassHosts is matched as exact case-sensitive hostname
+// equality, mirroring upstream Misskey's `proxyBypassHosts.includes(...)`.
+func WithProxy(proxyURL string, bypassHosts []string) Option {
+	return func(o *transportOptions) {
+		o.proxyURL = proxyURL
+		o.bypassHosts = bypassHosts
+	}
+}
+
 // NewSSRFSafeTransport returns an *http.Transport with a custom DialContext
 // that resolves DNS first and rejects connections to private/reserved IPs.
 // allowedCIDRs は config.AllowedPrivateNetworks に対応し、明示的に許可する CIDR リスト。
-func NewSSRFSafeTransport(allowedCIDRs []string) *http.Transport {
+// Functional opts (現状 WithProxy のみ) で外向き forward proxy 経由を有効化できる。
+func NewSSRFSafeTransport(allowedCIDRs []string, opts ...Option) *http.Transport {
+	o := transportOptions{}
+	for _, fn := range opts {
+		fn(&o)
+	}
+
 	var allowedNets []*net.IPNet
 	for _, cidr := range allowedCIDRs {
 		_, ipNet, err := net.ParseCIDR(cidr)
@@ -62,13 +91,49 @@ func NewSSRFSafeTransport(allowedCIDRs []string) *http.Transport {
 		allowedNets = append(allowedNets, ipNet)
 	}
 
+	// proxy 設定があれば事前に URL を一度だけ parse する。失敗したものは
+	// 無視 (proxy 不使用) して direct fallback。起動時に config 経由で
+	// 渡るので毎リクエスト parse する必要は無い。
+	var proxyURL *url.URL
+	var proxyAddr string // host:port 形式 (DialContext での比較用)
+	if o.proxyURL != "" {
+		if u, err := url.Parse(o.proxyURL); err == nil && u.Host != "" {
+			proxyURL = u
+			proxyAddr = u.Host
+			// URL に明示ポートが無い場合は scheme 既定を補う。後段の
+			// addr 比較で `host:80` のような正規化形と一致させるため。
+			if _, _, splitErr := net.SplitHostPort(proxyAddr); splitErr != nil {
+				if u.Scheme == "https" {
+					proxyAddr = net.JoinHostPort(u.Host, "443")
+				} else {
+					proxyAddr = net.JoinHostPort(u.Host, "80")
+				}
+			}
+		}
+	}
+	bypass := make(map[string]struct{}, len(o.bypassHosts))
+	for _, h := range o.bypassHosts {
+		if h != "" {
+			bypass[h] = struct{}{}
+		}
+	}
+
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 
-	return &http.Transport{
+	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// proxy 経由のリクエストでは Transport.Proxy callback の結果に
+			// 沿って http.Transport が proxy host:port で DialContext を
+			// 呼ぶ。proxy はオペレーターが明示設定したエンドポイントなので
+			// SSRF check (private IP 拒否) は適用しない。bypass 経路や
+			// proxy 未指定の direct dial には従来通り SSRF を適用する。
+			if proxyAddr != "" && addr == proxyAddr {
+				return dialer.DialContext(ctx, network, addr)
+			}
+
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, fmt.Errorf("safehttp: invalid address %q: %w", addr, err)
@@ -107,6 +172,18 @@ func NewSSRFSafeTransport(allowedCIDRs []string) *http.Transport {
 		// HTTP/1.1 のみに退化するのを避ける (#323 Devin review)。
 		ForceAttemptHTTP2: true,
 	}
+	if proxyURL != nil {
+		// upstream Misskey の HttpRequestService.getAgentByUrl と同じく
+		// proxyBypassHosts に含まれる hostname (exact match) は proxy を
+		// 経由せず direct で出す。それ以外は proxyURL に CONNECT/forward。
+		tr.Proxy = func(req *http.Request) (*url.URL, error) {
+			if _, ok := bypass[req.URL.Hostname()]; ok {
+				return nil, nil
+			}
+			return proxyURL, nil
+		}
+	}
+	return tr
 }
 
 // isPrivateIP returns true if ip falls within a private/reserved range

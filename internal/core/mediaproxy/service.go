@@ -23,6 +23,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	coredrive "github.com/shiroha-a/mk/internal/core/drive"
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 // ProxyMode enumerates the image processing modes.
@@ -112,7 +113,8 @@ type Service struct {
 
 // NewService creates a new media proxy Service.
 // allowedPrivateNetworks は SSRF 保護で許可するプライベート CIDR リスト (config.AllowedPrivateNetworks)。
-func NewService(instanceURL, userAgent string, driveStorage coredrive.Storage, allowlist AllowlistChecker, hmacSecret []byte, allowedPrivateNetworks []string) *Service {
+// transportOpts は forward proxy 等の追加 transport 設定 (safehttp.WithProxy など)。
+func NewService(instanceURL, userAgent string, driveStorage coredrive.Storage, allowlist AllowlistChecker, hmacSecret []byte, allowedPrivateNetworks []string, transportOpts ...safehttp.Option) *Service {
 	return &Service{
 		instanceURL:  instanceURL,
 		driveStorage: driveStorage,
@@ -120,7 +122,7 @@ func NewService(instanceURL, userAgent string, driveStorage coredrive.Storage, a
 		hmacSecret:   hmacSecret,
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: NewSSRFSafeTransport(allowedPrivateNetworks),
+			Transport: NewSSRFSafeTransport(allowedPrivateNetworks, transportOpts...),
 		},
 		userAgent: userAgent,
 	}
