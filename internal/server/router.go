@@ -399,9 +399,10 @@ func (s *Server) setupRoutes() {
 	}
 	// AP outbound client: SSRF-safe transport を適用 (#323)。
 	// config.AllowedPrivateNetworks で開発時の self-loop を許可できる。
+	// config.Proxy / ProxyBypassHosts も #485 で wire 済み。
 	apHTTPClient := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
 	}
 	apClient := activitypub.NewClient(apHTTPClient, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
@@ -421,7 +422,7 @@ func (s *Server) setupRoutes() {
 	// (30s) より短めの 10s にする。
 	imageProbeClient := &http.Client{
 		Timeout:   10 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
 	}
 	federationResolver.SetImageProbeClient(imageProbeClient)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
@@ -435,7 +436,7 @@ func (s *Server) setupRoutes() {
 	// user-facing API 経由で呼ばれるので応答性優先で 10s に設定する。
 	webfingerClient := activitypub.NewWebFingerClient(&http.Client{
 		Timeout:   10 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
 	}, s.config.UserAgent)
 	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
 		webfingerClient, federationResolver, userRepo, localHost,
@@ -1232,6 +1233,7 @@ func (s *Server) setupRoutes() {
 		s.config.URL, s.config.UserAgent, driveStorage,
 		proxyAllowlist, s.config.MediaProxySecret,
 		s.config.AllowedPrivateNetworks,
+		safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts),
 	)
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)
@@ -1719,7 +1721,7 @@ func (s *Server) setupRoutes() {
 		s.redis.Default,
 		&http.Client{
 			Timeout:   10 * time.Second,
-			Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks),
+			Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
 		},
 	))
 	// #417 P3: /match の acct 引数で未キャッシュのリモートユーザーを
