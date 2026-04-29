@@ -51,11 +51,10 @@ func (s *Server) registerShutdownHook(fn func()) {
 }
 
 // gzipConfig returns the GzipConfig used by the global middleware stack.
-// MinLength=1024 で小さい body の gzip overhead を回避し、/streaming は
-// WebSocket frame を壊さないよう Skipper で除外する。
-// テスト (gzip_test.go) からも参照して production と乖離しないよう一元化
-// する (#413 Phase 3 #12)。
+// Shared with gzip_test.go so production and tests stay in sync.
 func gzipConfig() echomw.GzipConfig {
+	// MinLength=1024 で小さい body の gzip overhead を回避し、/streaming は
+	// WebSocket frame を壊さないよう Skipper で除外する (#413 Phase 3 #12)。
 	return echomw.GzipConfig{
 		Skipper: func(c echo.Context) bool {
 			// WebSocket upgrade 経路 (/streaming) は frame 単位の bidirectional
