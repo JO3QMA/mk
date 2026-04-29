@@ -13,10 +13,15 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 )
 
-// HostBlockChecker reports whether a host is on the blocked list. Used by the
-// inbox handler to reject activities from blocked instances.
+// HostBlockChecker reports whether a host is on the blocked list and whether
+// the federation mode allows ingesting from it. Used by the inbox handler to
+// reject activities from blocked / disallowed instances (#536).
 type HostBlockChecker interface {
 	IsBlocked(host string) bool
+	// IsAllowed returns true when federation with host is permitted under
+	// the current admin federation mode (none / specified / all) and the
+	// host is not in blockedHosts.
+	IsAllowed(host string) bool
 }
 
 // InstanceTracker is invoked after a successfully verified inbound request so
@@ -130,13 +135,19 @@ func (h *Handler) verifySignature(req *http.Request) (*model.User, error) {
 	return actor, nil
 }
 
-// isHostBlocked reports whether the actor's host is on the blocked list.
-// hostBlocker が未設定 / actor がローカル / Host nil なら false。
+// isHostBlocked reports whether the actor's host is rejected by the local
+// federation policy — either on the blocklist, or excluded by the
+// federation mode (none / specified). hostBlocker が未設定 / actor が
+// ローカル / Host nil なら false (#536)。
 func (h *Handler) isHostBlocked(actor *model.User) bool {
 	if h.hostBlocker == nil || actor == nil || actor.Host == nil {
 		return false
 	}
-	return h.hostBlocker.IsBlocked(*actor.Host)
+	host := *actor.Host
+	if h.hostBlocker.IsBlocked(host) {
+		return true
+	}
+	return !h.hostBlocker.IsAllowed(host)
 }
 
 // touchInstance is a best-effort hook into the InstanceTracker. tracker が

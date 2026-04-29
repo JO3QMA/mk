@@ -250,11 +250,15 @@ func TestInbox_PublicKeyMissing(t *testing.T) {
 }
 
 // stubBlocker is a HostBlockChecker that returns true for matching host names.
+// disallowed simulates federation mode "specified" / "none". 既定 (zero-value)
+// では allow-all。
 type stubBlocker struct {
-	blocked map[string]bool
+	blocked    map[string]bool
+	disallowed map[string]bool
 }
 
 func (s *stubBlocker) IsBlocked(host string) bool { return s.blocked[host] }
+func (s *stubBlocker) IsAllowed(host string) bool { return !s.disallowed[host] }
 
 func TestInbox_BlockedHost(t *testing.T) {
 	priv, pub, err := activitypub.GenerateRSAKeypair()
@@ -276,6 +280,35 @@ func TestInbox_BlockedHost(t *testing.T) {
 
 	require.NoError(t, h.Inbox(c))
 	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// federation: specified で allowlist 外 host からの inbound は 403 で reject
+// される (#536)。blocked と独立した経路。
+// actorBody は固定で host=remote.example を返すので disallowed もそれに合わせる。
+func TestInbox_DisallowedHost(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	h, repo, _ := newHandler(t, pub)
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+	// blocked は空のまま、disallowed (= specified モードで allowlist 外) を
+	// シミュレート。これだけで 403 reject されること = allowlist enforcement
+	// が deliver path と独立に inbox path にも入ったこと。
+	h.SetHostBlockChecker(&stubBlocker{disallowed: map[string]bool{"remote.example": true}})
+
+	body := []byte(`{"type":"Follow","actor":"https://remote.example/users/alice","object":"https://example.com/users/bob"}`)
+	c, rec := newPost(t, body)
+	req := c.Request()
+	digest := activitypub.SHA256Digest(body)
+	require.NoError(t, activitypub.SignRequest(req, key, digest, []string{"(request-target)", "date", "host", "digest"}))
+	req.Host = "example.com"
+
+	require.NoError(t, h.Inbox(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code,
+		"federation policy excluded host must be rejected with 403")
 }
 
 // stubInstanceTracker captures MarkRequestReceived calls.

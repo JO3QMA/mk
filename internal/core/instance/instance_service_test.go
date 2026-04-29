@@ -150,6 +150,54 @@ func TestService_IsSilenced_MetaError(t *testing.T) {
 	assert.False(t, svc.IsSilenced("any.example"))
 }
 
+// federation == "all" (default) は blockedHosts 以外の全 host を allow する。
+func TestService_IsAllowed_AllMode(t *testing.T) {
+	svc, _, metaRepo := newService(t)
+	metaRepo.Meta.Federation = "all"
+	metaRepo.Meta.BlockedHosts = pq.StringArray{"bad.example"}
+	assert.True(t, svc.IsAllowed("good.example"))
+	assert.False(t, svc.IsAllowed("bad.example"))
+	assert.True(t, svc.IsAllowed(""), "empty host (= local) is always allowed")
+}
+
+// federation == "specified" は federationHosts に列挙された host だけ allow。
+func TestService_IsAllowed_SpecifiedMode(t *testing.T) {
+	svc, _, metaRepo := newService(t)
+	metaRepo.Meta.Federation = "specified"
+	metaRepo.Meta.FederationHosts = pq.StringArray{"allowed.example"}
+	assert.True(t, svc.IsAllowed("allowed.example"))
+	assert.False(t, svc.IsAllowed("other.example"))
+}
+
+// specified モードでも blockedHosts に入っていれば deny される (allowlist と
+// blocklist の AND)。
+func TestService_IsAllowed_SpecifiedRespectsBlock(t *testing.T) {
+	svc, _, metaRepo := newService(t)
+	metaRepo.Meta.Federation = "specified"
+	metaRepo.Meta.FederationHosts = pq.StringArray{"allowed.example"}
+	metaRepo.Meta.BlockedHosts = pq.StringArray{"allowed.example"}
+	assert.False(t, svc.IsAllowed("allowed.example"),
+		"a host listed in both federationHosts and blockedHosts must be denied")
+}
+
+// federation == "none" は全 host を deny する。
+func TestService_IsAllowed_NoneMode(t *testing.T) {
+	svc, _, metaRepo := newService(t)
+	metaRepo.Meta.Federation = "none"
+	metaRepo.Meta.FederationHosts = pq.StringArray{"allowed.example"}
+	assert.False(t, svc.IsAllowed("allowed.example"))
+	assert.False(t, svc.IsAllowed("other.example"))
+	assert.True(t, svc.IsAllowed(""), "empty host (= local) is always allowed even in none mode")
+}
+
+// meta が読めないときは安全側ではなく allow を返す (transient error で
+// 連合全体が落ちる事故を避ける)。
+func TestService_IsAllowed_MetaError(t *testing.T) {
+	svc, _, metaRepo := newService(t)
+	metaRepo.Meta = nil
+	assert.True(t, svc.IsAllowed("any.example"))
+}
+
 func TestService_Suspend(t *testing.T) {
 	svc, repo, _ := newService(t)
 	repo.Instances["alpha.example"] = &model.Instance{ID: "i1", Host: "alpha.example"}

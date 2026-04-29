@@ -20,11 +20,16 @@ var (
 	ErrNoLocalSigner = errors.New("cannot sign on behalf of a remote user")
 )
 
-// HostBlockChecker reports whether a host is on the blocked list. The
-// federation package only depends on this minimal interface to avoid coupling
-// to core/instance directly.
+// HostBlockChecker reports whether a host is on the blocked list and whether
+// the local instance is willing to federate with it (allowlist + blocklist
+// combined). federation package が core/instance に直接依存しないよう
+// minimal interface だけ持つ (#536)。
 type HostBlockChecker interface {
 	IsBlocked(host string) bool
+	// IsAllowed returns true when federation with host is permitted under
+	// the current admin federation mode (none / specified / all) and the
+	// host is not in blockedHosts.
+	IsAllowed(host string) bool
 }
 
 // DeliverService computes recipient inboxes and enqueues HTTP-signed delivery
@@ -101,7 +106,9 @@ func (s *DeliverService) DeliverActivity(signerUserID string, body []byte, inbox
 }
 
 // isBlockedInbox returns true when the inbox URL points at a host the local
-// instance has blocked. blocker が未設定なら常に false。
+// instance refuses to federate with — either because it is blocked or the
+// federation mode (none / specified) excludes it (#536). blocker が未設定なら
+// 常に false。
 func (s *DeliverService) isBlockedInbox(inbox string) bool {
 	if s.hostBlocker == nil {
 		return false
@@ -110,7 +117,10 @@ func (s *DeliverService) isBlockedInbox(inbox string) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	return s.hostBlocker.IsBlocked(u.Host)
+	if s.hostBlocker.IsBlocked(u.Host) {
+		return true
+	}
+	return !s.hostBlocker.IsAllowed(u.Host)
 }
 
 // DeliverToFollowers enqueues delivery to all remote followers of signerUserID.
