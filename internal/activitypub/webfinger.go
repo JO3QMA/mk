@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shiroha-a/mk/internal/safehttp"
+	"golang.org/x/sync/singleflight"
 )
 
 // WebFingerLink models a single link entry in an RFC 7033 response.
@@ -34,6 +35,9 @@ type WebFingerClient struct {
 	// endpointOverride is used by tests to redirect the default
 	// https://<host>/.well-known/webfinger URL to an httptest server.
 	endpointOverride func(host string) string
+	// lookupGroup は同一 (username, host) への並行 LookupActorURI 呼び出しを
+	// 1 つの HTTP リクエストに collapse する (#300 3-7)。
+	lookupGroup singleflight.Group
 }
 
 // NewWebFingerClient constructs a WebFingerClient. Pass nil for httpClient to
@@ -66,7 +70,22 @@ func (c *WebFingerClient) LookupActorURI(username, host string) (string, error) 
 	if username == "" || host == "" {
 		return "", errors.New("webfinger: username and host are required")
 	}
+	// 同一 acct への並行 lookup は singleflight で collapse (#300 3-7)。
+	// inbox / 検索画面で同じ remote handle が連続して resolve されるケース
+	// で WebFinger HTTP fan-out を抑える。
 	resource := "acct:" + username + "@" + host
+	v, err, _ := c.lookupGroup.Do(resource, func() (any, error) {
+		return c.lookupActorURIOnce(host, resource)
+	})
+	if err != nil {
+		return "", err
+	}
+	return v.(string), nil
+}
+
+// lookupActorURIOnce is the body of LookupActorURI, invoked once per
+// resource by singleflight.Do.
+func (c *WebFingerClient) lookupActorURIOnce(host, resource string) (string, error) {
 	endpoint := c.endpoint(host) + "?resource=" + url.QueryEscape(resource)
 
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)

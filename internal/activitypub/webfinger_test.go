@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/safehttp"
@@ -169,6 +171,50 @@ func TestWebFingerClient_ResourceIsURLEncoded(t *testing.T) {
 	uri, err := c.LookupActorURI("edge", "ex.example")
 	require.NoError(t, err)
 	assert.Equal(t, "https://ex.example/users/edge", uri)
+}
+
+// 同一 acct への並行 lookup は 1 つの HTTP リクエストに collapse される
+// (#300 3-7)。サーバ側で in-flight な状態を作って 16 並行呼び出しが全部
+// 同じ結果を受け取り、HTTP は 1 度しか叩かれないことを担保する。
+func TestWebFingerClient_LookupActorURI_DedupesConcurrentCalls(t *testing.T) {
+	var calls atomic.Int64
+	gate := make(chan struct{})
+	c, _ := newTestWebFingerClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		<-gate // すべての呼び出しが singleflight 集約待ちになるまで blockする
+		fmt.Fprint(w, `{
+			"subject": "acct:alice@example.com",
+			"links": [{"rel": "self", "type": "application/activity+json", "href": "https://example.com/users/alice"}]
+		}`)
+	})
+
+	const N = 16
+	var wg sync.WaitGroup
+	results := make([]string, N)
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = c.LookupActorURI("alice", "example.com")
+		}(i)
+	}
+	// 並行呼び出しが singleflight に登録される時間を稼ぐ。
+	// gate を閉じることで初めてサーバ側 handler が return する。
+	close(gate)
+	wg.Wait()
+
+	for i := 0; i < N; i++ {
+		require.NoError(t, errs[i], "call %d", i)
+		assert.Equal(t, "https://example.com/users/alice", results[i])
+	}
+	// singleflight が 16 並行を 1 リクエストに collapse しているので、
+	// HTTP は最大でも数回 (singleflight が in-flight をまだ登録できていない
+	// 隙に通った分) しか走らない。実装上は厳密に 1 を期待してよいが、Go
+	// runtime の goroutine スケジューリング次第で先行 leader が完了して
+	// 次の wave が新たに leader になることはあり得るので寛容な上限を取る。
+	assert.LessOrEqual(t, calls.Load(), int64(2),
+		"singleflight must collapse concurrent same-acct lookups to ~1 HTTP fetch")
 }
 
 func TestIsActivityPubLinkType(t *testing.T) {
