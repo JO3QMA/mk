@@ -21,6 +21,11 @@ import (
 // the timeline hot path (PackUserLite × N notes) doesn't trigger any DB hit.
 const cacheTTL = 30 * time.Second
 
+// failureBackoff throttles repo.List retries when the catalog refresh fails.
+// 失敗時に loaded を進めないと DB 障害中の hot path 全てで repo.List が再試行
+// されて connection storm を起こす (#524 review)。短めに刻んで退避する。
+const failureBackoff = 5 * time.Second
+
 // Resolver implements entity.AvatarDecorationLookup with a TTL cache backed
 // by AvatarDecorationRepository.List. Safe for concurrent use.
 type Resolver struct {
@@ -58,10 +63,17 @@ func (r *Resolver) LookupURL(id string) (string, bool) {
 
 // refresh reloads the full catalog. Failures keep the previous map so a
 // transient DB blip doesn't blank avatarDecorations across the site — admins
-// get up to one cacheTTL of staleness instead.
+// get up to one cacheTTL of staleness instead. 失敗時も loaded は
+// failureBackoff 分進めるので、障害中 hot path の連続 LookupURL が毎回
+// repo.List() を叩く retry storm を防ぐ (#524 review)。
 func (r *Resolver) refresh() {
 	rows, err := r.repo.List()
 	if err != nil {
+		r.mu.Lock()
+		// failureBackoff 分だけ次回 refresh を抑制する。cacheTTL より短く
+		// 設定しておくことで admin が catalog を直したあとも 5s で復旧する。
+		r.loaded = time.Now().Add(-cacheTTL).Add(failureBackoff)
+		r.mu.Unlock()
 		return
 	}
 	urls := make(map[string]string, len(rows))
