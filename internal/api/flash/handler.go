@@ -57,7 +57,7 @@ func (h *Handler) Create(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, h.flashesToListWithUser([]*model.Flash{f})[0])
+	return c.JSON(http.StatusOK, h.flashWithKnownUser(f, user))
 }
 
 // ShowRequest is the request body for flash/show.
@@ -128,7 +128,7 @@ func (h *Handler) Update(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, h.flashesToListWithUser([]*model.Flash{f})[0])
+	return c.JSON(http.StatusOK, h.flashWithKnownUser(f, user))
 }
 
 // DeleteRequest is the request body for flash/delete.
@@ -300,6 +300,23 @@ func flashToMap(f *model.Flash) map[string]any {
 		"likedCount":  f.LikedCount,
 		"visibility":  f.Visibility,
 	}
+}
+
+// flashWithKnownUser packs a single flash whose author is already in scope
+// (typically the authenticated user from middleware on Create / Update).
+// Saves one FindManyByIDs round-trip vs flashesToListWithUser.
+func (h *Handler) flashWithKnownUser(f *model.Flash, owner *model.User) map[string]any {
+	const tsFormat = "2006-01-02T15:04:05.000Z"
+	entry := flashToMap(f)
+	if h.idGen != nil {
+		if t, err := h.idGen.ParseTime(f.ID); err == nil {
+			entry["createdAt"] = t.UTC().Format(tsFormat)
+		}
+	}
+	if owner != nil && owner.ID == f.UserID {
+		entry["user"] = entity.PackUserLite(owner)
+	}
+	return entry
 }
 
 // flashesToListWithUser packs flashes including the embedded `user`
