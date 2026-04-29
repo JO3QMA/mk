@@ -76,7 +76,7 @@ func main() {
 		die("load notes: %v", err)
 	}
 
-	// Hydrate via repo so preload chain matches timeline path
+	// repo 経由で hydrate して timeline 経路と同じ preload chain を再現する
 	// (NoteFieldResolver.Apply は preload された Renote.User 等を頼る)。
 	hydrated := make([]*model.Note, 0, len(notes))
 	for _, n := range notes {
