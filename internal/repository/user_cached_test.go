@@ -85,6 +85,26 @@ func (c *countingUserRepo) IncrementFollowersCount(_ string, _ int) error {
 	return c.incFollowersErr
 }
 
+func (c *countingUserRepo) FindManyByIDs(ids []string) ([]*model.User, error) {
+	out := make([]*model.User, 0, len(ids))
+	for _, id := range ids {
+		if u, ok := c.users[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func (c *countingUserRepo) FindProfilesByUserIDs(ids []string) ([]*model.UserProfile, error) {
+	out := make([]*model.UserProfile, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := c.profiles[id]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 func TestCachedUserRepository_FindByIDHitsInnerOnce(t *testing.T) {
 	inner := newCountingUserRepo()
 	inner.users["u1"] = &model.User{ID: "u1", Username: "alice"}
@@ -277,6 +297,116 @@ func TestCachedUserRepository_PublicInvalidate(t *testing.T) {
 	cached.Invalidate("u1")
 	_, _ = cached.FindByID("u1")
 	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
+}
+
+// FindManyByIDs / FindProfilesByUserIDs はバルク結果で per-userID cache を
+// warm する。直後の FindByID / FindProfileByUserID は inner を再度叩かない
+// (Devin review #552 FLAG-1)。
+func TestCachedUserRepository_FindManyByIDsWarmsPerKeyCache(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	inner.users["u2"] = &model.User{ID: "u2"}
+	cached := repository.NewCachedUserRepository(inner)
+
+	out, err := cached.FindManyByIDs([]string{"u1", "u2"})
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+
+	// per-key cache が warm されているので FindByID は inner を叩かない。
+	_, err = cached.FindByID("u1")
+	require.NoError(t, err)
+	_, err = cached.FindByID("u2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), inner.findByIDCalls.Load(),
+		"bulk fetch must populate per-key cache")
+}
+
+func TestCachedUserRepository_FindProfilesByUserIDsWarmsPerKeyCache(t *testing.T) {
+	inner := newCountingUserRepo()
+	desc := "p"
+	inner.profiles["u1"] = &model.UserProfile{UserID: "u1", Description: &desc}
+	inner.profiles["u2"] = &model.UserProfile{UserID: "u2", Description: &desc}
+	cached := repository.NewCachedUserRepository(inner)
+
+	out, err := cached.FindProfilesByUserIDs([]string{"u1", "u2"})
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+
+	_, err = cached.FindProfileByUserID("u1")
+	require.NoError(t, err)
+	_, err = cached.FindProfileByUserID("u2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), inner.findProfileByUserIDCalls.Load(),
+		"bulk profile fetch must populate per-key cache")
+}
+
+// users map のサイズが maxEntries を超えたら、insert 時に期限切れエントリ
+// を一括削除する (Devin review #552: unbounded growth 対策)。
+//
+// 検証戦略: cap=3 / TTL=10ms で 3 件 warm → 期限切れ待機 → 4 件目を insert
+// → 期限切れ 3 件は map から消えるので、それらを再取得すると inner を
+// 叩く回数が増える (cache miss に戻る)。新しい entry は live なので
+// cache hit のまま。
+func TestCachedUserRepository_EvictsExpiredEntriesOnInsertOverCap(t *testing.T) {
+	inner := newCountingUserRepo()
+	for _, id := range []string{"u1", "u2", "u3", "u4"} {
+		inner.users[id] = &model.User{ID: id}
+	}
+	cached := repository.NewCachedUserRepositoryWithTTL(inner, 10*time.Millisecond)
+	cached.SetMaxEntriesForTest(3)
+
+	// 3 件 warm。inner は 3 回叩かれる。
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, err := cached.FindByID(id)
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(3), inner.findByIDCalls.Load())
+
+	// TTL 失効を待つ。
+	time.Sleep(15 * time.Millisecond)
+
+	// 4 件目を insert: len == cap(3) で eviction 発火 → expired 3 件削除。
+	_, err := cached.FindByID("u4")
+	require.NoError(t, err)
+	// u4 lookup で +1
+	require.Equal(t, int64(4), inner.findByIDCalls.Load())
+
+	// 期限切れだった u1/u2/u3 は map から消えているので、再 lookup は
+	// inner を叩く (cache miss)。
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, _ = cached.FindByID(id)
+	}
+	assert.Equal(t, int64(7), inner.findByIDCalls.Load(),
+		"expired entries must be evicted on insert when over cap, forcing inner re-fetch")
+}
+
+// profile 側の同 eviction 挙動。
+func TestCachedUserRepository_EvictsExpiredProfilesOnInsertOverCap(t *testing.T) {
+	inner := newCountingUserRepo()
+	desc := "p"
+	for _, id := range []string{"u1", "u2", "u3", "u4"} {
+		inner.profiles[id] = &model.UserProfile{UserID: id, Description: &desc}
+	}
+	cached := repository.NewCachedUserRepositoryWithTTL(inner, 10*time.Millisecond)
+	cached.SetMaxEntriesForTest(3)
+
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, err := cached.FindProfileByUserID(id)
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(3), inner.findProfileByUserIDCalls.Load())
+
+	time.Sleep(15 * time.Millisecond)
+
+	_, err := cached.FindProfileByUserID("u4")
+	require.NoError(t, err)
+	require.Equal(t, int64(4), inner.findProfileByUserIDCalls.Load())
+
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, _ = cached.FindProfileByUserID(id)
+	}
+	assert.Equal(t, int64(7), inner.findProfileByUserIDCalls.Load(),
+		"expired profile entries must be evicted on insert when over cap")
 }
 
 // 空 ID は no-op で inner にだけ任せる (lookup error がそのまま返る)。

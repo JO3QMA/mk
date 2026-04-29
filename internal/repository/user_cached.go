@@ -30,6 +30,10 @@ import (
 type CachedUserRepository struct {
 	UserRepository
 	ttl time.Duration
+	// maxEntries は users / profiles map それぞれの soft cap。size がこれを
+	// 超えたタイミングの insert で expired entry を一括削除する。0 なら
+	// userCacheMaxEntries が使われる。
+	maxEntries int
 
 	mu       sync.RWMutex
 	users    map[string]userCacheEntry
@@ -57,6 +61,14 @@ type profileCacheEntry struct {
 // 単一プロセス運用では TTL で守る必要は無いが、保守的に 5 分を採用する。
 const userCacheTTL = 5 * time.Minute
 
+// userCacheMaxEntries は per-map (users / profiles) のエントリ上限。
+// 連合インスタンスでは reachable な remote user 数だけ unique ID lookup が
+// 走り得るので、エントリは monotonically に増え続ける。しきい値超過時に
+// 期限切れエントリの一括 sweep を走らせて O(1) amortized で抑える。
+// しきい値 50000 は per-entry ~256B 想定で ~12MB を上限に取る (Devin
+// review #552: unbounded growth 対策)。
+const userCacheMaxEntries = 50000
+
 // NewCachedUserRepository wraps inner with the default TTL.
 func NewCachedUserRepository(inner UserRepository) *CachedUserRepository {
 	return NewCachedUserRepositoryWithTTL(inner, userCacheTTL)
@@ -64,12 +76,34 @@ func NewCachedUserRepository(inner UserRepository) *CachedUserRepository {
 
 // NewCachedUserRepositoryWithTTL is the test-friendly constructor.
 func NewCachedUserRepositoryWithTTL(inner UserRepository, ttl time.Duration) *CachedUserRepository {
+	return newCachedUserRepository(inner, ttl, userCacheMaxEntries)
+}
+
+// newCachedUserRepository is the internal constructor that exposes maxEntries.
+// Test-only entry point so the eviction path can be exercised without
+// inserting 50k synthetic rows.
+func newCachedUserRepository(inner UserRepository, ttl time.Duration, maxEntries int) *CachedUserRepository {
+	if maxEntries <= 0 {
+		maxEntries = userCacheMaxEntries
+	}
 	return &CachedUserRepository{
 		UserRepository: inner,
 		ttl:            ttl,
+		maxEntries:     maxEntries,
 		users:          make(map[string]userCacheEntry),
 		profiles:       make(map[string]profileCacheEntry),
 	}
+}
+
+// SetMaxEntriesForTest overrides the soft cap. Tests only.
+func (c *CachedUserRepository) SetMaxEntriesForTest(n int) {
+	c.mu.Lock()
+	if n <= 0 {
+		c.maxEntries = userCacheMaxEntries
+	} else {
+		c.maxEntries = n
+	}
+	c.mu.Unlock()
 }
 
 // invalidate drops both user and profile entries for the given userID.
@@ -152,26 +186,58 @@ func (c *CachedUserRepository) FindProfileByUserID(userID string) (*model.UserPr
 
 func (c *CachedUserRepository) storeUser(id string, u *model.User) {
 	c.mu.Lock()
+	c.evictExpiredUsersLocked()
 	c.users[id] = userCacheEntry{user: u, expiresAt: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 }
 
 func (c *CachedUserRepository) storeUserMissing(id string) {
 	c.mu.Lock()
+	c.evictExpiredUsersLocked()
 	c.users[id] = userCacheEntry{missing: true, expiresAt: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 }
 
 func (c *CachedUserRepository) storeProfile(userID string, p *model.UserProfile) {
 	c.mu.Lock()
+	c.evictExpiredProfilesLocked()
 	c.profiles[userID] = profileCacheEntry{profile: p, expiresAt: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 }
 
 func (c *CachedUserRepository) storeProfileMissing(userID string) {
 	c.mu.Lock()
+	c.evictExpiredProfilesLocked()
 	c.profiles[userID] = profileCacheEntry{missing: true, expiresAt: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
+}
+
+// evictExpiredUsersLocked は users map のサイズが userCacheMaxEntries を
+// 超えていたら、期限切れエントリを一括削除して memory growth を抑える。
+// 呼び出し側で c.mu.Lock 済みである必要がある。Devin #552: unbounded
+// growth 対策。
+func (c *CachedUserRepository) evictExpiredUsersLocked() {
+	if len(c.users) < c.maxEntries {
+		return
+	}
+	now := time.Now()
+	for k, e := range c.users {
+		if now.After(e.expiresAt) {
+			delete(c.users, k)
+		}
+	}
+}
+
+func (c *CachedUserRepository) evictExpiredProfilesLocked() {
+	if len(c.profiles) < c.maxEntries {
+		return
+	}
+	now := time.Now()
+	for k, e := range c.profiles {
+		if now.After(e.expiresAt) {
+			delete(c.profiles, k)
+		}
+	}
 }
 
 // --- mutating methods: delegate then invalidate -----------------------------
@@ -216,4 +282,50 @@ func (c *CachedUserRepository) IncrementFollowersCount(userID string, delta int)
 	}
 	c.invalidate(userID)
 	return nil
+}
+
+// FindManyByIDs delegates to the inner repo and warms the per-userID cache
+// with the returned rows. これにより users/show バルク経路 (#503) の結果が
+// 直後の ShowByID / FindByID で hit するようになる (Devin review #552 FLAG-1)。
+// missing rows は inner が silently skip するため negative-cache は付けない
+// (どの ID が抜けたかは戻り値からは判別できないため、別 round-trip での
+// FindByID が走った時に negative-cache する経路に任せる)。
+func (c *CachedUserRepository) FindManyByIDs(ids []string) ([]*model.User, error) {
+	users, err := c.UserRepository.FindManyByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	if len(users) > 0 {
+		c.mu.Lock()
+		c.evictExpiredUsersLocked()
+		expiry := time.Now().Add(c.ttl)
+		for _, u := range users {
+			if u != nil && u.ID != "" {
+				c.users[u.ID] = userCacheEntry{user: u, expiresAt: expiry}
+			}
+		}
+		c.mu.Unlock()
+	}
+	return users, nil
+}
+
+// FindProfilesByUserIDs is the profile counterpart of FindManyByIDs:
+// バルクで返ってきた行を per-userID cache に warm する。
+func (c *CachedUserRepository) FindProfilesByUserIDs(userIDs []string) ([]*model.UserProfile, error) {
+	profiles, err := c.UserRepository.FindProfilesByUserIDs(userIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(profiles) > 0 {
+		c.mu.Lock()
+		c.evictExpiredProfilesLocked()
+		expiry := time.Now().Add(c.ttl)
+		for _, p := range profiles {
+			if p != nil && p.UserID != "" {
+				c.profiles[p.UserID] = profileCacheEntry{profile: p, expiresAt: expiry}
+			}
+		}
+		c.mu.Unlock()
+	}
+	return profiles, nil
 }
