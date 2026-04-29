@@ -22,7 +22,11 @@ import (
 
 // Server represents the HTTP server.
 type Server struct {
-	echo           *echo.Echo
+	echo *echo.Echo
+	// userRepo は CachedUserRepository でラップ済みの共有 instance。
+	// auth middleware と setupRoutes の両方からこれを使うことで、片側の
+	// mutation で他方の cache が stale 化するのを防ぐ (#300 3-3)。
+	userRepo       repository.UserRepository
 	config         *config.Config
 	db             *gorm.DB
 	redis          *cache.RedisClients
@@ -80,7 +84,9 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) (*Server, e
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 	}))
 
-	userRepo := repository.NewUserRepository(db)
+	// CachedUserRepository を一度だけ構築して auth middleware と
+	// setupRoutes (services) が同じ cache を共有するようにする (#300 3-3)。
+	userRepo := repository.NewCachedUserRepository(repository.NewUserRepository(db))
 	accessTokenRepo := repository.NewAccessTokenRepository(db)
 
 	auth := middleware.NewAuthMiddleware(userRepo, accessTokenRepo)
@@ -101,6 +107,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) (*Server, e
 
 	s := &Server{
 		echo:           e,
+		userRepo:       userRepo,
 		config:         cfg,
 		db:             db,
 		redis:          redis,
