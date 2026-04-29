@@ -308,11 +308,15 @@ func flashToMap(f *model.Flash) map[string]any {
 func (h *Handler) flashWithKnownUser(f *model.Flash, owner *model.User) map[string]any {
 	const tsFormat = "2006-01-02T15:04:05.000Z"
 	entry := flashToMap(f)
+	createdAt := ""
 	if h.idGen != nil {
 		if t, err := h.idGen.ParseTime(f.ID); err == nil {
-			entry["createdAt"] = t.UTC().Format(tsFormat)
+			createdAt = t.UTC().Format(tsFormat)
 		}
 	}
+	// flashesToListWithUser と同じく nil/error 時も "" でフィールドを必ず
+	// 残す。frontend が `if (item.createdAt)` する場合のため (#520 review)。
+	entry["createdAt"] = createdAt
 	if owner != nil && owner.ID == f.UserID {
 		entry["user"] = entity.PackUserLite(owner)
 	}

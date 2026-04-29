@@ -197,18 +197,35 @@ func (s *Service) Unfollow(userID, channelID string) error {
 // 実体を解決して返す (followingRepo の戻り値は中間テーブル)。
 // frontend Paginator は channel_following.id ベースの cursor で叩いてくる
 // ので sinceID / untilID もそのまま forward する。
+//
+// 各 follow row の channel 実体は FindByIDs で一括解決して N+1 を回避する。
+// 元 followings の order は frontend cursor 整合のため保持する必要があるため
+// channelByID map を介して並び順を保つ。
 func (s *Service) ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
 	rows, err := s.followingRepo.ListFollowed(userID, sinceID, untilID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, f := range rows {
+		ids = append(ids, f.FolloweeID)
+	}
+	channels, err := s.repo.FindByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	channelByID := make(map[string]*model.Channel, len(channels))
+	for _, c := range channels {
+		channelByID[c.ID] = c
+	}
 	out := make([]*model.Channel, 0, len(rows))
 	for _, f := range rows {
-		c, err := s.repo.FindByID(f.FolloweeID)
-		if err != nil {
-			continue
+		if c, ok := channelByID[f.FolloweeID]; ok {
+			out = append(out, c)
 		}
-		out = append(out, c)
 	}
 	return out, nil
 }
