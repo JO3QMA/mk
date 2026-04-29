@@ -206,6 +206,116 @@ func TestCreateService_MentionResolution_WithUserRepo(t *testing.T) {
 	assert.ElementsMatch(t, []string{"uA", "uB"}, []string(created.Mentions))
 }
 
+// countingUserRepo wraps MockUserRepository to assert that mention resolution
+// issues at most one repo round-trip per host (#300 1-5).
+type countingUserRepo struct {
+	*testutil.MockUserRepository
+	calls atomic.Int64
+}
+
+func (c *countingUserRepo) FindManyByUsernamesAndHost(usernames []string, host *string) ([]*model.User, error) {
+	c.calls.Add(1)
+	return c.MockUserRepository.FindManyByUsernamesAndHost(usernames, host)
+}
+
+// 全 mention が local 単一 host のとき、host 種類 = 1 なので
+// FindManyByUsernamesAndHost は 1 回しか呼ばれない (#300 1-5)。
+func TestCreateService_MentionResolution_SingleQueryForLocalOnly(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	mock := testutil.NewMockUserRepository()
+	mock.Users["uA"] = &model.User{ID: "uA", UsernameLower: "alice"}
+	mock.Users["uB"] = &model.User{ID: "uB", UsernameLower: "bob"}
+	mock.Users["uC"] = &model.User{ID: "uC", UsernameLower: "carol"}
+	repo := &countingUserRepo{MockUserRepository: mock}
+	svc.SetUserRepo(repo)
+
+	author := &model.User{ID: "author1"}
+	text := "hi @alice and @bob and @carol"
+	created, err := svc.Create(note.CreateInput{User: author, Text: &text})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"uA", "uB", "uC"}, []string(created.Mentions))
+	assert.Equal(t, int64(1), repo.calls.Load(),
+		"3 local mentions must be resolved with a single batch query")
+}
+
+// host 種類数だけ batch query が走る。host 内の mention 数には依存しない。
+func TestCreateService_MentionResolution_OneQueryPerHost(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	mock := testutil.NewMockUserRepository()
+	hostA := "a.example"
+	hostB := "b.example"
+	mock.Users["uLocal"] = &model.User{ID: "uLocal", UsernameLower: "alice"}
+	mock.Users["uA1"] = &model.User{ID: "uA1", UsernameLower: "bob", Host: &hostA}
+	mock.Users["uA2"] = &model.User{ID: "uA2", UsernameLower: "carol", Host: &hostA}
+	mock.Users["uB1"] = &model.User{ID: "uB1", UsernameLower: "dave", Host: &hostB}
+	repo := &countingUserRepo{MockUserRepository: mock}
+	svc.SetUserRepo(repo)
+
+	author := &model.User{ID: "author1"}
+	text := "@alice @bob@a.example @carol@a.example @dave@b.example"
+	created, err := svc.Create(note.CreateInput{User: author, Text: &text})
+	require.NoError(t, err)
+	assert.ElementsMatch(t,
+		[]string{"uLocal", "uA1", "uA2", "uB1"},
+		[]string(created.Mentions))
+	// 3 distinct hosts: local + a.example + b.example
+	assert.Equal(t, int64(3), repo.calls.Load(),
+		"4 mentions across 3 hosts must batch into 3 queries (one per host)")
+}
+
+// mention の出現順は note.Mentions の順序にそのまま反映される。
+func TestCreateService_MentionResolution_PreservesOrder(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	userRepo := testutil.NewMockUserRepository()
+	hostA := "a.example"
+	userRepo.Users["uA"] = &model.User{ID: "uA", UsernameLower: "alice"}
+	userRepo.Users["uB"] = &model.User{ID: "uB", UsernameLower: "bob", Host: &hostA}
+	userRepo.Users["uC"] = &model.User{ID: "uC", UsernameLower: "carol"}
+	svc.SetUserRepo(userRepo)
+
+	author := &model.User{ID: "author1"}
+	// alice → bob@remote → carol を期待。
+	text := "@alice then @bob@a.example then @carol"
+	created, err := svc.Create(note.CreateInput{User: author, Text: &text})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"uA", "uB", "uC"}, []string(created.Mentions))
+}
+
+// FindManyByUsernamesAndHost が err を返した host は当該 mention だけ
+// drop される (元実装と同等)。他 host の解決は影響を受けない。
+func TestCreateService_MentionResolution_FailedHostIsSkipped(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	mock := testutil.NewMockUserRepository()
+	hostA := "a.example"
+	mock.Users["uLocal"] = &model.User{ID: "uLocal", UsernameLower: "alice"}
+	mock.Users["uA1"] = &model.User{ID: "uA1", UsernameLower: "bob", Host: &hostA}
+	repo := &flakyUserRepo{
+		MockUserRepository: mock,
+		failHost:           hostA,
+	}
+	svc.SetUserRepo(repo)
+
+	author := &model.User{ID: "author1"}
+	text := "@alice and @bob@a.example"
+	created, err := svc.Create(note.CreateInput{User: author, Text: &text})
+	require.NoError(t, err)
+	// hostA が err なので uA1 は drop、ローカルの uLocal だけ残る。
+	assert.Equal(t, []string{"uLocal"}, []string(created.Mentions))
+}
+
+// flakyUserRepo は指定 host の FindManyByUsernamesAndHost で err を返す。
+type flakyUserRepo struct {
+	*testutil.MockUserRepository
+	failHost string
+}
+
+func (f *flakyUserRepo) FindManyByUsernamesAndHost(usernames []string, host *string) ([]*model.User, error) {
+	if host != nil && *host == f.failHost {
+		return nil, stubError
+	}
+	return f.MockUserRepository.FindManyByUsernamesAndHost(usernames, host)
+}
+
 func TestCreateService_NoteRepoCreateError(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	noteRepo := &failingNoteRepoCreate{MockNoteRepository: testutil.NewMockNoteRepository()}
