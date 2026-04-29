@@ -468,3 +468,139 @@ func TestIsSilenced_CanPublicNoteFalseMeansSilenced(t *testing.T) {
 	}
 	assert.True(t, svc.IsSilenced("user1"))
 }
+
+// --- per-user role cache (#300 3-5) -----------------------------------------
+
+// countingAssignmentRepo wraps the mock to count ListByUser calls so we can
+// verify the role cache hits.
+type countingAssignmentRepo struct {
+	*testutil.MockRoleAssignmentRepository
+	listByUserCalls int
+}
+
+func (c *countingAssignmentRepo) ListByUser(userID string) ([]*model.RoleAssignment, error) {
+	c.listByUserCalls++
+	return c.MockRoleAssignmentRepository.ListByUser(userID)
+}
+
+func newServiceWithCountingAssign(t *testing.T) (*role.Service, *testutil.MockRoleRepository, *countingAssignmentRepo) {
+	t.Helper()
+	roleRepo := testutil.NewMockRoleRepository()
+	assignRepo := &countingAssignmentRepo{
+		MockRoleAssignmentRepository: testutil.NewMockRoleAssignmentRepository(roleRepo),
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := role.NewService(roleRepo, assignRepo, metaRepo, idGen)
+	return svc, roleRepo, assignRepo
+}
+
+// 同一 user に対する 10 連続 GetUserRoles で assignmentRepo.ListByUser が
+// 1 回しか呼ばれないことを担保 (#300 3-5)。
+func TestGetUserRoles_CachedHitsRepoOnce(t *testing.T) {
+	svc, roleRepo, assignRepo := newServiceWithCountingAssign(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod", IsModerator: true}
+	assignRepo.Assignments["user1:r1"] = &model.RoleAssignment{
+		ID: "a1", UserID: "user1", RoleID: "r1",
+	}
+
+	for i := 0; i < 10; i++ {
+		roles, err := svc.GetUserRoles("user1")
+		require.NoError(t, err)
+		require.Len(t, roles, 1)
+	}
+	assert.Equal(t, 1, assignRepo.listByUserCalls,
+		"per-user role list should be cached; only the first call hits the repo")
+}
+
+// Assign で当該ユーザーの cache が invalidate されることを担保。
+func TestAssign_InvalidatesUserRoleCache(t *testing.T) {
+	svc, roleRepo, assignRepo := newServiceWithCountingAssign(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod"}
+	roleRepo.Roles["r2"] = &model.Role{ID: "r2", Name: "Trial"}
+	assignRepo.Assignments["user1:r1"] = &model.RoleAssignment{
+		ID: "a1", UserID: "user1", RoleID: "r1",
+	}
+
+	// warm cache
+	_, _ = svc.GetUserRoles("user1")
+	assert.Equal(t, 1, assignRepo.listByUserCalls)
+
+	require.NoError(t, svc.Assign("user1", "r2", nil))
+
+	// next read should miss cache and go to DB
+	_, _ = svc.GetUserRoles("user1")
+	assert.Equal(t, 2, assignRepo.listByUserCalls,
+		"Assign must invalidate the user's role cache so next read is fresh")
+}
+
+// Unassign で当該ユーザーの cache が invalidate されることを担保。
+func TestUnassign_InvalidatesUserRoleCache(t *testing.T) {
+	svc, roleRepo, assignRepo := newServiceWithCountingAssign(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod"}
+	assignRepo.Assignments["user1:r1"] = &model.RoleAssignment{
+		ID: "a1", UserID: "user1", RoleID: "r1",
+	}
+
+	_, _ = svc.GetUserRoles("user1")
+	assert.Equal(t, 1, assignRepo.listByUserCalls)
+
+	require.NoError(t, svc.Unassign("user1", "r1"))
+
+	_, _ = svc.GetUserRoles("user1")
+	assert.Equal(t, 2, assignRepo.listByUserCalls,
+		"Unassign must invalidate the user's role cache")
+}
+
+// Service.Delete (role 削除) で全 user の cache が flush されること。
+func TestDelete_InvalidatesAllRoleCaches(t *testing.T) {
+	svc, roleRepo, assignRepo := newServiceWithCountingAssign(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod"}
+	roleRepo.Roles["r2"] = &model.Role{ID: "r2", Name: "Trial"}
+	assignRepo.Assignments["user1:r1"] = &model.RoleAssignment{
+		ID: "a1", UserID: "user1", RoleID: "r1",
+	}
+	assignRepo.Assignments["user2:r1"] = &model.RoleAssignment{
+		ID: "a2", UserID: "user2", RoleID: "r1",
+	}
+
+	// warm cache for both users
+	_, _ = svc.GetUserRoles("user1")
+	_, _ = svc.GetUserRoles("user2")
+	assert.Equal(t, 2, assignRepo.listByUserCalls)
+
+	require.NoError(t, svc.Delete("r2")) // 別 role の delete でも全 flush
+
+	_, _ = svc.GetUserRoles("user1")
+	_, _ = svc.GetUserRoles("user2")
+	assert.Equal(t, 4, assignRepo.listByUserCalls,
+		"Delete should flush every cached entry (we don't know which users were assigned)")
+}
+
+func TestGetUserRoles_EmptyUserIDDoesNotCache(t *testing.T) {
+	svc, _, assignRepo := newServiceWithCountingAssign(t)
+	roles, err := svc.GetUserRoles("")
+	require.NoError(t, err)
+	assert.Empty(t, roles)
+	assert.Equal(t, 0, assignRepo.listByUserCalls,
+		"empty userID must not hit the repo at all")
+}
+
+// 失敗した Assign / Unassign は invalidate しない (DB 状態が変わらないため)。
+func TestAssign_FailedDoesNotInvalidate(t *testing.T) {
+	svc, roleRepo, assignRepo := newServiceWithCountingAssign(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod"}
+	assignRepo.Assignments["user1:r1"] = &model.RoleAssignment{
+		ID: "a1", UserID: "user1", RoleID: "r1",
+	}
+
+	_, _ = svc.GetUserRoles("user1") // warm
+
+	// 同じ role を再度 Assign → ErrAlreadyAssigned で失敗
+	err := svc.Assign("user1", "r1", nil)
+	require.Error(t, err)
+
+	_, _ = svc.GetUserRoles("user1")
+	assert.Equal(t, 1, assignRepo.listByUserCalls,
+		"failed Assign must not invalidate cache")
+}

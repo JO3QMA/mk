@@ -502,41 +502,7 @@ func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error)
 	if err != nil {
 		return nil, err
 	}
-	// 一旦 bundle を全件集めてから resolver を 1 度構築する。ShowByID は
-	// N+1 のままだが、instance は batch 1 回に集約できる (#277)。
-	type resolved struct {
-		f      *model.Following
-		bundle *user.UserWithProfile
-	}
-	pending := make([]resolved, 0, len(rows))
-	remoteUsers := make([]*model.User, 0, len(rows))
-	for _, f := range rows {
-		if req.SinceID != "" && f.ID <= req.SinceID {
-			continue
-		}
-		if req.UntilID != "" && f.ID >= req.UntilID {
-			continue
-		}
-		r := resolved{f: f}
-		if b, err := h.userService.ShowByID(f.FollowerID); err == nil {
-			r.bundle = b
-			remoteUsers = append(remoteUsers, b.User)
-		}
-		pending = append(pending, r)
-	}
-	resolver := entity.NewInstanceResolver(h.instanceLookup(), remoteUsers...)
-	out := make([]relationItem, 0, len(pending))
-	for _, r := range pending {
-		item := relationItem{ID: r.f.ID, FollowerID: r.f.FollowerID, FolloweeID: r.f.FolloweeID}
-		if r.bundle != nil {
-			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
-			resolver.FillUserLite(&d.UserLite)
-			h.populateUserEmojis(r.bundle.User, &d.UserLite)
-			item.Follower = &d
-		}
-		out = append(out, item)
-	}
-	return out, nil
+	return h.packRelationItems(rows, req, true), nil
 }
 
 func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error) {
@@ -544,12 +510,22 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 	if err != nil {
 		return nil, err
 	}
-	type resolved struct {
-		f      *model.Following
-		bundle *user.UserWithProfile
-	}
-	pending := make([]resolved, 0, len(rows))
-	remoteUsers := make([]*model.User, 0, len(rows))
+	return h.packRelationItems(rows, req, false), nil
+}
+
+// packRelationItems builds the response slice for users/followers and
+// users/following. followers=true means embed the follower side, false means
+// embed the followee side. cursor (sinceId/untilId) で filter したあとに
+// ShowManyByIDs (#503) で 1 batch query にまとめ、map で O(1) 解決して
+// 旧 ShowByID per-row N+1 を解消する (#300 2-3)。instance は引き続き
+// batch 1 回で resolve する (#277)。
+func (h *Handler) packRelationItems(
+	rows []*model.Following,
+	req FollowersRequest,
+	followers bool,
+) []relationItem {
+	filtered := make([]*model.Following, 0, len(rows))
+	idSet := make(map[string]struct{}, len(rows))
 	for _, f := range rows {
 		if req.SinceID != "" && f.ID <= req.SinceID {
 			continue
@@ -557,26 +533,59 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 		if req.UntilID != "" && f.ID >= req.UntilID {
 			continue
 		}
-		r := resolved{f: f}
-		if b, err := h.userService.ShowByID(f.FolloweeID); err == nil {
-			r.bundle = b
-			remoteUsers = append(remoteUsers, b.User)
+		filtered = append(filtered, f)
+		var target string
+		if followers {
+			target = f.FollowerID
+		} else {
+			target = f.FolloweeID
 		}
-		pending = append(pending, r)
+		if target != "" {
+			idSet[target] = struct{}{}
+		}
+	}
+
+	bundleByID := make(map[string]*user.UserWithProfile, len(idSet))
+	if len(idSet) > 0 {
+		ids := make([]string, 0, len(idSet))
+		for id := range idSet {
+			ids = append(ids, id)
+		}
+		if bundles, err := h.userService.ShowManyByIDs(ids); err == nil {
+			for _, b := range bundles {
+				bundleByID[b.User.ID] = b
+			}
+		}
+	}
+
+	remoteUsers := make([]*model.User, 0, len(bundleByID))
+	for _, b := range bundleByID {
+		remoteUsers = append(remoteUsers, b.User)
 	}
 	resolver := entity.NewInstanceResolver(h.instanceLookup(), remoteUsers...)
-	out := make([]relationItem, 0, len(pending))
-	for _, r := range pending {
-		item := relationItem{ID: r.f.ID, FollowerID: r.f.FollowerID, FolloweeID: r.f.FolloweeID}
-		if r.bundle != nil {
-			d := entity.PackUserDetailed(r.bundle.User, r.bundle.Profile, h.idGen)
+
+	out := make([]relationItem, 0, len(filtered))
+	for _, f := range filtered {
+		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
+		var target string
+		if followers {
+			target = f.FollowerID
+		} else {
+			target = f.FolloweeID
+		}
+		if b, ok := bundleByID[target]; ok {
+			d := entity.PackUserDetailed(b.User, b.Profile, h.idGen)
 			resolver.FillUserLite(&d.UserLite)
-			h.populateUserEmojis(r.bundle.User, &d.UserLite)
-			item.Followee = &d
+			h.populateUserEmojis(b.User, &d.UserLite)
+			if followers {
+				item.Follower = &d
+			} else {
+				item.Followee = &d
+			}
 		}
 		out = append(out, item)
 	}
-	return out, nil
+	return out
 }
 
 // fillPinned populates PinnedNoteIDs / PinnedNotes / PinnedPageID / PinnedPage
