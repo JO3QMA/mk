@@ -465,6 +465,15 @@ func applyUserFields(u *model.User, fields map[string]any) {
 			u.AvatarBlurhash = ptrOrNilString(v)
 		case "bannerBlurhash":
 			u.BannerBlurhash = ptrOrNilString(v)
+		case "avatarDecorations":
+			// production の core/user.UpdateProfile は `string(jsonBytes)` で渡す。
+			// テスト互換のため []byte / その他 byte slice 系も受け取れるようにしておく。
+			switch s := v.(type) {
+			case string:
+				u.AvatarDecorations = []byte(s)
+			case []byte:
+				u.AvatarDecorations = append([]byte(nil), s...)
+			}
 		}
 	}
 }

@@ -61,6 +61,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/wellknown"
 	coreabuse "github.com/shiroha-a/mk/internal/core/abuse"
 	coreantenna "github.com/shiroha-a/mk/internal/core/antenna"
+	"github.com/shiroha-a/mk/internal/core/avatardecoration"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	corecaptcha "github.com/shiroha-a/mk/internal/core/captcha"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
@@ -1051,6 +1052,12 @@ func (s *Server) setupRoutes() {
 	iHandler.SetPageRepo(pageRepo)
 	iHandler.SetInstanceRepo(instanceRepo)
 	iHandler.SetEmojiRepo(emojiRepo)
+	avatarDecorationRepo := repository.NewAvatarDecorationRepository(s.db)
+	iHandler.SetAvatarDecorationRepo(avatarDecorationRepo)
+	// PackUserLite が avatarDecorations の各エントリに url を埋め込めるよう
+	// 共有 catalog resolver を entity package に登録する (#521)。catalog は
+	// admin 管理で低頻度更新のため 30s TTL の in-memory cache で十分。
+	entity.SetAvatarDecorationLookup(avatardecoration.NewResolver(avatarDecorationRepo))
 	iHandler.SetNoteFieldResolver(noteFieldResolver)
 	// announcementRepoは後続で構築されるため SetupAdditional() 相当の順序依存があるが、
 	// 現状 announcementRepo := ... の行がここより後にあるため下で wire する。

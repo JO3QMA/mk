@@ -1,0 +1,106 @@
+package entity
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+)
+
+type stubDecoLookup struct {
+	urls map[string]string
+}
+
+func (s *stubDecoLookup) LookupURL(id string) (string, bool) {
+	u, ok := s.urls[id]
+	return u, ok
+}
+
+func TestPackUserLite_AvatarDecorations_EnrichedWithURL(t *testing.T) {
+	t.Cleanup(func() { SetAvatarDecorationLookup(nil) })
+	SetAvatarDecorationLookup(&stubDecoLookup{urls: map[string]string{
+		"dec1": "https://cdn.example/dec1.png",
+	}})
+
+	u := &model.User{
+		ID:                "u1",
+		Username:          "alice",
+		AvatarDecorations: datatypes.JSON([]byte(`[{"id":"dec1","angle":0.5,"flipH":true,"offsetX":-0.25,"offsetY":0.25}]`)),
+	}
+	out := PackUserLite(u)
+	require.Len(t, out.AvatarDecorations, 1)
+	d := out.AvatarDecorations[0]
+	assert.Equal(t, "dec1", d.ID)
+	assert.Equal(t, 0.5, d.Angle)
+	assert.True(t, d.FlipH)
+	assert.Equal(t, -0.25, d.OffsetX)
+	assert.Equal(t, 0.25, d.OffsetY)
+	assert.Equal(t, "https://cdn.example/dec1.png", d.URL)
+}
+
+func TestPackUserLite_AvatarDecorations_DropsUnknownIDs(t *testing.T) {
+	t.Cleanup(func() { SetAvatarDecorationLookup(nil) })
+	SetAvatarDecorationLookup(&stubDecoLookup{urls: map[string]string{"dec1": "u1"}})
+
+	u := &model.User{
+		ID:                "u1",
+		Username:          "alice",
+		AvatarDecorations: datatypes.JSON([]byte(`[{"id":"dec1"},{"id":"deleted"}]`)),
+	}
+	out := PackUserLite(u)
+	require.Len(t, out.AvatarDecorations, 1)
+	assert.Equal(t, "dec1", out.AvatarDecorations[0].ID)
+}
+
+func TestPackUserLite_AvatarDecorations_NoLookup(t *testing.T) {
+	t.Cleanup(func() { SetAvatarDecorationLookup(nil) })
+	SetAvatarDecorationLookup(nil)
+
+	u := &model.User{
+		ID:                "u1",
+		Username:          "alice",
+		AvatarDecorations: datatypes.JSON([]byte(`[{"id":"dec1","angle":1}]`)),
+	}
+	out := PackUserLite(u)
+	// lookup 未配線時は url 空のまま全件残す (旧挙動と同じくフロント側で
+	// catalog 解決させる fallback)。
+	require.Len(t, out.AvatarDecorations, 1)
+	assert.Equal(t, "dec1", out.AvatarDecorations[0].ID)
+	assert.Equal(t, 1.0, out.AvatarDecorations[0].Angle)
+	assert.Empty(t, out.AvatarDecorations[0].URL)
+}
+
+func TestPackUserLite_AvatarDecorations_EmptyOrNull(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{"nil", nil},
+		{"empty", []byte(``)},
+		{"emptyArray", []byte(`[]`)},
+		{"malformed", []byte(`{not json}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := &model.User{ID: "u1", Username: "alice", AvatarDecorations: datatypes.JSON(tc.raw)}
+			out := PackUserLite(u)
+			// JSON null ではなく空配列で出すこと。
+			b, err := json.Marshal(out.AvatarDecorations)
+			require.NoError(t, err)
+			assert.Equal(t, "[]", string(b))
+		})
+	}
+}
+
+func TestPackUserLite_AvatarDecorations_DropsEmptyIDEntry(t *testing.T) {
+	u := &model.User{
+		ID:                "u1",
+		Username:          "alice",
+		AvatarDecorations: datatypes.JSON([]byte(`[{"id":""},{"angle":1}]`)),
+	}
+	out := PackUserLite(u)
+	assert.Empty(t, out.AvatarDecorations)
+}

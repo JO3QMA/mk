@@ -719,6 +719,214 @@ func TestUpdate_RoomOmittedLeavesUnchanged(t *testing.T) {
 	assert.JSONEq(t, `{"keep":true}`, string(got.Room))
 }
 
+// avatarDecorations の検証 (#521)。全 case で stubRoleProvider と
+// MockAvatarDecorationRepository を組み合わせて catalog / role / policy を
+// 注入する。
+func TestUpdate_AvatarDecorations_Success(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+
+	deco := testutil.NewMockAvatarDecorationRepository()
+	deco.Decorations["dec1"] = &model.AvatarDecoration{ID: "dec1", Name: "Hat", URL: "https://e/x.png"}
+	h.SetAvatarDecorationRepo(deco)
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": 1}})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"dec1","angle":0.5,"flipH":true,"offsetX":0.1,"offsetY":-0.2}]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// 永続化された JSON が正規化済みであること。
+	got := string(repo.Users["user1"].AvatarDecorations)
+	assert.JSONEq(t, `[{"id":"dec1","angle":0.5,"flipH":true,"offsetX":0.1,"offsetY":-0.2}]`, got)
+}
+
+func TestUpdate_AvatarDecorations_EmptyArrayClears(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte(`[{"id":"dec1","angle":0,"flipH":false,"offsetX":0,"offsetY":0}]`)),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": 1}})
+
+	rec := post(h.Update, `{"avatarDecorations":[]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	assert.JSONEq(t, `[]`, string(repo.Users["user1"].AvatarDecorations))
+}
+
+func TestUpdate_AvatarDecorations_DefaultsAppliedWhenFieldsOmitted(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+
+	deco := testutil.NewMockAvatarDecorationRepository()
+	deco.Decorations["dec1"] = &model.AvatarDecoration{ID: "dec1"}
+	h.SetAvatarDecorationRepo(deco)
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": 1}})
+
+	// id だけ指定 — 残り全フィールドは 0 / false で埋まる。
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"dec1"}]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `[{"id":"dec1","angle":0,"flipH":false,"offsetX":0,"offsetY":0}]`, string(repo.Users["user1"].AvatarDecorations))
+}
+
+func TestUpdate_AvatarDecorations_ExceedsLimit(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	deco := testutil.NewMockAvatarDecorationRepository()
+	deco.Decorations["dec1"] = &model.AvatarDecoration{ID: "dec1"}
+	deco.Decorations["dec2"] = &model.AvatarDecoration{ID: "dec2"}
+	h.SetAvatarDecorationRepo(deco)
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": 1}})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"dec1"},{"id":"dec2"}]}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "TOO_MANY_AVATAR_DECORATIONS")
+}
+
+func TestUpdate_AvatarDecorations_UnknownIDRejected(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	deco := testutil.NewMockAvatarDecorationRepository()
+	h.SetAvatarDecorationRepo(deco)
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": 1}})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"missing"}]}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NO_SUCH_AVATAR_DECORATION")
+}
+
+func TestUpdate_AvatarDecorations_RestrictedByRole(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	deco := testutil.NewMockAvatarDecorationRepository()
+	deco.Decorations["dec1"] = &model.AvatarDecoration{ID: "dec1", RoleIDs: pq.StringArray{"role-vip"}}
+	h.SetAvatarDecorationRepo(deco)
+	// ユーザーは role-other のみ所持 → role-vip 必須の dec1 は弾かれる。
+	h.SetRoleProvider(&stubRoleProvider{
+		roles:    []*model.Role{{ID: "role-other"}},
+		policies: map[string]any{"avatarDecorationLimit": 1},
+	})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"dec1"}]}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "RESTRICTED_BY_ROLE")
+}
+
+func TestUpdate_AvatarDecorations_RoleAllowed(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{
+		ID:                "user1",
+		Username:          "user1",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+	deco := testutil.NewMockAvatarDecorationRepository()
+	deco.Decorations["dec1"] = &model.AvatarDecoration{ID: "dec1", RoleIDs: pq.StringArray{"role-vip"}}
+	h.SetAvatarDecorationRepo(deco)
+	h.SetRoleProvider(&stubRoleProvider{
+		roles:    []*model.Role{{ID: "role-vip"}, {ID: "role-other"}},
+		policies: map[string]any{"avatarDecorationLimit": 1},
+	})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"dec1"}]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_AvatarDecorations_EmptyIDRejected(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{ID: "user1", Username: "user1", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["user1"] = user
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": 5}})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":""}]}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUpdate_AvatarDecorations_OmittedLeavesUnchanged(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	prev := datatypes.JSON([]byte(`[{"id":"dec1","angle":0,"flipH":false,"offsetX":0,"offsetY":0}]`))
+	user := &model.User{ID: "user1", Username: "user1", AvatarDecorations: prev}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+
+	rec := post(h.Update, `{"name":"x"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, string(prev), string(repo.Users["user1"].AvatarDecorations))
+}
+
+func TestUpdate_AvatarDecorations_NoRepoSkipsCatalogCheck(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{ID: "user1", Username: "user1", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": 1}})
+
+	// AvatarDecorationRepo 未配線 → catalog 検証 skip。任意 id を受け付ける fallback。
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"anything"}]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// role.GetUserPolicies は jsonb override を json.Unmarshal で any に
+// 展開するため、数値は float64 で入ってくる。int 限定 assertion だと
+// override が silent fallback して既定 limit=1 のままになる回帰を防ぐ。
+func TestUpdate_AvatarDecorations_RoleOverrideFloatLimitAccepted(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{ID: "user1", Username: "user1", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+	deco := testutil.NewMockAvatarDecorationRepository()
+	deco.Decorations["a"] = &model.AvatarDecoration{ID: "a"}
+	deco.Decorations["b"] = &model.AvatarDecoration{ID: "b"}
+	deco.Decorations["c"] = &model.AvatarDecoration{ID: "c"}
+	h.SetAvatarDecorationRepo(deco)
+	// jsonb override 経由を模倣して float64 を渡す。
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": float64(3)}})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"a"},{"id":"b"},{"id":"c"}]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestUpdate_AvatarDecorations_NoRoleProviderUsesDefaultLimit(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{ID: "user1", Username: "user1", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["user1"] = user
+
+	// roleProvider 未配線 → default limit=1。2 件渡すと 400。
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"a"},{"id":"b"}]}`, user)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 // --- Pin ---
 
 func TestPin_Success(t *testing.T) {

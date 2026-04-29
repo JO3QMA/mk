@@ -11,18 +11,18 @@ import (
 // instance as optional TS-compat fields. All use omitempty so absent values
 // are elided from the response (TS: `?? undefined` / `?: undefined`).
 type UserLite struct {
-	ID                string            `json:"id"`
-	Name              *string           `json:"name"`
-	Username          string            `json:"username"`
-	Host              *string           `json:"host"`
-	AvatarURL         *string           `json:"avatarUrl"`
-	AvatarBlurhash    *string           `json:"avatarBlurhash"`
-	AvatarDecorations datatypes.JSON    `json:"avatarDecorations"`
-	IsBot             bool              `json:"isBot"`
-	IsCat             bool              `json:"isCat"`
-	Emojis            map[string]string `json:"emojis"`
-	OnlineStatus      string            `json:"onlineStatus"`
-	BadgeRoles        []any             `json:"badgeRoles"`
+	ID                string                 `json:"id"`
+	Name              *string                `json:"name"`
+	Username          string                 `json:"username"`
+	Host              *string                `json:"host"`
+	AvatarURL         *string                `json:"avatarUrl"`
+	AvatarBlurhash    *string                `json:"avatarBlurhash"`
+	AvatarDecorations []AvatarDecorationItem `json:"avatarDecorations"`
+	IsBot             bool                   `json:"isBot"`
+	IsCat             bool                   `json:"isCat"`
+	Emojis            map[string]string      `json:"emojis"`
+	OnlineStatus      string                 `json:"onlineStatus"`
+	BadgeRoles        []any                  `json:"badgeRoles"`
 	// Optional TS-compat fields (Phase 7-5a)。
 	// TS側は `requireSigninToViewContents: user.x === false ? undefined : true`
 	// なので、値が true のときのみ expose する (*bool を &true に設定、
@@ -98,8 +98,12 @@ type InstanceLite struct {
 // PackUserLite converts a model.User to a UserLite DTO.
 // Instance (nested remote instance info) must be pre-fetched by the caller
 // via InstanceRepository and assigned to the returned UserLite.Instance.
-// PackUserLite itself performs no DB access (designed for hot paths such as
-// timeline packing).
+// PackUserLite itself performs no DB access on the steady-state hot path
+// (designed for timeline packing). 例外として avatarDecorations の url 解決
+// は entity.SetAvatarDecorationLookup() 経由の resolver を引く — 通常実装は
+// 30s TTL の in-memory cache (core/avatardecoration.Resolver) で hit 時は
+// DB を叩かない。cache miss / TTL 切れでのみ admin catalog の List を 1 回
+// 引く (#521 / #524 review)。
 func PackUserLite(u *model.User) UserLite {
 	avatarURL := u.AvatarURL
 	// avatarUrlがnullの場合、identiconを生成
@@ -118,7 +122,7 @@ func PackUserLite(u *model.User) UserLite {
 		Host:              u.Host,
 		AvatarURL:         avatarURL,
 		AvatarBlurhash:    u.AvatarBlurhash,
-		AvatarDecorations: u.AvatarDecorations,
+		AvatarDecorations: resolveAvatarDecorations(u.AvatarDecorations),
 		IsBot:             u.IsBot,
 		IsCat:             u.IsCat,
 		Emojis:            make(map[string]string),

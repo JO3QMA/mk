@@ -444,6 +444,29 @@ func TestService_UpdateProfile_AvatarNotImage(t *testing.T) {
 	assert.True(t, errors.Is(err, user.ErrAvatarNotImage))
 }
 
+// #521: UpdateInput.AvatarDecorations が user.avatarDecorations カラムに
+// jsonb (= string) として書き込まれることを確認する。
+func TestService_UpdateProfile_AvatarDecorationsSet(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+
+	raw := []byte(`[{"id":"dec1","angle":0,"flipH":false,"offsetX":0,"offsetY":0}]`)
+	bundle, err := svc.UpdateProfile("u1", user.UpdateInput{AvatarDecorations: &raw})
+	require.NoError(t, err)
+	require.NotNil(t, bundle.User)
+	assert.JSONEq(t, string(raw), string(userRepo.Users["u1"].AvatarDecorations))
+}
+
+func TestService_UpdateProfile_AvatarDecorationsClear(t *testing.T) {
+	svc, userRepo, _, _ := newFullSvc(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice", AvatarDecorations: []byte(`[{"id":"dec1"}]`)}
+
+	empty := []byte(`[]`)
+	_, err := svc.UpdateProfile("u1", user.UpdateInput{AvatarDecorations: &empty})
+	require.NoError(t, err)
+	assert.JSONEq(t, `[]`, string(userRepo.Users["u1"].AvatarDecorations))
+}
+
 func TestService_UpdateProfile_BannerSet(t *testing.T) {
 	// banner は avatar と applyMediaUpdate 共有なので smoke test 1 件のみ。
 	svc, userRepo, _, _ := newFullSvc(t)

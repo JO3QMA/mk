@@ -45,35 +45,36 @@ type AccountMover interface {
 
 // Handler handles account-related API endpoints.
 type Handler struct {
-	userService         *user.Service
-	idGen               id.Generator
-	roleProvider        RoleProvider
-	registryRepo        repository.RegistryRepository
-	favoriteRepo        repository.NoteFavoriteRepository
-	transferEnqueuer    TransferEnqueuer
-	webauthnSvc         *twofactor.WebAuthnService
-	securityKeyRepo     repository.UserSecurityKeyRepository
-	metaRepo            repository.MetaRepository
-	emailSender         EmailSender
-	serverURL           string
-	signinRepo          repository.SigninRepository
-	accessTokenRepo     repository.AccessTokenRepository
-	galleryRepo         GalleryRepository
-	pageLikeRepo        repository.PageLikeRepository
-	mover               AccountMover
-	notificationSvc     UnreadNotificationSource
-	followRequestRepo   repository.FollowRequestRepository
-	announcementRepo    AnnouncementUnreadSource
-	chatRepo            ChatUnreadSource
-	antennaUnreadRepo   AntennaUnreadSource
-	channelUnreadRepo   ChannelUnreadSource
-	piningRepo          repository.UserNotePiningRepository
-	noteRepo            repository.NoteRepository
-	pageRepo            repository.PageRepository
-	instanceRepo        repository.InstanceRepository
-	emojiRepo           repository.EmojiRepository
-	mainStreamPublisher MainStreamPublisher
-	fieldRes            *entity.NoteFieldResolver
+	userService          *user.Service
+	idGen                id.Generator
+	roleProvider         RoleProvider
+	registryRepo         repository.RegistryRepository
+	favoriteRepo         repository.NoteFavoriteRepository
+	transferEnqueuer     TransferEnqueuer
+	webauthnSvc          *twofactor.WebAuthnService
+	securityKeyRepo      repository.UserSecurityKeyRepository
+	metaRepo             repository.MetaRepository
+	emailSender          EmailSender
+	serverURL            string
+	signinRepo           repository.SigninRepository
+	accessTokenRepo      repository.AccessTokenRepository
+	galleryRepo          GalleryRepository
+	pageLikeRepo         repository.PageLikeRepository
+	mover                AccountMover
+	notificationSvc      UnreadNotificationSource
+	followRequestRepo    repository.FollowRequestRepository
+	announcementRepo     AnnouncementUnreadSource
+	chatRepo             ChatUnreadSource
+	antennaUnreadRepo    AntennaUnreadSource
+	channelUnreadRepo    ChannelUnreadSource
+	piningRepo           repository.UserNotePiningRepository
+	noteRepo             repository.NoteRepository
+	pageRepo             repository.PageRepository
+	instanceRepo         repository.InstanceRepository
+	emojiRepo            repository.EmojiRepository
+	avatarDecorationRepo repository.AvatarDecorationRepository
+	mainStreamPublisher  MainStreamPublisher
+	fieldRes             *entity.NoteFieldResolver
 }
 
 // SetNoteFieldResolver wires the shared resolver that fills Files /
@@ -285,6 +286,14 @@ func (h *Handler) SetNoteRepo(r repository.NoteRepository) {
 // SetPageRepo wires the page repository used to fill pinnedPage on /api/i.
 func (h *Handler) SetPageRepo(r repository.PageRepository) {
 	h.pageRepo = r
+}
+
+// SetAvatarDecorationRepo wires the avatar_decoration repository used to
+// validate i/update avatarDecorations entries (existence + role gating).
+// Optional — nil disables validation and lets i/update accept arbitrary
+// decoration ids without checking the catalog.
+func (h *Handler) SetAvatarDecorationRepo(r repository.AvatarDecorationRepository) {
+	h.avatarDecorationRepo = r
 }
 
 // NewHandler creates a new account Handler.
@@ -611,6 +620,21 @@ type UpdateRequest struct {
 	// は CLEAR、文字列値は SET。詳細は user.UpdateInput の docコメント参照。
 	AvatarID *string `json:"avatarId"`
 	BannerID *string `json:"bannerId"`
+	// AvatarDecorations は装着するデコレーション配列。nil (省略) なら不変、
+	// `[]` (空配列) なら全外し、`[{id,...}, ...]` で上書き。各要素は
+	// avatar_decoration テーブルに登録された id を参照する。
+	AvatarDecorations *[]AvatarDecorationInput `json:"avatarDecorations"`
+}
+
+// AvatarDecorationInput is one entry of the avatarDecorations array on
+// i/update. Only id is required; angle / flipH / offsetX / offsetY default
+// to 0 / false / 0 / 0 when omitted (matching upstream).
+type AvatarDecorationInput struct {
+	ID      string   `json:"id"`
+	Angle   *float64 `json:"angle,omitempty"`
+	FlipH   *bool    `json:"flipH,omitempty"`
+	OffsetX *float64 `json:"offsetX,omitempty"`
+	OffsetY *float64 `json:"offsetY,omitempty"`
 }
 
 // jsonbObject normalizes a raw jsonb byte slice into map[string]any for the
@@ -730,6 +754,13 @@ func (h *Handler) Update(c echo.Context) error {
 	if req.BannerID != nil {
 		in.BannerID = req.BannerID
 	}
+	if req.AvatarDecorations != nil {
+		normalized, apiErr := h.normalizeAvatarDecorations(me.ID, *req.AvatarDecorations)
+		if apiErr != nil {
+			return c.JSON(apiErr.status, apiErr.body)
+		}
+		in.AvatarDecorations = &normalized
+	}
 
 	bundle, err := h.userService.UpdateProfile(me.ID, in)
 	if err != nil {
@@ -751,6 +782,136 @@ func (h *Handler) Update(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, entity.PackUserDetailed(bundle.User, bundle.Profile, h.idGen))
+}
+
+// avatarDecorationAPIError carries a (status, body) pair from
+// normalizeAvatarDecorations back to the i/update handler so callers can emit
+// the precise Misskey-compatible error payload.
+type avatarDecorationAPIError struct {
+	status int
+	body   map[string]any
+}
+
+// normalizeAvatarDecorations validates the requested decoration array and
+// returns the JSON bytes ready for `user.avatarDecorations` jsonb storage.
+//
+// 検証順:
+//  1. policies.avatarDecorationLimit を超える長さは TOO_MANY_AVATAR_DECORATIONS で 400
+//  2. 各 id が avatar_decoration テーブルに存在しなければ NO_SUCH_AVATAR_DECORATION で 400
+//  3. decoration.roleIdsThatCanBeUsedThisDecoration が空でない場合、
+//     ユーザーが許可ロールを持っていなければ RESTRICTED_BY_ROLE で 400
+//
+// avatarDecorationRepo / roleProvider が未配線でも処理は継続する (length
+// チェックは default 1、catalog / role 検証は repo / provider が無い場合
+// skip する)。これは Update ハンドラを最小依存で test できるようにする
+// ための fallback。
+//
+// 戻り値の JSON は `[{id,angle,flipH,offsetX,offsetY}, ...]` 形式。空配列
+// なら `[]` を返してデコレーション全外しを表現する。
+func (h *Handler) normalizeAvatarDecorations(userID string, in []AvatarDecorationInput) ([]byte, *avatarDecorationAPIError) {
+	limit := 1
+	if h.roleProvider != nil {
+		policies := h.roleProvider.GetUserPolicies(userID)
+		// role override 経路は role.Policies の jsonb を json.Unmarshal で
+		// any に展開するので数値は float64 で入ってくる。一方 default 経路
+		// (DefaultPolicies()) は Go の int リテラル。両方を受けないと role
+		// 上書きが silent ignore される (#524 review)。
+		switch v := policies["avatarDecorationLimit"].(type) {
+		case int:
+			limit = v
+		case float64:
+			limit = int(v)
+		}
+	}
+	if len(in) > limit {
+		return nil, &avatarDecorationAPIError{
+			status: http.StatusBadRequest,
+			body: apierr.Error(
+				"TOO_MANY_AVATAR_DECORATIONS",
+				"You cannot apply more avatar decorations than the limit allows.",
+				"b449d1cf-d840-4a0a-8e25-f0b0c1782132",
+			),
+		}
+	}
+	// 許可ロール検証用の lookup set。provider 未配線時は空 set でフォールスルーし、
+	// roleIds 制限のあるデコレーションは catalog 側で 1 件目で弾かれる。
+	allowedRoleIDs := map[string]struct{}{}
+	if h.roleProvider != nil {
+		if roles, err := h.roleProvider.GetUserRoles(userID); err == nil {
+			for _, r := range roles {
+				allowedRoleIDs[r.ID] = struct{}{}
+			}
+		}
+	}
+	out := make([]map[string]any, 0, len(in))
+	for _, d := range in {
+		if d.ID == "" {
+			return nil, &avatarDecorationAPIError{
+				status: http.StatusBadRequest,
+				body:   apierr.InvalidParam(),
+			}
+		}
+		if h.avatarDecorationRepo != nil {
+			deco, err := h.avatarDecorationRepo.FindByID(d.ID)
+			if err != nil || deco == nil {
+				return nil, &avatarDecorationAPIError{
+					status: http.StatusBadRequest,
+					body: apierr.Error(
+						"NO_SUCH_AVATAR_DECORATION",
+						"No such avatar decoration.",
+						"c0fa7a0d-a32a-4cb1-b657-ae8a90eaa3a8",
+					),
+				}
+			}
+			if len(deco.RoleIDs) > 0 {
+				ok := false
+				for _, rid := range deco.RoleIDs {
+					if _, has := allowedRoleIDs[rid]; has {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					return nil, &avatarDecorationAPIError{
+						status: http.StatusBadRequest,
+						body: apierr.Error(
+							"RESTRICTED_BY_ROLE",
+							"This feature is restricted by your role.",
+							"8feff0ba-5ab5-585b-31f4-4df816663fad",
+						),
+					}
+				}
+			}
+		}
+		row := map[string]any{
+			"id":      d.ID,
+			"angle":   0.0,
+			"flipH":   false,
+			"offsetX": 0.0,
+			"offsetY": 0.0,
+		}
+		if d.Angle != nil {
+			row["angle"] = *d.Angle
+		}
+		if d.FlipH != nil {
+			row["flipH"] = *d.FlipH
+		}
+		if d.OffsetX != nil {
+			row["offsetX"] = *d.OffsetX
+		}
+		if d.OffsetY != nil {
+			row["offsetY"] = *d.OffsetY
+		}
+		out = append(out, row)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return nil, &avatarDecorationAPIError{
+			status: http.StatusInternalServerError,
+			body:   apierr.InternalError(),
+		}
+	}
+	return raw, nil
 }
 
 // PinRequest is the request body for i/pin and i/unpin.
