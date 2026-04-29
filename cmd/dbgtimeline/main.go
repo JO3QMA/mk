@@ -6,7 +6,7 @@
 // panic so the offending note can be identified.
 //
 // Originally written to track down the goccy 0.10.6 ptrToString crash on
-// remote Renote-with-Files notes (see docs/dbg-timeline.md and #542).
+// remote Renote-with-Files notes (see cmd/dbgtimeline/README.md and #542).
 // Kept around as a generic debug tool: any future "encoder panics on
 // timeline" report can be triaged with this same flow.
 //
@@ -50,9 +50,13 @@ func main() {
 	if err != nil {
 		die("open db: %v", err)
 	}
-	idGen, err := id.NewGenerator("aidx")
+	idType := cfg.ID
+	if idType == "" {
+		idType = "aidx"
+	}
+	idGen, err := id.NewGenerator(idType)
 	if err != nil {
-		die("idGen: %v", err)
+		die("idGen (%q): %v", idType, err)
 	}
 
 	noteRepo := repository.NewNoteRepository(db)
@@ -107,8 +111,8 @@ func main() {
 		one := packed[i : i+1]
 		if err := tryEncode(one); err != nil {
 			failed = append(failed, i)
-			fmt.Printf("PANIC at index=%d note.id=%s userHost=%s visibility=%s renoteId=%v\n",
-				i, notes[i].ID, derefStr(notes[i].UserHost), notes[i].Visibility, notes[i].RenoteID)
+			fmt.Printf("PANIC at index=%d note.id=%s userHost=%s visibility=%s renoteId=%s\n",
+				i, notes[i].ID, derefStr(notes[i].UserHost), notes[i].Visibility, derefStr(notes[i].RenoteID))
 		}
 	}
 	if len(failed) == 0 {
