@@ -261,8 +261,8 @@ func TestFanoutHook_StreamingPublisherUnsetIsNoOp(t *testing.T) {
 }
 
 func TestFanoutHook_StreamingFanoutErrorPath(t *testing.T) {
-	// failingFollowingRepo は ListFollowers でエラーを返す → fanoutStreamingToFollowers
-	// は早期 return する
+	// failingFollowingRepo は ListFollowers でエラーを返す → fanoutToFollowersAndStream
+	// は早期 return し、follower への streaming publish は届かない
 	testRedis.FlushAll(context.Background())
 	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }

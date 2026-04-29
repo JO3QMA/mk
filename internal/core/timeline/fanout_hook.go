@@ -188,7 +188,8 @@ func resolveCap(limits CacheLimits, kind TimelineKind) int {
 }
 
 // publishNote forwards the note to the StreamingPublisher when set. Best-
-// effort wrapper used by OnNoteCreated and fanoutToFollowers.
+// effort wrapper used by OnNoteCreated for non-follower topics; the per-
+// follower streaming publish is inlined in fanoutToFollowersAndStream.
 func (h *FanoutHook) publishNote(topic string, n *model.Note, author *model.User) {
 	if h.publisher == nil {
 		return
@@ -222,7 +223,7 @@ func (h *FanoutHook) fanoutToFollowersAndStream(ctx context.Context, authorID st
 	for {
 		rows, err := h.followingRepo.ListFollowers(authorID, pageSize, offset)
 		if err != nil {
-			slog.Warn("fanoutToFollowers: list followers failed", "err", err, "author", authorID)
+			slog.Warn("fanoutToFollowersAndStream: list followers failed", "err", err, "author", authorID)
 			return
 		}
 		if len(rows) == 0 {
@@ -304,8 +305,8 @@ func (h *FanoutHook) removeBestEffort(ctx context.Context, name Name, noteID str
 	}
 }
 
-// removeFromFollowerHomes mirrors fanoutToFollowers: page through followers and
-// LREM the note ID from each follower's home timeline list.
+// removeFromFollowerHomes mirrors fanoutToFollowersAndStream: page through
+// followers and LREM the note ID from each follower's home timeline list.
 func (h *FanoutHook) removeFromFollowerHomes(ctx context.Context, authorID, noteID string) {
 	const pageSize = 200
 	offset := 0
