@@ -1260,6 +1260,8 @@ func (s *Server) setupRoutes() {
 		proxyAllowlist, s.config.MediaProxySecret,
 		s.config.AllowedPrivateNetworks,
 		safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts),
+		safehttp.WithOutgoingAddress(s.config.OutgoingAddress),
+		safehttp.WithAddressFamily(s.config.OutgoingAddressFamily),
 	)
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)

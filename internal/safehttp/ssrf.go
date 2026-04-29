@@ -7,6 +7,7 @@ package safehttp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -150,6 +151,9 @@ func NewSSRFSafeTransport(allowedCIDRs []string, opts ...Option) *http.Transport
 	if o.localAddr != "" {
 		if ip := net.ParseIP(o.localAddr); ip != nil {
 			dialer.LocalAddr = &net.TCPAddr{IP: ip}
+		} else {
+			slog.Warn("safehttp: invalid outgoingAddress, falling back to kernel auto-pick",
+				"addr", o.localAddr)
 		}
 	}
 
@@ -185,6 +189,10 @@ func NewSSRFSafeTransport(allowedCIDRs []string, opts ...Option) *http.Transport
 			// 0 件になった場合は明示的にエラーを返して曖昧な fallback を
 			// 避ける (operator が ipv4 強制したのに AAAA しか無い host 等)。
 			if familyFilter != "" {
+				// in-place slice filter: ips[:0] が underlying array を共有する
+				// が、この closure 内では ips は LookupIPAddr の戻り (毎回新規)
+				// で書き込み index は読み込み index 以下、かつ goroutine
+				// 共有もしないので safe。
 				filtered := ips[:0]
 				for _, ipAddr := range ips {
 					if matchFamily(ipAddr.IP, familyFilter) {

@@ -6,6 +6,7 @@
 package smtp
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -168,6 +169,13 @@ func dialSOCKS5(u *url.URL, addr string, timeout time.Duration) (net.Conn, error
 // CONNECT request to tunnel through to addr. TLS over HTTP CONNECT (https://
 // proxy) は proxy への接続を TLS で包んでから CONNECT を送る; SMTP server
 // 側の StartTLS とは独立。
+//
+// 重要: 実 proxy (Squid / nginx 等) は target に先に接続して greeting を
+// バッファし、200 応答とまとめて 1 TCP segment で push する場合がある。
+// 単純な conn.Read だと SMTP banner まで読み込んで捨ててしまうため、
+// bufio.Reader で CONNECT 応答だけを正確に消費し、残った bytes は
+// 接続に noticed させて caller (gosmtp.NewClient) に届ける必要がある。
+// readCONNECTResponse + bufferedConn でこれを実装する。
 func dialHTTPConnect(u *url.URL, addr string, timeout time.Duration) (net.Conn, error) {
 	proxyHost := u.Host
 	if _, _, splitErr := net.SplitHostPort(proxyHost); splitErr != nil {
@@ -208,42 +216,58 @@ func dialHTTPConnect(u *url.URL, addr string, timeout time.Duration) (net.Conn, 
 		return nil, fmt.Errorf("write CONNECT: %w", err)
 	}
 
-	// CONNECT 応答 1 行目のみで判定。"HTTP/1.1 200" を含めば OK、それ以外は
-	// fail。残りの header 行は捨て (空行 or EOF まで読み進めても良いが、
-	// SMTP 用途では proxy 応答後すぐに smtp プロトコルが流れ始めるので
-	// 単純実装で十分)。
-	if err := readCONNECTResponse(conn); err != nil {
+	// bufio.Reader で CONNECT 応答 (status line + 空行までの header) を
+	// line-by-line で読む。Read 1 回で SMTP banner まで巻き込まないこと、
+	// それでも buffer に残ったバイトは bufferedConn 経由で gosmtp.NewClient
+	// に届くことを保証する。
+	br := bufio.NewReader(conn)
+	if err := readCONNECTResponse(conn, br); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	return conn, nil
+	return &bufferedConn{Conn: conn, r: br}, nil
 }
 
-// readCONNECTResponse parses the proxy's HTTP/1.1 CONNECT response. Returns
-// nil on 2xx (tunnel established), error otherwise.
-func readCONNECTResponse(conn net.Conn) error {
-	buf := make([]byte, 4096)
+// bufferedConn wraps net.Conn so subsequent Reads draw from a bufio.Reader
+// buffer first (consumed bytes that were left over after CONNECT response
+// parsing). Writes / Close / Deadline 系は素 conn にそのまま委譲する。
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
+
+// readCONNECTResponse parses the proxy's HTTP/1.1 CONNECT response from a
+// bufio.Reader. Returns nil on 2xx, error otherwise. Header 行は status の
+// 後ろの空行まで読み捨てる。実 proxy が buffer した SMTP banner は br に
+// 残し、後段の bufferedConn で gosmtp に渡す。
+func readCONNECTResponse(conn net.Conn, br *bufio.Reader) error {
 	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return fmt.Errorf("set read deadline: %w", err)
 	}
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-	n, err := conn.Read(buf)
-	if err != nil && n == 0 {
-		return fmt.Errorf("read CONNECT response: %w", err)
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read CONNECT status line: %w", err)
 	}
-	resp := string(buf[:n])
-	// 1 行目: "HTTP/1.1 200 Connection established"
-	idx := strings.Index(resp, "\r\n")
-	if idx < 0 {
-		return fmt.Errorf("malformed CONNECT response: %q", resp)
-	}
-	statusLine := resp[:idx]
+	statusLine = strings.TrimRight(statusLine, "\r\n")
 	parts := strings.SplitN(statusLine, " ", 3)
 	if len(parts) < 2 || !strings.HasPrefix(parts[1], "2") {
 		return fmt.Errorf("CONNECT failed: %s", statusLine)
 	}
-	return nil
+	// header 行を空行まで消費する。Header line を超えた bytes は bufio
+	// の buffer に残り、bufferedConn 経由で次の Read に渡る。
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read CONNECT headers: %w", err)
+		}
+		if line == "\r\n" || line == "\n" {
+			return nil
+		}
+	}
 }
 
 // encodeBasicAuth returns the base64 form of "user:pass" for the

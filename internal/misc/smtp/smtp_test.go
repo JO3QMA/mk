@@ -302,8 +302,10 @@ func TestSend_DialFailureIsBestEffort(t *testing.T) {
 }
 
 // #496: HTTP CONNECT proxy 経由で SMTP サーバに接続できることを確認する。
-// proxy は CONNECT を受けた後そのまま target SMTP との bidirectional pipe
-// になる minimum 実装。target SMTP は fakeSMTP を流用。
+// 実 proxy (Squid 等) の挙動を真似て、target SMTP に先に接続して banner を
+// バッファし、HTTP 200 応答 + banner を 1 write で client に push する。
+// 旧実装の readCONNECTResponse は raw conn.Read で over-read していたため
+// このシナリオで SMTP banner を握り潰して接続が hang していた (#553 review)。
 func TestSendWithOptions_HTTPConnectProxy(t *testing.T) {
 	srv := newFakeSMTP(t, false)
 	targetAddr := fmt.Sprintf("127.0.0.1:%d", srv.port())
@@ -320,7 +322,8 @@ func TestSendWithOptions_HTTPConnectProxy(t *testing.T) {
 			return
 		}
 		defer client.Close()
-		// CONNECT request を読み捨てて 200 を返し、target に pipe する。
+
+		// 1) CONNECT request を読み捨て
 		r := bufio.NewReader(client)
 		for {
 			line, err := r.ReadString('\n')
@@ -331,22 +334,28 @@ func TestSendWithOptions_HTTPConnectProxy(t *testing.T) {
 				break
 			}
 		}
-		fmt.Fprint(client, "HTTP/1.1 200 Connection established\r\n\r\n")
+		// 2) 先に target に dial して banner を 1 行読む (実 proxy 動作の
+		//    模倣)。fakeSMTP は accept 後即 "220 localhost ESMTP\r\n" を送る。
 		target, err := net.Dial("tcp", targetAddr)
 		if err != nil {
 			return
 		}
 		defer target.Close()
-		// pipe both directions
+		bannerBuf := make([]byte, 256)
+		_ = target.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _ := target.Read(bannerBuf)
+		_ = target.SetReadDeadline(time.Time{})
+
+		// 3) 200 応答 + banner を 1 write で push (TCP coalescing simulation)。
+		_, _ = client.Write(append(
+			[]byte("HTTP/1.1 200 Connection established\r\n\r\n"),
+			bannerBuf[:n]...,
+		))
+
+		// 4) 以降は通常 pipe。
 		done := make(chan struct{}, 2)
-		go func() {
-			_, _ = copyConn(target, r)
-			done <- struct{}{}
-		}()
-		go func() {
-			_, _ = copyConn(client, target)
-			done <- struct{}{}
-		}()
+		go func() { _, _ = copyConn(target, r); done <- struct{}{} }()
+		go func() { _, _ = copyConn(client, target); done <- struct{}{} }()
 		<-done
 	}()
 
