@@ -94,6 +94,62 @@ func TestClient_EnqueueDeliver(t *testing.T) {
 	assert.Equal(t, payload, got)
 }
 
+// #495: deliverJobMaxAttempts を Client.Policy に流すと EnqueueDeliver で
+// caller が WithMaxRetry を渡さないときに default として適用される。
+func TestClient_EnqueueDeliver_PolicyMaxAttemptsApplied(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+	c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: 7})
+
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.QueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	info, err := insp.GetTaskInfo(queue.QueueName, tasks[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, 7, info.MaxRetry, "policy default should apply when caller omits WithMaxRetry")
+}
+
+// caller の WithMaxRetry は policy default を上書きする (last-write-wins)。
+func TestClient_EnqueueDeliver_CallerOptsOverridePolicy(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+	c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: 7})
+
+	require.NoError(t, c.EnqueueDeliver(
+		queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)},
+		driver.WithMaxRetry(2),
+	))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+	tasks, err := insp.ListPendingTasks(queue.QueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	info, err := insp.GetTaskInfo(queue.QueueName, tasks[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, info.MaxRetry, "caller WithMaxRetry should override policy default")
+}
+
+func TestPolicyMap_PolicyFor(t *testing.T) {
+	var nilMap queue.PolicyMap
+	assert.Equal(t, queue.Policy{}, nilMap.PolicyFor("deliver"), "nil PolicyMap should return zero Policy")
+
+	m := queue.PolicyMap{"deliver": {MaxAttempts: 5}}
+	assert.Equal(t, 5, m.PolicyFor("deliver").MaxAttempts)
+	assert.Equal(t, queue.Policy{}, m.PolicyFor("missing"))
+}
+
 func TestClient_EnqueueDeliver_ClosedClientFails(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)

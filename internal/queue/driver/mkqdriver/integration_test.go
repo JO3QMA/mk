@@ -105,6 +105,152 @@ func TestEndToEnd_EnqueueProcess(t *testing.T) {
 	mu.Unlock()
 }
 
+// #495: policy MaxAttempts → driver.WithMaxRetry(N) → mkq.WithAttempts(N+1)
+// → BullMQ HASH `opts.attempts` の wire を end-to-end で検証する。queue
+// package を import するためテストファイル末尾の helper 経由で側 redis
+// (testRedis.Client) を使って HASH を直接覗く。
+func TestEnqueue_MaxRetryAppliedToBullMQHash(t *testing.T) {
+	d := newDriver(t)
+
+	require.NoError(t, d.Client().Enqueue(context.Background(),
+		"deliver:test", []byte(`{"x":1}`),
+		driver.WithQueue("deliver"),
+		driver.WithMaxRetry(7),
+	))
+
+	// BullMQ の HASH key 形式: `bull:<queue>:<jobID>`。最新 job を ID
+	// counter (`bull:<queue>:id`) から逆引きする。
+	ctx := context.Background()
+	idStr, err := testRedis.Client.Get(ctx, "bull:deliver:id").Result()
+	require.NoError(t, err)
+	require.NotEmpty(t, idStr)
+
+	hashKey := "bull:deliver:" + idStr
+	opts, err := testRedis.Client.HGet(ctx, hashKey, "opts").Result()
+	require.NoError(t, err)
+
+	// opts は JSON 文字列。`attempts:8` (MaxRetry 7 + 初回 1 = 8) を含む
+	// ことを確認すれば、queue.Client → mkqdriver.Client → mkq の
+	// 全経路が wire されていることが verifiable。
+	assert.Contains(t, opts, `"attempts":8`,
+		"MaxRetry=7 should map to attempts=8 in BullMQ HASH (got %q)", opts)
+}
+
+// #495: mkqdriver.Config.QueueRateLimits = {"deliver": N} を渡すと
+// mkq.WithRateLimit(N, time.Second) が worker に積まれて dispatch が
+// tasks/sec に back-pressure される。flaky 防止のため緩い閾値で elapsed
+// を assert する。
+func TestServer_RateLimit_BackPressuresDispatch(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushRedis(t)
+
+	d, err := mkqdriver.New(context.Background(), mkqdriver.Config{
+		Redis:           redis.UniversalOptions{Addrs: []string{testRedis.Addr}},
+		Concurrency:     8,
+		QueueRateLimits: map[string]int{"deliver": 2},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	srv := d.Server()
+	var (
+		wg       sync.WaitGroup
+		received int32
+	)
+	wg.Add(5)
+	srv.Handle("rl:tick", func(_ context.Context, _ driver.Task) error {
+		defer wg.Done()
+		atomic.AddInt32(&received, 1)
+		return nil
+	})
+	require.NoError(t, srv.Start())
+	t.Cleanup(srv.Shutdown)
+
+	start := time.Now()
+	for range 5 {
+		require.NoError(t, d.Client().Enqueue(context.Background(), "rl:tick", nil,
+			driver.WithQueue("deliver")))
+	}
+	if !waitGroupTimeout(&wg, 10*time.Second) {
+		t.Fatal("rate-limited handler did not complete within timeout")
+	}
+	elapsed := time.Since(start)
+	assert.Equal(t, int32(5), atomic.LoadInt32(&received))
+	assert.GreaterOrEqual(t, elapsed, 1*time.Second,
+		"mkq rate limit should pace dispatch (got elapsed=%s)", elapsed)
+}
+
+// QueueConcurrency = {"deliver": 2} で起動 → 5 task を concurrent に
+// 詰めて、handler 内の sync.barrier で peak 並列数を観測する。peak <= 2
+// かつ少なくとも一度は >= 2 同時実行されたことを assert する。
+func TestServer_PerQueueConcurrency_CapsParallelHandlers(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushRedis(t)
+
+	const cap = 2
+	d, err := mkqdriver.New(context.Background(), mkqdriver.Config{
+		Redis:            redis.UniversalOptions{Addrs: []string{testRedis.Addr}},
+		Concurrency:      8,
+		QueueConcurrency: map[string]int{"deliver": cap},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	srv := d.Server()
+
+	var (
+		wg       sync.WaitGroup
+		inFlight atomic.Int32
+		peak     atomic.Int32
+		release  = make(chan struct{})
+	)
+	wg.Add(5)
+	srv.Handle("conc:hold", func(ctx context.Context, _ driver.Task) error {
+		defer wg.Done()
+		now := inFlight.Add(1)
+		// peak の monotonic update。Add は atomic だが peak は CAS が必要。
+		for {
+			cur := peak.Load()
+			if now <= cur || peak.CompareAndSwap(cur, now) {
+				break
+			}
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		inFlight.Add(-1)
+		return nil
+	})
+	require.NoError(t, srv.Start())
+	t.Cleanup(srv.Shutdown)
+
+	for range 5 {
+		require.NoError(t, d.Client().Enqueue(context.Background(), "conc:hold", nil,
+			driver.WithQueue("deliver")))
+	}
+
+	// 並列数が cap に達するまで待つ (確実に同時 cap 個動いた状態を観測)。
+	deadline := time.After(5 * time.Second)
+	for peak.Load() < int32(cap) {
+		select {
+		case <-deadline:
+			t.Fatalf("peak concurrent handlers never reached cap=%d (got %d)", cap, peak.Load())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	// 余分な handler が cap を超えて起動していないことを 200ms 観測。
+	time.Sleep(200 * time.Millisecond)
+	assert.LessOrEqual(t, peak.Load(), int32(cap),
+		"per-queue concurrency cap=%d should bound peak parallel handlers", cap)
+
+	close(release)
+	if !waitGroupTimeout(&wg, 5*time.Second) {
+		t.Fatal("handlers did not drain after release")
+	}
+}
+
 // TestEnqueue_UnknownQueueRejects ensures the driver refuses to fall
 // back to a default queue for callers that forget WithQueue.
 func TestEnqueue_UnknownQueueRejects(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/shiroha-a/mkq"
 
@@ -33,6 +34,13 @@ type Server struct {
 	// 書き込みを無効化、正値で BullMQ-spec の metrics LIST に書き込み
 	// が走る。
 	maxMetricsPoints int
+
+	// perQueueConcurrent / perQueueRate are runtime tuning overrides
+	// keyed by queue name (#495). Missing / zero entries fall back to
+	// the shared per-queue defaults (`concurrency` for the worker pool,
+	// no rate limiter respectively).
+	perQueueConcurrent map[string]int
+	perQueueRate       map[string]int
 
 	mu       sync.Mutex
 	handlers map[string]driver.HandlerFunc
@@ -99,7 +107,18 @@ func (s *Server) Start() error {
 	started := make([]*mkq.Worker, 0, len(names))
 	for _, name := range names {
 		q := s.driver.queues[name]
-		opts := []mkq.WorkerOption{mkq.WithConcurrency(s.concurrency)}
+		concurrency := s.concurrency
+		if v, ok := s.perQueueConcurrent[name]; ok && v > 0 {
+			concurrency = v
+		}
+		opts := []mkq.WorkerOption{mkq.WithConcurrency(concurrency)}
+		if rl, ok := s.perQueueRate[name]; ok && rl > 0 {
+			// mkq.WithRateLimit(max, duration) は BullMQ Worker の
+			// limiter:{max,duration} に対応。tasks/sec を直接渡せば
+			// 1 秒バケットで token-bucket されるので mk-go config の
+			// `<queue>JobPerSec` 意味そのまま。
+			opts = append(opts, mkq.WithRateLimit(rl, time.Second))
+		}
 		if s.maxMetricsPoints > 0 {
 			// BullMQ-compatible per-queue metrics opt-in。書き込み有効に
 			// すると finalize 時に Lua が `bull:<q>:metrics:*` を更新し、

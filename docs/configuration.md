@@ -82,14 +82,18 @@ cp .config/docker.yml.example .config/docker.yml
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `deliverJobConcurrency` | int | - | AP配信の並列数 |
-| `inboxJobConcurrency` | int | - | Inbox処理の並列数 |
-| `relationshipJobConcurrency` | int | - | フォロー処理の並列数 |
-| `deliverJobPerSec` | int | - | AP配信の秒間レート |
-| `inboxJobPerSec` | int | - | Inbox処理の秒間レート |
-| `relationshipJobPerSec` | int | - | フォロー処理の秒間レート |
-| `deliverJobMaxAttempts` | int | - | AP配信の最大リトライ回数 |
-| `inboxJobMaxAttempts` | int | - | Inbox処理の最大リトライ回数 |
+| `deliverJobConcurrency` | int | `16` | AP配信worker数 (mkq driver では deliver queue 専用、asynq driver では総 worker pool 上限) |
+| `inboxJobConcurrency` | int | - | Inbox処理 worker 数 (mk-go は Inbox を同期処理する設計のため**現状 no-op**。TS互換維持のため受付のみ) |
+| `relationshipJobConcurrency` | int | - | フォロー処理 worker 数 (mk-go は relationship queue を持たないため**現状 no-op**) |
+| `deliverJobPerSec` | int | - | AP配信レート上限 (tasks/sec)。設定すると asynq middleware / mkq.WithRateLimit で worker dispatch が back-pressure される |
+| `inboxJobPerSec` | int | - | mk-go では**現状 no-op** (上記同様) |
+| `relationshipJobPerSec` | int | - | mk-go では**現状 no-op** (上記同様) |
+| `deliverJobMaxAttempts` | int | driver 既定 | AP配信の最大リトライ回数 default。EnqueueDeliver で `WithMaxRetry` 未指定時にだけ適用される (#495) |
+| `inboxJobMaxAttempts` | int | - | mk-go では**現状 no-op** (Inbox は同期処理) |
+
+> **driver 間の差分**:
+> - `asynq` driver は worker pool が共有なので `deliverJobConcurrency` は **総 concurrency** として扱われる (queue priority weight で deliver が優先される)。
+> - `mkq` driver は queue ごとに worker を分けているので `deliverJobConcurrency` は **deliver queue 専用** の worker 数として扱われる。それ以外の queue は `Concurrency / len(queues)` の既定値を使う。
 
 ### メディア
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/hibiken/asynq"
+	"golang.org/x/time/rate"
 
 	"github.com/shiroha-a/mk/internal/queue/driver"
 )
@@ -20,6 +21,12 @@ type ServerConfig struct {
 	// fills in the queue list expected by mk-go (deliver / push /
 	// export / webhook / maintenance).
 	Queues map[string]int
+	// RateLimits maps queue name → tasks/sec cap. Entries with
+	// value <= 0 are ignored. Implemented as a token-bucket
+	// middleware that wraps asynq's dispatch — handlers block on
+	// the limiter rather than being rejected. Burst defaults to
+	// the rate (1 second of headroom) so short spikes are absorbed.
+	RateLimits map[string]int
 }
 
 // Server implements driver.Server over *asynq.Server + ServeMux.
@@ -52,7 +59,42 @@ func NewServer(redisOpt asynq.RedisClientOpt, cfg ServerConfig) *Server {
 		Concurrency: concurrency,
 		Queues:      queues,
 	})
-	return &Server{inner: inner, mux: asynq.NewServeMux()}
+	mux := asynq.NewServeMux()
+	if mw := buildRateLimitMiddleware(cfg.RateLimits); mw != nil {
+		mux.Use(mw)
+	}
+	return &Server{inner: inner, mux: mux}
+}
+
+// buildRateLimitMiddleware returns nil when no queue has a positive
+// RatePerSec — keeping the dispatch fast-path allocation-free for the
+// common "no rate limit" case. When at least one queue is rate-limited,
+// returns a middleware that blocks (Wait) on the per-queue limiter.
+func buildRateLimitMiddleware(rates map[string]int) asynq.MiddlewareFunc {
+	limiters := map[string]*rate.Limiter{}
+	for q, r := range rates {
+		if r <= 0 {
+			continue
+		}
+		// Burst = rate gives ~1s of headroom for spikes (Wait blocks
+		// when exhausted). Smaller burst makes the limiter brittle
+		// for high-fanout deliveries; larger weakens the cap.
+		limiters[q] = rate.NewLimiter(rate.Limit(r), r)
+	}
+	if len(limiters) == 0 {
+		return nil
+	}
+	return func(next asynq.Handler) asynq.Handler {
+		return asynq.HandlerFunc(func(ctx context.Context, t *asynq.Task) error {
+			qname, _ := asynq.GetQueueName(ctx)
+			if l, ok := limiters[qname]; ok {
+				if err := l.Wait(ctx); err != nil {
+					return err
+				}
+			}
+			return next.ProcessTask(ctx, t)
+		})
+	}
 }
 
 // Handle registers a HandlerFunc for the given task type. The

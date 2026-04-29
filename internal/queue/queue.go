@@ -56,7 +56,8 @@ type Enqueuer interface {
 
 // Client wraps a driver.Client and implements Enqueuer.
 type Client struct {
-	inner driver.Client
+	inner    driver.Client
+	policies PolicyMap
 }
 
 // NewClient constructs a Client backed by the supplied driver.
@@ -64,13 +65,32 @@ func NewClient(d driver.Driver) *Client {
 	return &Client{inner: d.Client()}
 }
 
+// SetPolicy registers a runtime Policy for queueName. EnqueueDeliver
+// consults this when the caller doesn't specify WithMaxRetry. Subsequent
+// calls overwrite any prior policy for the same queue.
+func (c *Client) SetPolicy(queueName string, p Policy) {
+	if c.policies == nil {
+		c.policies = make(PolicyMap)
+	}
+	c.policies[queueName] = p
+}
+
 // EnqueueDeliver puts a deliver task on the queue. opts override the
 // default queue selection if they include WithQueue, but normal
 // callers should pass payload-only and let the queue routing stay
 // fixed.
+//
+// 当該キューの Policy.MaxAttempts が 0 でなければ、WithMaxRetry を
+// caller opts より先に積んで default として扱う。caller が
+// WithMaxRetry を渡したときは ApplyEnqueueOptions の last-write-wins で
+// caller 側が勝つ (#495)。
 func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...driver.EnqueueOption) error {
 	body := mustMarshal(payload)
-	merged := append([]driver.EnqueueOption{driver.WithQueue(QueueName)}, opts...)
+	base := []driver.EnqueueOption{driver.WithQueue(QueueName)}
+	if attempts := c.policies.PolicyFor(QueueName).MaxAttempts; attempts > 0 {
+		base = append(base, driver.WithMaxRetry(attempts))
+	}
+	merged := append(base, opts...)
 	return c.inner.Enqueue(context.Background(), TaskTypeDeliver, body, merged...)
 }
 

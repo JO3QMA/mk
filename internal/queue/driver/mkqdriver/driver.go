@@ -56,6 +56,18 @@ type Config struct {
 	// no BullMQ metrics keys are written in that case (mkq's default
 	// behaviour pre-v1.0.1).
 	MaxMetricsDataPoints int
+
+	// QueueConcurrency overrides the per-queue worker pool size for
+	// the named queue. Zero / missing entries fall back to the default
+	// `total / len(queues)` distribution computed from Concurrency.
+	// Used by config keys like `deliverJobConcurrency` to tune the
+	// hot deliver queue independently from the rest (#495).
+	QueueConcurrency map[string]int
+
+	// QueueRateLimits caps each named queue at N tasks/sec via
+	// mkq.WithRateLimit. Zero / missing entries disable the limiter
+	// for that queue.
+	QueueRateLimits map[string]int
 }
 
 // defaultMaxMetricsDataPoints mirrors BullMQ TS's
@@ -191,10 +203,12 @@ func (d *Driver) Server() driver.Server {
 			metricsPoints = defaultMaxMetricsDataPoints
 		}
 		d.dServer = &Server{
-			driver:           d,
-			concurrency:      perQueue,
-			maxMetricsPoints: metricsPoints,
-			handlers:         make(map[string]driver.HandlerFunc),
+			driver:             d,
+			concurrency:        perQueue,
+			maxMetricsPoints:   metricsPoints,
+			perQueueConcurrent: d.cfg.QueueConcurrency,
+			perQueueRate:       d.cfg.QueueRateLimits,
+			handlers:           make(map[string]driver.HandlerFunc),
 		}
 	}
 	return d.dServer
