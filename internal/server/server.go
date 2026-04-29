@@ -1,6 +1,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -49,6 +50,23 @@ func (s *Server) registerShutdownHook(fn func()) {
 	s.shutdownHooks = append(s.shutdownHooks, fn)
 }
 
+// gzipConfig returns the GzipConfig used by the global middleware stack.
+// MinLength=1024 で小さい body の gzip overhead を回避し、/streaming は
+// WebSocket frame を壊さないよう Skipper で除外する。
+// テスト (gzip_test.go) からも参照して production と乖離しないよう一元化
+// する (#413 Phase 3 #12)。
+func gzipConfig() echomw.GzipConfig {
+	return echomw.GzipConfig{
+		Skipper: func(c echo.Context) bool {
+			// WebSocket upgrade 経路 (/streaming) は frame 単位の bidirectional
+			// 通信で gzip すると壊れる。
+			return c.Path() == "/streaming"
+		},
+		Level:     gzip.DefaultCompression,
+		MinLength: 1024,
+	}
+}
+
 // New creates a new Server. Returns an error when the queue driver
 // fails to initialise (e.g. mkq driver failing to PING Redis at
 // startup).
@@ -83,6 +101,10 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) (*Server, e
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 	}))
+	// gzip response compression (#413 Phase 3 #12)。Misskey TS は nginx
+	// 前段で gzip するのが定石だが、mk-go は単体運用も想定するので app 側
+	// で提供する。設定は gzipConfig() に集約してテストと共有。
+	e.Use(echomw.GzipWithConfig(gzipConfig()))
 
 	// CachedUserRepository を一度だけ構築して auth middleware と
 	// setupRoutes (services) が同じ cache を共有するようにする (#300 3-3)。
