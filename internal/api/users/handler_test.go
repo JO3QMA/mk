@@ -508,6 +508,63 @@ func TestSearch_Success(t *testing.T) {
 	assert.Len(t, out, 1)
 }
 
+// users/search bulk path is now batch (#517). Per-row FindProfileByUserID
+// must not be called and the new batch FindProfilesByUserIDs is invoked once
+// with all matched user IDs.
+type countingSearchUserRepo struct {
+	*testutil.MockUserRepository
+	findProfileByUserIDCalls   int
+	findProfilesByUserIDsCalls int
+	findProfilesByUserIDsSize  int
+}
+
+func (c *countingSearchUserRepo) FindProfileByUserID(id string) (*model.UserProfile, error) {
+	c.findProfileByUserIDCalls++
+	return c.MockUserRepository.FindProfileByUserID(id)
+}
+
+func (c *countingSearchUserRepo) FindProfilesByUserIDs(ids []string) ([]*model.UserProfile, error) {
+	c.findProfilesByUserIDsCalls++
+	c.findProfilesByUserIDsSize += len(ids)
+	return c.MockUserRepository.FindProfilesByUserIDs(ids)
+}
+
+func TestSearch_BatchFetchesProfiles(t *testing.T) {
+	repo := &countingSearchUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(repo, noteRepo, piningRepo, idGen)
+	fSvc := corefollowing.NewService(repo, fRepo, frRepo, idGen)
+	h := NewHandler(svc, fSvc, noteRepo, idGen)
+
+	for i := 0; i < 5; i++ {
+		uid := fmt.Sprintf("searchuser-%d", i)
+		repo.Users[uid] = &model.User{
+			ID: uid, Username: "matchu" + fmt.Sprintf("%d", i),
+			UsernameLower:     "matchu" + fmt.Sprintf("%d", i),
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		}
+		desc := "d" + fmt.Sprintf("%d", i)
+		repo.Profiles[uid] = &model.UserProfile{UserID: uid, Description: &desc}
+	}
+
+	rec := post(h.Search, `{"query":"matchu","limit":10}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out, 5)
+
+	assert.Equal(t, 0, repo.findProfileByUserIDCalls,
+		"per-row FindProfileByUserID must not be called (N+1 must be eliminated)")
+	assert.Equal(t, 1, repo.findProfilesByUserIDsCalls,
+		"FindProfilesByUserIDs should be called exactly once per request")
+	assert.Equal(t, 5, repo.findProfilesByUserIDsSize,
+		"all 5 user IDs should be coalesced into a single batch")
+}
+
 func TestSearch_DefaultLimit(t *testing.T) {
 	h, repo := newTestHandler(t)
 	addTestUser(repo)

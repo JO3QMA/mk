@@ -215,6 +215,25 @@ func (s *Service) GetProfile(userID string) *model.UserProfile {
 	return profile
 }
 
+// GetProfilesByUserIDs returns a userID → profile map for the given IDs in
+// a single batch query. Missing rows are simply omitted from the map.
+// users/search 等の bulk path で per-row GetProfile loop の N+1 を消すために
+// 使う (#517)。
+func (s *Service) GetProfilesByUserIDs(ids []string) map[string]*model.UserProfile {
+	if len(ids) == 0 {
+		return map[string]*model.UserProfile{}
+	}
+	profiles, err := s.userRepo.FindProfilesByUserIDs(ids)
+	if err != nil {
+		return map[string]*model.UserProfile{}
+	}
+	out := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		out[p.UserID] = p
+	}
+	return out
+}
+
 // ListRecommendations returns locally-active explorable users the viewer does
 // not already follow. Thin wrapper over UserRepository.ListUserRecommendations.
 func (s *Service) ListRecommendations(viewerID string, activeSince time.Time, limit, offset int) ([]*model.User, error) {

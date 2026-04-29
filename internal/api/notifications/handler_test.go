@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -400,4 +401,96 @@ func TestShow_CursorPagination(t *testing.T) {
 	var resp []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Empty(t, resp)
+}
+
+// countingNotifRepos wraps the mock user / note repos to count single-row
+// FindByID-style calls. After #515 the bulk path must use FindManyByIDs /
+// FindManyByIDsWithUser so single-row callers should be 0.
+type countingNotifUserRepo struct {
+	*testutil.MockUserRepository
+	findByIDCalls         int
+	findManyByIDsCalls    int
+	findManyByIDsCallSize int
+}
+
+func (c *countingNotifUserRepo) FindByID(id string) (*model.User, error) {
+	c.findByIDCalls++
+	return c.MockUserRepository.FindByID(id)
+}
+
+func (c *countingNotifUserRepo) FindManyByIDs(ids []string) ([]*model.User, error) {
+	c.findManyByIDsCalls++
+	c.findManyByIDsCallSize += len(ids)
+	return c.MockUserRepository.FindManyByIDs(ids)
+}
+
+type countingNotifNoteRepo struct {
+	*testutil.MockNoteRepository
+	findByIDWithRelationsCalls int
+	findManyByIDsWithUserCalls int
+}
+
+func (c *countingNotifNoteRepo) FindByIDWithRelations(id string) (*model.Note, error) {
+	c.findByIDWithRelationsCalls++
+	return c.MockNoteRepository.FindByIDWithRelations(id)
+}
+
+func (c *countingNotifNoteRepo) FindManyByIDsWithUser(ids []string) ([]*model.Note, error) {
+	c.findManyByIDsWithUserCalls++
+	return c.MockNoteRepository.FindManyByIDsWithUser(ids)
+}
+
+// 通知 5 件 (異なる notifier / note) を返すケースで、user と note が batch
+// 1 回ずつだけ DB に問い合わされ、per-row FindByID 経路が使われていないこと
+// を担保する (#515 N+1 解消)。
+func TestShow_BatchFetchesNotifierAndNote(t *testing.T) {
+	h, svc := newTestHandler(t)
+	userRepo := &countingNotifUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	noteRepo := &countingNotifNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	for i := 0; i < 5; i++ {
+		uid := fmt.Sprintf("notifier-%d", i)
+		nid := fmt.Sprintf("note-%d", i)
+		userRepo.Users[uid] = &model.User{ID: uid, Username: uid}
+		noteRepo.Notes[nid] = &model.Note{ID: nid, UserID: uid, Visibility: "public",
+			User: &model.User{ID: uid, Username: uid}}
+	}
+	h.SetRepos(userRepo, noteRepo)
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_, err := svc.Create(ctx, notification.CreateInput{
+			NotifieeID: "alice",
+			NotifierID: fmt.Sprintf("notifier-%d", i),
+			Type:       notification.TypeMention,
+			NoteID:     fmt.Sprintf("note-%d", i),
+		})
+		require.NoError(t, err)
+	}
+
+	c, rec := newJSONRequest(t, "/api/i/notifications", `{}`)
+	setAuth(c, &model.User{ID: "alice"})
+	require.NoError(t, h.Show(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 5)
+
+	assert.Equal(t, 0, userRepo.findByIDCalls,
+		"per-row userRepo.FindByID must not be called (N+1 must be eliminated)")
+	assert.Equal(t, 1, userRepo.findManyByIDsCalls,
+		"userRepo.FindManyByIDs should be called exactly once per request")
+	assert.Equal(t, 5, userRepo.findManyByIDsCallSize,
+		"all 5 notifier IDs should be coalesced into a single batch")
+	assert.Equal(t, 0, noteRepo.findByIDWithRelationsCalls,
+		"per-row noteRepo.FindByIDWithRelations must not be called")
+	assert.Equal(t, 1, noteRepo.findManyByIDsWithUserCalls,
+		"noteRepo.FindManyByIDsWithUser should be called exactly once per request")
+
+	// Devin #516 INFO-3: batch fetch しても resolved user / note が response
+	// に正しく入ることを self-contained で担保する。
+	for i, item := range resp {
+		assert.NotNilf(t, item["user"], "item[%d].user must be present", i)
+		assert.NotNilf(t, item["note"], "item[%d].note must be present", i)
+	}
 }
