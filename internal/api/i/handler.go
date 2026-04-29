@@ -812,8 +812,15 @@ func (h *Handler) normalizeAvatarDecorations(userID string, in []AvatarDecoratio
 	limit := 1
 	if h.roleProvider != nil {
 		policies := h.roleProvider.GetUserPolicies(userID)
-		if v, ok := policies["avatarDecorationLimit"].(int); ok {
+		// role override 経路は role.Policies の jsonb を json.Unmarshal で
+		// any に展開するので数値は float64 で入ってくる。一方 default 経路
+		// (DefaultPolicies()) は Go の int リテラル。両方を受けないと role
+		// 上書きが silent ignore される (#524 review)。
+		switch v := policies["avatarDecorationLimit"].(type) {
+		case int:
 			limit = v
+		case float64:
+			limit = int(v)
 		}
 	}
 	if len(in) > limit {

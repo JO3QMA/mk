@@ -897,6 +897,26 @@ func TestUpdate_AvatarDecorations_NoRepoSkipsCatalogCheck(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// role.GetUserPolicies は jsonb override を json.Unmarshal で any に
+// 展開するため、数値は float64 で入ってくる。int 限定 assertion だと
+// override が silent fallback して既定 limit=1 のままになる回帰を防ぐ。
+func TestUpdate_AvatarDecorations_RoleOverrideFloatLimitAccepted(t *testing.T) {
+	h, repo, _, _ := newTestHandler(t)
+	user := &model.User{ID: "user1", Username: "user1", AvatarDecorations: datatypes.JSON([]byte("[]"))}
+	repo.Users["user1"] = user
+	repo.Profiles["user1"] = &model.UserProfile{UserID: "user1", Fields: datatypes.JSON([]byte("[]"))}
+	deco := testutil.NewMockAvatarDecorationRepository()
+	deco.Decorations["a"] = &model.AvatarDecoration{ID: "a"}
+	deco.Decorations["b"] = &model.AvatarDecoration{ID: "b"}
+	deco.Decorations["c"] = &model.AvatarDecoration{ID: "c"}
+	h.SetAvatarDecorationRepo(deco)
+	// jsonb override 経由を模倣して float64 を渡す。
+	h.SetRoleProvider(&stubRoleProvider{policies: map[string]any{"avatarDecorationLimit": float64(3)}})
+
+	rec := post(h.Update, `{"avatarDecorations":[{"id":"a"},{"id":"b"},{"id":"c"}]}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestUpdate_AvatarDecorations_NoRoleProviderUsesDefaultLimit(t *testing.T) {
 	h, repo, _, _ := newTestHandler(t)
 	user := &model.User{ID: "user1", Username: "user1", AvatarDecorations: datatypes.JSON([]byte("[]"))}
