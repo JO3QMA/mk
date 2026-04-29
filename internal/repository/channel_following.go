@@ -12,6 +12,10 @@ type ChannelFollowingRepository interface {
 	Delete(f *model.ChannelFollowing) error
 	FindByPair(followerID, channelID string) (*model.ChannelFollowing, error)
 	Exists(followerID, channelID string) (bool, error)
+	// ExistsMany returns a channelID → bool map indicating which of the
+	// given channels followerID currently follows. Used by /channels list
+	// endpoints to embed isFollowing without N+1 (#522).
+	ExistsMany(followerID string, channelIDs []string) (map[string]bool, error)
 	// ListFollowed returns channel_following rows for userID with cursor
 	// (sinceID/untilID) or offset pagination. Cursor 指定時は offset 無視。
 	ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.ChannelFollowing, error)
@@ -55,6 +59,25 @@ func (r *channelFollowingRepository) Exists(followerID, channelID string) (bool,
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// ExistsMany resolves "follower follows X?" for a set of channel IDs in a
+// single query. 空入力 / 空 followerID は空 map を返す。
+func (r *channelFollowingRepository) ExistsMany(followerID string, channelIDs []string) (map[string]bool, error) {
+	if followerID == "" || len(channelIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+	var followed []string
+	if err := r.db.Model(&model.ChannelFollowing{}).
+		Where(`"followerId" = ? AND "followeeId" IN ?`, followerID, channelIDs).
+		Pluck(`"followeeId"`, &followed).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(followed))
+	for _, id := range followed {
+		out[id] = true
+	}
+	return out, nil
 }
 
 // ListFollowerIDsPage returns a batch of follower userIds for a channel,

@@ -20,6 +20,13 @@ func (h *Handler) SetMutingRepo(r ChannelMutingRepository) {
 	h.mutingRepo = r
 }
 
+// SetFollowingRepo attaches a ChannelFollowingChecker so Show / list
+// endpoints can embed `isFollowing` for the authenticated viewer (#522).
+// nil leaves the field unset (compat with anonymous flows).
+func (h *Handler) SetFollowingRepo(r ChannelFollowingChecker) {
+	h.followingRepo = r
+}
+
 // Favorite handles POST /api/channels/favorite.
 func (h *Handler) Favorite(c echo.Context) error {
 	user := middleware.GetUser(c)
@@ -78,15 +85,17 @@ func (h *Handler) MyFavorites(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	out := make([]map[string]any, 0, len(favs))
+	rows := make([]*model.Channel, 0, len(favs))
 	for _, f := range favs {
 		ch, err := h.svc.Show(f.ChannelID)
 		if err != nil {
 			continue
 		}
-		out = append(out, channelToMap(ch))
+		rows = append(rows, ch)
 	}
-	return c.JSON(http.StatusOK, out)
+	// my-favorites の結果は viewer 自身が favorite している channel ばかり
+	// なので、batch 経由で isFavorited=true / isFollowing 状態が埋まる (#522)。
+	return c.JSON(http.StatusOK, h.channelsToList(rows, user))
 }
 
 // MuteCreate handles POST /api/channels/mute/create.
