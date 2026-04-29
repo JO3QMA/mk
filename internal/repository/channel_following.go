@@ -92,8 +92,15 @@ func (r *channelFollowingRepository) ListFollowerIDsPage(channelID, afterRowID s
 	return ids, rows[len(rows)-1].ID, nil
 }
 
-// ListFollowed returns the channel followings for a given user, ordered by id
-// descending (newest first), with cursor or offset pagination support.
+// ListFollowed returns the channel followings for a given user, ordered by
+// followeeId DESC by default with cursor or offset pagination support.
+//
+// 注意: cursor (sinceID/untilID) は **followeeId** (= channel.id) を基準に
+// する。frontend Paginator は response の `id` (= channel.id を返している)
+// を次ページの cursor として送ってくるので、ここで channel_following.id
+// を使うと domain mismatch で次ページが空になる (#520 review 指摘)。
+// upstream Misskey の channels/followed.ts も makePaginationQuery の 6 番目
+// 引数に 'followeeId' を渡して同じ列で paginate している。
 func (r *channelFollowingRepository) ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.ChannelFollowing, error) {
 	if limit <= 0 {
 		limit = 30
@@ -103,12 +110,12 @@ func (r *channelFollowingRepository) ListFollowed(userID, sinceID, untilID strin
 	}
 	q := r.db.Where(`"followerId" = ?`, userID)
 	if sinceID != "" {
-		q = q.Where("id > ?", sinceID)
+		q = q.Where(`"followeeId" > ?`, sinceID)
 	}
 	if untilID != "" {
-		q = q.Where("id < ?", untilID)
+		q = q.Where(`"followeeId" < ?`, untilID)
 	}
-	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	q = q.Order(paginationOrder(sinceID, untilID, `"followeeId"`)).Limit(limit)
 	if sinceID == "" && untilID == "" && offset > 0 {
 		q = q.Offset(offset)
 	}

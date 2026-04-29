@@ -191,11 +191,18 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 	// GalleryPost に visibility 概念はなく常に公開扱い。
+	// updatedAt / createdAt は i/gallery/posts と format を揃える (#520 review)。
+	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, g := range rows {
+		createdAt := ""
+		if t, err := h.idGen.ParseTime(g.ID); err == nil {
+			createdAt = t.UTC().Format(tsFormat)
+		}
 		out = append(out, map[string]any{
 			"id":          g.ID,
-			"updatedAt":   g.UpdatedAt,
+			"createdAt":   createdAt,
+			"updatedAt":   g.UpdatedAt.UTC().Format(tsFormat),
 			"userId":      g.UserID,
 			"title":       g.Title,
 			"description": g.Description,

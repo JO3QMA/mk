@@ -3233,10 +3233,11 @@ func (m *MockChannelFollowingRepository) ListFollowed(userID, sinceID, untilID s
 		if f.FollowerID != userID {
 			continue
 		}
-		if sinceID != "" && f.ID <= sinceID {
+		// cursor は followeeId (= channel.id) で絞る (#520 review)。
+		if sinceID != "" && f.FolloweeID <= sinceID {
 			continue
 		}
-		if untilID != "" && f.ID >= untilID {
+		if untilID != "" && f.FolloweeID >= untilID {
 			continue
 		}
 		rows = append(rows, f)
@@ -3244,7 +3245,7 @@ func (m *MockChannelFollowingRepository) ListFollowed(userID, sinceID, untilID s
 	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			less := rows[i].ID < rows[j].ID
+			less := rows[i].FolloweeID < rows[j].FolloweeID
 			if (asc && !less) || (!asc && less) {
 				rows[i], rows[j] = rows[j], rows[i]
 			}
