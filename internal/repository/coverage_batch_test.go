@@ -141,14 +141,14 @@ func TestFlashRepository_ListPublicByUser(t *testing.T) {
 	).Error)
 	defer testDB.Exec(`DELETE FROM "flash" WHERE id IN (?, ?)`, "fl_pub_1", "fl_priv_1")
 
-	rows, err := repo.ListPublicByUser(u.ID, 10, 0)
+	rows, err := repo.ListPublicByUser(u.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "fl_pub_1", rows[0].ID)
 
-	_, err = repo.ListPublicByUser(u.ID, 0, 0)
+	_, err = repo.ListPublicByUser(u.ID, "", "", 0, 0)
 	require.NoError(t, err)
-	_, err = repo.ListPublicByUser(u.ID, 999, 0)
+	_, err = repo.ListPublicByUser(u.ID, "", "", 999, 0)
 	require.NoError(t, err)
 }
 
@@ -167,7 +167,7 @@ func TestPageRepository_ListPublicByUser(t *testing.T) {
 	).Error)
 	defer testDB.Exec(`DELETE FROM "page" WHERE id IN (?, ?)`, "pg_pub_1", "pg_priv_1")
 
-	rows, err := repo.ListPublicByUser(u.ID, 10, 0)
+	rows, err := repo.ListPublicByUser(u.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "pg_pub_1", rows[0].ID)

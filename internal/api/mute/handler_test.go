@@ -22,7 +22,7 @@ func newHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
 	mutingRepo := testutil.NewMockMutingRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coremuting.NewService(userRepo, mutingRepo, idGen)
-	return NewHandler(svc), userRepo
+	return NewHandler(svc, userRepo, idGen), userRepo
 }
 
 func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {
@@ -125,7 +125,7 @@ func TestCreate_RepoError(t *testing.T) {
 	addUser(userRepo, "bob")
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coremuting.NewService(userRepo, &failingMutingRepo{MockMutingRepository: testutil.NewMockMutingRepository()}, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, nil, nil)
 
 	c, rec := newReq(t, `{"userId":"bob"}`)
 	setUser(c, "alice")
@@ -188,7 +188,7 @@ func TestDelete_RepoError(t *testing.T) {
 	mock.Mutings["m1"] = &model.Muting{ID: "m1", MuterID: "alice", MuteeID: "bob"}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coremuting.NewService(userRepo, &failingDeleteMutingRepo{MockMutingRepository: mock}, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, nil, nil)
 
 	c, rec := newReq(t, `{"userId":"bob"}`)
 	setUser(c, "alice")
@@ -231,7 +231,7 @@ type failingListMutingRepo struct {
 	*testutil.MockMutingRepository
 }
 
-func (f *failingListMutingRepo) ListByMuter(_ string, _, _ int) ([]*model.Muting, error) {
+func (f *failingListMutingRepo) ListByMuter(_, _, _ string, _, _ int) ([]*model.Muting, error) {
 	return nil, testutil.ErrNotFound
 }
 
@@ -239,7 +239,7 @@ func TestList_RepoError(t *testing.T) {
 	userRepo := testutil.NewMockUserRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coremuting.NewService(userRepo, &failingListMutingRepo{MockMutingRepository: testutil.NewMockMutingRepository()}, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, nil, nil)
 
 	c, rec := newReq(t, `{}`)
 	setUser(c, "alice")

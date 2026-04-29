@@ -209,20 +209,28 @@ func (h *Handler) Unfollow(c echo.Context) error {
 }
 
 // PaginatedListRequest is shared by followed / owned / featured / search /
-// timeline endpoints.
+// timeline endpoints. frontend Paginator は cursor mode で sinceId / untilId
+// を投げてくる (#493)。
 type PaginatedListRequest struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // Followed handles POST /api/channels/followed.
+//
+// frontend Paginator は response item の id (= channel.id = followeeId)
+// を cursor として送ってくる。repository.ListFollowed 側で followeeId を
+// cursor 列として使うことで domain mismatch を避けている。詳細は
+// channel_following.go:ListFollowed の comment 参照。
 func (h *Handler) Followed(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginatedListRequest
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.ListFollowed(user.ID, req.Limit, req.Offset)
+	rows, err := h.svc.ListFollowed(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
@@ -236,7 +244,7 @@ func (h *Handler) Owned(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.ListOwned(user.ID, req.Limit, req.Offset)
+	rows, err := h.svc.ListOwned(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
@@ -249,7 +257,7 @@ func (h *Handler) Featured(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.ListFeatured(req.Limit, req.Offset)
+	rows, err := h.svc.ListFeatured(req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
@@ -258,9 +266,11 @@ func (h *Handler) Featured(c echo.Context) error {
 
 // SearchRequest carries the query string for channels/search.
 type SearchRequest struct {
-	Query  string `json:"query"`
-	Limit  int    `json:"limit"`
-	Offset int    `json:"offset"`
+	Query   string `json:"query"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // Search handles POST /api/channels/search.
@@ -269,7 +279,7 @@ func (h *Handler) Search(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.Search(req.Query, req.Limit, req.Offset)
+	rows, err := h.svc.Search(req.Query, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}

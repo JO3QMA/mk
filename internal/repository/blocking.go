@@ -11,7 +11,8 @@ type BlockingRepository interface {
 	Delete(b *model.Blocking) error
 	FindByPair(blockerID, blockeeID string) (*model.Blocking, error)
 	Exists(blockerID, blockeeID string) (bool, error)
-	ListByBlocker(blockerID string, limit, offset int) ([]*model.Blocking, error)
+	// ListByBlocker supports cursor (sinceID/untilID) and offset pagination.
+	ListByBlocker(blockerID, sinceID, untilID string, limit, offset int) ([]*model.Blocking, error)
 }
 
 type blockingRepository struct {
@@ -49,13 +50,20 @@ func (r *blockingRepository) Exists(blockerID, blockeeID string) (bool, error) {
 	return count > 0, nil
 }
 
-func (r *blockingRepository) ListByBlocker(blockerID string, limit, offset int) ([]*model.Blocking, error) {
+func (r *blockingRepository) ListByBlocker(blockerID, sinceID, untilID string, limit, offset int) ([]*model.Blocking, error) {
+	q := r.db.Where(`"blockerId" = ?`, blockerID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
 	var rows []*model.Blocking
-	if err := r.db.Where("\"blockerId\" = ?", blockerID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

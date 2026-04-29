@@ -169,19 +169,21 @@ func (s *Service) Delete(ownerID, flashID string) error {
 	return s.repo.Delete(f)
 }
 
-// My returns the flashes owned by userID, ordered by updatedAt desc.
-func (s *Service) My(userID string, limit, offset int) ([]*model.Flash, error) {
-	return s.repo.ListByUser(userID, limit, offset)
+// My returns the flashes owned by userID with cursor (sinceID/untilID) or
+// offset pagination. Cursor 指定時は offset 無視。
+func (s *Service) My(userID, sinceID, untilID string, limit, offset int) ([]*model.Flash, error) {
+	return s.repo.ListByUser(userID, sinceID, untilID, limit, offset)
 }
 
-// Featured returns the flashes ordered by likedCount desc.
-func (s *Service) Featured(limit, offset int) ([]*model.Flash, error) {
-	return s.repo.ListFeatured(limit, offset)
+// Featured returns the flashes ordered by likedCount desc, or by id when
+// cursor is supplied (frontend Paginator対応)。
+func (s *Service) Featured(sinceID, untilID string, limit, offset int) ([]*model.Flash, error) {
+	return s.repo.ListFeatured(sinceID, untilID, limit, offset)
 }
 
 // Search performs a substring search across title and summary.
-func (s *Service) Search(query string, limit, offset int) ([]*model.Flash, error) {
-	return s.repo.Search(query, limit, offset)
+func (s *Service) Search(query, sinceID, untilID string, limit, offset int) ([]*model.Flash, error) {
+	return s.repo.Search(query, sinceID, untilID, limit, offset)
 }
 
 // Like attaches a Like row from userID to flashID.
@@ -229,20 +231,36 @@ func (s *Service) Unlike(userID, flashID string) error {
 	return nil
 }
 
-// MyLikes returns the flashes that userID has liked, newest first.
-func (s *Service) MyLikes(userID string, limit, offset int) ([]*model.Flash, error) {
-	likes, err := s.likeRepo.ListByUser(userID, limit, offset)
+// IsLikedBy reports whether userID has liked flashID. Used by flash/show
+// to set `isLiked` on the response so the frontend's like button reflects
+// the current state.
+func (s *Service) IsLikedBy(userID, flashID string) (bool, error) {
+	return s.likeRepo.Exists(userID, flashID)
+}
+
+// LikedFlash pairs a flash_like row id with the flash it points to. Used by
+// flash/my-likes to match upstream's `{id, flash: Flash}` response shape
+// (id = flash_like row id, NOT flash id).
+type LikedFlash struct {
+	LikeID string
+	Flash  *model.Flash
+}
+
+// MyLikes returns the flashes that userID has liked, newest first, paired
+// with the flash_like row id used for cursor pagination.
+func (s *Service) MyLikes(userID, sinceID, untilID string, limit, offset int) ([]LikedFlash, error) {
+	likes, err := s.likeRepo.ListByUser(userID, sinceID, untilID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*model.Flash, 0, len(likes))
+	out := make([]LikedFlash, 0, len(likes))
 	for _, l := range likes {
 		f, err := s.repo.FindByID(l.FlashID)
 		if err != nil {
 			// 削除されていたり権限が変わった Flash はスキップする。
 			continue
 		}
-		out = append(out, f)
+		out = append(out, LikedFlash{LikeID: l.ID, Flash: f})
 	}
 	return out, nil
 }

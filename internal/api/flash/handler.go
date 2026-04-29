@@ -8,18 +8,26 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreflash "github.com/shiroha-a/mk/internal/core/flash"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles flash-related API endpoints.
 type Handler struct {
-	svc *coreflash.Service
+	svc      *coreflash.Service
+	userRepo repository.UserRepository
+	idGen    id.Generator
 }
 
 // NewHandler creates a new flash Handler.
-func NewHandler(svc *coreflash.Service) *Handler {
-	return &Handler{svc: svc}
+// userRepo / idGen are required by list endpoints to embed the
+// `user` (UserLite) and `createdAt` fields that the upstream Misskey
+// frontend expects when rendering Play (Flash) cards.
+func NewHandler(svc *coreflash.Service, userRepo repository.UserRepository, idGen id.Generator) *Handler {
+	return &Handler{svc: svc, userRepo: userRepo, idGen: idGen}
 }
 
 // CreateRequest is the request body for flash/create.
@@ -49,7 +57,7 @@ func (h *Handler) Create(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashToMap(f))
+	return c.JSON(http.StatusOK, h.flashWithKnownUser(f, user))
 }
 
 // ShowRequest is the request body for flash/show.
@@ -58,6 +66,9 @@ type ShowRequest struct {
 }
 
 // Show handles POST /api/flash/show.
+//
+// frontend MkPlay.vue は user / createdAt / isLiked を読んでカード描画
+// および「いいね」ボタン状態を決めるので、handler 側で embed する。
 func (h *Handler) Show(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ShowRequest
@@ -72,7 +83,14 @@ func (h *Handler) Show(c echo.Context) error {
 	if err != nil {
 		return notFound(c)
 	}
-	return c.JSON(http.StatusOK, flashToMap(f))
+	resp := h.flashesToListWithUser([]*model.Flash{f})[0]
+	if user != nil {
+		liked, err := h.svc.IsLikedBy(user.ID, f.ID)
+		if err == nil {
+			resp["isLiked"] = liked
+		}
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
 // UpdateRequest is the request body for flash/update.
@@ -110,7 +128,7 @@ func (h *Handler) Update(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashToMap(f))
+	return c.JSON(http.StatusOK, h.flashWithKnownUser(f, user))
 }
 
 // DeleteRequest is the request body for flash/delete.
@@ -139,29 +157,35 @@ func (h *Handler) Delete(c echo.Context) error {
 
 // PaginationRequest is the shared body for list-style endpoints.
 type PaginationRequest struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // SearchRequest is the request body for flash/search.
 type SearchRequest struct {
-	Query  string `json:"query"`
-	Limit  int    `json:"limit"`
-	Offset int    `json:"offset"`
+	Query   string `json:"query"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // My handles POST /api/i/flashs and POST /api/flash/my (own list).
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) My(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginationRequest
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.My(user.ID, req.Limit, req.Offset)
+	rows, err := h.svc.My(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashesToList(rows))
+	return c.JSON(http.StatusOK, h.flashesToListWithUser(rows))
 }
 
 // Featured handles POST /api/flash/featured.
@@ -170,11 +194,11 @@ func (h *Handler) Featured(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.Featured(req.Limit, req.Offset)
+	rows, err := h.svc.Featured(req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashesToList(rows))
+	return c.JSON(http.StatusOK, h.flashesToListWithUser(rows))
 }
 
 // Search handles POST /api/flash/search.
@@ -183,11 +207,11 @@ func (h *Handler) Search(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.Query == "" {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.Search(req.Query, req.Limit, req.Offset)
+	rows, err := h.svc.Search(req.Query, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashesToList(rows))
+	return c.JSON(http.StatusOK, h.flashesToListWithUser(rows))
 }
 
 // LikeRequest is the request body for flash/like and flash/unlike.
@@ -233,32 +257,41 @@ func (h *Handler) Unlike(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// MyLikes handles POST /api/i/flashs/likes.
+// MyLikes handles POST /api/flash/my-likes.
+//
+// upstream Misskey TS は `{id, flash: Flash}` を返す (id = flash_like
+// row id, frontend は it.flash で MkPlayPreview を描画)。mk-go は元々
+// flatten された Flash 配列を返しており frontend が空表示になっていた。
 func (h *Handler) MyLikes(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginationRequest
 	if err := c.Bind(&req); err != nil {
 		return apierr.JSONInvalidParam(c)
 	}
-	rows, err := h.svc.MyLikes(user.ID, req.Limit, req.Offset)
+	pairs, err := h.svc.MyLikes(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashesToList(rows))
-}
-
-func flashesToList(rows []*model.Flash) []map[string]any {
-	out := make([]map[string]any, 0, len(rows))
-	for _, f := range rows {
-		out = append(out, flashToMap(f))
+	flashes := make([]*model.Flash, 0, len(pairs))
+	for _, p := range pairs {
+		flashes = append(flashes, p.Flash)
 	}
-	return out
+	packed := h.flashesToListWithUser(flashes)
+	out := make([]map[string]any, 0, len(pairs))
+	for i, p := range pairs {
+		out = append(out, map[string]any{
+			"id":    p.LikeID,
+			"flash": packed[i],
+		})
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 func flashToMap(f *model.Flash) map[string]any {
+	const tsFormat = "2006-01-02T15:04:05.000Z"
 	return map[string]any{
 		"id":          f.ID,
-		"updatedAt":   f.UpdatedAt,
+		"updatedAt":   f.UpdatedAt.UTC().Format(tsFormat),
 		"title":       f.Title,
 		"summary":     f.Summary,
 		"userId":      f.UserID,
@@ -267,6 +300,71 @@ func flashToMap(f *model.Flash) map[string]any {
 		"likedCount":  f.LikedCount,
 		"visibility":  f.Visibility,
 	}
+}
+
+// flashWithKnownUser packs a single flash whose author is already in scope
+// (typically the authenticated user from middleware on Create / Update).
+// Saves one FindManyByIDs round-trip vs flashesToListWithUser.
+func (h *Handler) flashWithKnownUser(f *model.Flash, owner *model.User) map[string]any {
+	const tsFormat = "2006-01-02T15:04:05.000Z"
+	entry := flashToMap(f)
+	createdAt := ""
+	if h.idGen != nil {
+		if t, err := h.idGen.ParseTime(f.ID); err == nil {
+			createdAt = t.UTC().Format(tsFormat)
+		}
+	}
+	// flashesToListWithUser と同じく nil/error 時も "" でフィールドを必ず
+	// 残す。frontend が `if (item.createdAt)` する場合のため (#520 review)。
+	entry["createdAt"] = createdAt
+	if owner != nil && owner.ID == f.UserID {
+		entry["user"] = entity.PackUserLite(owner)
+	}
+	return entry
+}
+
+// flashesToListWithUser packs flashes including the embedded `user`
+// (UserLite) and ISO-formatted `createdAt`, matching upstream Misskey TS
+// FlashEntityService output. The frontend Play page reads `flash.user`
+// for display so a missing user object causes empty card render.
+//
+// User lookups are deduped by author and fetched in a single FindManyByIDs
+// call to avoid the N+1 pattern.
+func (h *Handler) flashesToListWithUser(rows []*model.Flash) []map[string]any {
+	const tsFormat = "2006-01-02T15:04:05.000Z"
+	userIDs := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, f := range rows {
+		if _, ok := seen[f.UserID]; ok {
+			continue
+		}
+		seen[f.UserID] = struct{}{}
+		userIDs = append(userIDs, f.UserID)
+	}
+	userByID := make(map[string]*model.User, len(userIDs))
+	if h.userRepo != nil && len(userIDs) > 0 {
+		if users, err := h.userRepo.FindManyByIDs(userIDs); err == nil {
+			for _, u := range users {
+				userByID[u.ID] = u
+			}
+		}
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, f := range rows {
+		entry := flashToMap(f)
+		createdAt := ""
+		if h.idGen != nil {
+			if t, err := h.idGen.ParseTime(f.ID); err == nil {
+				createdAt = t.UTC().Format(tsFormat)
+			}
+		}
+		entry["createdAt"] = createdAt
+		if u, ok := userByID[f.UserID]; ok {
+			entry["user"] = entity.PackUserLite(u)
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func notFound(c echo.Context) error {

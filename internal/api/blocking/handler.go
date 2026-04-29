@@ -3,22 +3,31 @@ package blocking
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles blocking-related API endpoints.
 type Handler struct {
-	svc *coreblocking.Service
+	svc      *coreblocking.Service
+	userRepo repository.UserRepository
+	idGen    id.Generator
 }
 
 // NewHandler creates a new blocking Handler.
-func NewHandler(svc *coreblocking.Service) *Handler {
-	return &Handler{svc: svc}
+// userRepo / idGen are required by blocking/list to embed the
+// `blockee` user object that the upstream Misskey frontend renders.
+func NewHandler(svc *coreblocking.Service, userRepo repository.UserRepository, idGen id.Generator) *Handler {
+	return &Handler{svc: svc, userRepo: userRepo, idGen: idGen}
 }
 
 // PairRequest is the request body for blocking/create and blocking/delete.
@@ -69,11 +78,16 @@ func (h *Handler) Delete(c echo.Context) error {
 
 // ListRequest is the request body for blocking/list.
 type ListRequest struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // List handles POST /api/blocking/list.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する。
+// 本 endpoint は #493 で cursor 対応に切り替えた。
 func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
@@ -86,16 +100,66 @@ func (h *Handler) List(c echo.Context) error {
 	if req.Limit > 100 {
 		req.Limit = 100
 	}
-	rows, err := h.svc.List(user.ID, req.Limit, req.Offset)
+	rows, err := h.svc.List(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
+	// upstream frontend が item.blockee で MkUserCardMini を描画するので
+	// batch fetch で N+1 を回避しつつ user object を embed する。
+	blockeeMap := h.fetchBlockeeMap(rows)
+	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, b := range rows {
-		out = append(out, map[string]any{
+		createdAt := ""
+		if h.idGen != nil {
+			if t, err := h.idGen.ParseTime(b.ID); err == nil {
+				createdAt = t.UTC().Format(tsFormat)
+			}
+		}
+		entry := map[string]any{
 			"id":        b.ID,
+			"createdAt": createdAt,
 			"blockeeId": b.BlockeeID,
-		})
+		}
+		if blockee, ok := blockeeMap[b.BlockeeID]; ok {
+			entry["blockee"] = blockee
+		}
+		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// fetchBlockeeMap batches user + profile lookups for the blockee IDs in
+// rows so the response build loop performs zero per-row DB queries.
+func (h *Handler) fetchBlockeeMap(rows []*model.Blocking) map[string]entity.UserDetailed {
+	if h.userRepo == nil || len(rows) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, b := range rows {
+		if _, ok := seen[b.BlockeeID]; ok {
+			continue
+		}
+		seen[b.BlockeeID] = struct{}{}
+		ids = append(ids, b.BlockeeID)
+	}
+	users, err := h.userRepo.FindManyByIDs(ids)
+	if err != nil {
+		return nil
+	}
+	profiles, profErr := h.userRepo.FindProfilesByUserIDs(ids)
+	if profErr != nil {
+		// 部分結果を返す graceful degradation だが、log は残しておく。
+		slog.Warn("blocking/list: failed to fetch profiles", "error", profErr)
+	}
+	profileByUser := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileByUser[p.UserID] = p
+	}
+	out := make(map[string]entity.UserDetailed, len(users))
+	for _, u := range users {
+		out[u.ID] = entity.PackUserDetailed(u, profileByUser[u.ID], h.idGen)
+	}
+	return out
 }

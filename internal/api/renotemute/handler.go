@@ -3,22 +3,31 @@ package renotemute
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles renote-mute endpoints.
 type Handler struct {
-	svc *coremuting.RenoteService
+	svc      *coremuting.RenoteService
+	userRepo repository.UserRepository
+	idGen    id.Generator
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(svc *coremuting.RenoteService) *Handler {
-	return &Handler{svc: svc}
+// userRepo / idGen are required by renote-mute/list to embed the
+// `mutee` user object that the upstream Misskey frontend renders.
+func NewHandler(svc *coremuting.RenoteService, userRepo repository.UserRepository, idGen id.Generator) *Handler {
+	return &Handler{svc: svc, userRepo: userRepo, idGen: idGen}
 }
 
 // PairRequest is the body for create/delete.
@@ -68,11 +77,16 @@ func (h *Handler) Delete(c echo.Context) error {
 
 // ListRequest is the body for renote-mute/list.
 type ListRequest struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // List handles POST /api/renote-mute/list.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する。
+// 本 endpoint は #493 で cursor 対応に切り替えた。
 func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
@@ -85,16 +99,63 @@ func (h *Handler) List(c echo.Context) error {
 	if req.Limit > 100 {
 		req.Limit = 100
 	}
-	rows, err := h.svc.List(user.ID, req.Limit, req.Offset)
+	rows, err := h.svc.List(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
+	muteeMap := h.fetchMuteeMap(rows)
+	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, m := range rows {
-		out = append(out, map[string]any{
-			"id":      m.ID,
-			"muteeId": m.MuteeID,
-		})
+		createdAt := ""
+		if h.idGen != nil {
+			if t, err := h.idGen.ParseTime(m.ID); err == nil {
+				createdAt = t.UTC().Format(tsFormat)
+			}
+		}
+		entry := map[string]any{
+			"id":        m.ID,
+			"createdAt": createdAt,
+			"muteeId":   m.MuteeID,
+		}
+		if mutee, ok := muteeMap[m.MuteeID]; ok {
+			entry["mutee"] = mutee
+		}
+		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// fetchMuteeMap batches user + profile lookups for the muteeIds in rows so
+// the response build loop performs zero per-row DB queries.
+func (h *Handler) fetchMuteeMap(rows []*model.RenoteMuting) map[string]entity.UserDetailed {
+	if h.userRepo == nil || len(rows) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, m := range rows {
+		if _, ok := seen[m.MuteeID]; ok {
+			continue
+		}
+		seen[m.MuteeID] = struct{}{}
+		ids = append(ids, m.MuteeID)
+	}
+	users, err := h.userRepo.FindManyByIDs(ids)
+	if err != nil {
+		return nil
+	}
+	profiles, profErr := h.userRepo.FindProfilesByUserIDs(ids)
+	if profErr != nil {
+		slog.Warn("renote-mute/list: failed to fetch profiles", "error", profErr)
+	}
+	profileByUser := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileByUser[p.UserID] = p
+	}
+	out := make(map[string]entity.UserDetailed, len(users))
+	for _, u := range users {
+		out[u.ID] = entity.PackUserDetailed(u, profileByUser[u.ID], h.idGen)
+	}
+	return out
 }

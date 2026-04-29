@@ -1166,19 +1166,19 @@ func (s *Server) setupRoutes() {
 	api.POST("/gallery/posts/unlike", galleryHandler.PostsUnlike, middleware.RequireAuth())
 
 	// Blocking endpoints
-	blockingHandler := blocking.NewHandler(blockingService)
+	blockingHandler := blocking.NewHandler(blockingService, userRepo, idGen)
 	api.POST("/blocking/create", blockingHandler.Create, middleware.RequireAuth())
 	api.POST("/blocking/delete", blockingHandler.Delete, middleware.RequireAuth())
 	api.POST("/blocking/list", blockingHandler.List, middleware.RequireAuth())
 
 	// Mute endpoints
-	muteHandler := mute.NewHandler(mutingService)
+	muteHandler := mute.NewHandler(mutingService, userRepo, idGen)
 	api.POST("/mute/create", muteHandler.Create, middleware.RequireAuth())
 	api.POST("/mute/delete", muteHandler.Delete, middleware.RequireAuth())
 	api.POST("/mute/list", muteHandler.List, middleware.RequireAuth())
 
 	// Renote mute endpoints
-	renoteMuteHandler := renotemute.NewHandler(renoteMutingService)
+	renoteMuteHandler := renotemute.NewHandler(renoteMutingService, userRepo, idGen)
 	api.POST("/renote-mute/create", renoteMuteHandler.Create, middleware.RequireAuth())
 	api.POST("/renote-mute/delete", renoteMuteHandler.Delete, middleware.RequireAuth())
 	api.POST("/renote-mute/list", renoteMuteHandler.List, middleware.RequireAuth())
@@ -1347,7 +1347,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/i/pages", pagesHandler.My, middleware.RequireAuth())
 
 	// Flash endpoints (Phase 4.5)
-	flashHandler := apiflash.NewHandler(flashService)
+	flashHandler := apiflash.NewHandler(flashService, userRepo, idGen)
 	api.POST("/flash/create", flashHandler.Create, middleware.RequireAuth())
 	api.POST("/flash/show", flashHandler.Show)
 	api.POST("/flash/update", flashHandler.Update, middleware.RequireAuth())

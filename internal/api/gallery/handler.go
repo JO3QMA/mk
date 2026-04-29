@@ -39,10 +39,15 @@ func (h *Handler) Popular(c echo.Context) error {
 }
 
 // Posts handles POST /api/gallery/posts.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を投げてくる。
+// id 範囲フィルタ + paginationOrder 同等の ASC/DESC を直接組み立てる。
 func (h *Handler) Posts(c echo.Context) error {
 	var req struct {
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -50,8 +55,23 @@ func (h *Handler) Posts(c echo.Context) error {
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
-	q := h.db.Preload("User").Order("id DESC").Limit(req.Limit)
-	if req.Offset > 0 {
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	q := h.db.Preload("User")
+	if req.SinceID != "" {
+		q = q.Where("id > ?", req.SinceID)
+	}
+	if req.UntilID != "" {
+		q = q.Where("id < ?", req.UntilID)
+	}
+	if req.SinceID != "" && req.UntilID == "" {
+		q = q.Order("id ASC")
+	} else {
+		q = q.Order("id DESC")
+	}
+	q = q.Limit(req.Limit)
+	if req.SinceID == "" && req.UntilID == "" && req.Offset > 0 {
 		q = q.Offset(req.Offset)
 	}
 	var posts []*model.GalleryPost

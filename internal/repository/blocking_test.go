@@ -37,7 +37,7 @@ func TestBlockingRepository_CRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, exists)
 
-	rows, err := repo.ListByBlocker(u1.ID, 10, 0)
+	rows, err := repo.ListByBlocker(u1.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 
@@ -57,6 +57,6 @@ func TestBlockingRepository_QueryErrors(t *testing.T) {
 	assert.Error(t, err)
 	_, err = repo.Exists("a", "b")
 	assert.Error(t, err)
-	_, err = repo.ListByBlocker("a", 10, 0)
+	_, err = repo.ListByBlocker("a", "", "", 10, 0)
 	assert.Error(t, err)
 }

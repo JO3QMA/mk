@@ -148,32 +148,43 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 			q = q.Where("\"followingCount\" = 0")
 		}
 	}
-	switch filter.SortBy {
-	case "+host":
-		q = q.Order("host ASC")
-	case "-host":
-		q = q.Order("host DESC")
-	case "+notes":
-		q = q.Order("\"notesCount\" ASC")
-	case "-notes":
-		q = q.Order("\"notesCount\" DESC")
-	case "+users":
-		q = q.Order("\"usersCount\" ASC")
-	case "-users":
-		q = q.Order("\"usersCount\" DESC")
-	case "+following":
-		q = q.Order("\"followingCount\" ASC")
-	case "-following":
-		q = q.Order("\"followingCount\" DESC")
-	case "+followers":
-		q = q.Order("\"followersCount\" ASC")
-	case "-followers":
-		q = q.Order("\"followersCount\" DESC")
-	case "+firstRetrievedAt":
-		q = q.Order("\"firstRetrievedAt\" ASC")
-	default:
-		// デフォルトは新しい順
-		q = q.Order("\"firstRetrievedAt\" DESC")
+	cursor := filter.SinceID != "" || filter.UntilID != ""
+	if filter.SinceID != "" {
+		q = q.Where("id > ?", filter.SinceID)
+	}
+	if filter.UntilID != "" {
+		q = q.Where("id < ?", filter.UntilID)
+	}
+	if cursor {
+		q = q.Order(paginationOrder(filter.SinceID, filter.UntilID, "id"))
+	} else {
+		switch filter.SortBy {
+		case "+host":
+			q = q.Order("host ASC")
+		case "-host":
+			q = q.Order("host DESC")
+		case "+notes":
+			q = q.Order("\"notesCount\" ASC")
+		case "-notes":
+			q = q.Order("\"notesCount\" DESC")
+		case "+users":
+			q = q.Order("\"usersCount\" ASC")
+		case "-users":
+			q = q.Order("\"usersCount\" DESC")
+		case "+following":
+			q = q.Order("\"followingCount\" ASC")
+		case "-following":
+			q = q.Order("\"followingCount\" DESC")
+		case "+followers":
+			q = q.Order("\"followersCount\" ASC")
+		case "-followers":
+			q = q.Order("\"followersCount\" DESC")
+		case "+firstRetrievedAt":
+			q = q.Order("\"firstRetrievedAt\" ASC")
+		default:
+			// デフォルトは新しい順
+			q = q.Order("\"firstRetrievedAt\" DESC")
+		}
 	}
 	limit := filter.Limit
 	if limit <= 0 {
@@ -182,7 +193,10 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 	if limit > 100 {
 		limit = 100
 	}
-	q = q.Limit(limit).Offset(filter.Offset)
+	q = q.Limit(limit)
+	if !cursor && filter.Offset > 0 {
+		q = q.Offset(filter.Offset)
+	}
 	var rows []*model.Instance
 	if err := q.Find(&rows).Error; err != nil {
 		return nil, err

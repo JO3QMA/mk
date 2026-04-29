@@ -342,7 +342,7 @@ type listFailFollowRepo struct {
 	*testutil.MockChannelFollowingRepository
 }
 
-func (r *listFailFollowRepo) ListFollowed(_ string, _, _ int) ([]*model.ChannelFollowing, error) {
+func (r *listFailFollowRepo) ListFollowed(_, _, _ string, _, _ int) ([]*model.ChannelFollowing, error) {
 	return nil, errors.New("boom")
 }
 

@@ -105,11 +105,15 @@ func (h *Handler) Clips(c echo.Context) error {
 }
 
 // Flashs handles POST /api/users/flashs.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) Flashs(c echo.Context) error {
 	var req struct {
-		UserID string `json:"userId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		UserID  string `json:"userId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -123,18 +127,31 @@ func (h *Handler) Flashs(c echo.Context) error {
 	var rows []*model.Flash
 	var err error
 	if isSelf {
-		rows, err = h.flashRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.flashRepo.ListByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	} else {
-		rows, err = h.flashRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.flashRepo.ListPublicByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	}
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
+	// flash/* endpoint と shape を揃える: createdAt / updatedAt は
+	// ISO 8601 (.000Z) 固定、user (UserLite) を embed する (#520 review)。
+	// 全 row が同一 user (= req.UserID) なので fetch は 1 回で済む。
+	const tsFormat = "2006-01-02T15:04:05.000Z"
+	var packedUser any
+	if bundle, err := h.userService.ShowByID(req.UserID); err == nil && bundle != nil {
+		packedUser = entity.PackUserLite(bundle.User)
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, f := range rows {
-		out = append(out, map[string]any{
+		createdAt := ""
+		if t, err := h.idGen.ParseTime(f.ID); err == nil {
+			createdAt = t.UTC().Format(tsFormat)
+		}
+		entry := map[string]any{
 			"id":          f.ID,
-			"updatedAt":   f.UpdatedAt,
+			"createdAt":   createdAt,
+			"updatedAt":   f.UpdatedAt.UTC().Format(tsFormat),
 			"title":       f.Title,
 			"summary":     f.Summary,
 			"userId":      f.UserID,
@@ -142,17 +159,25 @@ func (h *Handler) Flashs(c echo.Context) error {
 			"permissions": []string(f.Permissions),
 			"likedCount":  f.LikedCount,
 			"visibility":  f.Visibility,
-		})
+		}
+		if packedUser != nil {
+			entry["user"] = packedUser
+		}
+		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
 }
 
 // GalleryPosts handles POST /api/users/gallery/posts.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) GalleryPosts(c echo.Context) error {
 	var req struct {
-		UserID string `json:"userId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		UserID  string `json:"userId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -161,16 +186,25 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	clampListLimit(&req.Limit)
-	rows, err := h.galleryRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	rows, err := h.galleryRepo.ListByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
 	// GalleryPost に visibility 概念はなく常に公開扱い。
+	// updatedAt / createdAt は i/gallery/posts と format を揃える (#520 review)。
+	// galleryRepo.ListByUser が Preload("User") を行うので g.User を読んで
+	// user (UserLite) を embed できる。i/gallery/posts と同 shape。
+	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, g := range rows {
-		out = append(out, map[string]any{
+		createdAt := ""
+		if t, err := h.idGen.ParseTime(g.ID); err == nil {
+			createdAt = t.UTC().Format(tsFormat)
+		}
+		entry := map[string]any{
 			"id":          g.ID,
-			"updatedAt":   g.UpdatedAt,
+			"createdAt":   createdAt,
+			"updatedAt":   g.UpdatedAt.UTC().Format(tsFormat),
 			"userId":      g.UserID,
 			"title":       g.Title,
 			"description": g.Description,
@@ -179,17 +213,25 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 			"isSensitive": g.IsSensitive,
 			"likedCount":  g.LikedCount,
 			"files":       []any{},
-		})
+		}
+		if g.User != nil {
+			entry["user"] = entity.PackUserLite(g.User)
+		}
+		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
 }
 
 // Pages handles POST /api/users/pages.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) Pages(c echo.Context) error {
 	var req struct {
-		UserID string `json:"userId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		UserID  string `json:"userId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -203,9 +245,9 @@ func (h *Handler) Pages(c echo.Context) error {
 	var rows []*model.Page
 	var err error
 	if isSelf {
-		rows, err = h.pageRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.pageRepo.ListByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	} else {
-		rows, err = h.pageRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.pageRepo.ListPublicByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	}
 	if err != nil {
 		return apierr.JSONInternalError(c)

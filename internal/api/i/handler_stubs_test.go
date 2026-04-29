@@ -292,11 +292,14 @@ type stubGalleryRepo struct {
 	err   error
 }
 
-func (s *stubGalleryRepo) ListByUser(_ string, _, _ int) ([]*model.GalleryPost, error) {
+func (s *stubGalleryRepo) ListByUser(_, _, _ string, _, _ int) ([]*model.GalleryPost, error) {
 	return s.posts, s.err
 }
-func (s *stubGalleryRepo) ListLikesByUser(_ string, _, _ int) ([]*model.GalleryLike, error) {
+func (s *stubGalleryRepo) ListLikesByUser(_, _, _ string, _, _ int) ([]*model.GalleryLike, error) {
 	return s.likes, s.err
+}
+func (s *stubGalleryRepo) FindPostsByIDs(_ []string) ([]*model.GalleryPost, error) {
+	return s.posts, s.err
 }
 
 // --- P4-6 (#166): i/gallery/* ---
@@ -318,15 +321,25 @@ func TestGalleryPosts_WithRepo(t *testing.T) {
 
 func TestGalleryLikes_WithRepo(t *testing.T) {
 	h, _ := newExtraHandler(t)
-	h.SetGalleryRepo(&stubGalleryRepo{likes: []*model.GalleryLike{
-		{ID: "l1", PostID: "p1", UserID: stubUser.ID},
-	}})
+	// upstream の `{id, post: GalleryPost}` shape を返す経路 (#493)。
+	// stubGalleryRepo.FindPostsByIDs は posts スライスをそのまま返すので
+	// PostID が一致するエントリを posts にも入れておく。
+	h.SetGalleryRepo(&stubGalleryRepo{
+		likes: []*model.GalleryLike{
+			{ID: "l1", PostID: "p1", UserID: stubUser.ID},
+		},
+		posts: []*model.GalleryPost{
+			{ID: "p1", Title: "t", UserID: stubUser.ID},
+		},
+	})
 	rec := postExtra(h.GalleryLikes, `{}`, stubUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	var got []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Len(t, got, 1)
-	assert.Equal(t, "p1", got[0]["postId"])
+	post, ok := got[0]["post"].(map[string]any)
+	require.True(t, ok, "expected post object embedded")
+	assert.Equal(t, "p1", post["id"])
 }
 
 // --- P4-6 (#166): i/page-likes ---

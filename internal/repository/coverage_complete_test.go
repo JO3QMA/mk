@@ -174,9 +174,9 @@ func TestErrorPaths_CancelledContext(t *testing.T) {
 	// clip / flash / page (ListPublicByUser)
 	_, err = NewClipRepository(db).ListPublicByUser("x", "", "", 10, 0)
 	assert.Error(t, err)
-	_, err = NewFlashRepository(db).ListPublicByUser("x", 10, 0)
+	_, err = NewFlashRepository(db).ListPublicByUser("x", "", "", 10, 0)
 	assert.Error(t, err)
-	_, err = NewPageRepository(db).ListPublicByUser("x", 10, 0)
+	_, err = NewPageRepository(db).ListPublicByUser("x", "", "", 10, 0)
 	assert.Error(t, err)
 
 	// drive_file
@@ -211,9 +211,9 @@ func TestErrorPaths_CancelledContext(t *testing.T) {
 	assert.Error(t, err)
 
 	// gallery
-	_, err = NewGalleryRepository(db).ListByUser("x", 10, 0)
+	_, err = NewGalleryRepository(db).ListByUser("x", "", "", 10, 0)
 	assert.Error(t, err)
-	_, err = NewGalleryRepository(db).ListLikesByUser("x", 10, 0)
+	_, err = NewGalleryRepository(db).ListLikesByUser("x", "", "", 10, 0)
 	assert.Error(t, err)
 
 	// note

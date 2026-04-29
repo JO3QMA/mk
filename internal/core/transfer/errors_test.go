@@ -27,7 +27,7 @@ type failingBlockingRepo struct {
 	*testutil.MockBlockingRepository
 }
 
-func (f *failingBlockingRepo) ListByBlocker(_ string, _, _ int) ([]*model.Blocking, error) {
+func (f *failingBlockingRepo) ListByBlocker(_, _, _ string, _, _ int) ([]*model.Blocking, error) {
 	return nil, errors.New("db boom")
 }
 
@@ -36,7 +36,7 @@ type failingMutingRepo struct {
 	*testutil.MockMutingRepository
 }
 
-func (f *failingMutingRepo) ListByMuter(_ string, _, _ int) ([]*model.Muting, error) {
+func (f *failingMutingRepo) ListByMuter(_, _, _ string, _, _ int) ([]*model.Muting, error) {
 	return nil, errors.New("db boom")
 }
 

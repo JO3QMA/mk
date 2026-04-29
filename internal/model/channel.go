@@ -45,4 +45,8 @@ type ChannelListFilter struct {
 	SortBy     string // "+lastNotedAt" / "-lastNotedAt" / "+name" / "-notesCount" 等
 	Limit      int
 	Offset     int
+	// Cursor pagination (frontend Paginator). 指定時は SortBy を id 順に
+	// 上書きして cursor 一貫性を保つ。Offset は無視する。
+	SinceID string
+	UntilID string
 }

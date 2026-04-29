@@ -30,7 +30,7 @@ func TestChannelFollowingRepository_LifeCycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	rows, err := repo.ListFollowed(user.ID, 10, 0)
+	rows, err := repo.ListFollowed(user.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 
@@ -48,10 +48,10 @@ func TestChannelFollowingRepository_FindByPair_NotFound(t *testing.T) {
 
 func TestChannelFollowingRepository_ListFollowed_LimitClamp(t *testing.T) {
 	repo := NewChannelFollowingRepository(testDB)
-	rows, err := repo.ListFollowed("nobody", 9999, 0)
+	rows, err := repo.ListFollowed("nobody", "", "", 9999, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
-	rows, err = repo.ListFollowed("nobody", -1, 0)
+	rows, err = repo.ListFollowed("nobody", "", "", -1, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 }
@@ -108,7 +108,7 @@ func TestChannelFollowingRepository_QueryErrors(t *testing.T) {
 	repo := NewChannelFollowingRepository(db)
 	_, err := repo.Exists("a", "b")
 	assert.Error(t, err)
-	_, err = repo.ListFollowed("a", 10, 0)
+	_, err = repo.ListFollowed("a", "", "", 10, 0)
 	assert.Error(t, err)
 	_, _, err = repo.ListFollowerIDsPage("a", "", 10)
 	assert.Error(t, err)

@@ -259,21 +259,27 @@ func TestListFollowed(t *testing.T) {
 	require.NoError(t, svc.Follow("u1", "c1"))
 	require.NoError(t, svc.Follow("u1", "c2"))
 
-	rows, err := svc.ListFollowed("u1", 10, 0)
+	rows, err := svc.ListFollowed("u1", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }
 
-// brokenChannelRepo makes FindByID fail so ListFollowed skips entries.
+// brokenChannelRepo makes FindByIDs fail so ListFollowed propagates the
+// error instead of returning a partial list.
 type brokenChannelRepo struct {
 	*testutil.MockChannelRepository
 }
 
-func (r *brokenChannelRepo) FindByID(_ string) (*model.Channel, error) {
+func (r *brokenChannelRepo) FindByIDs(_ []string) ([]*model.Channel, error) {
 	return nil, errors.New("boom")
 }
 
-func TestListFollowed_FindByIDFailure(t *testing.T) {
+// TestListFollowed_FindByIDsFailure verifies that ListFollowed propagates
+// the FindByIDs error (not silent skip). 8th-pass refactor switched from
+// per-row FindByID with continue-on-error to batch FindByIDs, so the
+// failure mode now surfaces to the caller (more correct than hiding DB
+// errors).
+func TestListFollowed_FindByIDsFailure(t *testing.T) {
 	mock := testutil.NewMockChannelRepository()
 	repo := &brokenChannelRepo{MockChannelRepository: mock}
 	followRepo := testutil.NewMockChannelFollowingRepository()
@@ -281,9 +287,27 @@ func TestListFollowed_FindByIDFailure(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	svc := channel.NewService(repo, followRepo, testutil.NewMockNoteRepository(), idGen)
 
-	rows, err := svc.ListFollowed("u1", 10, 0)
+	_, err := svc.ListFollowed("u1", "", "", 10, 0)
+	require.Error(t, err)
+}
+
+// TestListFollowed_MissingChannelSkipped verifies that channels missing
+// from the FindByIDs result (e.g., deleted) are silently skipped while
+// other rows are returned normally.
+func TestListFollowed_MissingChannelSkipped(t *testing.T) {
+	repo := testutil.NewMockChannelRepository()
+	repo.Channels["c1"] = &model.Channel{ID: "c1", Name: "alpha"}
+	// c_missing is followed but not in repo (deleted)
+	followRepo := testutil.NewMockChannelFollowingRepository()
+	followRepo.Followings["f1"] = &model.ChannelFollowing{ID: "f1", FollowerID: "u1", FolloweeID: "c1"}
+	followRepo.Followings["f2"] = &model.ChannelFollowing{ID: "f2", FollowerID: "u1", FolloweeID: "c_missing"}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := channel.NewService(repo, followRepo, testutil.NewMockNoteRepository(), idGen)
+
+	rows, err := svc.ListFollowed("u1", "", "", 10, 0)
 	require.NoError(t, err)
-	assert.Empty(t, rows)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "c1", rows[0].ID)
 }
 
 // listFailFollowRepo causes ListFollowed to fail.
@@ -291,7 +315,7 @@ type listFailFollowRepo struct {
 	*testutil.MockChannelFollowingRepository
 }
 
-func (r *listFailFollowRepo) ListFollowed(_ string, _, _ int) ([]*model.ChannelFollowing, error) {
+func (r *listFailFollowRepo) ListFollowed(_, _, _ string, _, _ int) ([]*model.ChannelFollowing, error) {
 	return nil, errors.New("list boom")
 }
 
@@ -300,7 +324,7 @@ func TestListFollowed_ListError(t *testing.T) {
 	followRepo := &listFailFollowRepo{MockChannelFollowingRepository: testutil.NewMockChannelFollowingRepository()}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := channel.NewService(repo, followRepo, testutil.NewMockNoteRepository(), idGen)
-	_, err := svc.ListFollowed("u1", 10, 0)
+	_, err := svc.ListFollowed("u1", "", "", 10, 0)
 	assert.Error(t, err)
 }
 
@@ -309,7 +333,7 @@ func TestListOwned(t *testing.T) {
 	owner := "u1"
 	repo.Channels["c1"] = &model.Channel{ID: "c1", UserID: &owner}
 	repo.Channels["c2"] = &model.Channel{ID: "c2", UserID: &owner}
-	rows, err := svc.ListOwned("u1", 10, 0)
+	rows, err := svc.ListOwned("u1", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }
@@ -317,7 +341,7 @@ func TestListOwned(t *testing.T) {
 func TestListFeatured(t *testing.T) {
 	svc, repo, _, _ := newSvc(t)
 	repo.Channels["c1"] = &model.Channel{ID: "c1"}
-	rows, err := svc.ListFeatured(10, 0)
+	rows, err := svc.ListFeatured("", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 }
@@ -326,7 +350,7 @@ func TestSearch(t *testing.T) {
 	svc, repo, _, _ := newSvc(t)
 	repo.Channels["c1"] = &model.Channel{ID: "c1", Name: "alpha"}
 	repo.Channels["c2"] = &model.Channel{ID: "c2", Name: "beta"}
-	rows, err := svc.Search("alp", 10, 0)
+	rows, err := svc.Search("alp", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 }

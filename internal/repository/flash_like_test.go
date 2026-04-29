@@ -31,7 +31,7 @@ func TestFlashLikeRepository_LifeCycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	rows, err := repo.ListByUser(user.ID, 10, 0)
+	rows, err := repo.ListByUser(user.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 
@@ -64,9 +64,9 @@ func TestFlashLikeRepository_Exists_QueryError(t *testing.T) {
 
 func TestFlashLikeRepository_ListByUser_LimitClamp(t *testing.T) {
 	repo := NewFlashLikeRepository(testDB)
-	_, err := repo.ListByUser("nobody", 9999, 0)
+	_, err := repo.ListByUser("nobody", "", "", 9999, 0)
 	require.NoError(t, err)
-	_, err = repo.ListByUser("nobody", -1, 0)
+	_, err = repo.ListByUser("nobody", "", "", -1, 0)
 	require.NoError(t, err)
 }
 
@@ -75,6 +75,6 @@ func TestFlashLikeRepository_ListByUser_QueryError(t *testing.T) {
 	cancel()
 	db := testDB.WithContext(ctx)
 	repo := NewFlashLikeRepository(db)
-	_, err := repo.ListByUser("nobody", 10, 0)
+	_, err := repo.ListByUser("nobody", "", "", 10, 0)
 	assert.Error(t, err)
 }

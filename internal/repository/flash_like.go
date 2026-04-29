@@ -11,7 +11,9 @@ type FlashLikeRepository interface {
 	Delete(l *model.FlashLike) error
 	FindByPair(userID, flashID string) (*model.FlashLike, error)
 	Exists(userID, flashID string) (bool, error)
-	ListByUser(userID string, limit, offset int) ([]*model.FlashLike, error)
+	// ListByUser supports cursor (sinceID/untilID) and offset pagination on
+	// flash_like.id (newest first). Cursor 指定時は offset 無視。
+	ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.FlashLike, error)
 }
 
 type flashLikeRepository struct {
@@ -51,19 +53,26 @@ func (r *flashLikeRepository) Exists(userID, flashID string) (bool, error) {
 
 // ListByUser returns the flash_like rows owned by userID newest first
 // (id desc), used by Misskey 互換 i/flashs/likes endpoint.
-func (r *flashLikeRepository) ListByUser(userID string, limit, offset int) ([]*model.FlashLike, error) {
+func (r *flashLikeRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.FlashLike, error) {
 	if limit <= 0 {
 		limit = 30
 	}
 	if limit > 100 {
 		limit = 100
 	}
+	q := r.db.Where(`"userId" = ?`, userID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
 	var rows []*model.FlashLike
-	if err := r.db.Where("\"userId\" = ?", userID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

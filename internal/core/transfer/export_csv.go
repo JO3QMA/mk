@@ -43,7 +43,7 @@ func (e *Exporter) exportBlocking(userID string) ([]byte, error) {
 	var buf bytes.Buffer
 	offset := 0
 	for {
-		rows, err := e.deps.BlockingRepo.ListByBlocker(userID, csvBatchSize, offset)
+		rows, err := e.deps.BlockingRepo.ListByBlocker(userID, "", "", csvBatchSize, offset)
 		if err != nil {
 			return nil, err
 		}
@@ -71,7 +71,7 @@ func (e *Exporter) exportMuting(userID string) ([]byte, error) {
 	var buf bytes.Buffer
 	offset := 0
 	for {
-		rows, err := e.deps.MutingRepo.ListByMuter(userID, csvBatchSize, offset)
+		rows, err := e.deps.MutingRepo.ListByMuter(userID, "", "", csvBatchSize, offset)
 		if err != nil {
 			return nil, err
 		}

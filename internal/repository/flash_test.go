@@ -115,17 +115,17 @@ func TestFlashRepository_ListByUser(t *testing.T) {
 		defer cleanupFlash(t, f.ID)
 	}
 
-	rows, err := repo.ListByUser(user.ID, 10, 0)
+	rows, err := repo.ListByUser(user.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 3)
 }
 
 func TestFlashRepository_ListByUser_LimitClamp(t *testing.T) {
 	repo := NewFlashRepository(testDB)
-	rows, err := repo.ListByUser("nobody", 9999, 0)
+	rows, err := repo.ListByUser("nobody", "", "", 9999, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
-	rows, err = repo.ListByUser("nobody", -1, 0)
+	rows, err = repo.ListByUser("nobody", "", "", -1, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 }
@@ -135,7 +135,7 @@ func TestFlashRepository_ListByUser_QueryError(t *testing.T) {
 	cancel()
 	db := testDB.WithContext(ctx)
 	repo := NewFlashRepository(db)
-	_, err := repo.ListByUser("nobody", 10, 0)
+	_, err := repo.ListByUser("nobody", "", "", 10, 0)
 	assert.Error(t, err)
 }
 
@@ -154,7 +154,7 @@ func TestFlashRepository_ListFeatured(t *testing.T) {
 		require.NoError(t, repo.Create(f))
 		defer cleanupFlash(t, f.ID)
 	}
-	rows, err := repo.ListFeatured(10, 0)
+	rows, err := repo.ListFeatured("", "", 10, 0)
 	require.NoError(t, err)
 	var found []*model.Flash
 	for _, f := range rows {
@@ -169,9 +169,9 @@ func TestFlashRepository_ListFeatured(t *testing.T) {
 
 func TestFlashRepository_ListFeatured_LimitClamp(t *testing.T) {
 	repo := NewFlashRepository(testDB)
-	_, err := repo.ListFeatured(9999, 0)
+	_, err := repo.ListFeatured("", "", 9999, 0)
 	require.NoError(t, err)
-	_, err = repo.ListFeatured(-1, 0)
+	_, err = repo.ListFeatured("", "", -1, 0)
 	require.NoError(t, err)
 }
 
@@ -180,7 +180,7 @@ func TestFlashRepository_ListFeatured_QueryError(t *testing.T) {
 	cancel()
 	db := testDB.WithContext(ctx)
 	repo := NewFlashRepository(db)
-	_, err := repo.ListFeatured(10, 0)
+	_, err := repo.ListFeatured("", "", 10, 0)
 	assert.Error(t, err)
 }
 
@@ -200,7 +200,7 @@ func TestFlashRepository_Search(t *testing.T) {
 		defer cleanupFlash(t, f.ID)
 	}
 
-	rows, err := repo.Search("calc", 10, 0)
+	rows, err := repo.Search("calc", "", "", 10, 0)
 	require.NoError(t, err)
 	var found []*model.Flash
 	for _, f := range rows {
@@ -213,9 +213,9 @@ func TestFlashRepository_Search(t *testing.T) {
 
 func TestFlashRepository_Search_LimitClamp(t *testing.T) {
 	repo := NewFlashRepository(testDB)
-	_, err := repo.Search("anything", 9999, 0)
+	_, err := repo.Search("anything", "", "", 9999, 0)
 	require.NoError(t, err)
-	_, err = repo.Search("anything", -1, 0)
+	_, err = repo.Search("anything", "", "", -1, 0)
 	require.NoError(t, err)
 }
 
@@ -224,6 +224,6 @@ func TestFlashRepository_Search_QueryError(t *testing.T) {
 	cancel()
 	db := testDB.WithContext(ctx)
 	repo := NewFlashRepository(db)
-	_, err := repo.Search("any", 10, 0)
+	_, err := repo.Search("any", "", "", 10, 0)
 	assert.Error(t, err)
 }

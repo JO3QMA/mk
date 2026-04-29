@@ -22,7 +22,7 @@ func newHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
 	blockingRepo := testutil.NewMockBlockingRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coreblocking.NewService(userRepo, blockingRepo, nil, idGen)
-	return NewHandler(svc), userRepo
+	return NewHandler(svc, userRepo, idGen), userRepo
 }
 
 func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {
@@ -116,7 +116,7 @@ func TestCreate_RepoError(t *testing.T) {
 	addUser(userRepo, "bob")
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coreblocking.NewService(userRepo, &failingBlockingRepo{MockBlockingRepository: testutil.NewMockBlockingRepository()}, nil, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, nil, nil)
 
 	c, rec := newReq(t, `{"userId":"bob"}`)
 	setUser(c, "alice")
@@ -179,7 +179,7 @@ func TestDelete_RepoError(t *testing.T) {
 	mock.Blockings["b1"] = &model.Blocking{ID: "b1", BlockerID: "alice", BlockeeID: "bob"}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coreblocking.NewService(userRepo, &failingDeleteBlockingRepo{MockBlockingRepository: mock}, nil, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, nil, nil)
 
 	c, rec := newReq(t, `{"userId":"bob"}`)
 	setUser(c, "alice")
@@ -222,7 +222,7 @@ type failingListBlockingRepo struct {
 	*testutil.MockBlockingRepository
 }
 
-func (f *failingListBlockingRepo) ListByBlocker(_ string, _, _ int) ([]*model.Blocking, error) {
+func (f *failingListBlockingRepo) ListByBlocker(_, _, _ string, _, _ int) ([]*model.Blocking, error) {
 	return nil, testutil.ErrNotFound
 }
 
@@ -230,7 +230,7 @@ func TestList_RepoError(t *testing.T) {
 	userRepo := testutil.NewMockUserRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coreblocking.NewService(userRepo, &failingListBlockingRepo{MockBlockingRepository: testutil.NewMockBlockingRepository()}, nil, idGen)
-	h := NewHandler(svc)
+	h := NewHandler(svc, nil, nil)
 
 	c, rec := newReq(t, `{}`)
 	setUser(c, "alice")

@@ -2432,50 +2432,58 @@ func (m *MockPageRepository) Delete(p *model.Page) error {
 	return nil
 }
 
-func (m *MockPageRepository) ListByUser(userID string, limit, offset int) ([]*model.Page, error) {
+func (m *MockPageRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Page, error) {
 	var rows []*model.Page
 	for _, p := range m.Pages {
-		if p.UserID == userID {
-			rows = append(rows, p)
+		if p.UserID != userID {
+			continue
 		}
-	}
-	// updatedAt 降順だが、テストの安定性のため updatedAt が同じ場合は ID 降順で解決する。
-	for i := 0; i < len(rows); i++ {
-		for j := i + 1; j < len(rows); j++ {
-			if rows[i].UpdatedAt.Before(rows[j].UpdatedAt) ||
-				(rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) && rows[i].ID < rows[j].ID) {
-				rows[i], rows[j] = rows[j], rows[i]
-			}
+		if sinceID != "" && p.ID <= sinceID {
+			continue
 		}
+		if untilID != "" && p.ID >= untilID {
+			continue
+		}
+		rows = append(rows, p)
 	}
-	return paginatePages(rows, limit, offset), nil
+	return paginatePages(rows, sinceID, untilID, limit, offset), nil
 }
 
-func (m *MockPageRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Page, error) {
+func (m *MockPageRepository) ListPublicByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Page, error) {
 	var rows []*model.Page
 	for _, p := range m.Pages {
-		if p.UserID == userID && p.Visibility == model.PageVisibilityPublic {
-			rows = append(rows, p)
+		if p.UserID != userID || p.Visibility != model.PageVisibilityPublic {
+			continue
 		}
-	}
-	for i := 0; i < len(rows); i++ {
-		for j := i + 1; j < len(rows); j++ {
-			if rows[i].UpdatedAt.Before(rows[j].UpdatedAt) ||
-				(rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) && rows[i].ID < rows[j].ID) {
-				rows[i], rows[j] = rows[j], rows[i]
-			}
+		if sinceID != "" && p.ID <= sinceID {
+			continue
 		}
+		if untilID != "" && p.ID >= untilID {
+			continue
+		}
+		rows = append(rows, p)
 	}
-	return paginatePages(rows, limit, offset), nil
+	return paginatePages(rows, sinceID, untilID, limit, offset), nil
 }
 
-func (m *MockPageRepository) ListFeatured(limit, offset int) ([]*model.Page, error) {
+func (m *MockPageRepository) ListFeatured(sinceID, untilID string, limit, offset int) ([]*model.Page, error) {
 	var rows []*model.Page
 	for _, p := range m.Pages {
-		if p.Visibility == model.PageVisibilityPublic {
-			rows = append(rows, p)
+		if p.Visibility != model.PageVisibilityPublic {
+			continue
 		}
+		if sinceID != "" && p.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && p.ID >= untilID {
+			continue
+		}
+		rows = append(rows, p)
 	}
+	if sinceID != "" || untilID != "" {
+		return paginatePages(rows, sinceID, untilID, limit, offset), nil
+	}
+	// offset mode: 元実装と同じく likedCount DESC で sort
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
 			if rows[i].LikedCount < rows[j].LikedCount ||
@@ -2484,7 +2492,7 @@ func (m *MockPageRepository) ListFeatured(limit, offset int) ([]*model.Page, err
 			}
 		}
 	}
-	return paginatePages(rows, limit, offset), nil
+	return paginatePages(rows, "", "", limit, offset), nil
 }
 
 func (m *MockPageRepository) IncrementCount(pageID, column string, delta int) error {
@@ -2498,15 +2506,30 @@ func (m *MockPageRepository) IncrementCount(pageID, column string, delta int) er
 	return nil
 }
 
-func paginatePages(rows []*model.Page, limit, offset int) []*model.Page {
+func paginatePages(rows []*model.Page, sinceID, untilID string, limit, offset int) []*model.Page {
+	asc := sinceID != "" && untilID == ""
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			less := rows[i].ID < rows[j].ID
+			if (asc && !less) || (!asc && less) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
-	if offset >= len(rows) {
-		return nil
+	if sinceID == "" && untilID == "" {
+		if offset >= len(rows) {
+			return nil
+		}
+		end := min(offset+limit, len(rows))
+		return rows[offset:end]
 	}
-	end := min(offset+limit, len(rows))
-	return rows[offset:end]
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	return rows[:limit]
 }
 
 func applyPageFields(p *model.Page, fields map[string]any) {
@@ -2612,32 +2635,53 @@ func (m *MockFlashRepository) Delete(f *model.Flash) error {
 	return nil
 }
 
-func (m *MockFlashRepository) ListByUser(userID string, limit, offset int) ([]*model.Flash, error) {
+func (m *MockFlashRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Flash, error) {
 	var rows []*model.Flash
 	for _, f := range m.Flashes {
-		if f.UserID == userID {
-			rows = append(rows, f)
+		if f.UserID != userID {
+			continue
 		}
-	}
-	sortFlashesByUpdatedDesc(rows)
-	return paginateFlashes(rows, limit, offset), nil
-}
-
-func (m *MockFlashRepository) ListPublicByUser(userID string, limit, offset int) ([]*model.Flash, error) {
-	var rows []*model.Flash
-	for _, f := range m.Flashes {
-		if f.UserID == userID && f.Visibility == "public" {
-			rows = append(rows, f)
+		if sinceID != "" && f.ID <= sinceID {
+			continue
 		}
-	}
-	sortFlashesByUpdatedDesc(rows)
-	return paginateFlashes(rows, limit, offset), nil
-}
-
-func (m *MockFlashRepository) ListFeatured(limit, offset int) ([]*model.Flash, error) {
-	var rows []*model.Flash
-	for _, f := range m.Flashes {
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
 		rows = append(rows, f)
+	}
+	return paginateFlashes(rows, sinceID, untilID, limit, offset), nil
+}
+
+func (m *MockFlashRepository) ListPublicByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Flash, error) {
+	var rows []*model.Flash
+	for _, f := range m.Flashes {
+		if f.UserID != userID || f.Visibility != "public" {
+			continue
+		}
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		rows = append(rows, f)
+	}
+	return paginateFlashes(rows, sinceID, untilID, limit, offset), nil
+}
+
+func (m *MockFlashRepository) ListFeatured(sinceID, untilID string, limit, offset int) ([]*model.Flash, error) {
+	var rows []*model.Flash
+	for _, f := range m.Flashes {
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		rows = append(rows, f)
+	}
+	if sinceID != "" || untilID != "" {
+		return paginateFlashes(rows, sinceID, untilID, limit, offset), nil
 	}
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
@@ -2647,20 +2691,30 @@ func (m *MockFlashRepository) ListFeatured(limit, offset int) ([]*model.Flash, e
 			}
 		}
 	}
-	return paginateFlashes(rows, limit, offset), nil
+	return paginateFlashes(rows, "", "", limit, offset), nil
 }
 
-func (m *MockFlashRepository) Search(query string, limit, offset int) ([]*model.Flash, error) {
+func (m *MockFlashRepository) Search(query, sinceID, untilID string, limit, offset int) ([]*model.Flash, error) {
 	var rows []*model.Flash
 	q := strings.ToLower(query)
 	for _, f := range m.Flashes {
-		if strings.Contains(strings.ToLower(f.Title), q) ||
-			strings.Contains(strings.ToLower(f.Summary), q) {
-			rows = append(rows, f)
+		if !(strings.Contains(strings.ToLower(f.Title), q) ||
+			strings.Contains(strings.ToLower(f.Summary), q)) {
+			continue
 		}
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		rows = append(rows, f)
+	}
+	if sinceID != "" || untilID != "" {
+		return paginateFlashes(rows, sinceID, untilID, limit, offset), nil
 	}
 	sortFlashesByUpdatedDesc(rows)
-	return paginateFlashes(rows, limit, offset), nil
+	return paginateFlashes(rows, "", "", limit, offset), nil
 }
 
 func (m *MockFlashRepository) IncrementCount(flashID, column string, delta int) error {
@@ -2685,15 +2739,34 @@ func sortFlashesByUpdatedDesc(rows []*model.Flash) {
 	}
 }
 
-func paginateFlashes(rows []*model.Flash, limit, offset int) []*model.Flash {
+func paginateFlashes(rows []*model.Flash, sinceID, untilID string, limit, offset int) []*model.Flash {
+	asc := sinceID != "" && untilID == ""
+	if sinceID != "" || untilID != "" {
+		// cursor mode は id 順に並べ替える (offset mode の updatedAt 順
+		// は既に呼び出し側で sort 済み)。
+		for i := 0; i < len(rows); i++ {
+			for j := i + 1; j < len(rows); j++ {
+				less := rows[i].ID < rows[j].ID
+				if (asc && !less) || (!asc && less) {
+					rows[i], rows[j] = rows[j], rows[i]
+				}
+			}
+		}
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
-	if offset >= len(rows) {
-		return nil
+	if sinceID == "" && untilID == "" {
+		if offset >= len(rows) {
+			return nil
+		}
+		end := min(offset+limit, len(rows))
+		return rows[offset:end]
 	}
-	end := min(offset+limit, len(rows))
-	return rows[offset:end]
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	return rows[:limit]
 }
 
 func applyFlashFields(f *model.Flash, fields map[string]any) {
@@ -2761,22 +2834,37 @@ func (m *MockFlashLikeRepository) Exists(userID, flashID string) (bool, error) {
 	return err == nil, nil
 }
 
-func (m *MockFlashLikeRepository) ListByUser(userID string, limit, offset int) ([]*model.FlashLike, error) {
+func (m *MockFlashLikeRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.FlashLike, error) {
 	var rows []*model.FlashLike
 	for _, l := range m.Likes {
-		if l.UserID == userID {
-			rows = append(rows, l)
+		if l.UserID != userID {
+			continue
 		}
+		if sinceID != "" && l.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && l.ID >= untilID {
+			continue
+		}
+		rows = append(rows, l)
 	}
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
+			less := rows[i].ID < rows[j].ID
+			if (asc && !less) || (!asc && less) {
 				rows[i], rows[j] = rows[j], rows[i]
 			}
 		}
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 30
+	}
+	if sinceID != "" || untilID != "" {
+		if limit > len(rows) {
+			limit = len(rows)
+		}
+		return rows[:limit], nil
 	}
 	if offset >= len(rows) {
 		return nil, nil
@@ -3139,16 +3227,26 @@ func (m *MockChannelFollowingRepository) Exists(followerID, channelID string) (b
 	return err == nil, nil
 }
 
-func (m *MockChannelFollowingRepository) ListFollowed(userID string, limit, offset int) ([]*model.ChannelFollowing, error) {
+func (m *MockChannelFollowingRepository) ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.ChannelFollowing, error) {
 	var rows []*model.ChannelFollowing
 	for _, f := range m.Followings {
-		if f.FollowerID == userID {
-			rows = append(rows, f)
+		if f.FollowerID != userID {
+			continue
 		}
+		// cursor は followeeId (= channel.id) で絞る (#520 review)。
+		if sinceID != "" && f.FolloweeID <= sinceID {
+			continue
+		}
+		if untilID != "" && f.FolloweeID >= untilID {
+			continue
+		}
+		rows = append(rows, f)
 	}
+	asc := sinceID != "" && untilID == ""
 	for i := 0; i < len(rows); i++ {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[i].ID < rows[j].ID {
+			less := rows[i].FolloweeID < rows[j].FolloweeID
+			if (asc && !less) || (!asc && less) {
 				rows[i], rows[j] = rows[j], rows[i]
 			}
 		}
@@ -3156,14 +3254,20 @@ func (m *MockChannelFollowingRepository) ListFollowed(userID string, limit, offs
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
-	if offset >= len(rows) {
-		return nil, nil
+	if sinceID == "" && untilID == "" {
+		if offset >= len(rows) {
+			return nil, nil
+		}
+		end := offset + limit
+		if end > len(rows) {
+			end = len(rows)
+		}
+		return rows[offset:end], nil
 	}
-	end := offset + limit
-	if end > len(rows) {
-		end = len(rows)
+	if limit > len(rows) {
+		limit = len(rows)
 	}
-	return rows[offset:end], nil
+	return rows[:limit], nil
 }
 
 // ListFollowerIDsPage returns a page of followerIds for a given channel,

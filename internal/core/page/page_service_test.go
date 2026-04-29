@@ -302,7 +302,7 @@ func TestListByUser(t *testing.T) {
 	svc, repo, _ := newSvc(t)
 	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "u1"}
 	repo.Pages["p2"] = &model.Page{ID: "p2", UserID: "u1"}
-	rows, err := svc.ListByUser("u1", 10, 0)
+	rows, err := svc.ListByUser("u1", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }
@@ -312,7 +312,7 @@ func TestFeatured(t *testing.T) {
 	repo.Pages["p1"] = &model.Page{ID: "p1", UserID: "u1", Visibility: model.PageVisibilityPublic, LikedCount: 5}
 	repo.Pages["p2"] = &model.Page{ID: "p2", UserID: "u1", Visibility: model.PageVisibilityPublic, LikedCount: 10}
 	repo.Pages["p3"] = &model.Page{ID: "p3", UserID: "u1", Visibility: model.PageVisibilityFollowers, LikedCount: 100}
-	rows, err := svc.Featured(10, 0)
+	rows, err := svc.Featured("", "", 10, 0)
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
 	assert.Equal(t, "p2", rows[0].ID)

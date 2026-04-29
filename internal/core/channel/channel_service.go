@@ -195,43 +195,73 @@ func (s *Service) Unfollow(userID, channelID string) error {
 
 // ListFollowed returns the channels followed by the user. 結果には channel の
 // 実体を解決して返す (followingRepo の戻り値は中間テーブル)。
-func (s *Service) ListFollowed(userID string, limit, offset int) ([]*model.Channel, error) {
-	rows, err := s.followingRepo.ListFollowed(userID, limit, offset)
+// frontend Paginator は channel_following.id ベースの cursor で叩いてくる
+// ので sinceID / untilID もそのまま forward する。
+//
+// 各 follow row の channel 実体は FindByIDs で一括解決して N+1 を回避する。
+// 元 followings の order は frontend cursor 整合のため保持する必要があるため
+// channelByID map を介して並び順を保つ。
+func (s *Service) ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
+	rows, err := s.followingRepo.ListFollowed(userID, sinceID, untilID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, f := range rows {
+		ids = append(ids, f.FolloweeID)
+	}
+	channels, err := s.repo.FindByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	channelByID := make(map[string]*model.Channel, len(channels))
+	for _, c := range channels {
+		channelByID[c.ID] = c
+	}
 	out := make([]*model.Channel, 0, len(rows))
 	for _, f := range rows {
-		c, err := s.repo.FindByID(f.FolloweeID)
-		if err != nil {
-			continue
+		if c, ok := channelByID[f.FolloweeID]; ok {
+			out = append(out, c)
 		}
-		out = append(out, c)
 	}
 	return out, nil
 }
 
-// ListOwned returns channels owned by the user. クエリ / アーカイブ条件は
-// repository に丸投げする。
-func (s *Service) ListOwned(userID string, limit, offset int) ([]*model.Channel, error) {
-	return s.repo.List(model.ChannelListFilter{OwnerID: userID, Limit: limit, Offset: offset})
+// ListOwned returns channels owned by the user with cursor (sinceID/untilID)
+// or offset pagination.
+func (s *Service) ListOwned(userID, sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
+	return s.repo.List(model.ChannelListFilter{
+		OwnerID: userID,
+		Limit:   limit,
+		Offset:  offset,
+		SinceID: sinceID,
+		UntilID: untilID,
+	})
 }
 
-// ListFeatured returns the most active channels (notes count desc).
-func (s *Service) ListFeatured(limit, offset int) ([]*model.Channel, error) {
+// ListFeatured returns the most active channels (notes count desc), or by
+// id when cursor is supplied (frontend Paginator対応)。
+func (s *Service) ListFeatured(sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
 	return s.repo.List(model.ChannelListFilter{
-		SortBy: "-notesCount",
-		Limit:  limit,
-		Offset: offset,
+		SortBy:  "-notesCount",
+		Limit:   limit,
+		Offset:  offset,
+		SinceID: sinceID,
+		UntilID: untilID,
 	})
 }
 
 // Search returns channels whose name matches the query.
-func (s *Service) Search(query string, limit, offset int) ([]*model.Channel, error) {
+func (s *Service) Search(query, sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
 	return s.repo.List(model.ChannelListFilter{
-		Query:  query,
-		Limit:  limit,
-		Offset: offset,
+		Query:   query,
+		Limit:   limit,
+		Offset:  offset,
+		SinceID: sinceID,
+		UntilID: untilID,
 	})
 }
 

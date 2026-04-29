@@ -65,6 +65,8 @@ func (r *channelRepository) IncrementCount(channelID, column string, delta int) 
 }
 
 // List returns channels matching the filter, ordered by the requested sort.
+// Cursor (SinceID / UntilID) 指定時は id 順 + WHERE id 範囲で frontend
+// Paginator に対応する。Offset は無視。
 func (r *channelRepository) List(filter model.ChannelListFilter) ([]*model.Channel, error) {
 	q := r.db.Model(&model.Channel{})
 	if filter.OwnerID != "" {
@@ -76,25 +78,36 @@ func (r *channelRepository) List(filter model.ChannelListFilter) ([]*model.Chann
 	if filter.IsArchived != nil {
 		q = q.Where("\"isArchived\" = ?", *filter.IsArchived)
 	}
-	switch filter.SortBy {
-	case "+lastNotedAt":
-		q = q.Order("\"lastNotedAt\" ASC NULLS LAST")
-	case "-lastNotedAt":
-		q = q.Order("\"lastNotedAt\" DESC NULLS LAST")
-	case "+name":
-		q = q.Order("name ASC")
-	case "-name":
-		q = q.Order("name DESC")
-	case "+notesCount":
-		q = q.Order("\"notesCount\" ASC")
-	case "-notesCount":
-		q = q.Order("\"notesCount\" DESC")
-	case "+usersCount":
-		q = q.Order("\"usersCount\" ASC")
-	case "-usersCount":
-		q = q.Order("\"usersCount\" DESC")
-	default:
-		q = q.Order("\"lastNotedAt\" DESC NULLS LAST")
+	cursor := filter.SinceID != "" || filter.UntilID != ""
+	if filter.SinceID != "" {
+		q = q.Where("id > ?", filter.SinceID)
+	}
+	if filter.UntilID != "" {
+		q = q.Where("id < ?", filter.UntilID)
+	}
+	if cursor {
+		q = q.Order(paginationOrder(filter.SinceID, filter.UntilID, "id"))
+	} else {
+		switch filter.SortBy {
+		case "+lastNotedAt":
+			q = q.Order("\"lastNotedAt\" ASC NULLS LAST")
+		case "-lastNotedAt":
+			q = q.Order("\"lastNotedAt\" DESC NULLS LAST")
+		case "+name":
+			q = q.Order("name ASC")
+		case "-name":
+			q = q.Order("name DESC")
+		case "+notesCount":
+			q = q.Order("\"notesCount\" ASC")
+		case "-notesCount":
+			q = q.Order("\"notesCount\" DESC")
+		case "+usersCount":
+			q = q.Order("\"usersCount\" ASC")
+		case "-usersCount":
+			q = q.Order("\"usersCount\" DESC")
+		default:
+			q = q.Order("\"lastNotedAt\" DESC NULLS LAST")
+		}
 	}
 	limit := filter.Limit
 	if limit <= 0 {
@@ -103,7 +116,10 @@ func (r *channelRepository) List(filter model.ChannelListFilter) ([]*model.Chann
 	if limit > 100 {
 		limit = 100
 	}
-	q = q.Limit(limit).Offset(filter.Offset)
+	q = q.Limit(limit)
+	if !cursor && filter.Offset > 0 {
+		q = q.Offset(filter.Offset)
+	}
 	var rows []*model.Channel
 	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
