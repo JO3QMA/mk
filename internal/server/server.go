@@ -94,6 +94,7 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) (*Server, e
 		return nil, fmt.Errorf("server: build queue driver: %w", err)
 	}
 	queueClient := queue.NewClient(queueDriver)
+	applyClientPolicies(queueClient, cfg)
 	queueServer := queue.NewServer(queueDriver)
 	queueScheduler := queue.NewScheduler(queueDriver)
 	queueInspector := queue.NewInspector(queueDriver)

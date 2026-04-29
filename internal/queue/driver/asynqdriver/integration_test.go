@@ -58,6 +58,52 @@ func waitGroupTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	}
 }
 
+// #495: ServerConfig.RateLimits = {"deliver": N} で middleware が dispatch
+// を tasks/sec に back-pressure することを wall-clock で検証する。
+// burst=rate なので最初の N 個は即座に通り、それ以降は token 補充待ちで
+// 1 秒あたり N 個ずつ進む。flaky 回避のため緩めの閾値で assert する。
+func TestServer_RateLimit_BackPressuresHandlerDispatch(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushRedis(t)
+
+	// rate=2/sec, 5 task → 期待最低 elapsed: (5-2)/2 = 1.5s 程度。
+	// flaky ガードに 1.0s 以上で OK にする (CI スケジューラ揺らぎ吸収)。
+	d := asynqdriver.New(redisOpt(), asynqdriver.ServerConfig{
+		Concurrency: 8,
+		RateLimits:  map[string]int{"deliver": 2},
+	})
+	t.Cleanup(func() { _ = d.Close() })
+
+	srv := d.Server()
+	var (
+		wg       sync.WaitGroup
+		received int32
+	)
+	wg.Add(5)
+	srv.Handle("rl:tick", func(_ context.Context, _ driver.Task) error {
+		defer wg.Done()
+		atomic.AddInt32(&received, 1)
+		return nil
+	})
+	require.NoError(t, srv.Start())
+	t.Cleanup(srv.Shutdown)
+
+	start := time.Now()
+	for range 5 {
+		require.NoError(t, d.Client().Enqueue(context.Background(), "rl:tick", nil,
+			driver.WithQueue("deliver")))
+	}
+	if !waitGroupTimeout(&wg, 10*time.Second) {
+		t.Fatal("rate-limited handler did not complete within timeout")
+	}
+	elapsed := time.Since(start)
+	assert.Equal(t, int32(5), atomic.LoadInt32(&received))
+	// 5 task @ 2/sec (burst 2) = 最低 ~1.5s。 1.0s で flaky 防止に余裕。
+	// 上限なしの場合は数十 ms で完了するので 1s 超えれば limit が効いている。
+	assert.GreaterOrEqual(t, elapsed, 1*time.Second,
+		"rate limiter should pace dispatch (got elapsed=%s)", elapsed)
+}
+
 // TestEndToEnd_EnqueueProcess confirms the asynq driver wires
 // Client.Enqueue, Server.Handle and the SkipRetry conversion through
 // to the real asynq runtime against a live Redis.

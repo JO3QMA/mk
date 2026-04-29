@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/hibiken/asynq"
+	"golang.org/x/time/rate"
 
 	"github.com/shiroha-a/mk/internal/queue/driver"
 )
@@ -20,6 +21,12 @@ type ServerConfig struct {
 	// fills in the queue list expected by mk-go (deliver / push /
 	// export / webhook / maintenance).
 	Queues map[string]int
+	// RateLimits maps queue name → tasks/sec cap. Entries with
+	// value <= 0 are ignored. Implemented as a token-bucket
+	// middleware that wraps asynq's dispatch — handlers block on
+	// the limiter rather than being rejected. Burst defaults to
+	// the rate (1 second of headroom) so short spikes are absorbed.
+	RateLimits map[string]int
 }
 
 // Server implements driver.Server over *asynq.Server + ServeMux.
@@ -52,7 +59,53 @@ func NewServer(redisOpt asynq.RedisClientOpt, cfg ServerConfig) *Server {
 		Concurrency: concurrency,
 		Queues:      queues,
 	})
-	return &Server{inner: inner, mux: asynq.NewServeMux()}
+	mux := asynq.NewServeMux()
+	if mw := buildRateLimitMiddleware(cfg.RateLimits); mw != nil {
+		mux.Use(mw)
+	}
+	return &Server{inner: inner, mux: mux}
+}
+
+// buildRateLimitMiddleware returns nil when no queue has a positive
+// RatePerSec — keeping the dispatch fast-path allocation-free for the
+// common "no rate limit" case. When at least one queue is rate-limited,
+// returns a middleware that blocks (Wait) on the per-queue limiter.
+//
+// 注意: asynq は共有 worker pool で各 queue を捌くため、レート制限対象の
+// queue (例: deliver) に多数のタスクが pending している状況では、ワーカー
+// goroutine が l.Wait で待機して他 queue (push / export / webhook /
+// maintenance) のタスクが starvation する可能性がある (#531 review)。
+// これは asynq の設計 (per-queue pull-rate 制御 API が無い) に起因する
+// 制約で、`Reserve` ベースに切替えても根本的に解消しない (タスクを
+// 即時失敗させて再 enqueue するか、Wait で worker を寝かせるかのトレード
+// オフ)。実運用で rate limit を本格運用するなら mkq driver 利用を推奨
+// (mkq.WithRateLimit は worker pull レイヤで制御するので他 queue に
+// 影響しない)。docs/configuration.md の jobQueueDriver 節に明記。
+func buildRateLimitMiddleware(rates map[string]int) asynq.MiddlewareFunc {
+	limiters := map[string]*rate.Limiter{}
+	for q, r := range rates {
+		if r <= 0 {
+			continue
+		}
+		// Burst = rate gives ~1s of headroom for spikes (Wait blocks
+		// when exhausted). Smaller burst makes the limiter brittle
+		// for high-fanout deliveries; larger weakens the cap.
+		limiters[q] = rate.NewLimiter(rate.Limit(r), r)
+	}
+	if len(limiters) == 0 {
+		return nil
+	}
+	return func(next asynq.Handler) asynq.Handler {
+		return asynq.HandlerFunc(func(ctx context.Context, t *asynq.Task) error {
+			qname, _ := asynq.GetQueueName(ctx)
+			if l, ok := limiters[qname]; ok {
+				if err := l.Wait(ctx); err != nil {
+					return err
+				}
+			}
+			return next.ProcessTask(ctx, t)
+		})
+	}
 }
 
 // Handle registers a HandlerFunc for the given task type. The

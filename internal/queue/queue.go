@@ -12,6 +12,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/queue/driver"
@@ -55,8 +56,17 @@ type Enqueuer interface {
 }
 
 // Client wraps a driver.Client and implements Enqueuer.
+//
+// 通常 SetPolicy は server 構築時 1 度だけ呼ばれるため概念上 race は無い
+// が、SetPolicy が exported method として公開されていることから将来の
+// foot-gun を避けるため policies map は sync.RWMutex で保護する (#531
+// review)。read 経路 (EnqueueDeliver) は RLock のみで、token contention
+// は実質ゼロ。
 type Client struct {
 	inner driver.Client
+
+	mu       sync.RWMutex
+	policies PolicyMap
 }
 
 // NewClient constructs a Client backed by the supplied driver.
@@ -64,13 +74,48 @@ func NewClient(d driver.Driver) *Client {
 	return &Client{inner: d.Client()}
 }
 
+// SetPolicy registers a runtime Policy for queueName. EnqueueDeliver
+// consults this when the caller doesn't specify WithMaxRetry. Subsequent
+// calls overwrite any prior policy for the same queue.
+func (c *Client) SetPolicy(queueName string, p Policy) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.policies == nil {
+		c.policies = make(PolicyMap)
+	}
+	c.policies[queueName] = p
+}
+
+// policyFor returns the Policy for queueName under RLock. Falls back to the
+// zero Policy when no entry is registered (PolicyMap.PolicyFor も nil-safe
+// だが、ここで lock を取り抜いてから map lookup する必要がある)。
+func (c *Client) policyFor(queueName string) Policy {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.policies.PolicyFor(queueName)
+}
+
 // EnqueueDeliver puts a deliver task on the queue. opts override the
 // default queue selection if they include WithQueue, but normal
 // callers should pass payload-only and let the queue routing stay
 // fixed.
+//
+// 当該キューの Policy.MaxAttempts が 0 でなければ、WithMaxRetry を
+// caller opts より先に積んで default として扱う。caller が
+// WithMaxRetry を渡したときは ApplyEnqueueOptions の last-write-wins で
+// caller 側が勝つ (#495)。
+//
+// MaxAttempts は BullMQ semantics の総試行回数 (TS Misskey YAML 互換)。
+// driver.WithMaxRetry は「初回 + N 回 retry」の N なので N-1 を渡す。
+// MaxAttempts=1 なら WithMaxRetry(0) = 「retry なし、初回のみ」になる
+// (#531 review)。
 func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...driver.EnqueueOption) error {
 	body := mustMarshal(payload)
-	merged := append([]driver.EnqueueOption{driver.WithQueue(QueueName)}, opts...)
+	base := []driver.EnqueueOption{driver.WithQueue(QueueName)}
+	if attempts := c.policyFor(QueueName).MaxAttempts; attempts > 0 {
+		base = append(base, driver.WithMaxRetry(attempts-1))
+	}
+	merged := append(base, opts...)
 	return c.inner.Enqueue(context.Background(), TaskTypeDeliver, body, merged...)
 }
 

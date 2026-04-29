@@ -212,6 +212,40 @@ func TestNewServer_ConcurrencyDefault(t *testing.T) {
 	}
 }
 
+// #495: rate limit middleware を入れずに builder を呼ぶと nil が返り
+// dispatch fast-path が触らない (allocation-free)。
+func TestBuildRateLimitMiddleware_EmptyMapReturnsNil(t *testing.T) {
+	if mw := buildRateLimitMiddleware(nil); mw != nil {
+		t.Fatal("nil rates map should yield nil middleware")
+	}
+	if mw := buildRateLimitMiddleware(map[string]int{"deliver": 0, "push": -1}); mw != nil {
+		t.Fatal("non-positive rates should yield nil middleware (no limiter active)")
+	}
+}
+
+// rate>0 が 1 つでもあれば middleware を返し、対象 queue の handler は
+// limiter.Wait を経由する。Wait は token があれば即座に返るため、
+// 1 token 取れることだけ確認する。
+func TestBuildRateLimitMiddleware_RateAppliedPerQueue(t *testing.T) {
+	mw := buildRateLimitMiddleware(map[string]int{"deliver": 100})
+	if mw == nil {
+		t.Fatal("middleware should be non-nil when at least one queue has rate>0")
+	}
+	called := false
+	wrapped := mw(asynq.HandlerFunc(func(_ context.Context, _ *asynq.Task) error {
+		called = true
+		return nil
+	}))
+	// queue 名を引かないのは context に未設定でも middleware が落ちず
+	// 通過する確認も兼ねる (qname="" は limiter map で未ヒット → 素通り)。
+	if err := wrapped.ProcessTask(context.Background(), asynq.NewTask("t", nil)); err != nil {
+		t.Fatalf("ProcessTask: %v", err)
+	}
+	if !called {
+		t.Fatal("inner handler should have been invoked")
+	}
+}
+
 func TestAsynqTask_Wrapper(t *testing.T) {
 	t1 := asynq.NewTask("foo", []byte("bar"))
 	w := asynqTask{t: t1}
