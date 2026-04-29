@@ -12,6 +12,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/queue/driver"
@@ -55,8 +56,16 @@ type Enqueuer interface {
 }
 
 // Client wraps a driver.Client and implements Enqueuer.
+//
+// 通常 SetPolicy は server 構築時 1 度だけ呼ばれるため概念上 race は無い
+// が、SetPolicy が exported method として公開されていることから将来の
+// foot-gun を避けるため policies map は sync.RWMutex で保護する (#531
+// review)。read 経路 (EnqueueDeliver) は RLock のみで、token contention
+// は実質ゼロ。
 type Client struct {
-	inner    driver.Client
+	inner driver.Client
+
+	mu       sync.RWMutex
 	policies PolicyMap
 }
 
@@ -69,10 +78,21 @@ func NewClient(d driver.Driver) *Client {
 // consults this when the caller doesn't specify WithMaxRetry. Subsequent
 // calls overwrite any prior policy for the same queue.
 func (c *Client) SetPolicy(queueName string, p Policy) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.policies == nil {
 		c.policies = make(PolicyMap)
 	}
 	c.policies[queueName] = p
+}
+
+// policyFor returns the Policy for queueName under RLock. Falls back to the
+// zero Policy when no entry is registered (PolicyMap.PolicyFor も nil-safe
+// だが、ここで lock を取り抜いてから map lookup する必要がある)。
+func (c *Client) policyFor(queueName string) Policy {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.policies.PolicyFor(queueName)
 }
 
 // EnqueueDeliver puts a deliver task on the queue. opts override the
@@ -87,7 +107,7 @@ func (c *Client) SetPolicy(queueName string, p Policy) {
 func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...driver.EnqueueOption) error {
 	body := mustMarshal(payload)
 	base := []driver.EnqueueOption{driver.WithQueue(QueueName)}
-	if attempts := c.policies.PolicyFor(QueueName).MaxAttempts; attempts > 0 {
+	if attempts := c.policyFor(QueueName).MaxAttempts; attempts > 0 {
 		base = append(base, driver.WithMaxRetry(attempts))
 	}
 	merged := append(base, opts...)
