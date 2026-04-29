@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
@@ -501,4 +502,124 @@ func TestTimeline_RepoError(t *testing.T) {
 	c, rec := newReq(t, `{"channelId":"c1"}`)
 	require.NoError(t, h.Timeline(c))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- isFollowing / isFavorited embedding (#522) ---------------------------
+
+// countingFollowingRepo wraps MockChannelFollowingRepository to count
+// per-row vs batch lookups.
+type countingFollowingRepo struct {
+	*testutil.MockChannelFollowingRepository
+	existsCalls     int
+	existsManyCalls int
+	existsManySize  int
+}
+
+func (c *countingFollowingRepo) Exists(followerID, channelID string) (bool, error) {
+	c.existsCalls++
+	return c.MockChannelFollowingRepository.Exists(followerID, channelID)
+}
+
+func (c *countingFollowingRepo) ExistsMany(followerID string, channelIDs []string) (map[string]bool, error) {
+	c.existsManyCalls++
+	c.existsManySize += len(channelIDs)
+	return c.MockChannelFollowingRepository.ExistsMany(followerID, channelIDs)
+}
+
+type countingFavoriteRepo struct {
+	*testutil.MockChannelFavoriteRepository
+	existsCalls     int
+	existsManyCalls int
+}
+
+func (c *countingFavoriteRepo) Exists(userID, channelID string) (bool, error) {
+	c.existsCalls++
+	return c.MockChannelFavoriteRepository.Exists(userID, channelID)
+}
+
+func (c *countingFavoriteRepo) ExistsMany(userID string, channelIDs []string) (map[string]bool, error) {
+	c.existsManyCalls++
+	return c.MockChannelFavoriteRepository.ExistsMany(userID, channelIDs)
+}
+
+// Show が viewer の following / favorite 状態に応じて isFollowing /
+// isFavorited を embed することを確認する (#522)。frontend の
+// channel.vue がフォローボタンの状態を切り替える前提となるフィールド。
+func TestShow_EmbedsViewerFollowState(t *testing.T) {
+	h, repo, followRepo, _ := newHandler(t)
+	favRepo := testutil.NewMockChannelFavoriteRepository()
+	repo.Channels["ch1"] = &model.Channel{ID: "ch1", Name: "ch1"}
+	_ = followRepo.Create(&model.ChannelFollowing{ID: "f1", FollowerID: "alice", FolloweeID: "ch1"})
+	_ = favRepo.Create(&model.ChannelFavorite{ID: "fv1", UserID: "alice", ChannelID: "ch1"})
+
+	h.SetFollowingRepo(followRepo)
+	h.SetFavoriteRepo(favRepo)
+
+	c, rec := newReq(t, `{"channelId":"ch1"}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Show(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, `"isFollowing":true`)
+	assert.Contains(t, body, `"isFavorited":true`)
+}
+
+// 認証されていない viewer (anonymous) の Show では isFollowing /
+// isFavorited を返さないこと。Misskey TS と同じく viewer 不在時は
+// undefined 扱い。
+func TestShow_NoViewerOmitsFollowState(t *testing.T) {
+	h, repo, followRepo, _ := newHandler(t)
+	favRepo := testutil.NewMockChannelFavoriteRepository()
+	repo.Channels["ch1"] = &model.Channel{ID: "ch1"}
+	h.SetFollowingRepo(followRepo)
+	h.SetFavoriteRepo(favRepo)
+
+	c, rec := newReq(t, `{"channelId":"ch1"}`)
+	require.NoError(t, h.Show(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.NotContains(t, body, "isFollowing")
+	assert.NotContains(t, body, "isFavorited")
+}
+
+// list endpoint (Featured) で per-row Exists が呼ばれず batch ExistsMany
+// が 1 回だけ呼ばれること。N+1 解消の担保 (#522)。
+func TestFeatured_BatchEmbedsFollowState(t *testing.T) {
+	h, repo, _, _ := newHandler(t)
+	follow := &countingFollowingRepo{MockChannelFollowingRepository: testutil.NewMockChannelFollowingRepository()}
+	fav := &countingFavoriteRepo{MockChannelFavoriteRepository: testutil.NewMockChannelFavoriteRepository()}
+	for i := 1; i <= 5; i++ {
+		id := "feat" + string(rune('0'+i))
+		repo.Channels[id] = &model.Channel{
+			ID:         id,
+			IsArchived: false,
+			NotesCount: 1,
+			LastNotedAt: func() *time.Time {
+				t := time.Now()
+				return &t
+			}(),
+		}
+	}
+	_ = follow.Create(&model.ChannelFollowing{ID: "f1", FollowerID: "alice", FolloweeID: "feat1"})
+	h.SetFollowingRepo(follow)
+	h.SetFavoriteRepo(fav)
+
+	c, rec := newReq(t, `{}`)
+	setUser(c, "alice")
+	require.NoError(t, h.Featured(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Equal(t, 0, follow.existsCalls,
+		"per-row Exists must not be called from list endpoint (N+1 must be eliminated)")
+	assert.Equal(t, 1, follow.existsManyCalls,
+		"ExistsMany should be called exactly once per request")
+	assert.Equal(t, 5, follow.existsManySize,
+		"all 5 channel IDs should be coalesced into a single batch")
+	assert.Equal(t, 1, fav.existsManyCalls)
+
+	body := rec.Body.String()
+	assert.Contains(t, body, `"isFollowing":true`,
+		"alice's followed channel must report isFollowing=true")
+	assert.Contains(t, body, `"isFollowing":false`,
+		"unfollowed channels must still report the field for the frontend")
 }

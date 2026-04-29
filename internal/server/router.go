@@ -1294,6 +1294,7 @@ func (s *Server) setupRoutes() {
 	channelsHandler := apichannels.NewHandler(channelService, idGen)
 	channelsHandler.SetFavoriteRepo(channelFavoriteRepo)
 	channelsHandler.SetMutingRepo(channelMutingRepo)
+	channelsHandler.SetFollowingRepo(channelFollowingRepo)
 	api.POST("/channels/create", channelsHandler.Create, middleware.RequireAuth())
 	api.POST("/channels/show", channelsHandler.Show)
 	api.POST("/channels/update", channelsHandler.Update, middleware.RequireAuth())

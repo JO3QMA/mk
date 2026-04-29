@@ -3227,6 +3227,19 @@ func (m *MockChannelFollowingRepository) Exists(followerID, channelID string) (b
 	return err == nil, nil
 }
 
+func (m *MockChannelFollowingRepository) ExistsMany(followerID string, channelIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(channelIDs))
+	if followerID == "" {
+		return out, nil
+	}
+	for _, cid := range channelIDs {
+		if ok, _ := m.Exists(followerID, cid); ok {
+			out[cid] = true
+		}
+	}
+	return out, nil
+}
+
 func (m *MockChannelFollowingRepository) ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.ChannelFollowing, error) {
 	var rows []*model.ChannelFollowing
 	for _, f := range m.Followings {
@@ -4742,6 +4755,19 @@ func (m *MockChannelFavoriteRepository) ListByUser(userID string) ([]*model.Chan
 func (m *MockChannelFavoriteRepository) Exists(userID, channelID string) (bool, error) {
 	_, ok := m.Favorites[userID+":"+channelID]
 	return ok, nil
+}
+
+func (m *MockChannelFavoriteRepository) ExistsMany(userID string, channelIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(channelIDs))
+	if userID == "" {
+		return out, nil
+	}
+	for _, cid := range channelIDs {
+		if _, ok := m.Favorites[userID+":"+cid]; ok {
+			out[cid] = true
+		}
+	}
+	return out, nil
 }
 
 // MockChannelMutingRepository is a test double for repository.ChannelMutingRepository.
