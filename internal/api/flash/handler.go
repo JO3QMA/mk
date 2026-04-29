@@ -288,9 +288,10 @@ func (h *Handler) MyLikes(c echo.Context) error {
 }
 
 func flashToMap(f *model.Flash) map[string]any {
+	const tsFormat = "2006-01-02T15:04:05.000Z"
 	return map[string]any{
 		"id":          f.ID,
-		"updatedAt":   f.UpdatedAt,
+		"updatedAt":   f.UpdatedAt.UTC().Format(tsFormat),
 		"title":       f.Title,
 		"summary":     f.Summary,
 		"userId":      f.UserID,
@@ -305,9 +306,11 @@ func flashToMap(f *model.Flash) map[string]any {
 // (UserLite) and ISO-formatted `createdAt`, matching upstream Misskey TS
 // FlashEntityService output. The frontend Play page reads `flash.user`
 // for display so a missing user object causes empty card render.
+//
+// User lookups are deduped by author and fetched in a single FindManyByIDs
+// call to avoid the N+1 pattern.
 func (h *Handler) flashesToListWithUser(rows []*model.Flash) []map[string]any {
 	const tsFormat = "2006-01-02T15:04:05.000Z"
-	// Avoid N+1 by batching user lookups.
 	userIDs := make([]string, 0, len(rows))
 	seen := make(map[string]struct{}, len(rows))
 	for _, f := range rows {
@@ -318,10 +321,10 @@ func (h *Handler) flashesToListWithUser(rows []*model.Flash) []map[string]any {
 		userIDs = append(userIDs, f.UserID)
 	}
 	userByID := make(map[string]*model.User, len(userIDs))
-	if h.userRepo != nil {
-		for _, uid := range userIDs {
-			if u, err := h.userRepo.FindByID(uid); err == nil {
-				userByID[uid] = u
+	if h.userRepo != nil && len(userIDs) > 0 {
+		if users, err := h.userRepo.FindManyByIDs(userIDs); err == nil {
+			for _, u := range users {
+				userByID[u.ID] = u
 			}
 		}
 	}
@@ -335,7 +338,6 @@ func (h *Handler) flashesToListWithUser(rows []*model.Flash) []map[string]any {
 			}
 		}
 		entry["createdAt"] = createdAt
-		entry["updatedAt"] = f.UpdatedAt.UTC().Format(tsFormat)
 		if u, ok := userByID[f.UserID]; ok {
 			entry["user"] = entity.PackUserLite(u)
 		}

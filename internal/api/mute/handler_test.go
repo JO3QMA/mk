@@ -22,7 +22,7 @@ func newHandler(t *testing.T) (*Handler, *testutil.MockUserRepository) {
 	mutingRepo := testutil.NewMockMutingRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coremuting.NewService(userRepo, mutingRepo, idGen)
-	return NewHandler(svc, nil, nil), userRepo
+	return NewHandler(svc, userRepo, idGen), userRepo
 }
 
 func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder) {

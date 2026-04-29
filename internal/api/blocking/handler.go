@@ -10,6 +10,7 @@ import (
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -102,6 +103,9 @@ func (h *Handler) List(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
+	// upstream frontend が item.blockee で MkUserCardMini を描画するので
+	// batch fetch で N+1 を回避しつつ user object を embed する。
+	blockeeMap := h.fetchBlockeeMap(rows)
 	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, b := range rows {
@@ -116,14 +120,41 @@ func (h *Handler) List(c echo.Context) error {
 			"createdAt": createdAt,
 			"blockeeId": b.BlockeeID,
 		}
-		// upstream frontend が item.blockee で MkUserCardMini を描画する。
-		if h.userRepo != nil {
-			if u, err := h.userRepo.FindByID(b.BlockeeID); err == nil {
-				profile, _ := h.userRepo.FindProfileByUserID(u.ID)
-				entry["blockee"] = entity.PackUserDetailed(u, profile)
-			}
+		if blockee, ok := blockeeMap[b.BlockeeID]; ok {
+			entry["blockee"] = blockee
 		}
 		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// fetchBlockeeMap batches user + profile lookups for the blockee IDs in
+// rows so the response build loop performs zero per-row DB queries.
+func (h *Handler) fetchBlockeeMap(rows []*model.Blocking) map[string]entity.UserDetailed {
+	if h.userRepo == nil || len(rows) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, b := range rows {
+		if _, ok := seen[b.BlockeeID]; ok {
+			continue
+		}
+		seen[b.BlockeeID] = struct{}{}
+		ids = append(ids, b.BlockeeID)
+	}
+	users, err := h.userRepo.FindManyByIDs(ids)
+	if err != nil {
+		return nil
+	}
+	profiles, _ := h.userRepo.FindProfilesByUserIDs(ids)
+	profileByUser := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileByUser[p.UserID] = p
+	}
+	out := make(map[string]entity.UserDetailed, len(users))
+	for _, u := range users {
+		out[u.ID] = entity.PackUserDetailed(u, profileByUser[u.ID], h.idGen)
+	}
+	return out
 }

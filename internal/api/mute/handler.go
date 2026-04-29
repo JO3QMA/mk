@@ -11,6 +11,7 @@ import (
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -118,6 +119,11 @@ func (h *Handler) List(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
+	// upstream frontend (mute-block.vue) は item.mutee を使って
+	// MkUserCardMini を描画する。userRepo が wire されていない場合は
+	// muteeId だけ返してフォールバック (legacy test)。本番ルートでは
+	// 必ず wire されるので batch fetch で N+1 を回避する。
+	muteeMap := h.fetchMuteeMap(rows)
 	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, m := range rows {
@@ -137,16 +143,41 @@ func (h *Handler) List(c echo.Context) error {
 		} else {
 			entry["expiresAt"] = nil
 		}
-		// upstream frontend (mute-block.vue) は item.mutee を使って
-		// MkUserCardMini を描画する。userRepo が wire されていない
-		// (legacy test) 場合は muteeId だけ返してフォールバック。
-		if h.userRepo != nil {
-			if u, err := h.userRepo.FindByID(m.MuteeID); err == nil {
-				profile, _ := h.userRepo.FindProfileByUserID(u.ID)
-				entry["mutee"] = entity.PackUserDetailed(u, profile)
-			}
+		if mutee, ok := muteeMap[m.MuteeID]; ok {
+			entry["mutee"] = mutee
 		}
 		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// fetchMuteeMap batches user + profile lookups for the muteeIds in rows so
+// the response build loop performs zero per-row DB queries.
+func (h *Handler) fetchMuteeMap(rows []*model.Muting) map[string]entity.UserDetailed {
+	if h.userRepo == nil || len(rows) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, m := range rows {
+		if _, ok := seen[m.MuteeID]; ok {
+			continue
+		}
+		seen[m.MuteeID] = struct{}{}
+		ids = append(ids, m.MuteeID)
+	}
+	users, err := h.userRepo.FindManyByIDs(ids)
+	if err != nil {
+		return nil
+	}
+	profiles, _ := h.userRepo.FindProfilesByUserIDs(ids)
+	profileByUser := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileByUser[p.UserID] = p
+	}
+	out := make(map[string]entity.UserDetailed, len(users))
+	for _, u := range users {
+		out[u.ID] = entity.PackUserDetailed(u, profileByUser[u.ID], h.idGen)
+	}
+	return out
 }
