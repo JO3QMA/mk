@@ -311,11 +311,25 @@ func TestTranslate_InvalidParam(t *testing.T) {
 
 // --- ShowPartialBulk ---
 
+// queryService が wire されているとき、public note は visibility filter を
+// 通って返ること。
 func TestShowPartialBulk_Success(t *testing.T) {
-	h, noteRepo, _ := newExtraHandler(t)
-	noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "u1", User: &model.User{ID: "u1"}}
+	noteRepo := testutil.NewMockNoteRepository()
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	querySvc := corenote.NewQueryService(noteRepo, nil)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, querySvc, nil, nil, nil, nil, idGen)
+
+	noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", UserID: "u1", Visibility: model.NoteVisibilityPublic,
+		User: &model.User{ID: "u1"},
+	}
 	rec := postExtra(h.ShowPartialBulk, `{"noteIds":["n1"]}`, nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"id":"n1"`,
+		"public note must be returned when queryService is wired")
 }
 
 func TestShowPartialBulk_Empty(t *testing.T) {
@@ -341,6 +355,23 @@ func TestShowPartialBulk_InvalidParam(t *testing.T) {
 	h, _, _ := newExtraHandler(t)
 	rec := postExtra(h.ShowPartialBulk, `invalid`, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// queryService 未配線時は note 行があっても空配列を返す fail-closed 挙動
+// を担保する (Devin #529 FLAG-1、Show / BulkShow と同種の defensive)。
+// router.go で RequireAuth() 無しに公開している endpoint なので、
+// followers / specified visibility のノートを匿名閲覧者に漏らさないため
+// に重要。
+func TestShowPartialBulk_NoQueryServiceRejects(t *testing.T) {
+	h, noteRepo, _ := newExtraHandler(t) // newExtraHandler は queryService=nil
+	noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", UserID: "u1", Visibility: model.NoteVisibilityPublic,
+		User: &model.User{ID: "u1"},
+	}
+	rec := postExtra(h.ShowPartialBulk, `{"noteIds":["n1"]}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String(),
+		"ShowPartialBulk must return [] when queryService is unwired so notes never bypass visibility filtering")
 }
 
 // --- Failing repo tests ---
