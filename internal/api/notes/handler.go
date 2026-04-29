@@ -509,9 +509,14 @@ func (h *Handler) BulkShow(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	viewer := middleware.GetUser(c)
-	if h.queryService != nil {
-		notes = h.queryService.FilterVisible(viewer, notes)
+	// queryService 未配線時は visibility filter を経ずに全 note を返してしまう
+	// と、followers / specified visibility のノートが任意の閲覧者に漏洩する。
+	// production の router.go では常に wire されるが、wiring が壊れた場合の
+	// fail-closed として空配列で返す (#509、#445 / PR #505 と同じ defensive)。
+	if h.queryService == nil {
+		return c.JSON(http.StatusOK, []any{})
 	}
+	notes = h.queryService.FilterVisible(viewer, notes)
 	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
 

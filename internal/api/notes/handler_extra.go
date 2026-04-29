@@ -275,5 +275,17 @@ func (h *Handler) ShowPartialBulk(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, []entity.NoteEntity{})
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, middleware.GetUser(c)))
+	viewer := middleware.GetUser(c)
+	// 旧実装は visibility filter を一切経ずに全 note を packMany にかけて
+	// 返していた。ShowPartialBulk は anonymous でも叩ける endpoint
+	// (router で RequireAuth() 無し) のため、followers / specified
+	// visibility のノートが任意の閲覧者に漏洩する security risk があった。
+	// BulkShow / Show と同じく queryService が wire されていなければ
+	// fail-closed で空配列、wire されていれば FilterVisible に通す
+	// (#509、Devin #529 FLAG-1)。
+	if h.queryService == nil {
+		return c.JSON(http.StatusOK, []entity.NoteEntity{})
+	}
+	notes = h.queryService.FilterVisible(viewer, notes)
+	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
 }
