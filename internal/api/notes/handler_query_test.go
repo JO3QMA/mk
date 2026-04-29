@@ -389,6 +389,31 @@ func TestCreate_RenoteTargetInvisible(t *testing.T) {
 	assert.Equal(t, apierr.UUIDCannotRenoteDueToVisibility, errObj["id"])
 }
 
+// TestBulkShow_NoQueryServiceRejects verifies BulkShow returns an empty
+// array when queryService is not wired, ensuring the visibility filter is
+// never bypassed (#509, sibling of #445 / TestShow_NoQueryServiceRejects).
+func TestBulkShow_NoQueryServiceRejects(t *testing.T) {
+	// 過去はここで fallback 経路が走り、followers / specified visibility の
+	// ノートが任意の閲覧者に漏洩する security regression risk があった。
+	// fallback を消したので、queryService nil なら note 行が引けても
+	// 空配列で返す。production でこの経路を踏むことは無いが、wiring 不整合
+	// に対する defensive 措置。
+	noteRepo := testutil.NewMockNoteRepository()
+	pollRepo := testutil.NewMockPollRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	createSvc := corenote.NewCreateService(noteRepo, pollRepo, idGen, nil)
+	deleteSvc := corenote.NewDeleteService(noteRepo)
+	h := NewHandler(noteRepo, createSvc, deleteSvc, nil, nil, nil, nil, nil, idGen)
+
+	seedPublicNote(noteRepo, "n1")
+	seedPublicNote(noteRepo, "n2")
+	c, rec := newJSONRequest(t, "/api/notes", `{"noteIds":["n1","n2"]}`)
+	require.NoError(t, h.BulkShow(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String(),
+		"BulkShow must return [] when queryService is unwired so notes never bypass visibility filtering")
+}
+
 // TestShow_NoQueryServiceRejects verifies Show returns NO_SUCH_NOTE when
 // queryService is not wired, ensuring the visibility check is never
 // bypassed (#445).
