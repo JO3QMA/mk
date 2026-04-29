@@ -593,7 +593,7 @@ func TestFeatured_BatchEmbedsFollowState(t *testing.T) {
 		repo.Channels[id] = &model.Channel{
 			ID:         id,
 			IsArchived: false,
-			NotesCount: 1, // ListFeatured は notesCount > 0 を要求
+			NotesCount: 1,
 			LastNotedAt: func() *time.Time {
 				t := time.Now()
 				return &t
