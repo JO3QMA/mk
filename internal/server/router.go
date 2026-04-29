@@ -123,7 +123,10 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Repositories
-	userRepo := repository.NewUserRepository(s.db)
+	// userRepo は server.New で構築した CachedUserRepository を再利用する。
+	// auth middleware と service 層が同じ cache を共有することで mutation
+	// 時の invalidate が両方に反映される (#300 3-3)。
+	userRepo := s.userRepo
 	noteRepo := repository.NewNoteRepository(s.db)
 	metaRepo := repository.NewCachedMetaRepository(repository.NewMetaRepository(s.db))
 	// Seed the singleton meta row on first boot so that fresh installs
