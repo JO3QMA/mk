@@ -2788,3 +2788,64 @@ func TestResolveNote_DedupesConcurrentCalls(t *testing.T) {
 }
 
 func ptrString(s string) *string { return &s }
+
+// stubPublickeyRepo は keys map race test 用の minimal な PublickeyStore
+// 実装。本物の publickey_repo は GORM 経由なのでテストでは差し替える。
+type stubPublickeyRepo struct {
+	mu      sync.RWMutex
+	entries map[string]*model.UserPublickey
+}
+
+func (s *stubPublickeyRepo) FindByUserID(userID string) (*model.UserPublickey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if pk, ok := s.entries[userID]; ok {
+		return pk, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (s *stubPublickeyRepo) Upsert(pk *model.UserPublickey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]*model.UserPublickey)
+	}
+	s.entries[pk.UserID] = pk
+	return nil
+}
+
+// 複数 goroutine が異なる actor の PublicKeyForActor を並行に呼ぶと、内部
+// keys map が無ロックだと race detector / 実行時 panic が発火する。
+// Devin review #555 FLAG-1 への対策として keysMu を入れたので、並行アクセス
+// が clean に動くことを race detector で担保する。本テストは r.keys のみを
+// 対象にして mock userRepo の race を巻き込まないように、PublickeyForActor
+// 経路だけを叩く (DB fallback で r.keys 書き込みを発火させる)。
+func TestResolver_KeysMapConcurrentAccessIsRaceFree(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	pkRepo := &stubPublickeyRepo{entries: map[string]*model.UserPublickey{}}
+	for i := 0; i < 4; i++ {
+		uid := fmt.Sprintf("u%d", i)
+		_ = pkRepo.Upsert(&model.UserPublickey{UserID: uid, KeyID: "k" + uid, KeyPEM: "pem" + uid})
+	}
+	r.SetPublickeyRepo(pkRepo)
+
+	// 8 並行で異なる userID の PublicKeyForActor を呼ぶ。in-memory cache
+	// miss → DB fallback → r.keys 書き込み が並行で走る。
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		uid := fmt.Sprintf("u%d", i%4)
+		wg.Add(1)
+		go func(uid string) {
+			defer wg.Done()
+			_, _ = r.PublicKeyForActor(uid)
+		}(uid)
+	}
+	wg.Wait()
+	// 検証ポイントは race detector が黙ること。
+}

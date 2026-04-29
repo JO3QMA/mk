@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -79,11 +80,16 @@ type PublickeyStore interface {
 // する。エントリは actorTTL を超えると miss として扱い、次回 ResolveActor 時
 // にリフレッシュされる。
 type Resolver struct {
-	userRepo        repository.UserRepository
-	noteRepo        repository.NoteRepository
-	urls            *activitypub.URLBuilder
-	fetcher         HTTPFetcher
-	idGen           id.Generator
+	userRepo repository.UserRepository
+	noteRepo repository.NoteRepository
+	urls     *activitypub.URLBuilder
+	fetcher  HTTPFetcher
+	idGen    id.Generator
+	// keysMu は keys map (userID → publicKey + fetchedAt) の concurrent
+	// access を保護する。queue worker や inbox handler は別 actor を並行
+	// 処理するため、ロック無しの map read/write は runtime panic を起こす
+	// (Devin review #555 FLAG-1)。
+	keysMu          sync.RWMutex
 	keys            map[string]publicKeyEntry      // userID → publicKey + fetchedAt
 	clock           func() time.Time               // テストで差し替える時計
 	actorTTL        time.Duration                  // アクター情報の最大寿命
@@ -197,16 +203,23 @@ func (r *Resolver) SetDriveFileRepo(repo repository.DriveFileRepository) {
 // 側が ResolveActor を再実行することで refresh をトリガできる。
 func (r *Resolver) PublicKeyForActor(actorID string) (string, error) {
 	// 1. in-memory cache (TTL内)
-	if entry, ok := r.keys[actorID]; ok {
+	r.keysMu.RLock()
+	entry, ok := r.keys[actorID]
+	r.keysMu.RUnlock()
+	if ok {
 		if r.clock().Sub(entry.fetchedAt) <= r.actorTTL {
 			return entry.pem, nil
 		}
+		r.keysMu.Lock()
 		delete(r.keys, actorID)
+		r.keysMu.Unlock()
 	}
 	// 2. DB fallback
 	if r.publickeyRepo != nil {
 		if pk, err := r.publickeyRepo.FindByUserID(actorID); err == nil {
+			r.keysMu.Lock()
 			r.keys[actorID] = publicKeyEntry{pem: pk.KeyPEM, fetchedAt: r.clock()}
+			r.keysMu.Unlock()
 			return pk.KeyPEM, nil
 		}
 	}
@@ -240,10 +253,15 @@ func (r *Resolver) resolveActorOnce(uri string) (*model.User, error) {
 	if existing, err := r.userRepo.FindByURI(uri); err == nil {
 		if r.shouldRefreshActor(existing) {
 			r.refreshActor(existing, uri)
-		} else if _, cached := r.keys[existing.ID]; !cached {
-			// TTL 内であっても publicKey キャッシュが空 (再起動直後など) なら
-			// 取り直す。
-			r.refreshPublicKey(existing.ID, uri)
+		} else {
+			r.keysMu.RLock()
+			_, cached := r.keys[existing.ID]
+			r.keysMu.RUnlock()
+			if !cached {
+				// TTL 内であっても publicKey キャッシュが空 (再起動直後など)
+				// なら取り直す。
+				r.refreshPublicKey(existing.ID, uri)
+			}
 		}
 		return existing, nil
 	}
@@ -459,7 +477,9 @@ func (r *Resolver) refreshPublicKey(userID, uri string) {
 // cachePublicKey stores a PEM in the in-memory cache and optionally persists
 // it to the user_publickey table.
 func (r *Resolver) cachePublicKey(userID, keyID, pem string) {
+	r.keysMu.Lock()
 	r.keys[userID] = publicKeyEntry{pem: pem, fetchedAt: r.clock()}
+	r.keysMu.Unlock()
 	if r.publickeyRepo != nil && keyID != "" {
 		if err := r.publickeyRepo.Upsert(&model.UserPublickey{
 			UserID: userID,
