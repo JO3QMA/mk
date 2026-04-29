@@ -11,18 +11,18 @@ import (
 // instance as optional TS-compat fields. All use omitempty so absent values
 // are elided from the response (TS: `?? undefined` / `?: undefined`).
 type UserLite struct {
-	ID                string            `json:"id"`
-	Name              *string           `json:"name"`
-	Username          string            `json:"username"`
-	Host              *string           `json:"host"`
-	AvatarURL         *string           `json:"avatarUrl"`
-	AvatarBlurhash    *string           `json:"avatarBlurhash"`
-	AvatarDecorations datatypes.JSON    `json:"avatarDecorations"`
-	IsBot             bool              `json:"isBot"`
-	IsCat             bool              `json:"isCat"`
-	Emojis            map[string]string `json:"emojis"`
-	OnlineStatus      string            `json:"onlineStatus"`
-	BadgeRoles        []any             `json:"badgeRoles"`
+	ID                string                 `json:"id"`
+	Name              *string                `json:"name"`
+	Username          string                 `json:"username"`
+	Host              *string                `json:"host"`
+	AvatarURL         *string                `json:"avatarUrl"`
+	AvatarBlurhash    *string                `json:"avatarBlurhash"`
+	AvatarDecorations []AvatarDecorationItem `json:"avatarDecorations"`
+	IsBot             bool                   `json:"isBot"`
+	IsCat             bool                   `json:"isCat"`
+	Emojis            map[string]string      `json:"emojis"`
+	OnlineStatus      string                 `json:"onlineStatus"`
+	BadgeRoles        []any                  `json:"badgeRoles"`
 	// Optional TS-compat fields (Phase 7-5a)。
 	// TS側は `requireSigninToViewContents: user.x === false ? undefined : true`
 	// なので、値が true のときのみ expose する (*bool を &true に設定、
@@ -118,7 +118,7 @@ func PackUserLite(u *model.User) UserLite {
 		Host:              u.Host,
 		AvatarURL:         avatarURL,
 		AvatarBlurhash:    u.AvatarBlurhash,
-		AvatarDecorations: u.AvatarDecorations,
+		AvatarDecorations: resolveAvatarDecorations(u.AvatarDecorations),
 		IsBot:             u.IsBot,
 		IsCat:             u.IsCat,
 		Emojis:            make(map[string]string),

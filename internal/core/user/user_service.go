@@ -286,6 +286,11 @@ type UpdateInput struct {
 	// ようになったら json.RawMessage ベースに昇格させる別 issue。
 	AvatarID *string
 	BannerID *string
+	// AvatarDecorations は jsonb カラム `user.avatarDecorations` に書き込む
+	// 正規化済み JSON バイト列。nil なら不変、`[]` なら全外し、
+	// `[{id,angle,flipH,offsetX,offsetY}, ...]` で上書き。検証 (catalog
+	// 存在 / role 制限 / 個数上限) はハンドラ側で実施済 (#521)。
+	AvatarDecorations *[]byte
 }
 
 // UpdateProfile applies the non-nil fields to the user and user_profile rows.
@@ -349,6 +354,11 @@ func (s *Service) UpdateProfile(userID string, in UpdateInput) (*UserWithProfile
 		// GORM は map で渡された値を jsonb 列に直接書き込む。
 		// []byte を渡すと bytea 扱いされてしまうので string にキャストする。
 		profileFields["room"] = string(*in.Room)
+	}
+	if in.AvatarDecorations != nil {
+		// avatarDecorations は user (not user_profile) 側の jsonb 列。
+		// Room と同じく []byte ではなく string で渡して bytea 化を防ぐ。
+		userFields["avatarDecorations"] = string(*in.AvatarDecorations)
 	}
 
 	// avatarId / bannerId 更新 (#467)。driveFileRepo 未配線時は media
