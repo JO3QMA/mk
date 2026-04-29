@@ -3,6 +3,7 @@ package mute
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -170,7 +171,10 @@ func (h *Handler) fetchMuteeMap(rows []*model.Muting) map[string]entity.UserDeta
 	if err != nil {
 		return nil
 	}
-	profiles, _ := h.userRepo.FindProfilesByUserIDs(ids)
+	profiles, profErr := h.userRepo.FindProfilesByUserIDs(ids)
+	if profErr != nil {
+		slog.Warn("mute/list: failed to fetch profiles", "error", profErr)
+	}
 	profileByUser := make(map[string]*model.UserProfile, len(profiles))
 	for _, p := range profiles {
 		profileByUser[p.UserID] = p

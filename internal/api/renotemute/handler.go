@@ -3,6 +3,7 @@ package renotemute
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -144,7 +145,10 @@ func (h *Handler) fetchMuteeMap(rows []*model.RenoteMuting) map[string]entity.Us
 	if err != nil {
 		return nil
 	}
-	profiles, _ := h.userRepo.FindProfilesByUserIDs(ids)
+	profiles, profErr := h.userRepo.FindProfilesByUserIDs(ids)
+	if profErr != nil {
+		slog.Warn("renote-mute/list: failed to fetch profiles", "error", profErr)
+	}
 	profileByUser := make(map[string]*model.UserProfile, len(profiles))
 	for _, p := range profiles {
 		profileByUser[p.UserID] = p

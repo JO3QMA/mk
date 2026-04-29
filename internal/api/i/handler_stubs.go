@@ -397,7 +397,12 @@ func (h *Handler) GalleryLikes(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 	postIDs := make([]string, 0, len(likes))
+	seen := make(map[string]struct{}, len(likes))
 	for _, l := range likes {
+		if _, ok := seen[l.PostID]; ok {
+			continue
+		}
+		seen[l.PostID] = struct{}{}
 		postIDs = append(postIDs, l.PostID)
 	}
 	posts, err := h.galleryRepo.FindPostsByIDs(postIDs)

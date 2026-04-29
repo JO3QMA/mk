@@ -3,6 +3,7 @@ package blocking
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -147,7 +148,11 @@ func (h *Handler) fetchBlockeeMap(rows []*model.Blocking) map[string]entity.User
 	if err != nil {
 		return nil
 	}
-	profiles, _ := h.userRepo.FindProfilesByUserIDs(ids)
+	profiles, profErr := h.userRepo.FindProfilesByUserIDs(ids)
+	if profErr != nil {
+		// 部分結果を返す graceful degradation だが、log は残しておく。
+		slog.Warn("blocking/list: failed to fetch profiles", "error", profErr)
+	}
 	profileByUser := make(map[string]*model.UserProfile, len(profiles))
 	for _, p := range profiles {
 		profileByUser[p.UserID] = p

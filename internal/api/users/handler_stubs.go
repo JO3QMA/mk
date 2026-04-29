@@ -134,11 +134,24 @@ func (h *Handler) Flashs(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
+	// flash/* endpoint と shape を揃える: createdAt / updatedAt は
+	// ISO 8601 (.000Z) 固定、user (UserLite) を embed する (#520 review)。
+	// 全 row が同一 user (= req.UserID) なので fetch は 1 回で済む。
+	const tsFormat = "2006-01-02T15:04:05.000Z"
+	var packedUser any
+	if bundle, err := h.userService.ShowByID(req.UserID); err == nil && bundle != nil {
+		packedUser = entity.PackUserLite(bundle.User)
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, f := range rows {
-		out = append(out, map[string]any{
+		createdAt := ""
+		if t, err := h.idGen.ParseTime(f.ID); err == nil {
+			createdAt = t.UTC().Format(tsFormat)
+		}
+		entry := map[string]any{
 			"id":          f.ID,
-			"updatedAt":   f.UpdatedAt,
+			"createdAt":   createdAt,
+			"updatedAt":   f.UpdatedAt.UTC().Format(tsFormat),
 			"title":       f.Title,
 			"summary":     f.Summary,
 			"userId":      f.UserID,
@@ -146,7 +159,11 @@ func (h *Handler) Flashs(c echo.Context) error {
 			"permissions": []string(f.Permissions),
 			"likedCount":  f.LikedCount,
 			"visibility":  f.Visibility,
-		})
+		}
+		if packedUser != nil {
+			entry["user"] = packedUser
+		}
+		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
 }
