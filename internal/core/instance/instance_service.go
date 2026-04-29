@@ -165,6 +165,36 @@ func (s *Service) IsSilenced(host string) bool {
 	return slices.Contains(meta.SilencedHosts, host)
 }
 
+// IsAllowed reports whether the local instance is willing to federate with
+// the given host. Misskey TS の admin/federation 設定と同じく、3 段階の
+// federation mode + blockedHosts の組み合わせで判定する (#536)。
+//
+//   - federation == "none": 連合無効、全 host を deny
+//   - federation == "specified": federationHosts に列挙した host だけ allow
+//   - その他 ("all" / 既定): blockedHosts に含まれない host を allow
+//
+// 引数の host が空文字 (= local) は常に true を返す。meta が読めない場合は
+// 安全側に倒さず true を返す (起動時の transient error で連合が落ちると
+// drop-in 互換が大幅に崩れるため、ベストエフォートを優先)。
+func (s *Service) IsAllowed(host string) bool {
+	if host == "" {
+		return true
+	}
+	meta, err := s.metaRepo.Fetch()
+	if err != nil {
+		return true
+	}
+	switch meta.Federation {
+	case "none":
+		return false
+	case "specified":
+		if !slices.Contains(meta.FederationHosts, host) {
+			return false
+		}
+	}
+	return !slices.Contains(meta.BlockedHosts, host)
+}
+
 // Suspend updates the suspensionState column for the host. 引数の state には
 // model.SuspensionStateManuallySuspended などを渡す。
 func (s *Service) Suspend(host string, state model.SuspensionState) error {

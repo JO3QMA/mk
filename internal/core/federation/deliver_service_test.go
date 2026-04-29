@@ -66,11 +66,15 @@ func installLocalSigner(t *testing.T, userRepo *testutil.MockUserRepository, key
 }
 
 // stubBlocker is a HostBlockChecker that returns true for the listed hosts.
+// disallowed map allows simulating federation mode "specified" / "none".
+// 既定 (zero-value) では allow-all 相当。
 type stubBlocker struct {
-	blocked map[string]bool
+	blocked    map[string]bool
+	disallowed map[string]bool
 }
 
 func (s *stubBlocker) IsBlocked(host string) bool { return s.blocked[host] }
+func (s *stubBlocker) IsAllowed(host string) bool { return !s.disallowed[host] }
 
 func TestDeliverActivity_SkipsBlockedHosts(t *testing.T) {
 	svc, enq, userRepo, _, keypairRepo := newDeliverService(t)
@@ -83,6 +87,21 @@ func TestDeliverActivity_SkipsBlockedHosts(t *testing.T) {
 	}))
 	require.Len(t, enq.calls, 1)
 	assert.Equal(t, "https://good.example/inbox", enq.calls[0].Inbox)
+}
+
+// federation: specified で allowlist 外 host への deliver は skip される
+// (#536)。blocked と独立した経路。
+func TestDeliverActivity_SkipsDisallowedHosts(t *testing.T) {
+	svc, enq, userRepo, _, keypairRepo := newDeliverService(t)
+	installLocalSigner(t, userRepo, keypairRepo)
+	svc.SetHostBlockChecker(&stubBlocker{disallowed: map[string]bool{"other.example": true}})
+
+	require.NoError(t, svc.DeliverActivity("alice", []byte(`{}`), []string{
+		"https://other.example/inbox",
+		"https://allowed.example/inbox",
+	}))
+	require.Len(t, enq.calls, 1, "only the allowed host should be enqueued")
+	assert.Equal(t, "https://allowed.example/inbox", enq.calls[0].Inbox)
 }
 
 func TestDeliverActivity_BlockedInboxBadURL(t *testing.T) {
