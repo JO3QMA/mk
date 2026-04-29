@@ -184,10 +184,85 @@ func TestS3Storage_Delete_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "s3 delete")
 }
 
+// S3 SDK は SigV4 payload hash 計算で Body を seek する。Body が
+// io.Seeker を満たしていなかった旧実装では SDK が即 fail していた (#523)。
+// 修正後の Put が PutObjectInput.Body に bytes.Reader (= io.Seeker 実装) を
+// 渡すこと、そして body 全文がそのまま伝わることを担保する。
+func TestS3Storage_Put_BodyIsSeekable(t *testing.T) {
+	mock := &mockS3API{}
+	st := NewS3Storage(S3StorageConfig{
+		Client: mock,
+		Bucket: "bucket",
+	})
+	payload := []byte("hello world payload >= 11 bytes")
+	// 渡す側は Seeker 非対応な io.Reader にして、Put 内部で seekable に
+	// 変換されることを確認する。
+	_, err := st.Put("k1", io.MultiReader(bytes.NewReader(payload)))
+	require.NoError(t, err)
+	require.NotNil(t, mock.putInput)
+
+	body, ok := mock.putInput.Body.(io.Seeker)
+	require.True(t, ok, "PutObjectInput.Body must implement io.Seeker for SigV4 payload hash")
+
+	// Body 内容が body 全文と一致すること
+	got, err := io.ReadAll(mock.putInput.Body)
+	require.NoError(t, err)
+	assert.Equal(t, payload, got)
+
+	// seek し直しても再読み込みできる (SDK の retry middleware が seek する)
+	_, err = body.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+	again, _ := io.ReadAll(mock.putInput.Body)
+	assert.Equal(t, payload, again)
+}
+
+// 512 byte 未満の小さい body でも正しく MIME 判定されて upload されること。
+func TestS3Storage_Put_SmallBody(t *testing.T) {
+	mock := &mockS3API{}
+	st := NewS3Storage(S3StorageConfig{Client: mock, Bucket: "bucket"})
+	_, err := st.Put("k", bytes.NewReader([]byte("tiny")))
+	require.NoError(t, err)
+	require.NotNil(t, mock.putInput)
+	assert.NotEmpty(t, *mock.putInput.ContentType)
+}
+
 func TestS3Storage_ObjectKey(t *testing.T) {
 	st := NewS3Storage(S3StorageConfig{Prefix: "uploads/"})
 	assert.Equal(t, "uploads/abc", st.objectKey("abc"))
 
 	st2 := NewS3Storage(S3StorageConfig{})
 	assert.Equal(t, "abc", st2.objectKey("abc"))
+}
+
+// Misskey TS の admin UI placeholder は "files" (末尾 / なし) なので、
+// operator がそのまま入れた値でも `<prefix>/<accessKey>` が生成されること。
+// これが破れると drop-in 互換が永続的に壊れる (#525)。
+func TestS3Storage_ObjectKey_PrefixWithoutTrailingSlash(t *testing.T) {
+	st := NewS3Storage(S3StorageConfig{Prefix: "files"})
+	assert.Equal(t, "files/abc123", st.objectKey("abc123"),
+		"prefix without trailing slash must still produce 'files/abc123' (TS-compat)")
+}
+
+func TestS3Storage_ObjectKey_PrefixWithMultipleTrailingSlashes(t *testing.T) {
+	// "files///" のような誤入力でも separator は 1 個だけになる
+	st := NewS3Storage(S3StorageConfig{Prefix: "files///"})
+	assert.Equal(t, "files/abc", st.objectKey("abc"))
+}
+
+// publicURL が prefix の末尾 / 有無に依らず "<base>/files/<key>" の形に
+// なることを担保する。
+func TestS3Storage_PublicURL_PrefixWithoutTrailingSlash(t *testing.T) {
+	mock := &mockS3API{}
+	st := NewS3Storage(S3StorageConfig{
+		Client:  mock,
+		Bucket:  "my-bucket",
+		Prefix:  "files",
+		BaseURL: "https://cdn.example.com",
+	})
+	url, err := st.Put("abc123", bytes.NewReader([]byte("x")))
+	require.NoError(t, err)
+	assert.Equal(t, "https://cdn.example.com/files/abc123", url)
+	require.NotNil(t, mock.putInput)
+	assert.Equal(t, "files/abc123", *mock.putInput.Key,
+		"S3 PutObject Key must be 'files/abc123' even when operator omits the trailing slash")
 }

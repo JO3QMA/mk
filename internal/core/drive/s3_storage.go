@@ -1,6 +1,7 @@
 package drive
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -21,10 +22,15 @@ type S3API interface {
 }
 
 // S3Storage implements Storage using an S3-compatible object storage backend.
+//
+// prefix is normalised at construction so that operators can enter either
+// "files" or "files/" in the admin UI; objectKey always emits
+// "<prefix>/<accessKey>". This matches Misskey TS which always joins prefix
+// and accessKey with a "/" (#525).
 type S3Storage struct {
 	client        S3API
 	bucket        string
-	prefix        string // オブジェクトキーのプリフィックス (e.g. "files/")
+	prefix        string // 末尾 / を取り除いた状態で保持。空なら prefix なし。
 	baseURL       string // 公開 URL のベース (e.g. "https://cdn.example.com")
 	setPublicRead bool
 }
@@ -41,17 +47,29 @@ type S3StorageConfig struct {
 // NewS3Storage creates a new S3Storage instance.
 func NewS3Storage(cfg S3StorageConfig) *S3Storage {
 	return &S3Storage{
-		client:        cfg.Client,
-		bucket:        cfg.Bucket,
-		prefix:        cfg.Prefix,
+		client: cfg.Client,
+		bucket: cfg.Bucket,
+		// Misskey TS の admin UI は placeholder が "files" (末尾 / 無し) で、
+		// 既存 operator はそのままの値を DB に入れている。一方で末尾 / 付きで
+		// 入れている運用も実在するので、ここで一度だけ正規化して保持する。
+		// "files/" でも "files" でも、最終的な objectKey は
+		// "files/<accessKey>" に揃う (#525)。
+		prefix:        strings.TrimRight(cfg.Prefix, "/"),
 		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
 		setPublicRead: cfg.SetPublicRead,
 	}
 }
 
 // objectKey returns the full S3 object key for the given accessKey.
+// Empty prefix returns just accessKey; otherwise emits "<prefix>/<accessKey>".
 func (s *S3Storage) objectKey(accessKey string) string {
-	return s.prefix + accessKey
+	// prefix と accessKey の間に必ず "/" を入れる。Misskey TS の objectKey
+	// 生成 (`${prefix}/${accessKey}`) と一致させて、同じ DB に対する
+	// drop-in 切替で互いの書き込みが読めるようにする (#525)。
+	if s.prefix == "" {
+		return accessKey
+	}
+	return s.prefix + "/" + accessKey
 }
 
 // publicURL returns the public URL for the given accessKey.
@@ -65,20 +83,30 @@ func (s *S3Storage) publicURL(accessKey string) string {
 }
 
 // Put uploads the body to S3 and returns the public URL.
+//
+// aws-sdk-go-v2 は SigV4 payload hash を計算するため Body が io.Seeker
+// を満たす必要がある。以前は MIME 判定のために `io.MultiReader` で wrap
+// していたが、MultiReader は Seeker を実装しないので SDK が
+// "failed to seek body to start, request stream is not seekable" で即 fail し、
+// HTTP リクエストすら送出されず drive/files/create が常に 500 になっていた
+// (#523)。一度 []byte に集めて bytes.Reader (Seeker 実装) を渡すことで解消。
 func (s *S3Storage) Put(accessKey string, body io.Reader) (string, error) {
 	key := s.objectKey(accessKey)
 
-	// MIME type を判定するため先頭を読む
-	buf := make([]byte, 512)
-	n, _ := io.ReadAtLeast(body, buf, 1)
-	contentType := http.DetectContentType(buf[:n])
-	// 読んだ分を body の先頭に戻す
-	combined := io.MultiReader(strings.NewReader(string(buf[:n])), body)
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return "", fmt.Errorf("s3 read body for %s: %w", key, err)
+	}
+	sniff := data
+	if len(sniff) > 512 {
+		sniff = sniff[:512]
+	}
+	contentType := http.DetectContentType(sniff)
 
 	input := &s3.PutObjectInput{
 		Bucket:       aws.String(s.bucket),
 		Key:          aws.String(key),
-		Body:         combined,
+		Body:         bytes.NewReader(data),
 		ContentType:  aws.String(contentType),
 		CacheControl: aws.String("max-age=31536000, immutable"),
 	}

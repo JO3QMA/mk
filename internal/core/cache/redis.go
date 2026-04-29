@@ -33,8 +33,8 @@ func NewRedisClients(cfg *config.Config) (*RedisClients, error) {
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
-	if config.IsUnixSocketPath(cfg.Redis.Host) {
-		slog.Info("connected to Redis", "socket", cfg.Redis.Host)
+	if sock := unixSocketPath(cfg.Redis); sock != "" {
+		slog.Info("connected to Redis", "socket", sock)
 	} else {
 		slog.Info("connected to Redis",
 			"host", cfg.Redis.Host,
@@ -49,10 +49,25 @@ func newClient(opts config.RedisOptions) *redis.Client {
 	return redis.NewClient(buildRedisOptions(opts))
 }
 
+// unixSocketPath は config から UNIX domain socket パスを取り出す。
+// `redis.path` (ioredis 流) を最優先し、未指定時は `redis.host` が socket
+// パス ("/" 始まり) のときに限ってそれを採用する。それ以外は "" を返す
+// (= TCP 接続にフォールバック)。
+func unixSocketPath(opts config.RedisOptions) string {
+	if opts.Path != "" {
+		return opts.Path
+	}
+	if config.IsUnixSocketPath(opts.Host) {
+		return opts.Host
+	}
+	return ""
+}
+
 // buildRedisOptions maps mk-go の config.RedisOptions を go-redis の
-// redis.Options に変換する。Host が UNIX domain socket パス ("/" 始まり) の
-// ときは Network を "unix" に切り替え、Addr にはパスをそのまま入れる。
-// そうでなければ従来どおり host:port 形式の TCP 接続にする。
+// redis.Options に変換する。`redis.path` (ioredis 互換 alias) もしくは
+// Host が UNIX domain socket パス ("/" 始まり) のときは Network を "unix"
+// に切り替え、Addr にはパスをそのまま入れる。そうでなければ従来どおり
+// host:port 形式の TCP 接続にする (#519)。
 func buildRedisOptions(opts config.RedisOptions) *redis.Options {
 	// go-redisのデフォルトPoolSizeはruntime.GOMAXPROCS * 10。
 	// 明示的に指定された場合のみ上書きする（0はgo-redisデフォルトを意味する）。
@@ -61,10 +76,10 @@ func buildRedisOptions(opts config.RedisOptions) *redis.Options {
 		poolSize = *opts.PoolSize
 	}
 
-	if config.IsUnixSocketPath(opts.Host) {
+	if sock := unixSocketPath(opts); sock != "" {
 		return &redis.Options{
 			Network:  "unix",
-			Addr:     opts.Host,
+			Addr:     sock,
 			Password: opts.Pass,
 			DB:       opts.DB,
 			Username: opts.Username,

@@ -17,13 +17,23 @@ import (
 
 // Handler handles channel-related API endpoints.
 type Handler struct {
-	svc          *corechannel.Service
-	idGen        id.Generator
-	favoriteRepo ChannelFavoriteRepository
-	mutingRepo   ChannelMutingRepository
-	instanceRepo repository.InstanceRepository
-	emojiRepo    repository.EmojiRepository
-	fieldRes     *entity.NoteFieldResolver
+	svc           *corechannel.Service
+	idGen         id.Generator
+	favoriteRepo  ChannelFavoriteRepository
+	mutingRepo    ChannelMutingRepository
+	followingRepo ChannelFollowingChecker
+	instanceRepo  repository.InstanceRepository
+	emojiRepo     repository.EmojiRepository
+	fieldRes      *entity.NoteFieldResolver
+}
+
+// ChannelFollowingChecker covers the subset of ChannelFollowingRepository
+// the channels handler needs to embed isFollowing on viewer-aware payloads
+// (#522). Single-row Exists drives the Show / Update / Create paths;
+// ExistsMany handles list endpoints in one query.
+type ChannelFollowingChecker interface {
+	Exists(followerID, channelID string) (bool, error)
+	ExistsMany(followerID string, channelIDs []string) (map[string]bool, error)
 }
 
 // SetNoteFieldResolver wires the shared resolver that fills Files /
@@ -65,6 +75,9 @@ type ChannelFavoriteRepository interface {
 	Delete(userID, channelID string) error
 	ListByUser(userID string) ([]*model.ChannelFavorite, error)
 	Exists(userID, channelID string) (bool, error)
+	// ExistsMany powers list-endpoint isFavorited embedding without N+1
+	// (#522). Returns a channelID → bool map.
+	ExistsMany(userID string, channelIDs []string) (map[string]bool, error)
 }
 
 // ChannelMutingRepository is the interface for channel muting operations.
@@ -105,7 +118,10 @@ func (h *Handler) Create(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, channelToMap(ch))
+	// Create 直後は viewer が当該 channel を follow していないが、API
+	// 互換のため空 viewer 情報も含めた map を返す。viewer 経路で is*
+	// フィールドを返さないと frontend が undefined を扱えないことがある。
+	return c.JSON(http.StatusOK, h.channelToMapForViewer(ch, user))
 }
 
 // ShowRequest is the request body for channels/show.
@@ -123,7 +139,7 @@ func (h *Handler) Show(c echo.Context) error {
 	if err != nil {
 		return notFound(c)
 	}
-	return c.JSON(http.StatusOK, channelToMap(ch))
+	return c.JSON(http.StatusOK, h.channelToMapForViewer(ch, middleware.GetUser(c)))
 }
 
 // UpdateRequest is the request body for channels/update.
@@ -165,7 +181,7 @@ func (h *Handler) Update(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, channelToMap(ch))
+	return c.JSON(http.StatusOK, h.channelToMapForViewer(ch, user))
 }
 
 // FollowRequest / UnfollowRequest reuse the channelId field.
@@ -234,7 +250,7 @@ func (h *Handler) Followed(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, channelsToList(rows))
+	return c.JSON(http.StatusOK, h.channelsToList(rows, user))
 }
 
 // Owned handles POST /api/channels/owned.
@@ -248,7 +264,7 @@ func (h *Handler) Owned(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, channelsToList(rows))
+	return c.JSON(http.StatusOK, h.channelsToList(rows, user))
 }
 
 // Featured handles POST /api/channels/featured.
@@ -261,7 +277,7 @@ func (h *Handler) Featured(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, channelsToList(rows))
+	return c.JSON(http.StatusOK, h.channelsToList(rows, middleware.GetUser(c)))
 }
 
 // SearchRequest carries the query string for channels/search.
@@ -283,7 +299,7 @@ func (h *Handler) Search(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, channelsToList(rows))
+	return c.JSON(http.StatusOK, h.channelsToList(rows, middleware.GetUser(c)))
 }
 
 // TimelineRequest is the request body for channels/timeline.
@@ -342,10 +358,62 @@ func channelToMap(ch *model.Channel) map[string]any {
 	}
 }
 
-func channelsToList(rows []*model.Channel) []map[string]any {
+// channelToMapForViewer wraps channelToMap and embeds viewer-dependent
+// fields (isFollowing / isFavorited) by issuing per-row Exists calls.
+// Returns the bare channelToMap when viewer is nil (#522).
+func (h *Handler) channelToMapForViewer(ch *model.Channel, viewer *model.User) map[string]any {
+	// Misskey TS の `ChannelEntityService` は channelFollowings /
+	// channelFavorites を join して埋めており、frontend (`channel.vue`) は
+	// このフィールドを直接参照してフォローボタン状態を切り替える。欠落
+	// すると常に未フォロー UI になる。
+	out := channelToMap(ch)
+	if viewer == nil {
+		return out
+	}
+	if h.followingRepo != nil {
+		if ok, err := h.followingRepo.Exists(viewer.ID, ch.ID); err == nil {
+			out["isFollowing"] = ok
+		}
+	}
+	if h.favoriteRepo != nil {
+		if ok, err := h.favoriteRepo.Exists(viewer.ID, ch.ID); err == nil {
+			out["isFavorited"] = ok
+		}
+	}
+	return out
+}
+
+// channelsToList serialises a slice of channels with viewer-dependent
+// fields embedded via batch lookups (1 query each for following / favorite,
+// not N+1). viewer が nil なら viewer-dependent フィールドは省略する。
+func (h *Handler) channelsToList(rows []*model.Channel, viewer *model.User) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
+	if viewer == nil || (h.followingRepo == nil && h.favoriteRepo == nil) {
+		for _, ch := range rows {
+			out = append(out, channelToMap(ch))
+		}
+		return out
+	}
+	ids := make([]string, 0, len(rows))
 	for _, ch := range rows {
-		out = append(out, channelToMap(ch))
+		ids = append(ids, ch.ID)
+	}
+	var followed, favorited map[string]bool
+	if h.followingRepo != nil {
+		followed, _ = h.followingRepo.ExistsMany(viewer.ID, ids)
+	}
+	if h.favoriteRepo != nil {
+		favorited, _ = h.favoriteRepo.ExistsMany(viewer.ID, ids)
+	}
+	for _, ch := range rows {
+		m := channelToMap(ch)
+		if followed != nil {
+			m["isFollowing"] = followed[ch.ID]
+		}
+		if favorited != nil {
+			m["isFavorited"] = favorited[ch.ID]
+		}
+		out = append(out, m)
 	}
 	return out
 }
