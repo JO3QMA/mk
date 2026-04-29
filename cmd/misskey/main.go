@@ -34,6 +34,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// pidFile が設定されていれば PID を書き込み、終了時に削除する。
+	// 既存ファイルが生存中の他プロセスを指す場合は ErrAlreadyRunning で
+	// 起動を拒否して二重起動を防ぐ (#497)。
+	cleanupPid, err := server.WritePidFile(cfg.PidFile)
+	if err != nil {
+		slog.Error("failed to write pid file", "error", err)
+		os.Exit(1)
+	}
+	defer cleanupPid()
+
 	// Sentry init は他のサービスより前に走らせ、以降の起動エラーも捕捉対象にする。
 	flushSentry, err := mksentry.Init(cfg)
 	if err != nil {
