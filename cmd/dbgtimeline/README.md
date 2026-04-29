@@ -80,6 +80,12 @@ Total panicking notes: 5
 
 ## 削除条件
 
-`internal/server/json_serializer.go` が goccy 以外 (例: jsoniter / encoding/json 永続) に
-切り替わって、本ツールが追う対象 (= goccy 静的コンパイルバグ) が消えたら削除して良い。
-それまでは似た encoder バグの triage に再利用できる。
+現状 (#546 マージ後) production の `internal/server/json_serializer.go` は **stdlib `encoding/json` に巻き戻し済**で、本ツールが直接 goccy を import するのは「将来 goccy / jsoniter 等の高速 encoder に再度乗り換える時に同じバグを踏まないか確認する」用途。
+
+以下のいずれかが起きたら削除候補:
+
+- 高速 encoder への乗り換えが検討対象から完全に外れて、stdlib `encoding/json` 永続使用が確定した
+- 別 issue で encoder bug triage 用の永続的な仕組み (e.g., entity 単体テストでの fuzz) が整備された
+- ツールの import 先 (`gojson`) を別の候補 encoder (jsoniter 等) に置き換えても trigger が再現しないことが確認された
+
+つまり「production が現状 stdlib」即削除ではない。encoder swap の意思決定が固まるまで triage 道具として温存する想定。
