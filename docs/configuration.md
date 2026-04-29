@@ -82,8 +82,8 @@ cp .config/docker.yml.example .config/docker.yml
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `deliverJobConcurrency` | int | `16` | AP配信worker数 (mkq driver では deliver queue 専用、asynq driver では総 worker pool 上限) |
-| `inboxJobConcurrency` | int | - | Inbox処理 worker 数 (#534 で非同期化済)。mkq driver では inbox queue 専用、asynq では priority weight 経由 |
+| `deliverJobConcurrency` | int | `16` | AP配信worker数。mkq driver では deliver queue 専用、asynq driver では**総 worker pool 上限**として扱う (asynq は per-queue concurrency を持たないため、この値は queue 共通の上限) |
+| `inboxJobConcurrency` | int | - | Inbox処理 worker 数 (#534 で非同期化済)。mkq driver では inbox queue 専用 worker。asynq driver では**現状 no-op** (asynq の queue priority weight も静的 1 固定で wire していないため、共有 worker pool 内の inbox tasks は他 queue と equal-weight で競合する) |
 | `relationshipJobConcurrency` | int | - | フォロー処理 worker 数 (mk-go は relationship queue を持たないため**現状 no-op**) |
 | `deliverJobPerSec` | int | - | AP配信レート上限 (tasks/sec)。設定すると asynq middleware / mkq.WithRateLimit で worker dispatch が back-pressure される |
 | `inboxJobPerSec` | int | - | Inbox処理レート上限 (tasks/sec) (#534)。設定すると asynq middleware / mkq.WithRateLimit で worker dispatch が back-pressure される |
@@ -92,8 +92,9 @@ cp .config/docker.yml.example .config/docker.yml
 | `inboxJobMaxAttempts` | int | driver 既定 | Inbox処理の**総試行回数** (#534)。BullMQ `attempts` と同じ意味で、TS Misskey YAML 互換。EnqueueInbox で `WithMaxRetry` 未指定時にだけ適用される |
 
 > **driver 間の差分**:
-> - `asynq` driver は worker pool が共有なので `deliverJobConcurrency` は **総 concurrency** として扱われる (queue priority weight で deliver が優先される)。
-> - `mkq` driver は queue ごとに worker を分けているので `deliverJobConcurrency` は **deliver queue 専用** の worker 数として扱われる。それ以外の queue は `Concurrency / len(queues)` の既定値を使う。
+> - `asynq` driver は worker pool が共有なので `deliverJobConcurrency` は **総 concurrency** として扱われる。queue 間の priority weight は全 queue 静的 1 で固定 (deliver / inbox / push / export / webhook / maintenance すべて equal-weight)。
+> - `mkq` driver は queue ごとに worker を分けているので `deliverJobConcurrency` / `inboxJobConcurrency` はそれぞれの queue 専用 worker 数として扱われる。明示指定の無い queue は `Concurrency / len(queues)` の既定値を使う。
+> - **per-queue concurrency tuning は `mkq` driver でしか効かない**。asynq で inbox / deliver を独立に絞りたい場合は `mkq` 推奨。
 >
 > **rate limit (`*JobPerSec`) の挙動差**:
 > - `asynq`: handler middleware で `golang.org/x/time/rate.Limiter.Wait` する設計。共有 worker pool で動くため、レート制限中の deliver タスクが多数 pending していると worker が `Wait` で寝てしまい、他 queue (push / export / webhook / maintenance) のタスクが starvation する可能性あり。これは asynq に per-queue pull-rate 制御 API が無いことに起因する根源的制約。
