@@ -15,7 +15,7 @@ DB は `SELECT` のみ。書き込み一切なし。production-like UDS DB に�
 ## 由来
 
 [#542](https://github.com/shiroha-a/mk/issues/542) (goccy 0.10.6 の `ptrToString` panic) を
-追跡するために作った。トリガー note を特定したあと、汎用デバッグ ツールとして残してある。
+追跡するために作った。トリガー note を特定したあと、汎用デバッグツールとして残してある。
 将来「特定の timeline で encoder panic が出る」報告が来たら、同じ手順で切り分けられる。
 
 ## 使い方
@@ -57,8 +57,8 @@ docker compose -f compose.uds.yaml exec mkgo \
 ```
 Loaded 200 notes
 Using viewer: alice (id=al9hjjx4b0ey0002)
-PANIC at index=1 note.id=alng2ov5ffpp0007 userHost=remote.example visibility=public renoteId=0xc0003c58e0
-PANIC at index=85 note.id=alm00w90sjj8000w userHost=remote.example visibility=public renoteId=0xc000463e90
+PANIC at index=1 note.id=alng2ov5ffpp0007 userHost=remote.example visibility=public renoteId=alng2ov5ffpp0003
+PANIC at index=85 note.id=alm00w90sjj8000w userHost=remote.example visibility=public renoteId=alm00w90sjj80005
 ...
 Total panicking notes: 5
 
