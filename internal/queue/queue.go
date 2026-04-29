@@ -104,11 +104,16 @@ func (c *Client) policyFor(queueName string) Policy {
 // caller opts より先に積んで default として扱う。caller が
 // WithMaxRetry を渡したときは ApplyEnqueueOptions の last-write-wins で
 // caller 側が勝つ (#495)。
+//
+// MaxAttempts は BullMQ semantics の総試行回数 (TS Misskey YAML 互換)。
+// driver.WithMaxRetry は「初回 + N 回 retry」の N なので N-1 を渡す。
+// MaxAttempts=1 なら WithMaxRetry(0) = 「retry なし、初回のみ」になる
+// (#531 review)。
 func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...driver.EnqueueOption) error {
 	body := mustMarshal(payload)
 	base := []driver.EnqueueOption{driver.WithQueue(QueueName)}
 	if attempts := c.policyFor(QueueName).MaxAttempts; attempts > 0 {
-		base = append(base, driver.WithMaxRetry(attempts))
+		base = append(base, driver.WithMaxRetry(attempts-1))
 	}
 	merged := append(base, opts...)
 	return c.inner.Enqueue(context.Background(), TaskTypeDeliver, body, merged...)

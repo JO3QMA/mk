@@ -94,15 +94,19 @@ func TestClient_EnqueueDeliver(t *testing.T) {
 	assert.Equal(t, payload, got)
 }
 
-// #495: deliverJobMaxAttempts を Client.Policy に流すと EnqueueDeliver で
-// caller が WithMaxRetry を渡さないときに default として適用される。
+// #495 / #531 review: deliverJobMaxAttempts を Client.Policy に流すと
+// EnqueueDeliver で caller が WithMaxRetry を渡さないときに default と
+// して適用される。Policy.MaxAttempts は BullMQ semantics の総試行回数
+// なので asynq MaxRetry には N-1 で渡る (TS YAML 互換)。
 func TestClient_EnqueueDeliver_PolicyMaxAttemptsApplied(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
 	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
-	c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: 7})
+	// MaxAttempts=8 は TS YAML の `deliverJobMaxAttempts: 8` 相当。
+	// BullMQ では 8 total tries → asynq MaxRetry=7 に変換される。
+	c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: 8})
 
 	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)}))
 
@@ -114,17 +118,41 @@ func TestClient_EnqueueDeliver_PolicyMaxAttemptsApplied(t *testing.T) {
 	require.Len(t, tasks, 1)
 	info, err := insp.GetTaskInfo(queue.QueueName, tasks[0].ID)
 	require.NoError(t, err)
-	assert.Equal(t, 7, info.MaxRetry, "policy default should apply when caller omits WithMaxRetry")
+	assert.Equal(t, 7, info.MaxRetry, "MaxAttempts=8 (BullMQ-style total) should map to asynq MaxRetry=7 (= 7 retries + 1 initial = 8 total)")
+}
+
+// MaxAttempts=1 (= no retry, only initial try) は WithMaxRetry(0) に
+// マップされる。境界条件として 0 を asynq に渡しても retry が発生しない
+// ことを Inspector で確認する。
+func TestClient_EnqueueDeliver_PolicyMaxAttemptsOne(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+	c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: 1})
+
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+	tasks, err := insp.ListPendingTasks(queue.QueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	info, err := insp.GetTaskInfo(queue.QueueName, tasks[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, info.MaxRetry, "MaxAttempts=1 should yield MaxRetry=0 (no retry)")
 }
 
 // caller の WithMaxRetry は policy default を上書きする (last-write-wins)。
+// caller の WithMaxRetry は driver semantics 直渡しなので変換しない。
 func TestClient_EnqueueDeliver_CallerOptsOverridePolicy(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
 
 	c := queue.NewClient(newDriver())
 	defer func() { _ = c.Close() }()
-	c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: 7})
+	c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: 8})
 
 	require.NoError(t, c.EnqueueDeliver(
 		queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)},

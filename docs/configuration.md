@@ -88,7 +88,7 @@ cp .config/docker.yml.example .config/docker.yml
 | `deliverJobPerSec` | int | - | AP配信レート上限 (tasks/sec)。設定すると asynq middleware / mkq.WithRateLimit で worker dispatch が back-pressure される |
 | `inboxJobPerSec` | int | - | mk-go では**現状 no-op** (上記同様) |
 | `relationshipJobPerSec` | int | - | mk-go では**現状 no-op** (上記同様) |
-| `deliverJobMaxAttempts` | int | driver 既定 | AP配信の最大リトライ回数 default。EnqueueDeliver で `WithMaxRetry` 未指定時にだけ適用される (#495) |
+| `deliverJobMaxAttempts` | int | driver 既定 | AP配信の**総試行回数** (初回 + retry) のdefault。BullMQ `attempts` と同じ意味で、TS Misskey YAML 互換。EnqueueDeliver で `WithMaxRetry` 未指定時にだけ適用される (#495)。例: `deliverJobMaxAttempts: 8` で 1 回失敗するごとに retry されて最大 8 回試行 |
 | `inboxJobMaxAttempts` | int | - | mk-go では**現状 no-op** (Inbox は同期処理) |
 
 > **driver 間の差分**:

@@ -21,9 +21,14 @@ type Policy struct {
 	// than rejecting enqueues.
 	RatePerSec int
 
-	// MaxAttempts is the default `WithMaxRetry` applied at enqueue time
-	// when the caller didn't pass `WithMaxRetry` explicitly. 0 means
-	// "fall back to driver default".
+	// MaxAttempts is the **total** number of tries (initial + retries)
+	// allowed for tasks on this queue, matching BullMQ's `attempts`
+	// option semantics — same shape as Misskey TS YAML
+	// `<queue>JobMaxAttempts`. Zero = "fall back to driver default".
+	//
+	// 内部では asynq の MaxRetry (= retries on top of initial) に
+	// 変換するため EnqueueDeliver で N-1 を渡す。drop-in 互換維持の
+	// ために TS の YAML 値そのままで一致させる必要がある (#531 review)。
 	MaxAttempts int
 }
 
