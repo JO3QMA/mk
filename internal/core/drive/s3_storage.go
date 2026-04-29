@@ -22,10 +22,15 @@ type S3API interface {
 }
 
 // S3Storage implements Storage using an S3-compatible object storage backend.
+//
+// prefix is normalised at construction so that operators can enter either
+// "files" or "files/" in the admin UI; objectKey always emits
+// "<prefix>/<accessKey>". This matches Misskey TS which always joins prefix
+// and accessKey with a "/" (#525).
 type S3Storage struct {
 	client        S3API
 	bucket        string
-	prefix        string // オブジェクトキーのプリフィックス (e.g. "files/")
+	prefix        string // 末尾 / を取り除いた状態で保持。空なら prefix なし。
 	baseURL       string // 公開 URL のベース (e.g. "https://cdn.example.com")
 	setPublicRead bool
 }
@@ -42,17 +47,29 @@ type S3StorageConfig struct {
 // NewS3Storage creates a new S3Storage instance.
 func NewS3Storage(cfg S3StorageConfig) *S3Storage {
 	return &S3Storage{
-		client:        cfg.Client,
-		bucket:        cfg.Bucket,
-		prefix:        cfg.Prefix,
+		client: cfg.Client,
+		bucket: cfg.Bucket,
+		// Misskey TS の admin UI は placeholder が "files" (末尾 / 無し) で、
+		// 既存 operator はそのままの値を DB に入れている。一方で末尾 / 付きで
+		// 入れている運用も実在するので、ここで一度だけ正規化して保持する。
+		// "files/" でも "files" でも、最終的な objectKey は
+		// "files/<accessKey>" に揃う (#525)。
+		prefix:        strings.TrimRight(cfg.Prefix, "/"),
 		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
 		setPublicRead: cfg.SetPublicRead,
 	}
 }
 
 // objectKey returns the full S3 object key for the given accessKey.
+// Empty prefix returns just accessKey; otherwise emits "<prefix>/<accessKey>".
 func (s *S3Storage) objectKey(accessKey string) string {
-	return s.prefix + accessKey
+	// prefix と accessKey の間に必ず "/" を入れる。Misskey TS の objectKey
+	// 生成 (`${prefix}/${accessKey}`) と一致させて、同じ DB に対する
+	// drop-in 切替で互いの書き込みが読めるようにする (#525)。
+	if s.prefix == "" {
+		return accessKey
+	}
+	return s.prefix + "/" + accessKey
 }
 
 // publicURL returns the public URL for the given accessKey.
