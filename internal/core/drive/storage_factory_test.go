@@ -58,9 +58,9 @@ func TestNewStorageFromMeta_S3(t *testing.T) {
 	s3st, ok := st.(*S3Storage)
 	assert.True(t, ok, "should return S3Storage")
 	assert.Equal(t, "my-bucket", s3st.bucket)
-	// NewS3Storage normalises the prefix by trimming trailing "/", so "files/"
-	// is stored as "files" (#525). objectKey re-inserts the separator so the
-	// final S3 key is still "files/<accessKey>".
+	// NewS3Storage は末尾の "/" を正規化するため、"files/" は "files" として
+	// 保持される (#525)。objectKey が separator を再挿入するので最終的な
+	// S3 キーは "files/<accessKey>" のまま変わらない。
 	assert.Equal(t, "files", s3st.prefix)
 	assert.Equal(t, "https://cdn.example.com", s3st.baseURL)
 	assert.True(t, s3st.setPublicRead)
