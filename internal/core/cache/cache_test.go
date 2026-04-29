@@ -97,6 +97,32 @@ func TestBuildRedisOptions_UnixSocket(t *testing.T) {
 	assert.Equal(t, 0, opts.PoolSize) // 未指定時はgo-redisデフォルト
 }
 
+// `redis.path: /run/...` (ioredis 流) を mk が UNIX domain socket として
+// 解釈すること (#519)。同じ config を TS と共有する drop-in 切替で
+// 詰まらないようにするための互換 alias。
+func TestBuildRedisOptions_PathAliasIsUnixSocket(t *testing.T) {
+	opts := buildRedisOptions(config.RedisOptions{
+		Path: "/var/run/valkey/valkey.sock",
+		// ioredis 互換: host: "127.0.0.1" / port: 6379 が同居していても
+		// Path が優先されること (TS の ioredis path 優先と同じ挙動)。
+		Host: "127.0.0.1",
+		Port: 6379,
+		Pass: "secret",
+	})
+	assert.Equal(t, "unix", opts.Network)
+	assert.Equal(t, "/var/run/valkey/valkey.sock", opts.Addr,
+		"redis.path must take precedence over redis.host for UDS")
+	assert.Equal(t, "secret", opts.Password)
+}
+
+func TestBuildRedisOptions_PathEmptyFallsBackToHost(t *testing.T) {
+	opts := buildRedisOptions(config.RedisOptions{
+		Host: "/var/run/redis/redis.sock", // 旧来 mk の書き方
+	})
+	assert.Equal(t, "unix", opts.Network)
+	assert.Equal(t, "/var/run/redis/redis.sock", opts.Addr)
+}
+
 func TestBuildRedisOptions_PoolSize(t *testing.T) {
 	poolSize := 50
 	opts := buildRedisOptions(config.RedisOptions{

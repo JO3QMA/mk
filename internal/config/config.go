@@ -23,7 +23,14 @@ var MisskeyVersion = "2026.3.2"
 
 // RedisOptions represents Redis connection configuration.
 type RedisOptions struct {
-	Host     string `mapstructure:"host"`
+	Host string `mapstructure:"host"`
+	// Path is an ioredis-style alias for connecting via a UNIX domain socket.
+	// Misskey TS は内部で ioredis を使っており、`example.yml` の "You can
+	// specify more ioredis options..." 経由で `redis.path: /run/valkey.sock`
+	// を書いている operator が一定数いる。同じ config を mk と共有する drop-in
+	// 切替で詰まらないよう、Path が指定されていれば Host より優先して unix
+	// socket 接続にする (#519)。
+	Path     string `mapstructure:"path"`
 	Port     int    `mapstructure:"port"`
 	Family   int    `mapstructure:"family"`
 	Pass     string `mapstructure:"pass"`
@@ -322,15 +329,15 @@ func bindEnvKeys(v *viper.Viper) {
 	keys := []string{
 		"url", "port", "socket",
 		"db.host", "db.port", "db.db", "db.user", "db.pass",
-		"redis.host", "redis.port", "redis.pass", "redis.db", "redis.username",
+		"redis.host", "redis.path", "redis.port", "redis.pass", "redis.db", "redis.username",
 		"redis.family", "redis.prefix",
-		"redisForPubsub.host", "redisForPubsub.port", "redisForPubsub.pass",
+		"redisForPubsub.host", "redisForPubsub.path", "redisForPubsub.port", "redisForPubsub.pass",
 		"redisForPubsub.family", "redisForPubsub.prefix", "redisForPubsub.db", "redisForPubsub.username",
-		"redisForJobQueue.host", "redisForJobQueue.port", "redisForJobQueue.pass",
+		"redisForJobQueue.host", "redisForJobQueue.path", "redisForJobQueue.port", "redisForJobQueue.pass",
 		"redisForJobQueue.family", "redisForJobQueue.prefix", "redisForJobQueue.db", "redisForJobQueue.username",
-		"redisForTimelines.host", "redisForTimelines.port", "redisForTimelines.pass",
+		"redisForTimelines.host", "redisForTimelines.path", "redisForTimelines.port", "redisForTimelines.pass",
 		"redisForTimelines.family", "redisForTimelines.prefix", "redisForTimelines.db", "redisForTimelines.username",
-		"redisForReactions.host", "redisForReactions.port", "redisForReactions.pass",
+		"redisForReactions.host", "redisForReactions.path", "redisForReactions.port", "redisForReactions.pass",
 		"redisForReactions.family", "redisForReactions.prefix", "redisForReactions.db", "redisForReactions.username",
 		"db.maxOpenConns", "db.maxIdleConns", "db.connMaxLifetime", "db.connMaxIdleTime",
 		"redis.poolSize",
