@@ -19,6 +19,7 @@ import (
 // configures.
 var QueueNames = []string{
 	"deliver",
+	"inbox",
 	"push",
 	"export",
 	"webhook",

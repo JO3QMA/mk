@@ -203,6 +203,26 @@ type genericActivity struct {
 // に揃えてから dispatch する。これにより `as:type` / `https://www.w3.org/ns/
 // activitystreams#type` / `@type` のいずれでも同じ struct フィールドにマップ
 // される。
+//
+// **Idempotency invariant (#534)**: each activity handler MUST be idempotent so
+// that the inbox queue worker can safely retry on transient failure and so
+// that out-of-order delivery (e.g. Update before Create due to federation
+// hop reordering) eventually converges. Verified at the time of #534:
+//
+//   - Follow / Accept: swallow ErrAlreadyFollowing / ErrAlreadyRequested /
+//     ErrRequestNotFound (so re-deliveries are no-ops)
+//   - Undo Follow / Like / Block: swallow ErrNotFollowing / ErrReactionNotFound /
+//     ErrNotBlocking
+//   - Like / Block: swallow ErrAlreadyReacted / ErrAlreadyBlocking
+//   - Create / Announce: dedup via note URI lookup before insert
+//   - Delete: treat "target not found" as success
+//   - Update Note / Person: overwrite semantics (last-write-wins). 後着
+//     Update が先着 Update を上書きしても peer が次回 fetch した値で
+//     収束するので一時的な不整合は許容
+//
+// New activity handlers added below MUST preserve this invariant; otherwise
+// retried inbox jobs will produce duplicate side effects (notifications
+// fired twice, counters double-incremented, etc).
 func (p *Processor) Process(body []byte) error {
 	normalized, err := activitypub.Normalize(body)
 	if err != nil {
