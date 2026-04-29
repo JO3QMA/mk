@@ -31,7 +31,7 @@ type UserRepository interface {
 	FindManyByUsernamesAndHost(usernames []string, host *string) ([]*model.User, error)
 	IncrementFollowingCount(userID string, delta int) error
 	IncrementFollowersCount(userID string, delta int) error
-	// IncrementNotesCount は user.notesCount を delta だけ増減する。
+	// IncrementNotesCount atomically adjusts user.notesCount by delta.
 	// 旧来は noteRepository.IncrementUserNotesCount が直接 user 行を
 	// UPDATE していたが、CachedUserRepository wrapper の invalidate を
 	// 通すため userRepo 経由に統一する (Devin review #552 BUG-2)。
