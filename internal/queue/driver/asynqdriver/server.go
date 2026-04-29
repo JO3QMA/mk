@@ -70,6 +70,17 @@ func NewServer(redisOpt asynq.RedisClientOpt, cfg ServerConfig) *Server {
 // RatePerSec — keeping the dispatch fast-path allocation-free for the
 // common "no rate limit" case. When at least one queue is rate-limited,
 // returns a middleware that blocks (Wait) on the per-queue limiter.
+//
+// 注意: asynq は共有 worker pool で各 queue を捌くため、レート制限対象の
+// queue (例: deliver) に多数のタスクが pending している状況では、ワーカー
+// goroutine が l.Wait で待機して他 queue (push / export / webhook /
+// maintenance) のタスクが starvation する可能性がある (#531 review)。
+// これは asynq の設計 (per-queue pull-rate 制御 API が無い) に起因する
+// 制約で、`Reserve` ベースに切替えても根本的に解消しない (タスクを
+// 即時失敗させて再 enqueue するか、Wait で worker を寝かせるかのトレード
+// オフ)。実運用で rate limit を本格運用するなら mkq driver 利用を推奨
+// (mkq.WithRateLimit は worker pull レイヤで制御するので他 queue に
+// 影響しない)。docs/configuration.md の jobQueueDriver 節に明記。
 func buildRateLimitMiddleware(rates map[string]int) asynq.MiddlewareFunc {
 	limiters := map[string]*rate.Limiter{}
 	for q, r := range rates {

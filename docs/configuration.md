@@ -94,6 +94,11 @@ cp .config/docker.yml.example .config/docker.yml
 > **driver 間の差分**:
 > - `asynq` driver は worker pool が共有なので `deliverJobConcurrency` は **総 concurrency** として扱われる (queue priority weight で deliver が優先される)。
 > - `mkq` driver は queue ごとに worker を分けているので `deliverJobConcurrency` は **deliver queue 専用** の worker 数として扱われる。それ以外の queue は `Concurrency / len(queues)` の既定値を使う。
+>
+> **rate limit (`*JobPerSec`) の挙動差**:
+> - `asynq`: handler middleware で `golang.org/x/time/rate.Limiter.Wait` する設計。共有 worker pool で動くため、レート制限中の deliver タスクが多数 pending していると worker が `Wait` で寝てしまい、他 queue (push / export / webhook / maintenance) のタスクが starvation する可能性あり。これは asynq に per-queue pull-rate 制御 API が無いことに起因する根源的制約。
+> - `mkq`: `mkq.WithRateLimit` で **worker pull レイヤ** に制御が入るため、レート制限が他 queue の処理を阻害しない。
+> - **本格的に rate limit を運用するなら `mkq` driver を推奨**。
 
 ### メディア
 
