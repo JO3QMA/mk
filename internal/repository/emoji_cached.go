@@ -42,7 +42,11 @@ func NewCachedEmojiRepositoryWithTTL(inner EmojiRepository, ttl time.Duration) *
 // the slice itself).
 func (c *CachedEmojiRepository) ListLocal() ([]*model.Emoji, error) {
 	c.mu.RLock()
-	if c.local != nil && time.Since(c.at) < c.ttl {
+	// "キャッシュ済みかどうか" は c.at が non-zero かどうかで判定する。
+	// inner.ListLocal() は emoji table が空のとき GORM 由来で (nil, nil)
+	// を返す可能性があり、`c.local != nil` で判定すると空テーブルの
+	// instance で cache が永久に効かなくなる (Devin #541 BUG-1)。
+	if !c.at.IsZero() && time.Since(c.at) < c.ttl {
 		v := c.local
 		c.mu.RUnlock()
 		return v, nil
@@ -52,7 +56,7 @@ func (c *CachedEmojiRepository) ListLocal() ([]*model.Emoji, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// double-check: RUnlock〜Lock 間に別 goroutine がフェッチ済みの場合
-	if c.local != nil && time.Since(c.at) < c.ttl {
+	if !c.at.IsZero() && time.Since(c.at) < c.ttl {
 		return c.local, nil
 	}
 	list, err := c.inner.ListLocal()
@@ -69,6 +73,7 @@ func (c *CachedEmojiRepository) ListLocal() ([]*model.Emoji, error) {
 func (c *CachedEmojiRepository) Invalidate() {
 	c.mu.Lock()
 	c.local = nil
+	c.at = time.Time{}
 	c.mu.Unlock()
 }
 

@@ -163,6 +163,22 @@ func TestCachedEmojiRepository_ListLocalErrorIsNotCached(t *testing.T) {
 		"errors must not be cached so transient failures recover on next call")
 }
 
+// 空 emoji table のとき inner.ListLocal() は (nil, nil) を返すが、それでも
+// cache が効くべき。`c.local != nil` で判定すると毎回 DB を叩くバグに
+// なるので `c.at.IsZero()` で判定する (Devin #541 BUG-1)。
+func TestCachedEmojiRepository_EmptyResultIsCached(t *testing.T) {
+	inner := &countingEmojiRepo{emojis: nil}
+	cached := repository.NewCachedEmojiRepository(inner)
+
+	for i := 0; i < 5; i++ {
+		got, err := cached.ListLocal()
+		require.NoError(t, err)
+		require.Empty(t, got)
+	}
+	assert.Equal(t, int64(1), inner.listLocalCalls.Load(),
+		"empty emoji table must still be cached; only the first call should hit inner")
+}
+
 func TestCachedEmojiRepository_InvalidatePublic(t *testing.T) {
 	inner := &countingEmojiRepo{emojis: []*model.Emoji{{ID: "e1"}}}
 	cached := repository.NewCachedEmojiRepositoryWithTTL(inner, time.Hour)
