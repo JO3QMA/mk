@@ -95,6 +95,8 @@ func (m *mockUserRepo) FindManyByUsernamesAndHost([]string, *string) ([]*model.U
 	return nil, nil
 }
 
+func (m *mockUserRepo) IncrementNotesCount(string, int) error { return nil }
+
 func (m *mockUserRepo) FindProfilesByUserIDs([]string) ([]*model.UserProfile, error) {
 	return nil, nil
 }

@@ -85,6 +85,10 @@ func (c *countingUserRepo) IncrementFollowersCount(_ string, _ int) error {
 	return c.incFollowersErr
 }
 
+func (c *countingUserRepo) IncrementNotesCount(_ string, _ int) error {
+	return nil
+}
+
 func (c *countingUserRepo) FindManyByIDs(ids []string) ([]*model.User, error) {
 	out := make([]*model.User, 0, len(ids))
 	for _, id := range ids {
@@ -273,6 +277,21 @@ func TestCachedUserRepository_IncrementFollowingCountInvalidates(t *testing.T) {
 
 	_, _ = cached.FindByID("u1")
 	require.NoError(t, cached.IncrementFollowingCount("u1", 1))
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
+}
+
+// notesCount は note 作成のたびに userRepo.IncrementNotesCount で増減
+// される (旧経路の noteRepo.IncrementUserNotesCount は cache を bypass
+// していた)。CachedUserRepository が invalidate を取りこぼすと profile
+// 表示で stale notesCount が出続けるので必ず飛ぶこと (Devin #552 BUG-2)。
+func TestCachedUserRepository_IncrementNotesCountInvalidates(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindByID("u1")
+	require.NoError(t, cached.IncrementNotesCount("u1", 1))
 	_, _ = cached.FindByID("u1")
 	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
 }

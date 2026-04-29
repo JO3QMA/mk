@@ -571,7 +571,17 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// Misskey本家NoteCreateServiceと同じfan-out方針 (TS lines 792 / 809 / 935)。
 	s.publishNoteMainEvents(finalNote, in.User, replyTarget, renoteTarget)
 
-	safeGo(func() { _ = s.noteRepo.IncrementUserNotesCount(in.User.ID, 1) })
+	// notesCount の増加は user 行への直接 UPDATE。userRepo 経由で叩くこと
+	// で CachedUserRepository wrapper の invalidate が走り、stale notesCount
+	// が profile API に出続ける問題を防ぐ (Devin review #552 BUG-2)。
+	// userRepo 未配線の旧経路は noteRepo の同等メソッドにフォールバック。
+	safeGo(func() {
+		if s.userRepo != nil {
+			_ = s.userRepo.IncrementNotesCount(in.User.ID, 1)
+			return
+		}
+		_ = s.noteRepo.IncrementUserNotesCount(in.User.ID, 1)
+	})
 
 	return finalNote, nil
 }

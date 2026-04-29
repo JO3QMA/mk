@@ -284,6 +284,14 @@ func (c *CachedUserRepository) IncrementFollowersCount(userID string, delta int)
 	return nil
 }
 
+func (c *CachedUserRepository) IncrementNotesCount(userID string, delta int) error {
+	if err := c.UserRepository.IncrementNotesCount(userID, delta); err != nil {
+		return err
+	}
+	c.invalidate(userID)
+	return nil
+}
+
 // FindManyByIDs delegates to the inner repo and warms the per-userID cache
 // with the returned rows. これにより users/show バルク経路 (#503) の結果が
 // 直後の ShowByID / FindByID で hit するようになる (Devin review #552 FLAG-1)。
