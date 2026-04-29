@@ -233,3 +233,36 @@ func TestS3Storage_ObjectKey(t *testing.T) {
 	st2 := NewS3Storage(S3StorageConfig{})
 	assert.Equal(t, "abc", st2.objectKey("abc"))
 }
+
+// Misskey TS の admin UI placeholder は "files" (末尾 / なし) なので、
+// operator がそのまま入れた値でも `<prefix>/<accessKey>` が生成されること。
+// これが破れると drop-in 互換が永続的に壊れる (#525)。
+func TestS3Storage_ObjectKey_PrefixWithoutTrailingSlash(t *testing.T) {
+	st := NewS3Storage(S3StorageConfig{Prefix: "files"})
+	assert.Equal(t, "files/abc123", st.objectKey("abc123"),
+		"prefix without trailing slash must still produce 'files/abc123' (TS-compat)")
+}
+
+func TestS3Storage_ObjectKey_PrefixWithMultipleTrailingSlashes(t *testing.T) {
+	// "files///" のような誤入力でも separator は 1 個だけになる
+	st := NewS3Storage(S3StorageConfig{Prefix: "files///"})
+	assert.Equal(t, "files/abc", st.objectKey("abc"))
+}
+
+// publicURL が prefix の末尾 / 有無に依らず "<base>/files/<key>" の形に
+// なることを担保する。
+func TestS3Storage_PublicURL_PrefixWithoutTrailingSlash(t *testing.T) {
+	mock := &mockS3API{}
+	st := NewS3Storage(S3StorageConfig{
+		Client:  mock,
+		Bucket:  "my-bucket",
+		Prefix:  "files",
+		BaseURL: "https://cdn.example.com",
+	})
+	url, err := st.Put("abc123", bytes.NewReader([]byte("x")))
+	require.NoError(t, err)
+	assert.Equal(t, "https://cdn.example.com/files/abc123", url)
+	require.NotNil(t, mock.putInput)
+	assert.Equal(t, "files/abc123", *mock.putInput.Key,
+		"S3 PutObject Key must be 'files/abc123' even when operator omits the trailing slash")
+}
