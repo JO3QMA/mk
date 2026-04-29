@@ -13,7 +13,9 @@ type MutingRepository interface {
 	Delete(m *model.Muting) error
 	FindByPair(muterID, muteeID string) (*model.Muting, error)
 	Exists(muterID, muteeID string) (bool, error)
-	ListByMuter(muterID string, limit, offset int) ([]*model.Muting, error)
+	// ListByMuter supports cursor (sinceID/untilID) and offset pagination.
+	// Cursor 指定時は offset を無視 (upstream makePaginationQuery と一致)。
+	ListByMuter(muterID, sinceID, untilID string, limit, offset int) ([]*model.Muting, error)
 }
 
 type mutingRepository struct {
@@ -54,13 +56,20 @@ func (r *mutingRepository) Exists(muterID, muteeID string) (bool, error) {
 	return count > 0, nil
 }
 
-func (r *mutingRepository) ListByMuter(muterID string, limit, offset int) ([]*model.Muting, error) {
+func (r *mutingRepository) ListByMuter(muterID, sinceID, untilID string, limit, offset int) ([]*model.Muting, error) {
+	q := r.db.Where(`"muterId" = ?`, muterID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
 	var rows []*model.Muting
-	if err := r.db.Where("\"muterId\" = ?", muterID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -72,7 +81,8 @@ type RenoteMutingRepository interface {
 	Delete(m *model.RenoteMuting) error
 	FindByPair(muterID, muteeID string) (*model.RenoteMuting, error)
 	Exists(muterID, muteeID string) (bool, error)
-	ListByMuter(muterID string, limit, offset int) ([]*model.RenoteMuting, error)
+	// ListByMuter supports cursor (sinceID/untilID) and offset pagination.
+	ListByMuter(muterID, sinceID, untilID string, limit, offset int) ([]*model.RenoteMuting, error)
 }
 
 type renoteMutingRepository struct {
@@ -110,13 +120,20 @@ func (r *renoteMutingRepository) Exists(muterID, muteeID string) (bool, error) {
 	return count > 0, nil
 }
 
-func (r *renoteMutingRepository) ListByMuter(muterID string, limit, offset int) ([]*model.RenoteMuting, error) {
+func (r *renoteMutingRepository) ListByMuter(muterID, sinceID, untilID string, limit, offset int) ([]*model.RenoteMuting, error) {
+	q := r.db.Where(`"muterId" = ?`, muterID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
 	var rows []*model.RenoteMuting
-	if err := r.db.Where("\"muterId\" = ?", muterID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

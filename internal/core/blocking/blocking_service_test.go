@@ -154,11 +154,11 @@ func TestIsBlockedAndList(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, yes)
 
-	rows, err := svc.List("a", 0, 0)
+	rows, err := svc.List("a", "", "", 0, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 
-	rows, err = svc.List("a", 5, 0)
+	rows, err = svc.List("a", "", "", 5, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 }

@@ -316,7 +316,7 @@ type listFailRepo struct {
 	*testutil.MockPageRepository
 }
 
-func (r *listFailRepo) ListByUser(_ string, _, _ int) ([]*model.Page, error) {
+func (r *listFailRepo) ListByUser(_, _, _ string, _, _ int) ([]*model.Page, error) {
 	return nil, errors.New("boom")
 }
 
@@ -353,7 +353,7 @@ type featuredFailRepo struct {
 	*testutil.MockPageRepository
 }
 
-func (r *featuredFailRepo) ListFeatured(_, _ int) ([]*model.Page, error) {
+func (r *featuredFailRepo) ListFeatured(_, _ string, _, _ int) ([]*model.Page, error) {
 	return nil, errors.New("boom")
 }
 

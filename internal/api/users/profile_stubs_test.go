@@ -20,10 +20,13 @@ type stubGalleryRepo struct {
 	posts []*model.GalleryPost
 }
 
-func (s *stubGalleryRepo) ListByUser(_ string, _, _ int) ([]*model.GalleryPost, error) {
+func (s *stubGalleryRepo) ListByUser(_, _, _ string, _, _ int) ([]*model.GalleryPost, error) {
 	return s.posts, nil
 }
-func (s *stubGalleryRepo) ListLikesByUser(_ string, _, _ int) ([]*model.GalleryLike, error) {
+func (s *stubGalleryRepo) ListLikesByUser(_, _, _ string, _, _ int) ([]*model.GalleryLike, error) {
+	return nil, nil
+}
+func (s *stubGalleryRepo) FindPostsByIDs(_ []string) ([]*model.GalleryPost, error) {
 	return nil, nil
 }
 

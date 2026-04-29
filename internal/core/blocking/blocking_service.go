@@ -98,12 +98,13 @@ func (s *Service) IsBlocked(blockerID, blockeeID string) (bool, error) {
 	return s.blockingRepo.Exists(blockerID, blockeeID)
 }
 
-// List returns the user's blockings.
-func (s *Service) List(blockerID string, limit, offset int) ([]*model.Blocking, error) {
+// List returns the user's blockings with cursor (sinceID/untilID) or offset
+// pagination. Cursor 指定時は offset 無視 (upstream makePaginationQuery と一致)。
+func (s *Service) List(blockerID, sinceID, untilID string, limit, offset int) ([]*model.Blocking, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	return s.blockingRepo.ListByBlocker(blockerID, limit, offset)
+	return s.blockingRepo.ListByBlocker(blockerID, sinceID, untilID, limit, offset)
 }
 
 // removeFollowing deletes a follow edge if it exists and adjusts counters.

@@ -53,7 +53,7 @@ func TestMutingRepository_CRUDExpiry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "m_active", found.ID)
 
-	rows, err := repo.ListByMuter(u1.ID, 10, 0)
+	rows, err := repo.ListByMuter(u1.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 
@@ -73,7 +73,7 @@ func TestMutingRepository_QueryErrors(t *testing.T) {
 	assert.Error(t, err)
 	_, err = repo.Exists("a", "b")
 	assert.Error(t, err)
-	_, err = repo.ListByMuter("a", 10, 0)
+	_, err = repo.ListByMuter("a", "", "", 10, 0)
 	assert.Error(t, err)
 }
 
@@ -96,7 +96,7 @@ func TestRenoteMutingRepository_CRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	rows, err := repo.ListByMuter(u1.ID, 10, 0)
+	rows, err := repo.ListByMuter(u1.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 
@@ -116,6 +116,6 @@ func TestRenoteMutingRepository_QueryErrors(t *testing.T) {
 	assert.Error(t, err)
 	_, err = repo.Exists("a", "b")
 	assert.Error(t, err)
-	_, err = repo.ListByMuter("a", 10, 0)
+	_, err = repo.ListByMuter("a", "", "", 10, 0)
 	assert.Error(t, err)
 }

@@ -800,12 +800,16 @@ func (s *stubPageRepoForPin) FindByID(string) (*model.Page, error)              
 func (s *stubPageRepoForPin) FindByUserAndName(string, string) (*model.Page, error) { return nil, nil }
 func (s *stubPageRepoForPin) UpdateFields(string, map[string]any) error             { return nil }
 func (s *stubPageRepoForPin) Delete(*model.Page) error                              { return nil }
-func (s *stubPageRepoForPin) ListByUser(string, int, int) ([]*model.Page, error)    { return nil, nil }
-func (s *stubPageRepoForPin) ListPublicByUser(string, int, int) ([]*model.Page, error) {
+func (s *stubPageRepoForPin) ListByUser(string, string, string, int, int) ([]*model.Page, error) {
 	return nil, nil
 }
-func (s *stubPageRepoForPin) ListFeatured(int, int) ([]*model.Page, error) { return nil, nil }
-func (s *stubPageRepoForPin) IncrementCount(string, string, int) error     { return nil }
+func (s *stubPageRepoForPin) ListPublicByUser(string, string, string, int, int) ([]*model.Page, error) {
+	return nil, nil
+}
+func (s *stubPageRepoForPin) ListFeatured(string, string, int, int) ([]*model.Page, error) {
+	return nil, nil
+}
+func (s *stubPageRepoForPin) IncrementCount(string, string, int) error { return nil }
 
 func TestShow_PinnedNotes_Populated(t *testing.T) {
 	h, userRepo := newTestHandler(t)

@@ -195,8 +195,10 @@ func (s *Service) Unfollow(userID, channelID string) error {
 
 // ListFollowed returns the channels followed by the user. 結果には channel の
 // 実体を解決して返す (followingRepo の戻り値は中間テーブル)。
-func (s *Service) ListFollowed(userID string, limit, offset int) ([]*model.Channel, error) {
-	rows, err := s.followingRepo.ListFollowed(userID, limit, offset)
+// frontend Paginator は channel_following.id ベースの cursor で叩いてくる
+// ので sinceID / untilID もそのまま forward する。
+func (s *Service) ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
+	rows, err := s.followingRepo.ListFollowed(userID, sinceID, untilID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -211,27 +213,38 @@ func (s *Service) ListFollowed(userID string, limit, offset int) ([]*model.Chann
 	return out, nil
 }
 
-// ListOwned returns channels owned by the user. クエリ / アーカイブ条件は
-// repository に丸投げする。
-func (s *Service) ListOwned(userID string, limit, offset int) ([]*model.Channel, error) {
-	return s.repo.List(model.ChannelListFilter{OwnerID: userID, Limit: limit, Offset: offset})
+// ListOwned returns channels owned by the user with cursor (sinceID/untilID)
+// or offset pagination.
+func (s *Service) ListOwned(userID, sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
+	return s.repo.List(model.ChannelListFilter{
+		OwnerID: userID,
+		Limit:   limit,
+		Offset:  offset,
+		SinceID: sinceID,
+		UntilID: untilID,
+	})
 }
 
-// ListFeatured returns the most active channels (notes count desc).
-func (s *Service) ListFeatured(limit, offset int) ([]*model.Channel, error) {
+// ListFeatured returns the most active channels (notes count desc), or by
+// id when cursor is supplied (frontend Paginator対応)。
+func (s *Service) ListFeatured(sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
 	return s.repo.List(model.ChannelListFilter{
-		SortBy: "-notesCount",
-		Limit:  limit,
-		Offset: offset,
+		SortBy:  "-notesCount",
+		Limit:   limit,
+		Offset:  offset,
+		SinceID: sinceID,
+		UntilID: untilID,
 	})
 }
 
 // Search returns channels whose name matches the query.
-func (s *Service) Search(query string, limit, offset int) ([]*model.Channel, error) {
+func (s *Service) Search(query, sinceID, untilID string, limit, offset int) ([]*model.Channel, error) {
 	return s.repo.List(model.ChannelListFilter{
-		Query:  query,
-		Limit:  limit,
-		Offset: offset,
+		Query:   query,
+		Limit:   limit,
+		Offset:  offset,
+		SinceID: sinceID,
+		UntilID: untilID,
 	})
 }
 

@@ -84,9 +84,9 @@ func TestUserListRepository_UpdateMembership_NotFound(t *testing.T) {
 
 func TestPageRepository_ListPublicByUser_Clamp(t *testing.T) {
 	r := NewPageRepository(testDB)
-	_, err := r.ListPublicByUser("x", 0, 0)
+	_, err := r.ListPublicByUser("x", "", "", 0, 0)
 	require.NoError(t, err)
-	_, err = r.ListPublicByUser("x", 999, 0)
+	_, err = r.ListPublicByUser("x", "", "", 999, 0)
 	require.NoError(t, err)
 }
 

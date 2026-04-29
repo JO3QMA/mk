@@ -12,7 +12,9 @@ type ChannelFollowingRepository interface {
 	Delete(f *model.ChannelFollowing) error
 	FindByPair(followerID, channelID string) (*model.ChannelFollowing, error)
 	Exists(followerID, channelID string) (bool, error)
-	ListFollowed(userID string, limit, offset int) ([]*model.ChannelFollowing, error)
+	// ListFollowed returns channel_following rows for userID with cursor
+	// (sinceID/untilID) or offset pagination. Cursor 指定時は offset 無視。
+	ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.ChannelFollowing, error)
 	// ListFollowerIDsPage returns a batch of follower userIds for a channel,
 	// ordered by row id ASC. afterRowID は前ページの nextCursor を渡す
 	// (空なら先頭から)。返り値の nextCursor は次回 call にそのまま渡せる
@@ -91,20 +93,27 @@ func (r *channelFollowingRepository) ListFollowerIDsPage(channelID, afterRowID s
 }
 
 // ListFollowed returns the channel followings for a given user, ordered by id
-// descending (newest first).
-func (r *channelFollowingRepository) ListFollowed(userID string, limit, offset int) ([]*model.ChannelFollowing, error) {
+// descending (newest first), with cursor or offset pagination support.
+func (r *channelFollowingRepository) ListFollowed(userID, sinceID, untilID string, limit, offset int) ([]*model.ChannelFollowing, error) {
 	if limit <= 0 {
 		limit = 30
 	}
 	if limit > 100 {
 		limit = 100
 	}
+	q := r.db.Where(`"followerId" = ?`, userID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
+		q = q.Offset(offset)
+	}
 	var rows []*model.ChannelFollowing
-	if err := r.db.Where("\"followerId\" = ?", userID).
-		Order("id DESC").
-		Limit(limit).
-		Offset(offset).
-		Find(&rows).Error; err != nil {
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

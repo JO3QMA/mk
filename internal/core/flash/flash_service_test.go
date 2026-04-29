@@ -173,7 +173,7 @@ func TestMy(t *testing.T) {
 	svc, repo, _ := newSvc(t)
 	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "u1"}
 	repo.Flashes["f2"] = &model.Flash{ID: "f2", UserID: "u1"}
-	rows, err := svc.My("u1", 10, 0)
+	rows, err := svc.My("u1", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }
@@ -182,7 +182,7 @@ func TestFeatured(t *testing.T) {
 	svc, repo, _ := newSvc(t)
 	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "u1", LikedCount: 5}
 	repo.Flashes["f2"] = &model.Flash{ID: "f2", UserID: "u1", LikedCount: 10}
-	rows, err := svc.Featured(10, 0)
+	rows, err := svc.Featured("", "", 10, 0)
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
 	assert.Equal(t, "f2", rows[0].ID)
@@ -193,7 +193,7 @@ func TestSearch(t *testing.T) {
 	svc, repo, _ := newSvc(t)
 	repo.Flashes["f1"] = &model.Flash{ID: "f1", UserID: "u1", Title: "alpha calc"}
 	repo.Flashes["f2"] = &model.Flash{ID: "f2", UserID: "u1", Title: "beta game"}
-	rows, err := svc.Search("calc", 10, 0)
+	rows, err := svc.Search("calc", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 }
@@ -320,7 +320,7 @@ func TestMyLikes_HappyPath(t *testing.T) {
 	repo.Flashes["f2"] = &model.Flash{ID: "f2", UserID: "u1"}
 	require.NoError(t, svc.Like("u2", "f1"))
 	require.NoError(t, svc.Like("u2", "f2"))
-	rows, err := svc.MyLikes("u2", 10, 0)
+	rows, err := svc.MyLikes("u2", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 2)
 }
@@ -331,7 +331,7 @@ func TestMyLikes_SkipsMissingFlashes(t *testing.T) {
 	require.NoError(t, svc.Like("u2", "f1"))
 	// Insert a stale like pointing to a non-existent flash.
 	likeRepo.Likes["stale"] = &model.FlashLike{ID: "stale", UserID: "u2", FlashID: "missing"}
-	rows, err := svc.MyLikes("u2", 10, 0)
+	rows, err := svc.MyLikes("u2", "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 }
@@ -341,7 +341,7 @@ type failingListLikeRepo struct {
 	*testutil.MockFlashLikeRepository
 }
 
-func (r *failingListLikeRepo) ListByUser(_ string, _, _ int) ([]*model.FlashLike, error) {
+func (r *failingListLikeRepo) ListByUser(_, _, _ string, _, _ int) ([]*model.FlashLike, error) {
 	return nil, errors.New("boom")
 }
 
@@ -350,7 +350,7 @@ func TestMyLikes_RepoError(t *testing.T) {
 	likeRepo := &failingListLikeRepo{MockFlashLikeRepository: testutil.NewMockFlashLikeRepository()}
 	idGen, _ := id.NewGenerator("aidx")
 	svc := flash.NewService(repo, likeRepo, idGen)
-	_, err := svc.MyLikes("u2", 10, 0)
+	_, err := svc.MyLikes("u2", "", "", 10, 0)
 	assert.Error(t, err)
 }
 

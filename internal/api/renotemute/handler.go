@@ -8,17 +8,24 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
+	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Handler handles renote-mute endpoints.
 type Handler struct {
-	svc *coremuting.RenoteService
+	svc      *coremuting.RenoteService
+	userRepo repository.UserRepository
+	idGen    id.Generator
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(svc *coremuting.RenoteService) *Handler {
-	return &Handler{svc: svc}
+// userRepo / idGen are required by renote-mute/list to embed the
+// `mutee` user object that the upstream Misskey frontend renders.
+func NewHandler(svc *coremuting.RenoteService, userRepo repository.UserRepository, idGen id.Generator) *Handler {
+	return &Handler{svc: svc, userRepo: userRepo, idGen: idGen}
 }
 
 // PairRequest is the body for create/delete.
@@ -68,11 +75,16 @@ func (h *Handler) Delete(c echo.Context) error {
 
 // ListRequest is the body for renote-mute/list.
 type ListRequest struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	SinceID string `json:"sinceId"`
+	UntilID string `json:"untilId"`
 }
 
 // List handles POST /api/renote-mute/list.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する。
+// 本 endpoint は #493 で cursor 対応に切り替えた。
 func (h *Handler) List(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req ListRequest
@@ -85,16 +97,32 @@ func (h *Handler) List(c echo.Context) error {
 	if req.Limit > 100 {
 		req.Limit = 100
 	}
-	rows, err := h.svc.List(user.ID, req.Limit, req.Offset)
+	rows, err := h.svc.List(user.ID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
+	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, m := range rows {
-		out = append(out, map[string]any{
-			"id":      m.ID,
-			"muteeId": m.MuteeID,
-		})
+		createdAt := ""
+		if h.idGen != nil {
+			if t, err := h.idGen.ParseTime(m.ID); err == nil {
+				createdAt = t.UTC().Format(tsFormat)
+			}
+		}
+		entry := map[string]any{
+			"id":        m.ID,
+			"createdAt": createdAt,
+			"muteeId":   m.MuteeID,
+		}
+		// upstream frontend が item.mutee で MkUserCardMini を描画する。
+		if h.userRepo != nil {
+			if u, err := h.userRepo.FindByID(m.MuteeID); err == nil {
+				profile, _ := h.userRepo.FindProfileByUserID(u.ID)
+				entry["mutee"] = entity.PackUserDetailed(u, profile)
+			}
+		}
+		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
 }

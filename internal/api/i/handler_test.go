@@ -1221,15 +1221,19 @@ type stubPageRepo struct {
 	err  error
 }
 
-func (s *stubPageRepo) Create(*model.Page) error                                 { return nil }
-func (s *stubPageRepo) FindByID(id string) (*model.Page, error)                  { return s.page, s.err }
-func (s *stubPageRepo) FindByUserAndName(string, string) (*model.Page, error)    { return nil, nil }
-func (s *stubPageRepo) UpdateFields(string, map[string]any) error                { return nil }
-func (s *stubPageRepo) Delete(*model.Page) error                                 { return nil }
-func (s *stubPageRepo) ListByUser(string, int, int) ([]*model.Page, error)       { return nil, nil }
-func (s *stubPageRepo) ListPublicByUser(string, int, int) ([]*model.Page, error) { return nil, nil }
-func (s *stubPageRepo) ListFeatured(int, int) ([]*model.Page, error)             { return nil, nil }
-func (s *stubPageRepo) IncrementCount(string, string, int) error                 { return nil }
+func (s *stubPageRepo) Create(*model.Page) error                              { return nil }
+func (s *stubPageRepo) FindByID(id string) (*model.Page, error)               { return s.page, s.err }
+func (s *stubPageRepo) FindByUserAndName(string, string) (*model.Page, error) { return nil, nil }
+func (s *stubPageRepo) UpdateFields(string, map[string]any) error             { return nil }
+func (s *stubPageRepo) Delete(*model.Page) error                              { return nil }
+func (s *stubPageRepo) ListByUser(string, string, string, int, int) ([]*model.Page, error) {
+	return nil, nil
+}
+func (s *stubPageRepo) ListPublicByUser(string, string, string, int, int) ([]*model.Page, error) {
+	return nil, nil
+}
+func (s *stubPageRepo) ListFeatured(string, string, int, int) ([]*model.Page, error) { return nil, nil }
+func (s *stubPageRepo) IncrementCount(string, string, int) error                     { return nil }
 
 func TestMe_PinnedPage_Populated(t *testing.T) {
 	h, userRepo, _, _ := newTestHandler(t)

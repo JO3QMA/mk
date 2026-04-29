@@ -258,14 +258,16 @@ func (s *Service) Delete(ownerID, pageID string) error {
 	return s.repo.Delete(p)
 }
 
-// ListByUser returns the pages owned by userID.
-func (s *Service) ListByUser(userID string, limit, offset int) ([]*model.Page, error) {
-	return s.repo.ListByUser(userID, limit, offset)
+// ListByUser returns the pages owned by userID with cursor (sinceID/untilID)
+// or offset pagination. Cursor 指定時は offset を無視。
+func (s *Service) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.Page, error) {
+	return s.repo.ListByUser(userID, sinceID, untilID, limit, offset)
 }
 
-// Featured returns the public pages ordered by likedCount desc.
-func (s *Service) Featured(limit, offset int) ([]*model.Page, error) {
-	return s.repo.ListFeatured(limit, offset)
+// Featured returns the public pages ordered by likedCount desc, or by id
+// when cursor (sinceID/untilID) is supplied (frontend Paginator対応)。
+func (s *Service) Featured(sinceID, untilID string, limit, offset int) ([]*model.Page, error) {
+	return s.repo.ListFeatured(sinceID, untilID, limit, offset)
 }
 
 // Like attaches a Like row from userID to pageID. Public pages can be liked

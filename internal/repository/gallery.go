@@ -9,8 +9,14 @@ import (
 // scoped to a single user. i/gallery/posts と i/gallery/likes の
 // per-user 一覧で利用する。
 type GalleryRepository interface {
-	ListByUser(userID string, limit, offset int) ([]*model.GalleryPost, error)
-	ListLikesByUser(userID string, limit, offset int) ([]*model.GalleryLike, error)
+	// ListByUser supports cursor (sinceID/untilID) and offset pagination.
+	// Cursor 指定時は offset 無視。
+	ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.GalleryPost, error)
+	// ListLikesByUser same cursor semantics.
+	ListLikesByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.GalleryLike, error)
+	// FindPostsByIDs returns the posts whose id is in ids. Used by
+	// i/gallery/likes to embed the full GalleryPost in each like row.
+	FindPostsByIDs(ids []string) ([]*model.GalleryPost, error)
 }
 
 type galleryRepository struct {
@@ -32,10 +38,17 @@ func clampLimit(limit int) int {
 	return limit
 }
 
-func (r *galleryRepository) ListByUser(userID string, limit, offset int) ([]*model.GalleryPost, error) {
+func (r *galleryRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.GalleryPost, error) {
 	limit = clampLimit(limit)
-	q := r.db.Where(`"userId" = ?`, userID).Order(`"id" DESC`).Limit(limit)
-	if offset > 0 {
+	q := r.db.Where(`"userId" = ?`, userID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
 		q = q.Offset(offset)
 	}
 	var posts []*model.GalleryPost
@@ -45,10 +58,28 @@ func (r *galleryRepository) ListByUser(userID string, limit, offset int) ([]*mod
 	return posts, nil
 }
 
-func (r *galleryRepository) ListLikesByUser(userID string, limit, offset int) ([]*model.GalleryLike, error) {
+func (r *galleryRepository) FindPostsByIDs(ids []string) ([]*model.GalleryPost, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var posts []*model.GalleryPost
+	if err := r.db.Preload("User").Where("id IN ?", ids).Find(&posts).Error; err != nil {
+		return nil, err
+	}
+	return posts, nil
+}
+
+func (r *galleryRepository) ListLikesByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.GalleryLike, error) {
 	limit = clampLimit(limit)
-	q := r.db.Where(`"userId" = ?`, userID).Order(`"id" DESC`).Limit(limit)
-	if offset > 0 {
+	q := r.db.Where(`"userId" = ?`, userID)
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	q = q.Order(paginationOrder(sinceID, untilID, "id")).Limit(limit)
+	if sinceID == "" && untilID == "" && offset > 0 {
 		q = q.Offset(offset)
 	}
 	var likes []*model.GalleryLike

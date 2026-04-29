@@ -137,17 +137,17 @@ func TestPageRepository_ListByUser(t *testing.T) {
 		defer cleanupPage(t, p.ID)
 	}
 
-	rows, err := repo.ListByUser(user.ID, 10, 0)
+	rows, err := repo.ListByUser(user.ID, "", "", 10, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows, 3)
 }
 
 func TestPageRepository_ListByUser_LimitClamp(t *testing.T) {
 	repo := NewPageRepository(testDB)
-	rows, err := repo.ListByUser("nobody", 9999, 0)
+	rows, err := repo.ListByUser("nobody", "", "", 9999, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
-	rows, err = repo.ListByUser("nobody", -1, 0)
+	rows, err = repo.ListByUser("nobody", "", "", -1, 0)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 }
@@ -157,7 +157,7 @@ func TestPageRepository_ListByUser_QueryError(t *testing.T) {
 	cancel()
 	db := testDB.WithContext(ctx)
 	repo := NewPageRepository(db)
-	_, err := repo.ListByUser("nobody", 10, 0)
+	_, err := repo.ListByUser("nobody", "", "", 10, 0)
 	assert.Error(t, err)
 }
 
@@ -180,7 +180,7 @@ func TestPageRepository_ListFeatured(t *testing.T) {
 		defer cleanupPage(t, p.ID)
 	}
 
-	rows, err := repo.ListFeatured(10, 0)
+	rows, err := repo.ListFeatured("", "", 10, 0)
 	require.NoError(t, err)
 	// 他テストの残骸が混ざる可能性があるので、この3件が降順で含まれることだけ検証する。
 	var found []*model.Page
@@ -197,10 +197,10 @@ func TestPageRepository_ListFeatured(t *testing.T) {
 
 func TestPageRepository_ListFeatured_LimitClamp(t *testing.T) {
 	repo := NewPageRepository(testDB)
-	rows, err := repo.ListFeatured(9999, 0)
+	rows, err := repo.ListFeatured("", "", 9999, 0)
 	require.NoError(t, err)
 	_ = rows
-	rows, err = repo.ListFeatured(-1, 0)
+	rows, err = repo.ListFeatured("", "", -1, 0)
 	require.NoError(t, err)
 	_ = rows
 }
@@ -210,6 +210,6 @@ func TestPageRepository_ListFeatured_QueryError(t *testing.T) {
 	cancel()
 	db := testDB.WithContext(ctx)
 	repo := NewPageRepository(db)
-	_, err := repo.ListFeatured(10, 0)
+	_, err := repo.ListFeatured("", "", 10, 0)
 	assert.Error(t, err)
 }

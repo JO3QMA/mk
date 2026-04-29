@@ -57,9 +57,13 @@ type InstancesRequest struct {
 	Sort          string `json:"sort"`
 	Limit         int    `json:"limit"`
 	Offset        int    `json:"offset"`
+	SinceID       string `json:"sinceId"`
+	UntilID       string `json:"untilId"`
 }
 
 // Instances handles POST /api/federation/instances.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) Instances(c echo.Context) error {
 	var req InstancesRequest
 	if err := c.Bind(&req); err != nil {
@@ -75,6 +79,8 @@ func (h *Handler) Instances(c echo.Context) error {
 		SortBy:        req.Sort,
 		Limit:         req.Limit,
 		Offset:        req.Offset,
+		SinceID:       req.SinceID,
+		UntilID:       req.UntilID,
 	}
 	rows, err := h.svc.List(filter)
 	if err != nil {

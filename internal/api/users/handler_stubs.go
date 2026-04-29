@@ -105,11 +105,15 @@ func (h *Handler) Clips(c echo.Context) error {
 }
 
 // Flashs handles POST /api/users/flashs.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) Flashs(c echo.Context) error {
 	var req struct {
-		UserID string `json:"userId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		UserID  string `json:"userId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -123,9 +127,9 @@ func (h *Handler) Flashs(c echo.Context) error {
 	var rows []*model.Flash
 	var err error
 	if isSelf {
-		rows, err = h.flashRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.flashRepo.ListByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	} else {
-		rows, err = h.flashRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.flashRepo.ListPublicByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	}
 	if err != nil {
 		return apierr.JSONInternalError(c)
@@ -148,11 +152,15 @@ func (h *Handler) Flashs(c echo.Context) error {
 }
 
 // GalleryPosts handles POST /api/users/gallery/posts.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) GalleryPosts(c echo.Context) error {
 	var req struct {
-		UserID string `json:"userId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		UserID  string `json:"userId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -161,7 +169,7 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	clampListLimit(&req.Limit)
-	rows, err := h.galleryRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+	rows, err := h.galleryRepo.ListByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
@@ -185,11 +193,15 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 }
 
 // Pages handles POST /api/users/pages.
+//
+// frontend Paginator (cursor mode) は untilId / sinceId を forward する (#493)。
 func (h *Handler) Pages(c echo.Context) error {
 	var req struct {
-		UserID string `json:"userId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		UserID  string `json:"userId"`
+		Limit   int    `json:"limit"`
+		Offset  int    `json:"offset"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return apierr.JSONInvalidParam(c)
@@ -203,9 +215,9 @@ func (h *Handler) Pages(c echo.Context) error {
 	var rows []*model.Page
 	var err error
 	if isSelf {
-		rows, err = h.pageRepo.ListByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.pageRepo.ListByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	} else {
-		rows, err = h.pageRepo.ListPublicByUser(req.UserID, req.Limit, req.Offset)
+		rows, err = h.pageRepo.ListPublicByUser(req.UserID, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	}
 	if err != nil {
 		return apierr.JSONInternalError(c)

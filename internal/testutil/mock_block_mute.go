@@ -39,14 +39,21 @@ func (m *MockBlockingRepository) Exists(blockerID, blockeeID string) (bool, erro
 	return err == nil, nil
 }
 
-func (m *MockBlockingRepository) ListByBlocker(blockerID string, limit, offset int) ([]*model.Blocking, error) {
+func (m *MockBlockingRepository) ListByBlocker(blockerID, sinceID, untilID string, limit, offset int) ([]*model.Blocking, error) {
 	var rows []*model.Blocking
 	for _, b := range m.Blockings {
-		if b.BlockerID == blockerID {
-			rows = append(rows, b)
+		if b.BlockerID != blockerID {
+			continue
 		}
+		if sinceID != "" && b.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && b.ID >= untilID {
+			continue
+		}
+		rows = append(rows, b)
 	}
-	return paginateBlockings(rows, limit, offset), nil
+	return paginateBlockings(rows, sinceID, untilID, limit, offset), nil
 }
 
 // MockMutingRepository is a test double for repository.MutingRepository.
@@ -90,14 +97,21 @@ func (m *MockMutingRepository) Exists(muterID, muteeID string) (bool, error) {
 	return false, nil
 }
 
-func (m *MockMutingRepository) ListByMuter(muterID string, limit, offset int) ([]*model.Muting, error) {
+func (m *MockMutingRepository) ListByMuter(muterID, sinceID, untilID string, limit, offset int) ([]*model.Muting, error) {
 	var rows []*model.Muting
 	for _, r := range m.Mutings {
-		if r.MuterID == muterID {
-			rows = append(rows, r)
+		if r.MuterID != muterID {
+			continue
 		}
+		if sinceID != "" && r.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && r.ID >= untilID {
+			continue
+		}
+		rows = append(rows, r)
 	}
-	return paginateMutings(rows, limit, offset), nil
+	return paginateMutings(rows, sinceID, untilID, limit, offset), nil
 }
 
 // MockRenoteMutingRepository is a test double for repository.RenoteMutingRepository.
@@ -133,36 +147,101 @@ func (m *MockRenoteMutingRepository) Exists(muterID, muteeID string) (bool, erro
 	return err == nil, nil
 }
 
-func (m *MockRenoteMutingRepository) ListByMuter(muterID string, limit, offset int) ([]*model.RenoteMuting, error) {
+func (m *MockRenoteMutingRepository) ListByMuter(muterID, sinceID, untilID string, limit, offset int) ([]*model.RenoteMuting, error) {
 	var rows []*model.RenoteMuting
 	for _, r := range m.Mutings {
-		if r.MuterID == muterID {
-			rows = append(rows, r)
+		if r.MuterID != muterID {
+			continue
+		}
+		if sinceID != "" && r.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && r.ID >= untilID {
+			continue
+		}
+		rows = append(rows, r)
+	}
+	return paginateRenoteMutings(rows, sinceID, untilID, limit, offset), nil
+}
+
+// applyCursorPagination applies the same ordering / limit / cursor-vs-offset
+// rules as the real repositories so mock tests exercise upstream
+// makePaginationQuery semantics. ASC ordering kicks in when sinceID is set
+// without untilID (matches paginationOrder in repository package).
+func paginateBlockings(rows []*model.Blocking, sinceID, untilID string, limit, offset int) []*model.Blocking {
+	asc := sinceID != "" && untilID == ""
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			less := rows[i].ID < rows[j].ID
+			if (asc && !less) || (!asc && less) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
 		}
 	}
-	return paginateRenoteMutings(rows, limit, offset), nil
+	if limit <= 0 {
+		limit = 30
+	}
+	if sinceID == "" && untilID == "" {
+		if offset >= len(rows) {
+			return nil
+		}
+		end := min(offset+limit, len(rows))
+		return rows[offset:end]
+	}
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	return rows[:limit]
 }
 
-func paginateBlockings(rows []*model.Blocking, limit, offset int) []*model.Blocking {
-	if offset >= len(rows) {
-		return nil
+func paginateMutings(rows []*model.Muting, sinceID, untilID string, limit, offset int) []*model.Muting {
+	asc := sinceID != "" && untilID == ""
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			less := rows[i].ID < rows[j].ID
+			if (asc && !less) || (!asc && less) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
 	}
-	end := min(offset+limit, len(rows))
-	return rows[offset:end]
+	if limit <= 0 {
+		limit = 30
+	}
+	if sinceID == "" && untilID == "" {
+		if offset >= len(rows) {
+			return nil
+		}
+		end := min(offset+limit, len(rows))
+		return rows[offset:end]
+	}
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	return rows[:limit]
 }
 
-func paginateMutings(rows []*model.Muting, limit, offset int) []*model.Muting {
-	if offset >= len(rows) {
-		return nil
+func paginateRenoteMutings(rows []*model.RenoteMuting, sinceID, untilID string, limit, offset int) []*model.RenoteMuting {
+	asc := sinceID != "" && untilID == ""
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			less := rows[i].ID < rows[j].ID
+			if (asc && !less) || (!asc && less) {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
 	}
-	end := min(offset+limit, len(rows))
-	return rows[offset:end]
-}
-
-func paginateRenoteMutings(rows []*model.RenoteMuting, limit, offset int) []*model.RenoteMuting {
-	if offset >= len(rows) {
-		return nil
+	if limit <= 0 {
+		limit = 30
 	}
-	end := min(offset+limit, len(rows))
-	return rows[offset:end]
+	if sinceID == "" && untilID == "" {
+		if offset >= len(rows) {
+			return nil
+		}
+		end := min(offset+limit, len(rows))
+		return rows[offset:end]
+	}
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	return rows[:limit]
 }
