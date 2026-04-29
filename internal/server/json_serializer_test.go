@@ -12,8 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withSerializer prepares an echo.Context with the goccy-backed serializer
-// installed, mimicking what server.New does at boot.
+// withSerializer prepares an echo.Context with the fastJSONSerializer
+// installed, mimicking what server.New does at boot. Currently backed by
+// stdlib encoding/json (#542 で goccy 0.10.x の VM compile bug が
+// timeline 経路で踏まれたため一時的に巻き戻し)。
 func withSerializer(body string) (echo.Context, *httptest.ResponseRecorder) {
 	e := echo.New()
 	e.JSONSerializer = fastJSONSerializer{}
