@@ -307,7 +307,7 @@ func (h *Handler) SendEmail(c echo.Context) error {
 			if m.SmtpPort != nil {
 				port = *m.SmtpPort
 			}
-			go smtp.Send(*m.SmtpHost, port, m.SmtpUser, m.SmtpPass, *m.Email, req.To, req.Subject, req.Text)
+			go smtp.SendWithOptions(*m.SmtpHost, port, m.SmtpUser, m.SmtpPass, *m.Email, req.To, req.Subject, req.Text, smtp.Options{ProxyURL: h.smtpProxyURL})
 		}
 	}
 	return c.NoContent(http.StatusNoContent)

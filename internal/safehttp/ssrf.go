@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -52,8 +53,10 @@ var ErrSSRFBlocked = fmt.Errorf("safehttp: connection to private IP blocked")
 
 // transportOptions accumulates state from functional Option values.
 type transportOptions struct {
-	proxyURL    string
-	bypassHosts []string
+	proxyURL      string
+	bypassHosts   []string
+	localAddr     string
+	addressFamily string
 }
 
 // Option configures NewSSRFSafeTransport. Use WithProxy to enable forward
@@ -70,6 +73,23 @@ func WithProxy(proxyURL string, bypassHosts []string) Option {
 		o.proxyURL = proxyURL
 		o.bypassHosts = bypassHosts
 	}
+}
+
+// WithOutgoingAddress binds outbound TCP connections to the given local IP
+// (cfg.OutgoingAddress) — useful on multi-NIC hosts where federation should
+// originate from a specific source. Empty string is a no-op (kernel picks).
+// Invalid IP は warn ログを出してそのまま no-op (起動時 fail-fast より
+// best-effort 起動を優先する)。
+func WithOutgoingAddress(addr string) Option {
+	return func(o *transportOptions) { o.localAddr = addr }
+}
+
+// WithAddressFamily restricts DNS resolution / dial path to one address
+// family. Accepts "ipv4" / "ipv6" / "dual" (or empty = dual). 不正値は
+// dual にフォールバック。upstream Misskey の `outgoingAddressFamily` と
+// 同じ semantics で、IPv6 障害のリモートを IPv4 強制で迂回する用途。
+func WithAddressFamily(family string) Option {
+	return func(o *transportOptions) { o.addressFamily = family }
 }
 
 // NewSSRFSafeTransport returns an *http.Transport with a custom DialContext
@@ -125,6 +145,17 @@ func NewSSRFSafeTransport(allowedCIDRs []string, opts ...Option) *http.Transport
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
+	// outgoingAddress: 指定があれば本ホストの該当 IP を source として bind
+	// する。parse 失敗は warn のみ (操作ミスで全 outbound を止めない方針)。
+	if o.localAddr != "" {
+		if ip := net.ParseIP(o.localAddr); ip != nil {
+			dialer.LocalAddr = &net.TCPAddr{IP: ip}
+		}
+	}
+
+	// outgoingAddressFamily: ipv4/ipv6/dual (空文字 = dual と同義)。
+	// resolved IPs を family で絞る dial 側 helper を closure に閉じ込める。
+	familyFilter := normalizeFamily(o.addressFamily)
 
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -147,6 +178,23 @@ func NewSSRFSafeTransport(allowedCIDRs []string, opts ...Option) *http.Transport
 			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 			if err != nil {
 				return nil, fmt.Errorf("safehttp: DNS lookup failed for %q: %w", host, err)
+			}
+
+			// outgoingAddressFamily が ipv4/ipv6 指定なら該当 family で
+			// 絞り込み (#496)。dual / 空文字なら全 IP を維持。filter 結果が
+			// 0 件になった場合は明示的にエラーを返して曖昧な fallback を
+			// 避ける (operator が ipv4 強制したのに AAAA しか無い host 等)。
+			if familyFilter != "" {
+				filtered := ips[:0]
+				for _, ipAddr := range ips {
+					if matchFamily(ipAddr.IP, familyFilter) {
+						filtered = append(filtered, ipAddr)
+					}
+				}
+				if len(filtered) == 0 {
+					return nil, fmt.Errorf("safehttp: no %s address resolved for %q", familyFilter, host)
+				}
+				ips = filtered
 			}
 
 			// 全解決IPがプライベートでないか検証
@@ -187,6 +235,29 @@ func NewSSRFSafeTransport(allowedCIDRs []string, opts ...Option) *http.Transport
 		}
 	}
 	return tr
+}
+
+// normalizeFamily lowercases and validates the family string. Returns
+// "ipv4" / "ipv6" for valid filters, or "" for dual / empty / unrecognized
+// values (treat as no-filter, matching upstream Misskey behaviour).
+func normalizeFamily(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "ipv4":
+		return "ipv4"
+	case "ipv6":
+		return "ipv6"
+	}
+	return ""
+}
+
+// matchFamily reports whether ip belongs to the requested address family.
+// IPv4-mapped IPv6 (::ffff:x.x.x.x) は IPv4 として扱う (Go の resolver は
+// 4-in-6 形式で返すことがあり、operator の意図に合致するように)。
+func matchFamily(ip net.IP, family string) bool {
+	if v4 := ip.To4(); v4 != nil {
+		return family == "ipv4"
+	}
+	return family == "ipv6"
 }
 
 // isPrivateIP returns true if ip falls within a private/reserved range

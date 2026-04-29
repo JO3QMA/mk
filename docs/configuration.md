@@ -116,12 +116,12 @@ cp .config/docker.yml.example .config/docker.yml
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `proxy` | string | - | HTTPプロキシURL |
-| `proxySmtp` | string | - | SMTPプロキシURL |
-| `proxyBypassHosts` | []string | - | プロキシを迂回するホスト |
+| `proxy` | string | - | 外向き HTTP のプロキシ URL (PR #485) |
+| `proxySmtp` | string | - | SMTP 配送のプロキシ URL。`http://host:port` (HTTP CONNECT)、`https://host:port`、`socks5://[user:pass@]host:port` (#496) |
+| `proxyBypassHosts` | []string | - | プロキシを迂回するホスト (HTTP のみ) |
 | `allowedPrivateNetworks` | []string | - | AP fetchで許可するプライベートネットワーク |
-| `outgoingAddress` | string | - | 送信元IPアドレス |
-| `outgoingAddressFamily` | string | - | アドレスファミリー (`"ipv4"`, `"ipv6"`, `"dual"`) |
+| `outgoingAddress` | string | - | 外向き HTTP の送信元 IP として bind するアドレス。複数 NIC 環境で federation 配信の source IP を固定する用途 (#496)。不正値は警告のみで kernel auto-pick に fallback |
+| `outgoingAddressFamily` | string | `dual` | DNS 解決後の IP family 制限。`"ipv4"` / `"ipv6"` 指定で該当 family のみで dial、`"dual"` または空で両方 (#496) |
 
 ### 検索
 

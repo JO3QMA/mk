@@ -87,6 +87,7 @@ type Handler struct {
 	noteFinder              NoteFinder
 	resetReqRepo            repository.PasswordResetRequestRepository
 	emailSender             EmailSender
+	smtpProxyURL            string
 	serverURL               string
 	idGen                   id.Generator
 	configSetupPassword     string
@@ -167,6 +168,11 @@ func (h *Handler) SetPasswordResetRepo(r repository.PasswordResetRequestReposito
 // reset emails. If nil, admin/reset-password falls back to returning a
 // temporary password.
 func (h *Handler) SetEmailSender(s EmailSender) { h.emailSender = s }
+
+// SetSMTPProxyURL forwards admin/send-email TCP connections through the
+// configured proxy (cfg.ProxySmtp). Empty string disables the proxy and
+// falls back to direct dial. See internal/misc/smtp.SendWithOptions.
+func (h *Handler) SetSMTPProxyURL(u string) { h.smtpProxyURL = u }
 
 // SetServerURL sets the base URL used inside password-reset email bodies.
 func (h *Handler) SetServerURL(u string) { h.serverURL = u }
