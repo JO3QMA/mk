@@ -192,6 +192,8 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 	}
 	// GalleryPost に visibility 概念はなく常に公開扱い。
 	// updatedAt / createdAt は i/gallery/posts と format を揃える (#520 review)。
+	// galleryRepo.ListByUser が Preload("User") を行うので g.User を読んで
+	// user (UserLite) を embed できる。i/gallery/posts と同 shape。
 	const tsFormat = "2006-01-02T15:04:05.000Z"
 	out := make([]map[string]any, 0, len(rows))
 	for _, g := range rows {
@@ -199,7 +201,7 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 		if t, err := h.idGen.ParseTime(g.ID); err == nil {
 			createdAt = t.UTC().Format(tsFormat)
 		}
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"id":          g.ID,
 			"createdAt":   createdAt,
 			"updatedAt":   g.UpdatedAt.UTC().Format(tsFormat),
@@ -211,7 +213,11 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 			"isSensitive": g.IsSensitive,
 			"likedCount":  g.LikedCount,
 			"files":       []any{},
-		})
+		}
+		if g.User != nil {
+			entry["user"] = entity.PackUserLite(g.User)
+		}
+		out = append(out, entry)
 	}
 	return c.JSON(http.StatusOK, out)
 }
