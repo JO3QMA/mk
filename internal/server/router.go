@@ -414,7 +414,7 @@ func (s *Server) setupRoutes() {
 	// config.Proxy / ProxyBypassHosts も #485 で wire 済み。
 	apHTTPClient := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
 	}
 	apClient := activitypub.NewClient(apHTTPClient, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
@@ -434,7 +434,7 @@ func (s *Server) setupRoutes() {
 	// (30s) より短めの 10s にする。
 	imageProbeClient := &http.Client{
 		Timeout:   10 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
 	}
 	federationResolver.SetImageProbeClient(imageProbeClient)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
@@ -448,7 +448,7 @@ func (s *Server) setupRoutes() {
 	// user-facing API 経由で呼ばれるので応答性優先で 10s に設定する。
 	webfingerClient := activitypub.NewWebFingerClient(&http.Client{
 		Timeout:   10 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
+		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
 	}, s.config.UserAgent)
 	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
 		webfingerClient, federationResolver, userRepo, localHost,
@@ -874,7 +874,7 @@ func (s *Server) setupRoutes() {
 		}
 		smtpUser, smtpPass := smtpMeta2.SmtpUser, smtpMeta2.SmtpPass
 		resetHandler.SetEmailSender(func(to, subject, body string) {
-			miscsmtp.Send(host, port, smtpUser, smtpPass, fromAddr, to, subject, body)
+			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
 	api.POST("/request-reset-password", resetHandler.RequestReset)
@@ -1026,7 +1026,7 @@ func (s *Server) setupRoutes() {
 		}
 		smtpUser, smtpPass := smtpMeta.SmtpUser, smtpMeta.SmtpPass
 		iHandler.SetEmailSender(func(to, subject, body string) {
-			miscsmtp.Send(host, port, smtpUser, smtpPass, fromAddr, to, subject, body)
+			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
 	if webauthnSvc != nil {
@@ -1260,6 +1260,8 @@ func (s *Server) setupRoutes() {
 		proxyAllowlist, s.config.MediaProxySecret,
 		s.config.AllowedPrivateNetworks,
 		safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts),
+		safehttp.WithOutgoingAddress(s.config.OutgoingAddress),
+		safehttp.WithAddressFamily(s.config.OutgoingAddressFamily),
 	)
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)
@@ -1572,6 +1574,7 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetPasswordResetRepo(resetReqRepo)
 	adminHandler.SetServerURL(s.config.URL)
 	adminHandler.SetConfigSetupPassword(s.config.SetupPassword)
+	adminHandler.SetSMTPProxyURL(s.config.ProxySmtp)
 	if smtpMetaAdmin, err := metaRepo.Fetch(); err == nil && smtpMetaAdmin.EnableEmail && smtpMetaAdmin.Email != nil && smtpMetaAdmin.SmtpHost != nil {
 		fromAddr := *smtpMetaAdmin.Email
 		host := *smtpMetaAdmin.SmtpHost
@@ -1581,7 +1584,7 @@ func (s *Server) setupRoutes() {
 		}
 		smtpUser, smtpPass := smtpMetaAdmin.SmtpUser, smtpMetaAdmin.SmtpPass
 		adminHandler.SetEmailSender(func(to, subject, body string) {
-			miscsmtp.Send(host, port, smtpUser, smtpPass, fromAddr, to, subject, body)
+			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
 	adminHandler.SetModLogRepo(modLogRepo)
@@ -1751,7 +1754,7 @@ func (s *Server) setupRoutes() {
 		s.redis.Default,
 		&http.Client{
 			Timeout:   10 * time.Second,
-			Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts)),
+			Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
 		},
 	))
 	// #417 P3: /match の acct 引数で未キャッシュのリモートユーザーを

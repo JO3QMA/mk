@@ -241,6 +241,108 @@ func TestNewSSRFSafeTransport_EmptyProxyURLNoOp(t *testing.T) {
 // ErrSSRFBlocked が返らない (= proxy 一致判定が機能している) ことで
 // 間接的に検証する。dial 自体はループバック上の閉じた port なので
 // "connection refused" 系のエラーになるが、それは bug fix の対象外。
+// #496: WithOutgoingAddress / WithAddressFamily の挙動を確認する。
+// LocalAddr は実 bind しないと kernel が valid 検証しないので、Transport
+// 構築 + Dialer 経由で「不正値は無視」「正常値が反映される」だけ確認。
+
+// 不正な IP 文字列を渡しても panic せず Transport は使えるまま。
+// (内部 Dialer.LocalAddr は nil のまま = kernel auto-pick)。
+func TestNewSSRFSafeTransport_OutgoingAddressInvalidIgnored(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	tr := NewSSRFSafeTransport([]string{"127.0.0.0/8"}, WithOutgoingAddress("not-an-ip"))
+	client := &http.Client{Transport: tr}
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+}
+
+// 正常な loopback IP を LocalAddr に指定してもループバック宛なら通る
+// (実 bind を kernel が許可する経路)。
+func TestNewSSRFSafeTransport_OutgoingAddressLoopbackBinds(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	tr := NewSSRFSafeTransport([]string{"127.0.0.0/8"}, WithOutgoingAddress("127.0.0.1"))
+	client := &http.Client{Transport: tr}
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+}
+
+// addressFamily=ipv4 で IPv6 のみ解決される host への接続を弾く。
+// httptest の listener は IPv4 にバインドされるが、LookupIPAddr が ::1 も
+// 返してくるかは環境次第。確実な検証には normalize/match を直叩きする。
+func TestNormalizeFamily(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"ipv4", "ipv4"},
+		{"IPv4", "ipv4"},
+		{"ipv6", "ipv6"},
+		{" IPv6 ", "ipv6"},
+		{"dual", ""},
+		{"", ""},
+		{"garbage", ""},
+	}
+	for _, tc := range cases {
+		if got := normalizeFamily(tc.in); got != tc.want {
+			t.Errorf("normalizeFamily(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchFamily(t *testing.T) {
+	if !matchFamily(net.ParseIP("1.2.3.4"), "ipv4") {
+		t.Error("1.2.3.4 should match ipv4")
+	}
+	if matchFamily(net.ParseIP("1.2.3.4"), "ipv6") {
+		t.Error("1.2.3.4 should NOT match ipv6")
+	}
+	if !matchFamily(net.ParseIP("2001:db8::1"), "ipv6") {
+		t.Error("2001:db8::1 should match ipv6")
+	}
+	// IPv4-mapped IPv6 は ipv4 として扱う。
+	if !matchFamily(net.ParseIP("::ffff:1.2.3.4"), "ipv4") {
+		t.Error("::ffff:1.2.3.4 should match ipv4 (4-in-6)")
+	}
+}
+
+// addressFamily=ipv4 でも 127.0.0.1 自体は IPv4 なので解決され、その後の
+// SSRF check で private IP として block される。family filter 経路を抜けて
+// 後段の SSRF 判定に到達することの確認。
+func TestNewSSRFSafeTransport_AddressFamilyIPv4PassesThrough(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	tr := NewSSRFSafeTransport(nil, WithAddressFamily("ipv4"))
+	client := &http.Client{Transport: tr, Timeout: 2 * time.Second}
+	_, err := client.Get(ts.URL)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSSRFBlocked, "ipv4 family must reach SSRF check, not bypass it")
+}
+
+// addressFamily=ipv6 で IPv4-only host (httptest) を解決すると
+// no ipv6 address エラーで dial 失敗。
+func TestNewSSRFSafeTransport_AddressFamilyIPv6FiltersOutIPv4(t *testing.T) {
+	tr := NewSSRFSafeTransport([]string{"127.0.0.0/8"}, WithAddressFamily("ipv6"))
+	client := &http.Client{Transport: tr, Timeout: 2 * time.Second}
+	// IPv4-only な test 用ドメイン: localhost は実際 ::1 も返すので使えない。
+	// 127.0.0.1 を直接渡す (IPv4 数値リテラル → DNS 不要だが Go の resolver
+	// が wrap で 127.0.0.1 を返す経路 = familyFilter が IPv4 を弾く)。
+	_, err := client.Get("http://127.0.0.1:1/")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no ipv6 address",
+		"ipv6 family must drop the only-IPv4 resolution result")
+}
+
 func TestNewSSRFSafeTransport_IPv6ProxyDefaultPort(t *testing.T) {
 	tr := NewSSRFSafeTransport(nil, WithProxy("http://[::1]", nil))
 	require.NotNil(t, tr)

@@ -6,14 +6,31 @@
 package smtp
 
 import (
+	"bufio"
+	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	gosmtp "net/smtp"
+	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
+
+// Options holds optional configuration for Send. Future flags (TLS mode,
+// timeouts, etc) live here. Zero-value is "no overrides".
+type Options struct {
+	// ProxyURL routes the SMTP TCP connection through a forward proxy.
+	// 形式は upstream Misskey の `proxySmtp` と同じく URL (scheme で
+	// プロトコルを指定): `socks5://user:pass@host:1080` または
+	// `http://host:3128` (HTTP CONNECT)。空文字なら direct dial。
+	ProxyURL string
+}
 
 // sanitizeHeaderValue strips CR and LF characters to prevent SMTP header
 // injection.
@@ -24,8 +41,15 @@ func sanitizeHeaderValue(s string) string {
 	return r.Replace(s)
 }
 
-// Send sends a plain-text email via SMTP.
+// Send sends a plain-text email via SMTP. Direct dial; equivalent to
+// SendWithOptions(.., Options{}).
 func Send(host string, port int, user, pass *string, from, to, subject, body string) {
+	SendWithOptions(host, port, user, pass, from, to, subject, body, Options{})
+}
+
+// SendWithOptions is Send + functional options. Currently only ProxyURL is
+// supported; mismatched scheme falls back to direct dial with a warning.
+func SendWithOptions(host string, port int, user, pass *string, from, to, subject, body string, opts Options) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	// ヘッダーフィールドのCRLFインジェクション対策
@@ -42,9 +66,9 @@ func Send(host string, port int, user, pass *string, from, to, subject, body str
 		from, to, subject, body)
 
 	tlsConfig := &tls.Config{ServerName: host}
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	conn, err := dialSMTP(addr, opts.ProxyURL, 10*time.Second)
 	if err != nil {
-		slog.Warn("email: dial failed", "error", err)
+		slog.Warn("email: dial failed", "error", err, "proxyConfigured", opts.ProxyURL != "")
 		return
 	}
 
@@ -86,3 +110,174 @@ func Send(host string, port int, user, pass *string, from, to, subject, body str
 
 	slog.Info("email sent", "to", to, "subject", subject)
 }
+
+// dialSMTP opens a TCP connection to addr (SMTP server). When proxyURL is
+// set, the connection is tunnelled via the named proxy:
+//
+//   - socks5://[user:pass@]host:port → SOCKS5 (golang.org/x/net/proxy)
+//   - socks5h:// は socks5 と同じ扱い (Go 標準では区別しない)
+//   - http://host:port / https://host:port → HTTP CONNECT tunnel
+//
+// 不明な scheme / parse 失敗時は warn ログを出して direct dial にフォール
+// バックする (proxy 設定ミスでメール送信全停止になるよりは、direct で
+// 送れる経路があれば送る方を優先する)。
+func dialSMTP(addr, proxyURL string, timeout time.Duration) (net.Conn, error) {
+	if proxyURL == "" {
+		return net.DialTimeout("tcp", addr, timeout)
+	}
+	u, err := url.Parse(proxyURL)
+	if err != nil || u.Host == "" {
+		slog.Warn("email: invalid proxySmtp URL, falling back to direct dial",
+			"proxySmtp", proxyURL, "err", err)
+		return net.DialTimeout("tcp", addr, timeout)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "socks5", "socks5h":
+		return dialSOCKS5(u, addr, timeout)
+	case "http", "https":
+		return dialHTTPConnect(u, addr, timeout)
+	default:
+		slog.Warn("email: unsupported proxySmtp scheme, falling back to direct dial",
+			"scheme", u.Scheme)
+		return net.DialTimeout("tcp", addr, timeout)
+	}
+}
+
+// dialSOCKS5 wraps golang.org/x/net/proxy.SOCKS5 with the configured
+// timeout. user/pass は URL の userinfo から取り出す (空なら認証無し)。
+func dialSOCKS5(u *url.URL, addr string, timeout time.Duration) (net.Conn, error) {
+	var auth *proxy.Auth
+	if u.User != nil {
+		pw, _ := u.User.Password()
+		auth = &proxy.Auth{User: u.User.Username(), Password: pw}
+	}
+	d, err := proxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: timeout})
+	if err != nil {
+		return nil, fmt.Errorf("socks5 setup: %w", err)
+	}
+	// proxy.Dialer.Dial は context をサポートしないが、x/net/proxy の
+	// SOCKS5 内部 Dialer に Timeout を渡しているので接続全体に伝播する。
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if cd, ok := d.(proxy.ContextDialer); ok {
+		return cd.DialContext(ctx, "tcp", addr)
+	}
+	return d.Dial("tcp", addr)
+}
+
+// dialHTTPConnect opens a TCP connection to the HTTP proxy and issues a
+// CONNECT request to tunnel through to addr. TLS over HTTP CONNECT (https://
+// proxy) は proxy への接続を TLS で包んでから CONNECT を送る; SMTP server
+// 側の StartTLS とは独立。
+//
+// 重要: 実 proxy (Squid / nginx 等) は target に先に接続して greeting を
+// バッファし、200 応答とまとめて 1 TCP segment で push する場合がある。
+// 単純な conn.Read だと SMTP banner まで読み込んで捨ててしまうため、
+// bufio.Reader で CONNECT 応答だけを正確に消費し、残った bytes は
+// 接続に noticed させて caller (gosmtp.NewClient) に届ける必要がある。
+// readCONNECTResponse + bufferedConn でこれを実装する。
+func dialHTTPConnect(u *url.URL, addr string, timeout time.Duration) (net.Conn, error) {
+	proxyHost := u.Host
+	if _, _, splitErr := net.SplitHostPort(proxyHost); splitErr != nil {
+		port := "80"
+		if strings.EqualFold(u.Scheme, "https") {
+			port = "443"
+		}
+		proxyHost = net.JoinHostPort(u.Hostname(), port)
+	}
+
+	dialer := &net.Dialer{Timeout: timeout}
+	var conn net.Conn
+	var err error
+	if strings.EqualFold(u.Scheme, "https") {
+		conn, err = tls.DialWithDialer(dialer, "tcp", proxyHost, &tls.Config{ServerName: u.Hostname()})
+	} else {
+		conn, err = dialer.Dial("tcp", proxyHost)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dial proxy %s: %w", proxyHost, err)
+	}
+
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", addr, addr)
+	if u.User != nil {
+		// Basic auth — RFC 7617 base64(user:pass). 空 user / 空 pass は省略。
+		username := u.User.Username()
+		password, _ := u.User.Password()
+		if username != "" || password != "" {
+			creds := username + ":" + password
+			encoded := encodeBasicAuth(creds)
+			req += "Proxy-Authorization: Basic " + encoded + "\r\n"
+		}
+	}
+	req += "\r\n"
+
+	if _, err := conn.Write([]byte(req)); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("write CONNECT: %w", err)
+	}
+
+	// bufio.Reader で CONNECT 応答 (status line + 空行までの header) を
+	// line-by-line で読む。Read 1 回で SMTP banner まで巻き込まないこと、
+	// それでも buffer に残ったバイトは bufferedConn 経由で gosmtp.NewClient
+	// に届くことを保証する。
+	br := bufio.NewReader(conn)
+	if err := readCONNECTResponse(conn, br); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return &bufferedConn{Conn: conn, r: br}, nil
+}
+
+// bufferedConn wraps net.Conn so subsequent Reads draw from a bufio.Reader
+// buffer first (consumed bytes that were left over after CONNECT response
+// parsing). Writes / Close / Deadline 系は素 conn にそのまま委譲する。
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
+
+// readCONNECTResponse parses the proxy's HTTP/1.1 CONNECT response from a
+// bufio.Reader. Returns nil on 2xx, error otherwise. Header 行は status の
+// 後ろの空行まで読み捨てる。実 proxy が buffer した SMTP banner は br に
+// 残し、後段の bufferedConn で gosmtp に渡す。
+func readCONNECTResponse(conn net.Conn, br *bufio.Reader) error {
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read CONNECT status line: %w", err)
+	}
+	statusLine = strings.TrimRight(statusLine, "\r\n")
+	parts := strings.SplitN(statusLine, " ", 3)
+	if len(parts) < 2 || !strings.HasPrefix(parts[1], "2") {
+		return fmt.Errorf("CONNECT failed: %s", statusLine)
+	}
+	// header 行を空行まで消費する。Header line を超えた bytes は bufio
+	// の buffer に残り、bufferedConn 経由で次の Read に渡る。
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read CONNECT headers: %w", err)
+		}
+		if line == "\r\n" || line == "\n" {
+			return nil
+		}
+	}
+}
+
+// encodeBasicAuth returns the base64 form of "user:pass" for the
+// Proxy-Authorization header.
+func encodeBasicAuth(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+// errProxyTunnelFailed is exported for tests. (Currently dial errors are
+// wrapped via fmt.Errorf, but a sentinel kept as an extension point.)
+var errProxyTunnelFailed = errors.New("proxy tunnel failed")
+
+var _ = errProxyTunnelFailed
