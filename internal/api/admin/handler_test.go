@@ -2,6 +2,7 @@ package admin_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -173,6 +174,59 @@ func TestShowUsers_Success(t *testing.T) {
 	var resp []any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Len(t, resp, 2)
+}
+
+// admin/show-users が profile 取得を per-row FindProfileByUserID で
+// 引いていた N+1 を FindProfilesByUserIDs 1 batch に置換した (#300 1-4)。
+// 5 user 検証で per-row が 0 回、batch が 1 回 + size=5 で呼ばれることを
+// 担保する。
+type countingAdminUserRepo struct {
+	*testutil.MockUserRepository
+	findProfileByUserIDCalls    int
+	findProfilesByUserIDsCalls  int
+	findProfilesByUserIDsBucket int
+}
+
+func (c *countingAdminUserRepo) FindProfileByUserID(id string) (*model.UserProfile, error) {
+	c.findProfileByUserIDCalls++
+	return c.MockUserRepository.FindProfileByUserID(id)
+}
+
+func (c *countingAdminUserRepo) FindProfilesByUserIDs(ids []string) ([]*model.UserProfile, error) {
+	c.findProfilesByUserIDsCalls++
+	c.findProfilesByUserIDsBucket += len(ids)
+	return c.MockUserRepository.FindProfilesByUserIDs(ids)
+}
+
+func TestShowUsers_BatchFetchesProfiles(t *testing.T) {
+	repo := &countingAdminUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	for i := 0; i < 5; i++ {
+		uid := fmt.Sprintf("au%d", i)
+		repo.Users[uid] = &model.User{ID: uid, Username: uid}
+		desc := fmt.Sprintf("d%d", i)
+		repo.Profiles[uid] = &model.UserProfile{UserID: uid, Description: &desc}
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	roleRepo := testutil.NewMockRoleRepository()
+	assignRepo := testutil.NewMockRoleAssignmentRepository(roleRepo)
+	idGen, _ := id.NewGenerator("aidx")
+	signupSvc := signup.NewService(repo, metaRepo, idGen)
+	roleSvc := role.NewService(roleRepo, assignRepo, metaRepo, idGen)
+	h := apiadmin.NewHandler(signupSvc, roleSvc, metaRepo, repo, idGen)
+
+	rec := doPost(h.ShowUsers, `{"limit":10}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 5)
+
+	assert.Equal(t, 0, repo.findProfileByUserIDCalls,
+		"per-row FindProfileByUserID must not be called (N+1 must be eliminated)")
+	assert.Equal(t, 1, repo.findProfilesByUserIDsCalls,
+		"FindProfilesByUserIDs should be called exactly once per request")
+	assert.Equal(t, 5, repo.findProfilesByUserIDsBucket,
+		"all 5 user IDs should be coalesced into a single batch")
 }
 
 func TestShowUsers_WithFilter(t *testing.T) {

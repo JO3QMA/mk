@@ -80,6 +80,7 @@ make dropin-frontend-logs
 | `cross_instance_view.cy.ts` | charlie note を A/B 両方から observe して一致確認 | pass |
 | `delete_note.cy.ts` | charlie 削除 → A/B timeline から消える | pass |
 | `reply_chain.cy.ts` | charlie → bob reply の 2 hop | skip (#389 で調整後 activate) |
+| `federation_allowlist.cy.ts` | A の federation mode を `specified [B]` / `none` に切替えて A→B 通過 / A→C ブロックを検証 | pass (#536) |
 
 attachment / emoji / reaction は Phase 14-2.5 以降 (admin emoji 投入フロー / 
 remote image ingest (#378) / reaction deliver (#369) の条件整備が必要)。

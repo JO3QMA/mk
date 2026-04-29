@@ -517,10 +517,26 @@ func (h *Handler) ShowUsers(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
+	// Profile を per-row FindProfileByUserID で引いていた N+1 (#300 1-4) を
+	// FindProfilesByUserIDs (#503 で追加済) の 1 batch query に置換。
+	ids := make([]string, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	profiles, err := h.userRepo.FindProfilesByUserIDs(ids)
+	if err != nil {
+		// Profile fetch 失敗は ShowUsers 全体の致命扱いではないので、空 map で
+		// fallback する (各 user は profile=nil で pack される)。
+		profiles = nil
+	}
+	profileByUser := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileByUser[p.UserID] = p
+	}
+
 	result := make([]map[string]any, 0, len(users))
 	for _, u := range users {
-		profile, _ := h.userRepo.FindProfileByUserID(u.ID)
-		result = append(result, h.packAdminUser(u, profile))
+		result = append(result, h.packAdminUser(u, profileByUser[u.ID]))
 	}
 	return c.JSON(http.StatusOK, result)
 }
