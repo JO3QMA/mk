@@ -15,11 +15,11 @@ import (
 var ErrAlreadyRunning = errors.New("server: another instance appears to be running")
 
 // WritePidFile writes the current PID to path. If path is empty it returns
-// (nil, nil) — pidFile is an opt-in feature.
+// a no-op cleanup function and nil error — pidFile is an opt-in feature.
 //
 // Returns a cleanup function that removes the file (best effort) on
-// shutdown. Cleanup is also nil when path is empty so callers can defer it
-// unconditionally.
+// shutdown. When path is empty the cleanup function is a no-op, so callers
+// can defer it unconditionally.
 //
 // 既存 PID ファイルが live なプロセスを指しているときは ErrAlreadyRunning
 // を返して起動を拒否する。stale なファイル (PID は dead) なら上書きする
