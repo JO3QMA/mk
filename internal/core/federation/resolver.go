@@ -247,8 +247,8 @@ func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
 	return v.(*model.User), nil
 }
 
-// resolveActorOnce は ResolveActor の本体。singleflight.Do から 1 度だけ
-// 呼ばれる前提。
+// resolveActorOnce is the body of ResolveActor, invoked once per URI by
+// singleflight.Do.
 func (r *Resolver) resolveActorOnce(uri string) (*model.User, error) {
 	if existing, err := r.userRepo.FindByURI(uri); err == nil {
 		if r.shouldRefreshActor(existing) {
@@ -519,6 +519,8 @@ func (r *Resolver) ResolveNote(uri string) (*model.Note, error) {
 	return v.(*model.Note), nil
 }
 
+// resolveNoteOnce is the body of ResolveNote, invoked once per URI by
+// singleflight.Do.
 func (r *Resolver) resolveNoteOnce(uri string) (*model.Note, error) {
 	if r.noteRepo == nil {
 		return nil, ErrInvalidNote

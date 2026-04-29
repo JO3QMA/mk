@@ -83,6 +83,8 @@ func (c *WebFingerClient) LookupActorURI(username, host string) (string, error) 
 	return v.(string), nil
 }
 
+// lookupActorURIOnce is the body of LookupActorURI, invoked once per
+// resource by singleflight.Do.
 func (c *WebFingerClient) lookupActorURIOnce(host, resource string) (string, error) {
 	endpoint := c.endpoint(host) + "?resource=" + url.QueryEscape(resource)
 
