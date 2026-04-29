@@ -220,7 +220,10 @@ type PaginatedListRequest struct {
 
 // Followed handles POST /api/channels/followed.
 //
-// channel_following.id を cursor として frontend Paginator から受ける。
+// frontend Paginator は response item の id (= channel.id = followeeId)
+// を cursor として送ってくる。repository.ListFollowed 側で followeeId を
+// cursor 列として使うことで domain mismatch を避けている。詳細は
+// channel_following.go:ListFollowed の comment 参照。
 func (h *Handler) Followed(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req PaginatedListRequest

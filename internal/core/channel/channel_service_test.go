@@ -264,16 +264,22 @@ func TestListFollowed(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
-// brokenChannelRepo makes FindByID fail so ListFollowed skips entries.
+// brokenChannelRepo makes FindByIDs fail so ListFollowed propagates the
+// error instead of returning a partial list.
 type brokenChannelRepo struct {
 	*testutil.MockChannelRepository
 }
 
-func (r *brokenChannelRepo) FindByID(_ string) (*model.Channel, error) {
+func (r *brokenChannelRepo) FindByIDs(_ []string) ([]*model.Channel, error) {
 	return nil, errors.New("boom")
 }
 
-func TestListFollowed_FindByIDFailure(t *testing.T) {
+// TestListFollowed_FindByIDsFailure verifies that ListFollowed propagates
+// the FindByIDs error (not silent skip). 8th-pass refactor switched from
+// per-row FindByID with continue-on-error to batch FindByIDs, so the
+// failure mode now surfaces to the caller (more correct than hiding DB
+// errors).
+func TestListFollowed_FindByIDsFailure(t *testing.T) {
 	mock := testutil.NewMockChannelRepository()
 	repo := &brokenChannelRepo{MockChannelRepository: mock}
 	followRepo := testutil.NewMockChannelFollowingRepository()
@@ -281,9 +287,27 @@ func TestListFollowed_FindByIDFailure(t *testing.T) {
 	idGen, _ := id.NewGenerator("aidx")
 	svc := channel.NewService(repo, followRepo, testutil.NewMockNoteRepository(), idGen)
 
+	_, err := svc.ListFollowed("u1", "", "", 10, 0)
+	require.Error(t, err)
+}
+
+// TestListFollowed_MissingChannelSkipped verifies that channels missing
+// from the FindByIDs result (e.g., deleted) are silently skipped while
+// other rows are returned normally.
+func TestListFollowed_MissingChannelSkipped(t *testing.T) {
+	repo := testutil.NewMockChannelRepository()
+	repo.Channels["c1"] = &model.Channel{ID: "c1", Name: "alpha"}
+	// c_missing is followed but not in repo (deleted)
+	followRepo := testutil.NewMockChannelFollowingRepository()
+	followRepo.Followings["f1"] = &model.ChannelFollowing{ID: "f1", FollowerID: "u1", FolloweeID: "c1"}
+	followRepo.Followings["f2"] = &model.ChannelFollowing{ID: "f2", FollowerID: "u1", FolloweeID: "c_missing"}
+	idGen, _ := id.NewGenerator("aidx")
+	svc := channel.NewService(repo, followRepo, testutil.NewMockNoteRepository(), idGen)
+
 	rows, err := svc.ListFollowed("u1", "", "", 10, 0)
 	require.NoError(t, err)
-	assert.Empty(t, rows)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "c1", rows[0].ID)
 }
 
 // listFailFollowRepo causes ListFollowed to fail.
