@@ -40,7 +40,11 @@ func clampLimit(limit int) int {
 
 func (r *galleryRepository) ListByUser(userID, sinceID, untilID string, limit, offset int) ([]*model.GalleryPost, error) {
 	limit = clampLimit(limit)
-	q := r.db.Where(`"userId" = ?`, userID)
+	// packGalleryPost が p.User を読んで user フィールドを埋めるので、
+	// FindPostsByIDs と揃えて User を Preload する。Preload なしだと
+	// i/gallery/posts のレスポンスから user が抜け落ちて i/gallery/likes
+	// との shape 不整合になる (#520 review)。
+	q := r.db.Preload("User").Where(`"userId" = ?`, userID)
 	if sinceID != "" {
 		q = q.Where("id > ?", sinceID)
 	}
