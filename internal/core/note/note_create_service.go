@@ -448,15 +448,40 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		if s.userRepo != nil {
 			mentions := ExtractMentionStructs(*in.Text)
 			if len(mentions) > 0 {
-				ids := make([]string, 0, len(mentions))
+				// host ごとに 1 query にまとめる (#300 1-5)。
+				// 元実装は mention 数 N に対して N 回 FindByUsernameLower を
+				// 直列に叩いていたが、host 単位で IN(?) にしてラウンドトリップ
+				// を host 種類数まで削減する。
+				byHost := make(map[string][]string)
 				for _, m := range mentions {
-					var host *string
-					if m.Host != "" {
-						h := m.Host
-						host = &h
+					byHost[m.Host] = append(byHost[m.Host], m.Username)
+				}
+				// resolved[host][usernameLower] = userID
+				resolved := make(map[string]map[string]string, len(byHost))
+				for host, names := range byHost {
+					var hostPtr *string
+					if host != "" {
+						h := host
+						hostPtr = &h
 					}
-					if u, err := s.userRepo.FindByUsernameLower(m.Username, host); err == nil {
-						ids = append(ids, u.ID)
+					users, err := s.userRepo.FindManyByUsernamesAndHost(names, hostPtr)
+					if err != nil {
+						// 1 host の lookup 失敗は当該 host の mention を
+						// 諦めて後続を続行する (元実装も err 時 skip だった)。
+						continue
+					}
+					m := make(map[string]string, len(users))
+					for _, u := range users {
+						m[u.UsernameLower] = u.ID
+					}
+					resolved[host] = m
+				}
+				ids := make([]string, 0, len(mentions))
+				for _, mn := range mentions {
+					if hostMap, ok := resolved[mn.Host]; ok {
+						if id, ok := hostMap[strings.ToLower(mn.Username)]; ok {
+							ids = append(ids, id)
+						}
 					}
 				}
 				note.Mentions = ids
