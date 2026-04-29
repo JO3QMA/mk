@@ -21,6 +21,7 @@ import (
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
+	"golang.org/x/sync/singleflight"
 )
 
 // HTTPFetcher abstracts the HTTP client used for fetching remote AP objects.
@@ -98,6 +99,13 @@ type Resolver struct {
 	// 未設定なら probe 自体をスキップする (安全側に倒す: SSRF リスクを
 	// 起こすくらいなら properties 空のまま運用)。
 	imageProbeClient *http.Client
+
+	// resolveActorGroup / resolveNoteGroup は同一 URI への並行 ResolveActor /
+	// ResolveNote 呼び出しを 1 度の DB lookup + HTTP fetch に collapse する
+	// (#300 3-7)。inbox 受信時に同じ remote actor / note を参照する activity
+	// が連続して届く現実的なケースで thundering herd を抑える。
+	resolveActorGroup singleflight.Group
+	resolveNoteGroup  singleflight.Group
 }
 
 // NewResolver constructs a Resolver.
@@ -210,6 +218,25 @@ func (r *Resolver) PublicKeyForActor(actorID string) (string, error) {
 // が actorTTL を超えていたら fetch しなおして name / inbox / sharedInbox /
 // publicKey を更新する。fetch 失敗時はベストエフォートで既存値を返す。
 func (r *Resolver) ResolveActor(uri string) (*model.User, error) {
+	// 同一 URI への並行呼び出しは singleflight で 1 つに collapse する
+	// (#300 3-7)。cache hit 経路は微秒なので serialize の影響は無視でき、
+	// cold な fetch + Create で発生する HTTP fan-out + UNIQUE 衝突を抑える
+	// 効果が大きい。
+	v, err, _ := r.resolveActorGroup.Do(uri, func() (any, error) {
+		return r.resolveActorOnce(uri)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, ErrInvalidActor
+	}
+	return v.(*model.User), nil
+}
+
+// resolveActorOnce は ResolveActor の本体。singleflight.Do から 1 度だけ
+// 呼ばれる前提。
+func (r *Resolver) resolveActorOnce(uri string) (*model.User, error) {
 	if existing, err := r.userRepo.FindByURI(uri); err == nil {
 		if r.shouldRefreshActor(existing) {
 			r.refreshActor(existing, uri)
@@ -457,6 +484,22 @@ func (r *Resolver) ResolveActorByKeyID(keyID string) (*model.User, error) {
 //   - リモート URI で既に取り込み済みなら noteRepo.FindByURI で返す
 //   - 未知のリモート URI なら fetcher で取得して IngestNote で永続化
 func (r *Resolver) ResolveNote(uri string) (*model.Note, error) {
+	// 同一 URI への並行呼び出しは singleflight で collapse (#300 3-7)。
+	// ResolveActor と同じく cold path の HTTP fetch + IngestNote を重複
+	// 実行しないことが目的。
+	v, err, _ := r.resolveNoteGroup.Do(uri, func() (any, error) {
+		return r.resolveNoteOnce(uri)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, ErrInvalidNote
+	}
+	return v.(*model.Note), nil
+}
+
+func (r *Resolver) resolveNoteOnce(uri string) (*model.Note, error) {
 	if r.noteRepo == nil {
 		return nil, ErrInvalidNote
 	}

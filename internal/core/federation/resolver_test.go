@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +29,21 @@ type stubFetcher struct {
 
 func (s *stubFetcher) FetchObject(_ string) ([]byte, error) {
 	return s.body, s.err
+}
+
+// blockingFetcher counts FetchObject calls and blocks until gate is closed.
+// 並行呼び出しが singleflight に集約される瞬間を観測するためのテスト用 fetcher
+// (#300 3-7)。
+type blockingFetcher struct {
+	body  []byte
+	gate  chan struct{}
+	calls atomic.Int64
+}
+
+func (b *blockingFetcher) FetchObject(_ string) ([]byte, error) {
+	b.calls.Add(1)
+	<-b.gate
+	return b.body, nil
 }
 
 const sampleActor = `{
@@ -2673,3 +2690,101 @@ func TestUpdateRemoteNote_MentionsRecomputed(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, []string{"alice"}, []string(got.Mentions))
 }
+
+// 同一 URI への並行 ResolveActor 呼び出しは singleflight で 1 回の HTTP
+// fetch に collapse される (#300 3-7)。inbox 受信が同じ remote actor の
+// activity を連続して取り込むケースを想定。
+func TestResolveActor_DedupesConcurrentCalls(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	fetcher := &blockingFetcher{body: []byte(sampleActor), gate: make(chan struct{})}
+	r := federation.NewResolver(repo, noteRepo, urls, fetcher, idGen)
+
+	const N = 16
+	var wg sync.WaitGroup
+	results := make([]*model.User, N)
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = r.ResolveActor("https://remote.example/users/alice")
+		}(i)
+	}
+	close(fetcher.gate)
+	wg.Wait()
+
+	for i := 0; i < N; i++ {
+		require.NoError(t, errs[i], "call %d", i)
+		require.NotNil(t, results[i])
+		assert.Equal(t, "alice", results[i].Username)
+	}
+	// 16 並行 → 1 fetch に集約されることが目標。leader が 1 回完了すると
+	// 別の wave の leader が立ち得るので寛容な上限を取る。
+	assert.LessOrEqual(t, fetcher.calls.Load(), int64(2),
+		"singleflight must collapse concurrent same-URI ResolveActor to ~1 fetch")
+	// DB 上は単一 user 行になることも担保する (UNIQUE 衝突が発生しない)。
+	assert.Len(t, repo.Users, 1)
+}
+
+// blockingNoteFetcher は FetchObject の calls を atomic で数える Note 用 fetcher。
+// FetchObject の戻り値はユニコードな Note JSON である必要があるので、actor
+// JSON を流用する resolver test のヘルパとは別に持つ。
+type blockingNoteFetcher struct {
+	body  []byte
+	gate  chan struct{}
+	calls atomic.Int64
+}
+
+func (b *blockingNoteFetcher) FetchObject(_ string) ([]byte, error) {
+	b.calls.Add(1)
+	<-b.gate
+	return b.body, nil
+}
+
+// 同一 URI への並行 ResolveNote 呼び出しも同様に collapse される (#300 3-7)。
+func TestResolveNote_DedupesConcurrentCalls(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	repo.Users["uA"] = &model.User{
+		ID:       "uA",
+		Username: "alice",
+		Host:     ptrString("remote.example"),
+		URI:      ptrString("https://remote.example/users/alice"),
+	}
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	body := []byte(`{
+		"id": "https://remote.example/notes/n1",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "hello"
+	}`)
+	fetcher := &blockingNoteFetcher{body: body, gate: make(chan struct{})}
+	r := federation.NewResolver(repo, noteRepo, urls, fetcher, idGen)
+
+	const N = 16
+	var wg sync.WaitGroup
+	results := make([]*model.Note, N)
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = r.ResolveNote("https://remote.example/notes/n1")
+		}(i)
+	}
+	close(fetcher.gate)
+	wg.Wait()
+
+	for i := 0; i < N; i++ {
+		require.NoError(t, errs[i], "call %d", i)
+		require.NotNil(t, results[i])
+	}
+	assert.LessOrEqual(t, fetcher.calls.Load(), int64(2),
+		"singleflight must collapse concurrent same-URI ResolveNote to ~1 fetch")
+}
+
+func ptrString(s string) *string { return &s }
