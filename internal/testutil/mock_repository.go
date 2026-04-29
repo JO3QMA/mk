@@ -166,6 +166,13 @@ func (m *MockUserRepository) IncrementFollowingCount(userID string, delta int) e
 	return nil
 }
 
+func (m *MockUserRepository) IncrementNotesCount(userID string, delta int) error {
+	if u, ok := m.Users[userID]; ok {
+		u.NotesCount += delta
+	}
+	return nil
+}
+
 func (m *MockUserRepository) IncrementFollowersCount(userID string, delta int) error {
 	if u, ok := m.Users[userID]; ok {
 		u.FollowersCount += delta

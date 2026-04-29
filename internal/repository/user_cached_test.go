@@ -1,0 +1,443 @@
+package repository_test
+
+import (
+	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+// countingUserRepo wraps a stub UserRepository and exposes call counts on
+// the methods we cache or invalidate around. それ以外は zero-value pass-
+// through で十分 (caching とは無関係なので)。
+type countingUserRepo struct {
+	repository.UserRepository
+
+	users    map[string]*model.User
+	profiles map[string]*model.UserProfile
+
+	findByIDCalls            atomic.Int64
+	findProfileByUserIDCalls atomic.Int64
+
+	updateUserErr      error
+	updateProfileErr   error
+	createProfileErr   error
+	incFollowingErr    error
+	incFollowersErr    error
+	updateUserCalls    atomic.Int64
+	updateProfileCalls atomic.Int64
+}
+
+func newCountingUserRepo() *countingUserRepo {
+	return &countingUserRepo{
+		users:    make(map[string]*model.User),
+		profiles: make(map[string]*model.UserProfile),
+	}
+}
+
+func (c *countingUserRepo) FindByID(id string) (*model.User, error) {
+	c.findByIDCalls.Add(1)
+	if u, ok := c.users[id]; ok {
+		return u, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (c *countingUserRepo) FindProfileByUserID(userID string) (*model.UserProfile, error) {
+	c.findProfileByUserIDCalls.Add(1)
+	if p, ok := c.profiles[userID]; ok {
+		return p, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (c *countingUserRepo) UpdateUser(userID string, _ map[string]any) error {
+	c.updateUserCalls.Add(1)
+	return c.updateUserErr
+}
+
+func (c *countingUserRepo) UpdateProfile(userID string, _ map[string]any) error {
+	c.updateProfileCalls.Add(1)
+	return c.updateProfileErr
+}
+
+func (c *countingUserRepo) CreateProfile(p *model.UserProfile) error {
+	if c.createProfileErr != nil {
+		return c.createProfileErr
+	}
+	if p != nil {
+		c.profiles[p.UserID] = p
+	}
+	return nil
+}
+
+func (c *countingUserRepo) IncrementFollowingCount(_ string, _ int) error {
+	return c.incFollowingErr
+}
+
+func (c *countingUserRepo) IncrementFollowersCount(_ string, _ int) error {
+	return c.incFollowersErr
+}
+
+func (c *countingUserRepo) IncrementNotesCount(_ string, _ int) error {
+	return nil
+}
+
+func (c *countingUserRepo) FindManyByIDs(ids []string) ([]*model.User, error) {
+	out := make([]*model.User, 0, len(ids))
+	for _, id := range ids {
+		if u, ok := c.users[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func (c *countingUserRepo) FindProfilesByUserIDs(ids []string) ([]*model.UserProfile, error) {
+	out := make([]*model.UserProfile, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := c.profiles[id]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func TestCachedUserRepository_FindByIDHitsInnerOnce(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	cached := repository.NewCachedUserRepository(inner)
+
+	for i := 0; i < 10; i++ {
+		got, err := cached.FindByID("u1")
+		require.NoError(t, err)
+		assert.Equal(t, "alice", got.Username)
+	}
+	assert.Equal(t, int64(1), inner.findByIDCalls.Load(),
+		"10 cached lookups must hit inner exactly once")
+}
+
+func TestCachedUserRepository_FindProfileByUserIDHitsInnerOnce(t *testing.T) {
+	inner := newCountingUserRepo()
+	desc := "hi"
+	inner.profiles["u1"] = &model.UserProfile{UserID: "u1", Description: &desc}
+	cached := repository.NewCachedUserRepository(inner)
+
+	for i := 0; i < 5; i++ {
+		got, err := cached.FindProfileByUserID("u1")
+		require.NoError(t, err)
+		assert.Equal(t, "hi", *got.Description)
+	}
+	assert.Equal(t, int64(1), inner.findProfileByUserIDCalls.Load())
+}
+
+func TestCachedUserRepository_NotFoundIsNegativeCached(t *testing.T) {
+	inner := newCountingUserRepo()
+	cached := repository.NewCachedUserRepository(inner)
+
+	for i := 0; i < 5; i++ {
+		_, err := cached.FindByID("ghost")
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	}
+	assert.Equal(t, int64(1), inner.findByIDCalls.Load(),
+		"missing rows must be negative-cached so timeline ghost lookups don't reflood inner")
+}
+
+// ErrNotFound 以外の error は cache されない。transient な DB 障害が次回
+// 呼び出しで自動回復することを担保する。
+type erroringUserRepo struct {
+	repository.UserRepository
+	calls atomic.Int64
+}
+
+func (e *erroringUserRepo) FindByID(_ string) (*model.User, error) {
+	e.calls.Add(1)
+	return nil, errors.New("db down")
+}
+
+func (e *erroringUserRepo) FindProfileByUserID(_ string) (*model.UserProfile, error) {
+	e.calls.Add(1)
+	return nil, errors.New("db down")
+}
+
+func TestCachedUserRepository_TransientErrorIsNotCached(t *testing.T) {
+	inner := &erroringUserRepo{}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, err := cached.FindByID("u1")
+	require.Error(t, err)
+	_, err = cached.FindByID("u1")
+	require.Error(t, err)
+	assert.Equal(t, int64(2), inner.calls.Load(),
+		"non-NotFound errors must not be cached")
+
+	_, err = cached.FindProfileByUserID("u1")
+	require.Error(t, err)
+	_, err = cached.FindProfileByUserID("u1")
+	require.Error(t, err)
+	assert.Equal(t, int64(4), inner.calls.Load())
+}
+
+func TestCachedUserRepository_RefreshesAfterTTL(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	cached := repository.NewCachedUserRepositoryWithTTL(inner, 1*time.Millisecond)
+
+	_, err := cached.FindByID("u1")
+	require.NoError(t, err)
+	time.Sleep(2 * time.Millisecond)
+	_, err = cached.FindByID("u1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
+}
+
+func TestCachedUserRepository_UpdateUserInvalidates(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindByID("u1") // warm
+	require.NoError(t, cached.UpdateUser("u1", map[string]any{"name": "x"}))
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load(),
+		"UpdateUser must invalidate so the next FindByID re-reads")
+}
+
+func TestCachedUserRepository_UpdateUserErrDoesNotInvalidate(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	inner.updateUserErr = errors.New("db down")
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindByID("u1") // warm
+	err := cached.UpdateUser("u1", map[string]any{"name": "x"})
+	require.Error(t, err)
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(1), inner.findByIDCalls.Load(),
+		"failed UpdateUser must not invalidate (DB state unchanged)")
+}
+
+func TestCachedUserRepository_UpdateProfileInvalidatesProfile(t *testing.T) {
+	inner := newCountingUserRepo()
+	desc := "hi"
+	inner.profiles["u1"] = &model.UserProfile{UserID: "u1", Description: &desc}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindProfileByUserID("u1")
+	require.NoError(t, cached.UpdateProfile("u1", map[string]any{"desc": "y"}))
+	_, _ = cached.FindProfileByUserID("u1")
+	assert.Equal(t, int64(2), inner.findProfileByUserIDCalls.Load())
+}
+
+// UpdateProfile (例: lastActiveDate / password) が user 行も同 ID で
+// 共有されているケースに備え、profile 更新時は user 側 cache も飛ばす。
+// (現状は同 userID で削除しているので user 側エントリも消える挙動。)
+func TestCachedUserRepository_UpdateProfileInvalidatesUserAlso(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	desc := "hi"
+	inner.profiles["u1"] = &model.UserProfile{UserID: "u1", Description: &desc}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindByID("u1")
+	_, _ = cached.FindProfileByUserID("u1")
+	require.NoError(t, cached.UpdateProfile("u1", map[string]any{"desc": "y"}))
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load(),
+		"UpdateProfile invalidates both user and profile entries for the same ID")
+}
+
+func TestCachedUserRepository_CreateProfileInvalidates(t *testing.T) {
+	inner := newCountingUserRepo()
+	cached := repository.NewCachedUserRepository(inner)
+
+	// 最初は profile なし → negative cache に乗る
+	_, err := cached.FindProfileByUserID("u1")
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	require.Equal(t, int64(1), inner.findProfileByUserIDCalls.Load())
+
+	// CreateProfile 後は negative cache を飛ばして再取得する
+	require.NoError(t, cached.CreateProfile(&model.UserProfile{UserID: "u1"}))
+	got, err := cached.FindProfileByUserID("u1")
+	require.NoError(t, err)
+	assert.Equal(t, "u1", got.UserID)
+	assert.Equal(t, int64(2), inner.findProfileByUserIDCalls.Load())
+}
+
+func TestCachedUserRepository_IncrementFollowingCountInvalidates(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1", FollowingCount: 0}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindByID("u1")
+	require.NoError(t, cached.IncrementFollowingCount("u1", 1))
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
+}
+
+// notesCount は note 作成のたびに userRepo.IncrementNotesCount で増減
+// される (旧経路の noteRepo.IncrementUserNotesCount は cache を bypass
+// していた)。CachedUserRepository が invalidate を取りこぼすと profile
+// 表示で stale notesCount が出続けるので必ず飛ぶこと (Devin #552 BUG-2)。
+func TestCachedUserRepository_IncrementNotesCountInvalidates(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindByID("u1")
+	require.NoError(t, cached.IncrementNotesCount("u1", 1))
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
+}
+
+func TestCachedUserRepository_IncrementFollowersCountInvalidates(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	cached := repository.NewCachedUserRepository(inner)
+
+	_, _ = cached.FindByID("u1")
+	require.NoError(t, cached.IncrementFollowersCount("u1", 1))
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
+}
+
+func TestCachedUserRepository_PublicInvalidate(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	cached := repository.NewCachedUserRepositoryWithTTL(inner, time.Hour)
+
+	_, _ = cached.FindByID("u1")
+	cached.Invalidate("u1")
+	_, _ = cached.FindByID("u1")
+	assert.Equal(t, int64(2), inner.findByIDCalls.Load())
+}
+
+// FindManyByIDs / FindProfilesByUserIDs はバルク結果で per-userID cache を
+// warm する。直後の FindByID / FindProfileByUserID は inner を再度叩かない
+// (Devin review #552 FLAG-1)。
+func TestCachedUserRepository_FindManyByIDsWarmsPerKeyCache(t *testing.T) {
+	inner := newCountingUserRepo()
+	inner.users["u1"] = &model.User{ID: "u1"}
+	inner.users["u2"] = &model.User{ID: "u2"}
+	cached := repository.NewCachedUserRepository(inner)
+
+	out, err := cached.FindManyByIDs([]string{"u1", "u2"})
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+
+	// per-key cache が warm されているので FindByID は inner を叩かない。
+	_, err = cached.FindByID("u1")
+	require.NoError(t, err)
+	_, err = cached.FindByID("u2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), inner.findByIDCalls.Load(),
+		"bulk fetch must populate per-key cache")
+}
+
+func TestCachedUserRepository_FindProfilesByUserIDsWarmsPerKeyCache(t *testing.T) {
+	inner := newCountingUserRepo()
+	desc := "p"
+	inner.profiles["u1"] = &model.UserProfile{UserID: "u1", Description: &desc}
+	inner.profiles["u2"] = &model.UserProfile{UserID: "u2", Description: &desc}
+	cached := repository.NewCachedUserRepository(inner)
+
+	out, err := cached.FindProfilesByUserIDs([]string{"u1", "u2"})
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+
+	_, err = cached.FindProfileByUserID("u1")
+	require.NoError(t, err)
+	_, err = cached.FindProfileByUserID("u2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), inner.findProfileByUserIDCalls.Load(),
+		"bulk profile fetch must populate per-key cache")
+}
+
+// users map のサイズが maxEntries を超えたら、insert 時に期限切れエントリ
+// を一括削除する (Devin review #552: unbounded growth 対策)。
+//
+// 検証戦略: cap=3 / TTL=10ms で 3 件 warm → 期限切れ待機 → 4 件目を insert
+// → 期限切れ 3 件は map から消えるので、それらを再取得すると inner を
+// 叩く回数が増える (cache miss に戻る)。新しい entry は live なので
+// cache hit のまま。
+func TestCachedUserRepository_EvictsExpiredEntriesOnInsertOverCap(t *testing.T) {
+	inner := newCountingUserRepo()
+	for _, id := range []string{"u1", "u2", "u3", "u4"} {
+		inner.users[id] = &model.User{ID: id}
+	}
+	cached := repository.NewCachedUserRepositoryWithTTL(inner, 10*time.Millisecond)
+	cached.SetMaxEntriesForTest(3)
+
+	// 3 件 warm。inner は 3 回叩かれる。
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, err := cached.FindByID(id)
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(3), inner.findByIDCalls.Load())
+
+	// TTL 失効を待つ。
+	time.Sleep(15 * time.Millisecond)
+
+	// 4 件目を insert: len == cap(3) で eviction 発火 → expired 3 件削除。
+	_, err := cached.FindByID("u4")
+	require.NoError(t, err)
+	// u4 lookup で +1
+	require.Equal(t, int64(4), inner.findByIDCalls.Load())
+
+	// 期限切れだった u1/u2/u3 は map から消えているので、再 lookup は
+	// inner を叩く (cache miss)。
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, _ = cached.FindByID(id)
+	}
+	assert.Equal(t, int64(7), inner.findByIDCalls.Load(),
+		"expired entries must be evicted on insert when over cap, forcing inner re-fetch")
+}
+
+// profile 側の同 eviction 挙動。
+func TestCachedUserRepository_EvictsExpiredProfilesOnInsertOverCap(t *testing.T) {
+	inner := newCountingUserRepo()
+	desc := "p"
+	for _, id := range []string{"u1", "u2", "u3", "u4"} {
+		inner.profiles[id] = &model.UserProfile{UserID: id, Description: &desc}
+	}
+	cached := repository.NewCachedUserRepositoryWithTTL(inner, 10*time.Millisecond)
+	cached.SetMaxEntriesForTest(3)
+
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, err := cached.FindProfileByUserID(id)
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(3), inner.findProfileByUserIDCalls.Load())
+
+	time.Sleep(15 * time.Millisecond)
+
+	_, err := cached.FindProfileByUserID("u4")
+	require.NoError(t, err)
+	require.Equal(t, int64(4), inner.findProfileByUserIDCalls.Load())
+
+	for _, id := range []string{"u1", "u2", "u3"} {
+		_, _ = cached.FindProfileByUserID(id)
+	}
+	assert.Equal(t, int64(7), inner.findProfileByUserIDCalls.Load(),
+		"expired profile entries must be evicted on insert when over cap")
+}
+
+// 空 ID は no-op で inner にだけ任せる (lookup error がそのまま返る)。
+// 空 ID を cache key にすると意図しない衝突を起こすので意図的に bypass する。
+func TestCachedUserRepository_EmptyIDIsBypassed(t *testing.T) {
+	inner := newCountingUserRepo()
+	cached := repository.NewCachedUserRepository(inner)
+
+	for i := 0; i < 3; i++ {
+		_, _ = cached.FindByID("")
+		_, _ = cached.FindProfileByUserID("")
+	}
+	assert.Equal(t, int64(3), inner.findByIDCalls.Load())
+	assert.Equal(t, int64(3), inner.findProfileByUserIDCalls.Load())
+}

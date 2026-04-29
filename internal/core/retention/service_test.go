@@ -72,6 +72,7 @@ func (s *stubUserRepo) FindManyByIDs([]string) ([]*model.User, error) { return n
 func (s *stubUserRepo) FindManyByUsernamesAndHost([]string, *string) ([]*model.User, error) {
 	return nil, nil
 }
+func (s *stubUserRepo) IncrementNotesCount(string, int) error                        { return nil }
 func (s *stubUserRepo) FindProfilesByUserIDs([]string) ([]*model.UserProfile, error) { return nil, nil }
 
 type stubRetentionRepo struct {
