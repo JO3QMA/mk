@@ -247,6 +247,75 @@ func TestUserRepository_FindProfilesByUserIDs_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestUserRepository_FindManyByUsernamesAndHost_Local(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u1 := insertTestUser(t, "u_fmu_1", "alice")
+	u2 := insertTestUser(t, "u_fmu_2", "bob")
+	defer cleanupUser(t, u1.ID)
+	defer cleanupUser(t, u2.ID)
+
+	out, err := repo.FindManyByUsernamesAndHost([]string{"alice", "bob", "ghost"}, nil)
+	require.NoError(t, err)
+	got := map[string]bool{}
+	for _, u := range out {
+		got[u.ID] = true
+	}
+	assert.True(t, got[u1.ID])
+	assert.True(t, got[u2.ID])
+	assert.False(t, got["ghost"], "missing rows are skipped silently")
+}
+
+func TestUserRepository_FindManyByUsernamesAndHost_CaseInsensitive(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	u := insertTestUser(t, "u_fmu_3", "carol")
+	defer cleanupUser(t, u.ID)
+
+	// 入力が大文字混じりでも usernameLower 列で正規化マッチする (#300 1-5)。
+	out, err := repo.FindManyByUsernamesAndHost([]string{"CAROL"}, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, u.ID, out[0].ID)
+}
+
+func TestUserRepository_FindManyByUsernamesAndHost_RemoteScope(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	hostA := "a.example.com"
+	hostB := "b.example.com"
+	uA := insertRemoteTestUser(t, "u_fmu_4", "dave", hostA)
+	uB := insertRemoteTestUser(t, "u_fmu_5", "dave", hostB)
+	uLocal := insertTestUser(t, "u_fmu_6", "dave")
+	defer cleanupUser(t, uA.ID)
+	defer cleanupUser(t, uB.ID)
+	defer cleanupUser(t, uLocal.ID)
+
+	// host=hostA のみ返る (同名だが host 違いの remote / local は除外)。
+	out, err := repo.FindManyByUsernamesAndHost([]string{"dave"}, &hostA)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, uA.ID, out[0].ID)
+
+	// host=nil のときは local のみ返る (remote 同名はマッチしない)。
+	out, err = repo.FindManyByUsernamesAndHost([]string{"dave"}, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, uLocal.ID, out[0].ID)
+}
+
+func TestUserRepository_FindManyByUsernamesAndHost_Empty(t *testing.T) {
+	repo := NewUserRepository(testDB)
+	out, err := repo.FindManyByUsernamesAndHost(nil, nil)
+	require.NoError(t, err)
+	assert.Nil(t, out)
+}
+
+func TestUserRepository_FindManyByUsernamesAndHost_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserRepository(testDB.WithContext(ctx))
+	_, err := repo.FindManyByUsernamesAndHost([]string{"x"}, nil)
+	assert.Error(t, err)
+}
+
 func TestUserRepository_FindByUsernameLower_NotFound(t *testing.T) {
 	repo := NewUserRepository(testDB)
 

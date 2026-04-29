@@ -91,6 +91,10 @@ func (m *mockUserRepo) FindManyByIDs([]string) ([]*model.User, error) {
 	return nil, nil
 }
 
+func (m *mockUserRepo) FindManyByUsernamesAndHost([]string, *string) ([]*model.User, error) {
+	return nil, nil
+}
+
 func (m *mockUserRepo) FindProfilesByUserIDs([]string) ([]*model.UserProfile, error) {
 	return nil, nil
 }

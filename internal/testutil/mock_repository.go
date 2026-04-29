@@ -79,6 +79,30 @@ func (m *MockUserRepository) FindByUsernameLower(username string, host *string) 
 	return nil, ErrNotFound
 }
 
+// FindManyByUsernamesAndHost mirrors the production repo: case-insensitive
+// match on usernameLower, scoped to a single host (nil = local-only).
+func (m *MockUserRepository) FindManyByUsernamesAndHost(usernames []string, host *string) ([]*model.User, error) {
+	if len(usernames) == 0 {
+		return nil, nil
+	}
+	want := make(map[string]struct{}, len(usernames))
+	for _, u := range usernames {
+		want[strings.ToLower(u)] = struct{}{}
+	}
+	out := make([]*model.User, 0, len(usernames))
+	for _, u := range m.Users {
+		if _, ok := want[u.UsernameLower]; !ok {
+			continue
+		}
+		if host == nil && u.Host == nil {
+			out = append(out, u)
+		} else if host != nil && u.Host != nil && *host == *u.Host {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 func (m *MockUserRepository) FindProfileByUserID(userID string) (*model.UserProfile, error) {
 	p, ok := m.Profiles[userID]
 	if !ok {
