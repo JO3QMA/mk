@@ -3,6 +3,7 @@ package role
 import (
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -19,12 +20,31 @@ var (
 	ErrNotAssigned = errors.New("role not assigned")
 )
 
+// roleCacheTTL は GetUserRoles キャッシュの有効期限。Misskey TS 同等の
+// admin 操作 (admin/roles/* 経路) は頻度が低いので、5 分に揃えて
+// IsAdministrator / IsModerator / GetUserPolicies の DB 負荷を消す
+// (#300 3-5)。
+const roleCacheTTL = 5 * time.Minute
+
+// roleCacheEntry は per-user の roles snapshot + 失効時刻。
+type roleCacheEntry struct {
+	roles     []*model.Role
+	expiresAt time.Time
+}
+
 // Service manages roles and role assignments.
 type Service struct {
 	roleRepo       repository.RoleRepository
 	assignmentRepo repository.RoleAssignmentRepository
 	metaRepo       repository.MetaRepository
 	idGen          id.Generator
+
+	// userRoleCache は GetUserRoles 結果の per-user TTL キャッシュ
+	// (sync.Map で hot path に lock を持ち込まない)。Assign / Unassign で
+	// 当該 userID を、Delete (role 削除) で全 entry を invalidate する。
+	// admin/roles/update が roleRepo を直接叩く経路は TTL でしかカバー
+	// できないが、roleCacheTTL = 5 min で staleness は bounded (#300 3-5)。
+	userRoleCache sync.Map // userID -> *roleCacheEntry
 }
 
 // NewService constructs a RoleService.
@@ -42,8 +62,38 @@ func NewService(
 	}
 }
 
+// InvalidateUserRoleCache drops the cached role list for userID. Out-of-band
+// admin paths (e.g. role mutation via repo) can call this to force a refresh.
+func (s *Service) InvalidateUserRoleCache(userID string) {
+	if userID == "" {
+		return
+	}
+	s.userRoleCache.Delete(userID)
+}
+
+// InvalidateAllRoleCaches drops every cached entry. Used when a role is
+// deleted (we don't know which users were assigned without an extra DB hit,
+// so the simplest safe action is to flush the whole cache).
+func (s *Service) InvalidateAllRoleCaches() {
+	s.userRoleCache.Range(func(k, _ any) bool {
+		s.userRoleCache.Delete(k)
+		return true
+	})
+}
+
 // GetUserRoles returns all active (non-expired) roles assigned to the user.
+// 結果は roleCacheTTL 期間 in-memory にキャッシュされる (#300 3-5)。
 func (s *Service) GetUserRoles(userID string) ([]*model.Role, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	if v, ok := s.userRoleCache.Load(userID); ok {
+		if entry, ok := v.(*roleCacheEntry); ok && time.Now().Before(entry.expiresAt) {
+			return entry.roles, nil
+		}
+		s.userRoleCache.Delete(userID)
+	}
+
 	assignments, err := s.assignmentRepo.ListByUser(userID)
 	if err != nil {
 		return nil, err
@@ -54,6 +104,10 @@ func (s *Service) GetUserRoles(userID string) ([]*model.Role, error) {
 			roles = append(roles, a.Role)
 		}
 	}
+	s.userRoleCache.Store(userID, &roleCacheEntry{
+		roles:     roles,
+		expiresAt: time.Now().Add(roleCacheTTL),
+	})
 	return roles, nil
 }
 
@@ -172,7 +226,11 @@ func (s *Service) Assign(userID, roleID string, expiresAt *time.Time) error {
 		RoleID:    roleID,
 		ExpiresAt: expiresAt,
 	}
-	return s.assignmentRepo.Create(a)
+	if err := s.assignmentRepo.Create(a); err != nil {
+		return err
+	}
+	s.InvalidateUserRoleCache(userID)
+	return nil
 }
 
 // Unassign removes a role from a user.
@@ -184,7 +242,11 @@ func (s *Service) Unassign(userID, roleID string) error {
 	if !exists {
 		return ErrNotAssigned
 	}
-	return s.assignmentRepo.Delete(userID, roleID)
+	if err := s.assignmentRepo.Delete(userID, roleID); err != nil {
+		return err
+	}
+	s.InvalidateUserRoleCache(userID)
+	return nil
 }
 
 // Create creates a new role.
@@ -239,7 +301,14 @@ func (s *Service) Delete(id string) error {
 	if _, err := s.roleRepo.FindByID(id); err != nil {
 		return ErrRoleNotFound
 	}
-	return s.roleRepo.Delete(id)
+	if err := s.roleRepo.Delete(id); err != nil {
+		return err
+	}
+	// 削除した role を assigned していた user 集合は分からないので、
+	// 全 cache を flush する。admin 操作で頻度が低いので O(N) flush の
+	// コストは許容範囲。
+	s.InvalidateAllRoleCaches()
+	return nil
 }
 
 // DefaultPolicies returns the Misskey default policies.

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/entity"
@@ -323,12 +324,38 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 
 	// reply/renote先のノートを取得し、閲覧権限を確認する。
 	// 取得したノートは、後段のカウンタ更新と非正規化フィールドの埋め込みに使う。
-	var replyTarget, renoteTarget *model.Note
+	// ReplyID と RenoteID の DB fetch は完全に独立しているので並列に走らせて
+	// 1 round-trip ぶん latency を削る (#300 2-5)。validation は fetch 後に
+	// 直列で走らせ、エラー報告順 (reply → renote) は変えない。
+	var (
+		replyTarget, renoteTarget *model.Note
+		replyFetchErr             error
+		renoteFetchErr            error
+	)
+	{
+		var wg sync.WaitGroup
+		if in.ReplyID != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				replyTarget, replyFetchErr = s.noteRepo.FindByIDWithUser(*in.ReplyID)
+			}()
+		}
+		if in.RenoteID != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				renoteTarget, renoteFetchErr = s.noteRepo.FindByIDWithUser(*in.RenoteID)
+			}()
+		}
+		wg.Wait()
+	}
+
 	if in.ReplyID != nil {
-		t, err := s.noteRepo.FindByIDWithUser(*in.ReplyID)
-		if err != nil {
+		if replyFetchErr != nil {
 			return nil, ErrReplyTargetNotFound
 		}
+		t := replyTarget
 		// 可視性チェックを先に行う。FindByIDWithUserは無条件に行を返すため、
 		// 不可視noteに対して別error (pure renote 等) を返すと「対象noteが
 		// 何であるか」を攻撃者が推測できる情報漏洩になる。Devin review #270。
@@ -349,13 +376,12 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 				return nil, err
 			}
 		}
-		replyTarget = t
 	}
 	if in.RenoteID != nil {
-		t, err := s.noteRepo.FindByIDWithUser(*in.RenoteID)
-		if err != nil {
+		if renoteFetchErr != nil {
 			return nil, ErrRenoteTargetNotFound
 		}
+		t := renoteTarget
 		// 可視性チェックを先に行う (Devin review #270 — 情報漏洩防止)。
 		if !CanSeeNote(in.User, t, s.followingRepo) {
 			return nil, ErrCannotRenoteInvisibleNote
@@ -378,7 +404,6 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 				return nil, err
 			}
 		}
-		renoteTarget = t
 	}
 
 	now := time.Now()

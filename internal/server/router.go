@@ -137,7 +137,11 @@ func (s *Server) setupRoutes() {
 	followRequestRepo := repository.NewFollowRequestRepository(s.db)
 	piningRepo := repository.NewUserNotePiningRepository(s.db)
 	reactionRepo := repository.NewNoteReactionRepository(s.db)
-	emojiRepo := repository.NewEmojiRepository(s.db)
+	// emoji の ListLocal はタイムライン描画ごとに毎回フルスキャンしていた
+	// hot path だが、絵文字テーブルの mutation は admin 経由のみで頻度が低い。
+	// 5 分 TTL の in-memory cache + mutation 時 invalidate で DB 負荷を消す
+	// (#300 3-6)。
+	emojiRepo := repository.NewCachedEmojiRepository(repository.NewEmojiRepository(s.db))
 	blockingRepo := repository.NewBlockingRepository(s.db)
 	mutingRepo := repository.NewMutingRepository(s.db)
 	renoteMutingRepo := repository.NewRenoteMutingRepository(s.db)

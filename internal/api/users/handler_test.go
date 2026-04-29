@@ -646,6 +646,97 @@ func TestFollowers_Success(t *testing.T) {
 	assert.Len(t, out, 1)
 }
 
+// users/followers が follower user の取得を per-row ShowByID で叩いて
+// いた N+1 を ShowManyByIDs 1 batch に置換した (#300 2-3)。
+// 5 follower 検証で per-row FindByID + FindProfileByUserID が 0 回、
+// FindManyByIDs / FindProfilesByUserIDs が 1 回ずつだけ呼ばれることを担保。
+type countingFollowerUserRepo struct {
+	*testutil.MockUserRepository
+	findByIDCalls            int
+	findProfileByUserIDCalls int
+	findManyByIDsCalls       int
+	findProfilesByUserIDs    int
+	findManyByIDsCallSize    int
+}
+
+func (c *countingFollowerUserRepo) FindByID(id string) (*model.User, error) {
+	c.findByIDCalls++
+	return c.MockUserRepository.FindByID(id)
+}
+
+func (c *countingFollowerUserRepo) FindProfileByUserID(id string) (*model.UserProfile, error) {
+	c.findProfileByUserIDCalls++
+	return c.MockUserRepository.FindProfileByUserID(id)
+}
+
+func (c *countingFollowerUserRepo) FindManyByIDs(ids []string) ([]*model.User, error) {
+	c.findManyByIDsCalls++
+	c.findManyByIDsCallSize += len(ids)
+	return c.MockUserRepository.FindManyByIDs(ids)
+}
+
+func (c *countingFollowerUserRepo) FindProfilesByUserIDs(ids []string) ([]*model.UserProfile, error) {
+	c.findProfilesByUserIDs++
+	return c.MockUserRepository.FindProfilesByUserIDs(ids)
+}
+
+func TestFollowers_BatchFetchesUsers(t *testing.T) {
+	repo := &countingFollowerUserRepo{MockUserRepository: testutil.NewMockUserRepository()}
+	noteRepo := testutil.NewMockNoteRepository()
+	piningRepo := testutil.NewMockUserNotePiningRepository()
+	fRepo := testutil.NewMockFollowingRepository()
+	frRepo := testutil.NewMockFollowRequestRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coreuser.NewService(repo, noteRepo, piningRepo, idGen)
+	fSvc := corefollowing.NewService(repo, fRepo, frRepo, idGen)
+	h := NewHandler(svc, fSvc, noteRepo, idGen)
+
+	// target user (followee)
+	repo.Users["target"] = &model.User{
+		ID: "target", Username: "target", UsernameLower: "target",
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	for i := 0; i < 5; i++ {
+		uid := fmt.Sprintf("rel-f-%d", i)
+		repo.Users[uid] = &model.User{
+			ID: uid, Username: uid, UsernameLower: uid,
+			AvatarDecorations: datatypes.JSON([]byte("[]")),
+		}
+		_, err := fSvc.Follow(uid, "target")
+		require.NoError(t, err)
+	}
+
+	// `followingService.Follow` が内部で repo.FindByID 経由でユーザー存在
+	// 確認するため、handler 直前に call counter をリセットして listRelations
+	// 経由の query 数だけを観測する。
+	repo.findByIDCalls = 0
+	repo.findProfileByUserIDCalls = 0
+	repo.findManyByIDsCalls = 0
+	repo.findManyByIDsCallSize = 0
+	repo.findProfilesByUserIDs = 0
+
+	rec := post(h.Followers, `{"userId":"target","limit":10}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 5)
+
+	// listRelations の冒頭で ShowByID(req.UserID) を呼んで target 存在確認
+	// するため、FindByID と FindProfileByUserID が 1 回ずつ走るのは
+	// 想定どおり。重要なのは follower 5 件の解決で per-row 経路に落ちて
+	// いないこと = listRelations の N+1 が解消されていること。
+	assert.Equal(t, 1, repo.findByIDCalls,
+		"only target existence check should call FindByID; per-row must use batch")
+	assert.Equal(t, 1, repo.findProfileByUserIDCalls,
+		"only target existence check should call FindProfileByUserID; per-row must use batch")
+	assert.Equal(t, 1, repo.findManyByIDsCalls,
+		"FindManyByIDs should be called exactly once per request for the 5 followers")
+	assert.Equal(t, 5, repo.findManyByIDsCallSize,
+		"all 5 follower IDs should be coalesced into a single batch")
+	assert.Equal(t, 1, repo.findProfilesByUserIDs,
+		"FindProfilesByUserIDs should be called exactly once per request")
+}
+
 func TestFollowers_LimitClamp(t *testing.T) {
 	h, repo := newTestHandler(t)
 	addTestUser(repo)
