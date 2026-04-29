@@ -26,7 +26,7 @@ type S3API interface {
 // prefix is normalised at construction so that operators can enter either
 // "files" or "files/" in the admin UI; objectKey always emits
 // "<prefix>/<accessKey>". This matches Misskey TS which always joins prefix
-// and accessKey with a "/" (#525)。
+// and accessKey with a "/" (#525).
 type S3Storage struct {
 	client        S3API
 	bucket        string
@@ -61,10 +61,11 @@ func NewS3Storage(cfg S3StorageConfig) *S3Storage {
 }
 
 // objectKey returns the full S3 object key for the given accessKey.
-// prefix と accessKey の間に必ず "/" を入れる。Misskey TS の objectKey
-// 生成 (`${prefix}/${accessKey}`) と一致させて、同じ DB に対する
-// drop-in 切替で互いの書き込みが読めるようにする (#525)。
+// Empty prefix returns just accessKey; otherwise emits "<prefix>/<accessKey>".
 func (s *S3Storage) objectKey(accessKey string) string {
+	// prefix と accessKey の間に必ず "/" を入れる。Misskey TS の objectKey
+	// 生成 (`${prefix}/${accessKey}`) と一致させて、同じ DB に対する
+	// drop-in 切替で互いの書き込みが読めるようにする (#525)。
 	if s.prefix == "" {
 		return accessKey
 	}
