@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"strings"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
@@ -22,6 +23,12 @@ type UserRepository interface {
 	// FindProfilesByUserIDs returns user_profile rows for the given userId
 	// set in a single query. Order is unspecified; missing rows are skipped.
 	FindProfilesByUserIDs(userIDs []string) ([]*model.UserProfile, error)
+	// FindManyByUsernamesAndHost returns users matching any of the given
+	// (case-insensitive) usernames within a single host scope. host=nil
+	// targets local users (host IS NULL); otherwise host must equal the
+	// supplied value. Used by note-create mention resolution to batch the
+	// FindByUsernameLower per-mention loop into one query per host (#300 1-5).
+	FindManyByUsernamesAndHost(usernames []string, host *string) ([]*model.User, error)
 	IncrementFollowingCount(userID string, delta int) error
 	IncrementFollowersCount(userID string, delta int) error
 	SearchByUsername(query string, limit, offset int) ([]*model.User, error)
@@ -103,6 +110,32 @@ func (r *userRepository) FindByUsernameLower(username string, host *string) (*mo
 		return nil, err
 	}
 	return &user, nil
+}
+
+// FindManyByUsernamesAndHost batches the case-insensitive username lookup
+// for one host scope. Empty input returns nil. PostgreSQL の `lower(unnest)`
+// 比較で IN(?) 相当を 1 query にまとめる (#300 1-5)。
+func (r *userRepository) FindManyByUsernamesAndHost(usernames []string, host *string) ([]*model.User, error) {
+	if len(usernames) == 0 {
+		return nil, nil
+	}
+	// usernameLower 列に格納されている値と比較したいので、引数側を lower
+	// 化して IN マッチさせる。usernames が大文字混在でも一括で正規化される。
+	lowered := make([]string, len(usernames))
+	for i, u := range usernames {
+		lowered[i] = strings.ToLower(u)
+	}
+	q := r.db.Where(`"usernameLower" IN ?`, lowered)
+	if host != nil {
+		q = q.Where("host = ?", *host)
+	} else {
+		q = q.Where("host IS NULL")
+	}
+	var users []*model.User
+	if err := q.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
 }
 
 func (r *userRepository) FindProfileByUserID(userID string) (*model.UserProfile, error) {
