@@ -359,11 +359,13 @@ func channelToMap(ch *model.Channel) map[string]any {
 }
 
 // channelToMapForViewer wraps channelToMap and embeds viewer-dependent
-// fields (isFollowing / isFavorited). Misskey TS is `ChannelEntityService`
-// が channelFollowings / channelFavorites を join して埋めており、
-// frontend (`channel.vue`) はこのフィールドを直接参照してフォローボタン
-// 状態を切り替えるので、欠落すると常に未フォロー UI になる (#522)。
+// fields (isFollowing / isFavorited) by issuing per-row Exists calls.
+// Returns the bare channelToMap when viewer is nil (#522).
 func (h *Handler) channelToMapForViewer(ch *model.Channel, viewer *model.User) map[string]any {
+	// Misskey TS の `ChannelEntityService` は channelFollowings /
+	// channelFavorites を join して埋めており、frontend (`channel.vue`) は
+	// このフィールドを直接参照してフォローボタン状態を切り替える。欠落
+	// すると常に未フォロー UI になる。
 	out := channelToMap(ch)
 	if viewer == nil {
 		return out
