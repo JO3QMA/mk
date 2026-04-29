@@ -410,11 +410,17 @@ func (h *Handler) GalleryLikes(c echo.Context) error {
 	}
 	out := make([]map[string]any, 0, len(likes))
 	for _, l := range likes {
-		entry := map[string]any{"id": l.ID}
-		if p, ok := postByID[l.PostID]; ok {
-			entry["post"] = packGalleryPost(p, h.idGen)
+		// upstream Misskey TS は post が削除済の like row を Promise.all
+		// + pack の null フィルタで弾く。frontend の MkGalleryPostPreview
+		// も it.post 必須なので、ここで skip して整合させる。
+		p, ok := postByID[l.PostID]
+		if !ok {
+			continue
 		}
-		out = append(out, entry)
+		out = append(out, map[string]any{
+			"id":   l.ID,
+			"post": packGalleryPost(p, h.idGen),
+		})
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -462,25 +468,7 @@ func (h *Handler) GalleryPosts(c echo.Context) error {
 	}
 	out := make([]map[string]any, 0, len(posts))
 	for _, p := range posts {
-		entry := map[string]any{
-			"id":          p.ID,
-			"updatedAt":   p.UpdatedAt,
-			"title":       p.Title,
-			"description": p.Description,
-			"userId":      p.UserID,
-			"fileIds":     []string(p.FileIDs),
-			// files は既存の gallery packOne と揃えて空配列を返す
-			// (フロントが post.files を前提にするため undefined を避ける)。
-			// 将来 gallery/posts と同じ展開ロジックを共通化する可能性あり。
-			"files":       []any{},
-			"isSensitive": p.IsSensitive,
-			"likedCount":  p.LikedCount,
-			"tags":        []string(p.Tags),
-		}
-		if t, err := h.idGen.ParseTime(p.ID); err == nil {
-			entry["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
-		}
-		out = append(out, entry)
+		out = append(out, packGalleryPost(p, h.idGen))
 	}
 	return c.JSON(http.StatusOK, out)
 }

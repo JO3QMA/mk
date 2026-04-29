@@ -55,6 +55,9 @@ func (h *Handler) Posts(c echo.Context) error {
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
 	q := h.db.Preload("User")
 	if req.SinceID != "" {
 		q = q.Where("id > ?", req.SinceID)

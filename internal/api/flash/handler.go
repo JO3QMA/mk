@@ -57,7 +57,7 @@ func (h *Handler) Create(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashToMap(f))
+	return c.JSON(http.StatusOK, h.flashesToListWithUser([]*model.Flash{f})[0])
 }
 
 // ShowRequest is the request body for flash/show.
@@ -128,7 +128,7 @@ func (h *Handler) Update(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, flashToMap(f))
+	return c.JSON(http.StatusOK, h.flashesToListWithUser([]*model.Flash{f})[0])
 }
 
 // DeleteRequest is the request body for flash/delete.
