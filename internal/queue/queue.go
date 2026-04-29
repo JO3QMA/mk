@@ -154,9 +154,11 @@ func (c *Client) EnqueueImportCustomEmojis(payload ImportCustomEmojisPayload) er
 // (#534). HTTP handler 側で signature 検証 + host block + chart hook を
 // 同期で済ませた後、重い Process(body) だけを worker に逃がすために使う。
 //
-// Policy.MaxAttempts (= deliverJobMaxAttempts と同じ BullMQ 規約) が
-// セットされていれば WithMaxRetry に N-1 で適用、caller opts は
-// last-write-wins で上書き可能 (deliver と同じ pattern)。
+// Policy.MaxAttempts (= inboxJobMaxAttempts と同じ BullMQ 規約) が
+// セットされていれば WithMaxRetry に N-1 で適用される。EnqueueInbox は
+// 現状 caller opts を受け取らない (inbox 経路は単一の固定 enqueue で
+// 十分なため)。将来オプション渡しが必要になったら EnqueueDeliver と同じ
+// variadic pattern に揃える。
 func (c *Client) EnqueueInbox(ctx context.Context, payload InboxPayload) error {
 	body := mustMarshal(payload)
 	base := []driver.EnqueueOption{driver.WithQueue(InboxQueueName)}

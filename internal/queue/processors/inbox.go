@@ -11,6 +11,14 @@ import (
 	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
+// FederationProcessor is the narrow surface of federation.Processor that
+// InboxProcessor consumes (#534). 切り出すことで unit test が
+// federation.NewProcessor(...) の重い依存 chain (resolver / following /
+// reaction / userRepo / noteRepo) を組まなくても済む。
+type FederationProcessor interface {
+	Process(body []byte) error
+}
+
 // InboxProcessor handles ap:inbox tasks by replaying the inbound AP
 // activity through federation.Processor (#534). The HTTP handler has
 // already verified the signature and committed instance / chart hooks
@@ -21,12 +29,12 @@ import (
 // 戦略)。順序保証や per-actor lock は持たず、後着の Update が一時的に
 // 旧 state を上書きする可能性は許容する設計 (#534 issue body 参照)。
 type InboxProcessor struct {
-	processor *federation.Processor
+	processor FederationProcessor
 }
 
 // NewInboxProcessor constructs an InboxProcessor wrapping the supplied
 // federation.Processor.
-func NewInboxProcessor(p *federation.Processor) *InboxProcessor {
+func NewInboxProcessor(p FederationProcessor) *InboxProcessor {
 	return &InboxProcessor{processor: p}
 }
 
@@ -36,7 +44,7 @@ func NewInboxProcessor(p *federation.Processor) *InboxProcessor {
 // payload decode 失敗は再 retry しても無意味なので driver.SkipRetry で
 // 確定 fail にする。federation.ErrUnsupportedActivity は handler 不在
 // (= 受け付けたが何もしない) 扱いで成功扱い。それ以外の処理エラーは
-// driver の retry policy (deliverJobMaxAttempts) に任せる。
+// driver の retry policy (inboxJobMaxAttempts) に任せる。
 func (p *InboxProcessor) Handle(_ context.Context, t driver.Task) error {
 	payload, err := queue.DecodeInboxPayload(t.Payload())
 	if err != nil {
