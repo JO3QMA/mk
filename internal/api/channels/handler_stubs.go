@@ -156,13 +156,15 @@ func (h *Handler) MuteList(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	out := make([]map[string]any, 0, len(mutings))
+	rows := make([]*model.Channel, 0, len(mutings))
 	for _, m := range mutings {
 		ch, err := h.svc.Show(m.ChannelID)
 		if err != nil {
 			continue
 		}
-		out = append(out, channelToMap(ch))
+		rows = append(rows, ch)
 	}
-	return c.JSON(http.StatusOK, out)
+	// MyFavorites と同じく channelsToList 経由で viewer-aware に
+	// 揃える (Devin #530 BUG-1)。
+	return c.JSON(http.StatusOK, h.channelsToList(rows, user))
 }
