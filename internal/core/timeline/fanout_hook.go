@@ -112,8 +112,7 @@ func (h *FanoutHook) OnNoteCreated(n *model.Note, author *model.User) {
 	h.pushWithLimit(ctx, HomeTimelineName(author.ID), n.ID, homeCap)
 	h.publishNote("homeTimeline:"+author.ID, n, author)
 	if h.followingRepo != nil && shouldFanoutToFollowers(n) {
-		h.fanoutToFollowers(ctx, author.ID, n.ID, homeCap)
-		h.fanoutStreamingToFollowers(author.ID, n, author)
+		h.fanoutToFollowersAndStream(ctx, author.ID, n, author, homeCap)
 	}
 
 	// 3. ローカルタイムライン: ローカル投稿でvisibility=publicのみ。
@@ -189,7 +188,8 @@ func resolveCap(limits CacheLimits, kind TimelineKind) int {
 }
 
 // publishNote forwards the note to the StreamingPublisher when set. Best-
-// effort wrapper used by OnNoteCreated and fanoutToFollowers.
+// effort wrapper used by OnNoteCreated for non-follower topics; the per-
+// follower streaming publish is inlined in fanoutToFollowersAndStream.
 func (h *FanoutHook) publishNote(topic string, n *model.Note, author *model.User) {
 	if h.publisher == nil {
 		return
@@ -207,52 +207,33 @@ func shouldFanoutToFollowers(n *model.Note) bool {
 	return false
 }
 
-// fanoutToFollowers iterates the author's followers in pages and pushes the
-// note id onto each follower's home timeline. homeCap は OnNoteCreated 側で
-// meta から取得済みのものを再利用する (per-follower で fetch しない)。
-func (h *FanoutHook) fanoutToFollowers(ctx context.Context, authorID, noteID string, homeCap int) {
+// fanoutToFollowersAndStream walks the author's followers once and, for each
+// follower, both pushes the note id onto the home timeline list and publishes
+// the note to the per-follower streaming topic.
+//
+// 旧実装は同じ followers ページネーションを Redis push 用と streaming publish
+// 用で 2 回繰り返しており、フォロワー数 N に対して `ListFollowers` の DB
+// クエリが 2N/pageSize 回走っていた (#300 2-4)。両者の per-row 操作はどちら
+// もベストエフォートで失敗が他方に波及しないため、1 ループに畳む方が安全か
+// つ DB 負荷半減になる。publisher 不在の場合だけ streaming step を skip する。
+// homeCap は OnNoteCreated 側で meta から取得済みのものを再利用する。
+func (h *FanoutHook) fanoutToFollowersAndStream(ctx context.Context, authorID string, n *model.Note, author *model.User, homeCap int) {
 	const pageSize = 200
 	offset := 0
 	for {
 		rows, err := h.followingRepo.ListFollowers(authorID, pageSize, offset)
 		if err != nil {
-			slog.Warn("fanoutToFollowers: list followers failed", "err", err, "author", authorID)
+			slog.Warn("fanoutToFollowersAndStream: list followers failed", "err", err, "author", authorID)
 			return
 		}
 		if len(rows) == 0 {
 			return
 		}
 		for _, f := range rows {
-			h.pushWithLimit(ctx, HomeTimelineName(f.FollowerID), noteID, homeCap)
-		}
-		if len(rows) < pageSize {
-			return
-		}
-		offset += pageSize
-	}
-}
-
-// fanoutStreamingToFollowers publishes the note to the per-follower
-// homeTimeline streaming topic. 別ループにすると DB を 2 回見る無駄があるが、
-// publish は best-effort で fan-out が成功した後に走らせる方が安全 (publish
-// 失敗が fan-out を巻き込まない)。フォロワー数が多い場合は将来 channel topic
-// の broadcast を 1 つに統合する余地あり。
-func (h *FanoutHook) fanoutStreamingToFollowers(authorID string, n *model.Note, author *model.User) {
-	if h.publisher == nil || h.followingRepo == nil {
-		return
-	}
-	const pageSize = 200
-	offset := 0
-	for {
-		rows, err := h.followingRepo.ListFollowers(authorID, pageSize, offset)
-		if err != nil {
-			return
-		}
-		if len(rows) == 0 {
-			return
-		}
-		for _, f := range rows {
-			h.publisher.PublishNote("homeTimeline:"+f.FollowerID, n, author)
+			h.pushWithLimit(ctx, HomeTimelineName(f.FollowerID), n.ID, homeCap)
+			if h.publisher != nil {
+				h.publisher.PublishNote("homeTimeline:"+f.FollowerID, n, author)
+			}
 		}
 		if len(rows) < pageSize {
 			return
@@ -324,8 +305,8 @@ func (h *FanoutHook) removeBestEffort(ctx context.Context, name Name, noteID str
 	}
 }
 
-// removeFromFollowerHomes mirrors fanoutToFollowers: page through followers and
-// LREM the note ID from each follower's home timeline list.
+// removeFromFollowerHomes mirrors fanoutToFollowersAndStream: page through
+// followers and LREM the note ID from each follower's home timeline list.
 func (h *FanoutHook) removeFromFollowerHomes(ctx context.Context, authorID, noteID string) {
 	const pageSize = 200
 	offset := 0

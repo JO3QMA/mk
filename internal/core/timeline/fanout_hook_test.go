@@ -2,10 +2,12 @@ package timeline
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -259,8 +261,8 @@ func TestFanoutHook_StreamingPublisherUnsetIsNoOp(t *testing.T) {
 }
 
 func TestFanoutHook_StreamingFanoutErrorPath(t *testing.T) {
-	// failingFollowingRepo は ListFollowers でエラーを返す → fanoutStreamingToFollowers
-	// は早期 return する
+	// failingFollowingRepo は ListFollowers でエラーを返す → fanoutToFollowersAndStream
+	// は早期 return し、follower への streaming publish は届かない
 	testRedis.FlushAll(context.Background())
 	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
 	fanout.randFn = func() float64 { return 1.0 }
@@ -298,6 +300,87 @@ func TestFanoutHook_StreamingFanoutAcrossPages(t *testing.T) {
 	h.OnNoteCreated(n, &model.User{ID: "author"})
 	// 201 人 + 自分 + local + global = 204 トピック以上
 	assert.GreaterOrEqual(t, len(pub.topics), 201+1+1+1)
+}
+
+// countingFollowingRepo wraps MockFollowingRepository to count ListFollowers
+// calls. 旧実装は Redis push と streaming publish で同じ followers ページネ
+// ーションを 2 回繰り返していた。マージ後は 1 ページにつき 1 call で済む
+// ことを担保する (#300 2-4)。
+type countingFollowingRepo struct {
+	*testutil.MockFollowingRepository
+	listFollowersCalls atomic.Int64
+}
+
+func (c *countingFollowingRepo) ListFollowers(userID string, limit, offset int) ([]*model.Following, error) {
+	c.listFollowersCalls.Add(1)
+	return c.MockFollowingRepository.ListFollowers(userID, limit, offset)
+}
+
+// インターフェース実装は完全に MockFollowingRepository に委譲するための
+// コンパイル時アサート。
+var _ repository.FollowingRepository = (*countingFollowingRepo)(nil)
+
+func TestFanoutHook_FollowersFanoutSinglePassListsFollowersOnce(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
+	fanout.randFn = func() float64 { return 1.0 }
+	mock := testutil.NewMockFollowingRepository()
+	for i := range 3 {
+		fid := "f-" + idGen.Generate(time.Now().Add(time.Duration(i)*time.Microsecond))
+		mock.Followings[fid] = &model.Following{
+			ID:         fid,
+			FollowerID: "follower-" + fid,
+			FolloweeID: "author",
+		}
+	}
+	following := &countingFollowingRepo{MockFollowingRepository: mock}
+	h := NewFanoutHook(fanout, following)
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// 3 followers, pageSize=200 なので 1 page で読み切る → 1 call が期待値。
+	// 旧実装は Redis push 用 + streaming publish 用で 2 page をフェッチ。
+	assert.Equal(t, int64(1), following.listFollowersCalls.Load(),
+		"merged loop must list followers exactly once per page (perf #300 2-4)")
+	// Redis push と streaming publish が両方届く。
+	for fid := range mock.Followings {
+		topic := "homeTimeline:" + mock.Followings[fid].FollowerID
+		assert.Contains(t, pub.topics, topic)
+	}
+}
+
+// pageSize=200 を超えるフォロワー数でも、1 ページにつき 1 call で済む
+// (旧実装では 2 ページ x 2 ループ = 4 call、新実装は 2 page = 2 call)。
+func TestFanoutHook_FollowersFanoutSinglePassAcrossPages(t *testing.T) {
+	testRedis.FlushAll(context.Background())
+	fanout := NewFanoutTimelineService(testRedis.Client, idGen, "")
+	fanout.randFn = func() float64 { return 1.0 }
+	mock := testutil.NewMockFollowingRepository()
+	for i := range 250 { // 200 + 50, 2 pages
+		fid := "f-" + idGen.Generate(time.Now().Add(time.Duration(i)*time.Microsecond))
+		mock.Followings[fid] = &model.Following{
+			ID:         fid,
+			FollowerID: "follower-" + fid,
+			FolloweeID: "author",
+		}
+	}
+	following := &countingFollowingRepo{MockFollowingRepository: mock}
+	h := NewFanoutHook(fanout, following)
+	pub := &stubStreamingPublisher{}
+	h.SetStreamingPublisher(pub)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// 250 followers / pageSize=200 = 2 pages → 2 calls (新実装)。
+	// 旧実装なら 4 calls。
+	assert.Equal(t, int64(2), following.listFollowersCalls.Load(),
+		"merged loop on 250 followers must take 2 page calls (was 4 before #300 2-4)")
 }
 
 func TestFanoutHook_StreamingPublisherNilFollowingRepo(t *testing.T) {
