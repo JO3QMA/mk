@@ -44,9 +44,10 @@ func main() {
 	if err != nil {
 		die("load config: %v", err)
 	}
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		cfg.DB.Host, cfg.DB.Port, cfg.DB.User, cfg.DB.Pass, cfg.DB.DB)
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	// cfg.DSN() は UDS path / SSL extra も honoring する production と
+	// 同じ DSN 構築経路。本ツールが production-shape の config を
+	// そのまま受け取れるようにこれに揃える (#545 review)。
+	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{})
 	if err != nil {
 		die("open db: %v", err)
 	}
