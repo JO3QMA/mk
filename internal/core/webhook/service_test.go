@@ -45,7 +45,8 @@ func (f *fakeEnqueuer) EnqueueSystemWebhook(_ context.Context, p queue.WebhookPa
 	f.systemCalls = append(f.systemCalls, p)
 	return nil
 }
-func (f *fakeEnqueuer) Close() error { return nil }
+func (f *fakeEnqueuer) EnqueueInbox(_ context.Context, _ queue.InboxPayload) error { return nil }
+func (f *fakeEnqueuer) Close() error                                               { return nil }
 
 // --- fake webhook repos ---
 

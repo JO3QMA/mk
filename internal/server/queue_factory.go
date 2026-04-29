@@ -22,9 +22,9 @@ import (
 //
 // `<queue>JobConcurrency` / `<queue>JobPerSec` / `<queue>JobMaxAttempts`
 // 系の config は queue_factory が driver Config に流して runtime に反映
-// する。mk-go には deliver queue しか実装が無いため、現状有効なのは
-// `deliverJob*` のみ。inboxJob* / relationshipJob* は TS-compat 用に
-// config 自体は受け付けるが現状 no-op (#495 / docs/configuration.md)。
+// する。deliver / inbox の両 queue に対して有効 (#495 / #534)。
+// relationshipJob* は mk-go に該当 queue が無いため TS-compat 用に
+// 受け付けのみで no-op (docs/configuration.md 参照)。
 func buildQueueDriver(ctx context.Context, cfg *config.Config) (driver.Driver, error) {
 	totalConcurrency := 16
 	if cfg.DeliverJobConcurrency != nil && *cfg.DeliverJobConcurrency > 0 {
@@ -58,14 +58,15 @@ func buildQueueDriver(ctx context.Context, cfg *config.Config) (driver.Driver, e
 }
 
 // perQueueConcurrencyFromConfig flattens the deliver/inbox/relationship
-// concurrency knobs into a queue-name → worker-count map. Currently only
-// `deliver` is wired (mk-go has no inbox / relationship queue); the other
-// two are forwarded but dropped by the driver because there is no matching
-// queue handle. Documented in docs/configuration.md.
+// concurrency knobs into a queue-name → worker-count map. relationship は
+// 該当 queue が無いため forward されない (docs 参照)。
 func perQueueConcurrencyFromConfig(cfg *config.Config) map[string]int {
 	out := map[string]int{}
 	if cfg.DeliverJobConcurrency != nil && *cfg.DeliverJobConcurrency > 0 {
 		out["deliver"] = *cfg.DeliverJobConcurrency
+	}
+	if cfg.InboxJobConcurrency != nil && *cfg.InboxJobConcurrency > 0 {
+		out["inbox"] = *cfg.InboxJobConcurrency
 	}
 	if len(out) == 0 {
 		return nil
@@ -75,11 +76,14 @@ func perQueueConcurrencyFromConfig(cfg *config.Config) map[string]int {
 
 // perQueueRatesFromConfig builds the queue-name → tasks/sec map applied to
 // the driver Server's rate-limiter middleware (asynq) / mkq.WithRateLimit
-// (mkq). Only deliver is wired today.
+// (mkq).
 func perQueueRatesFromConfig(cfg *config.Config) map[string]int {
 	out := map[string]int{}
 	if cfg.DeliverJobPerSec != nil && *cfg.DeliverJobPerSec > 0 {
 		out["deliver"] = *cfg.DeliverJobPerSec
+	}
+	if cfg.InboxJobPerSec != nil && *cfg.InboxJobPerSec > 0 {
+		out["inbox"] = *cfg.InboxJobPerSec
 	}
 	if len(out) == 0 {
 		return nil
@@ -87,16 +91,15 @@ func perQueueRatesFromConfig(cfg *config.Config) map[string]int {
 	return out
 }
 
-// applyClientPolicies copies enqueue-side defaults (currently
-// deliverJobMaxAttempts) onto the queue.Client. Called once at server
-// construction so EnqueueDeliver can pre-pend WithMaxRetry when callers
-// don't override.
+// applyClientPolicies copies enqueue-side defaults (deliverJobMaxAttempts /
+// inboxJobMaxAttempts) onto the queue.Client. Called once at server
+// construction so EnqueueDeliver / EnqueueInbox can pre-pend WithMaxRetry
+// when callers don't override.
 func applyClientPolicies(c *queue.Client, cfg *config.Config) {
-	p := queue.Policy{}
 	if cfg.DeliverJobMaxAttempts != nil && *cfg.DeliverJobMaxAttempts > 0 {
-		p.MaxAttempts = *cfg.DeliverJobMaxAttempts
+		c.SetPolicy(queue.QueueName, queue.Policy{MaxAttempts: *cfg.DeliverJobMaxAttempts})
 	}
-	if p.MaxAttempts > 0 {
-		c.SetPolicy(queue.QueueName, p)
+	if cfg.InboxJobMaxAttempts != nil && *cfg.InboxJobMaxAttempts > 0 {
+		c.SetPolicy(queue.InboxQueueName, queue.Policy{MaxAttempts: *cfg.InboxJobMaxAttempts})
 	}
 }

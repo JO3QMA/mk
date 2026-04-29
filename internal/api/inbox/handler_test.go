@@ -2,6 +2,8 @@ package inbox
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -432,4 +435,76 @@ func TestInbox_BodyReadError(t *testing.T) {
 	c := e.NewContext(req, rec)
 	require.NoError(t, h.Inbox(c))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// recordingEnqueuer captures EnqueueInbox calls so async-mode tests can
+// assert that the handler dispatches the activity to the queue instead of
+// running Process synchronously (#534).
+type recordingEnqueuer struct {
+	calls []queue.InboxPayload
+	err   error
+}
+
+func (r *recordingEnqueuer) EnqueueInbox(_ context.Context, p queue.InboxPayload) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.calls = append(r.calls, p)
+	return nil
+}
+
+// SetEnqueuer 後は Inbox は Process を呼ばずに EnqueueInbox に委譲する。
+// followingRepo に書き込みが起きないこと、enqueuer が活動 body と host を
+// 受け取ること、HTTP は 202 Accepted を返すことを確認する。
+func TestInbox_AsyncMode_DispatchesToQueue(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	h, repo, followingRepo := newHandler(t, pub)
+	enq := &recordingEnqueuer{}
+	h.SetEnqueuer(enq)
+
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{"type":"Follow","actor":"https://remote.example/users/alice","object":"https://example.com/users/bob"}`)
+	c, rec := newPost(t, body)
+	req := c.Request()
+	digest := activitypub.SHA256Digest(body)
+	require.NoError(t, activitypub.SignRequest(req, key, digest, []string{"(request-target)", "date", "host", "digest"}))
+	req.Host = "example.com"
+
+	require.NoError(t, h.Inbox(c))
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	require.Len(t, enq.calls, 1, "activity should be enqueued, not processed synchronously")
+	assert.JSONEq(t, string(body), string(enq.calls[0].Body))
+	assert.Equal(t, "remote.example", enq.calls[0].Host)
+	assert.Empty(t, followingRepo.Followings, "Process should NOT have been invoked synchronously")
+}
+
+// queue 障害時は 500 を返して上流に retry を促す (202 で握り潰すと
+// activity が silent drop される)。
+func TestInbox_AsyncMode_EnqueueFailureReturns500(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	h, repo, _ := newHandler(t, pub)
+	h.SetEnqueuer(&recordingEnqueuer{err: errors.New("redis down")})
+
+	bobURI := "https://example.com/users/bob"
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+
+	body := []byte(`{"type":"Follow","actor":"https://remote.example/users/alice","object":"https://example.com/users/bob"}`)
+	c, rec := newPost(t, body)
+	req := c.Request()
+	digest := activitypub.SHA256Digest(body)
+	require.NoError(t, activitypub.SignRequest(req, key, digest, []string{"(request-target)", "date", "host", "digest"}))
+	req.Host = "example.com"
+
+	require.NoError(t, h.Inbox(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

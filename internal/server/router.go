@@ -497,6 +497,14 @@ func (s *Server) setupRoutes() {
 	}
 	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 
+	// Inbox (#534): HTTP handler が signature 検証 + host block + chart
+	// hook を同期で済ませた後、Process(body) だけを worker に逃がす。
+	// 順序保証は各 activity handler の冪等性で吸収する Misskey TS 互換
+	// 戦略。inboxJobConcurrency / inboxJobPerSec / inboxJobMaxAttempts
+	// は queue_factory で wire 済み。
+	inboxProcessor := processors.NewInboxProcessor(federationProcessor)
+	s.queueServer.Handle(queue.TaskTypeInbox, inboxProcessor.Handle)
+
 	// Remote notes cleaning (issue #46)
 	if cleanMeta, err := metaRepo.Fetch(); err == nil {
 		cleanCfg := processors.CleanRemoteNotesConfig{
@@ -1278,6 +1286,9 @@ func (s *Server) setupRoutes() {
 	inboxHandler.SetHostBlockChecker(instanceService)
 	inboxHandler.SetInstanceTracker(instanceService)
 	inboxHandler.SetChartHook(chartHooks)
+	// #534: signature 検証成功後の Process(body) を inbox queue に逃がす。
+	// 未配線時は legacy 同期処理にフォールバック (テスト互換)。
+	inboxHandler.SetEnqueuer(s.queueClient)
 	s.echo.POST("/inbox", inboxHandler.Inbox)
 	s.echo.POST("/users/:id/inbox", inboxHandler.Inbox)
 

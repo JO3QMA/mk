@@ -37,7 +37,8 @@ func (f *fakeEnqueuer) EnqueueUserWebhook(_ context.Context, _ queue.WebhookPayl
 func (f *fakeEnqueuer) EnqueueSystemWebhook(_ context.Context, _ queue.WebhookPayload) error {
 	return nil
 }
-func (f *fakeEnqueuer) Close() error { return nil }
+func (f *fakeEnqueuer) EnqueueInbox(_ context.Context, _ queue.InboxPayload) error { return nil }
+func (f *fakeEnqueuer) Close() error                                               { return nil }
 
 func TestService_PushNotification_Enqueues(t *testing.T) {
 	enq := &fakeEnqueuer{}

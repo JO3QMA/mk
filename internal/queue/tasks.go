@@ -66,6 +66,39 @@ const TaskTypeInstanceRefresh = "maintenance:instanceRefresh"
 // `processors.RetentionAggregateProcessor`.
 const TaskTypeRetentionAggregate = "maintenance:retentionAggregate"
 
+// TaskTypeInbox is the task type for inbound ActivityPub activity
+// processing (#534). Enqueued by the inbox HTTP handler after signature
+// verification, and consumed by a worker that calls
+// `federation.Processor.Process` to apply the activity. 各 activity
+// handler は冪等であることが前提 (Misskey TS と同じ吸収戦略)。
+const TaskTypeInbox = "ap:inbox"
+
+// InboxPayload is the body of an inbox task. Body は受信した raw AP
+// activity の bytes そのまま (Process 側で再 normalize / decode する)。
+// Host は actor が属するリモートホスト名。empty なら local actor 由来
+// または signature 検証で host 抽出に失敗したケースで、worker 側で
+// チャート / instance 更新等の host 依存処理を skip するためのキー。
+type InboxPayload struct {
+	Body []byte `json:"body"`
+	Host string `json:"host,omitempty"`
+}
+
+// NewInboxTask serializes the payload into a driver.Task ready to pass
+// into a HandlerFunc (used in tests).
+func NewInboxTask(payload InboxPayload) driver.Task {
+	body, _ := json.Marshal(payload)
+	return driver.RawTask{TypeName: TaskTypeInbox, Body: body}
+}
+
+// DecodeInboxPayload extracts an InboxPayload from a task body.
+func DecodeInboxPayload(body []byte) (InboxPayload, error) {
+	var p InboxPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return InboxPayload{}, err
+	}
+	return p, nil
+}
+
 // DeliverPayload is the body of a deliver task. すべてJSONで安全に
 // シリアライズできる型のみを保持する。
 type DeliverPayload struct {

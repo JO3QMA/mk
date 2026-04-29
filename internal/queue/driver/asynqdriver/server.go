@@ -49,6 +49,7 @@ func NewServer(redisOpt asynq.RedisClientOpt, cfg ServerConfig) *Server {
 		// 定数追加を同時に行う。
 		queues = map[string]int{
 			"deliver":     1,
+			"inbox":       1,
 			"push":        1,
 			"export":      1,
 			"webhook":     1,

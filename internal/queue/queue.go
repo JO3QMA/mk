@@ -42,6 +42,11 @@ const PushQueueName = "push"
 // WebhookQueueName is the queue for user + system webhook delivery jobs.
 const WebhookQueueName = "webhook"
 
+// InboxQueueName is the queue for inbound ActivityPub activity processing
+// (#534). Misskey TS uses the same name (lower-case "inbox") for BullMQ
+// drop-in compat.
+const InboxQueueName = "inbox"
+
 // Enqueuer abstracts task enqueueing for callers (DeliverService,
 // admin handlers, etc.). The interface is driver-neutral so callers
 // can be unit-tested with mocks.
@@ -52,6 +57,7 @@ type Enqueuer interface {
 	EnqueueWebPush(ctx context.Context, payload WebPushPayload) error
 	EnqueueUserWebhook(ctx context.Context, payload WebhookPayload) error
 	EnqueueSystemWebhook(ctx context.Context, payload WebhookPayload) error
+	EnqueueInbox(ctx context.Context, payload InboxPayload) error
 	Close() error
 }
 
@@ -142,6 +148,24 @@ func (c *Client) EnqueueImportCustomEmojis(payload ImportCustomEmojisPayload) er
 	return c.inner.Enqueue(context.Background(), TaskTypeImportCustomEmojis, body,
 		driver.WithQueue(ExportQueueName),
 	)
+}
+
+// EnqueueInbox puts an inbound ActivityPub activity onto the inbox queue
+// (#534). HTTP handler 側で signature 検証 + host block + chart hook を
+// 同期で済ませた後、重い Process(body) だけを worker に逃がすために使う。
+//
+// Policy.MaxAttempts (= inboxJobMaxAttempts と同じ BullMQ 規約) が
+// セットされていれば WithMaxRetry に N-1 で適用される。EnqueueInbox は
+// 現状 caller opts を受け取らない (inbox 経路は単一の固定 enqueue で
+// 十分なため)。将来オプション渡しが必要になったら EnqueueDeliver と同じ
+// variadic pattern に揃える。
+func (c *Client) EnqueueInbox(ctx context.Context, payload InboxPayload) error {
+	body := mustMarshal(payload)
+	base := []driver.EnqueueOption{driver.WithQueue(InboxQueueName)}
+	if attempts := c.policyFor(InboxQueueName).MaxAttempts; attempts > 0 {
+		base = append(base, driver.WithMaxRetry(attempts-1))
+	}
+	return c.inner.Enqueue(ctx, TaskTypeInbox, body, base...)
 }
 
 // EnqueueWebPush puts a Web Push delivery task on the push queue.

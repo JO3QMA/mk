@@ -272,6 +272,68 @@ func waitGroupTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	}
 }
 
+// #534: EnqueueInbox は inbox queue に積まれる + Policy.MaxAttempts が
+// 適用される。BullMQ semantics で MaxAttempts=N → MaxRetry=N-1。
+func TestClient_EnqueueInbox(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueInbox(context.Background(), queue.InboxPayload{
+		Body: []byte(`{"type":"Follow"}`),
+		Host: "remote.example",
+	}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+	tasks, err := insp.ListPendingTasks(queue.InboxQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, queue.TaskTypeInbox, tasks[0].Type)
+
+	got, err := queue.DecodeInboxPayload(tasks[0].Payload)
+	require.NoError(t, err)
+	assert.Equal(t, "remote.example", got.Host)
+	assert.JSONEq(t, `{"type":"Follow"}`, string(got.Body))
+}
+
+func TestClient_EnqueueInbox_PolicyMaxAttemptsApplied(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+	c.SetPolicy(queue.InboxQueueName, queue.Policy{MaxAttempts: 8})
+
+	require.NoError(t, c.EnqueueInbox(context.Background(), queue.InboxPayload{Body: []byte(`{}`)}))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+	tasks, err := insp.ListPendingTasks(queue.InboxQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	info, err := insp.GetTaskInfo(queue.InboxQueueName, tasks[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, 7, info.MaxRetry, "MaxAttempts=8 (BullMQ-style total) → asynq MaxRetry=7")
+}
+
+func TestNewInboxTask_RoundTrip(t *testing.T) {
+	payload := queue.InboxPayload{Body: []byte(`{"type":"Create"}`), Host: "h.example"}
+	task := queue.NewInboxTask(payload)
+	assert.Equal(t, queue.TaskTypeInbox, task.Type())
+	got, err := queue.DecodeInboxPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload.Host, got.Host)
+	assert.JSONEq(t, string(payload.Body), string(got.Body))
+}
+
+func TestDecodeInboxPayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeInboxPayload([]byte(`{not json`))
+	assert.Error(t, err)
+}
+
 func TestNewExportTask_RoundTrip(t *testing.T) {
 	payload := queue.ExportPayload{UserID: "u1", Type: "notes"}
 	task := queue.NewExportTask(payload)
