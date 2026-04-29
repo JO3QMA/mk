@@ -1,6 +1,7 @@
 package drive
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -65,20 +66,30 @@ func (s *S3Storage) publicURL(accessKey string) string {
 }
 
 // Put uploads the body to S3 and returns the public URL.
+//
+// aws-sdk-go-v2 は SigV4 payload hash を計算するため Body が io.Seeker
+// を満たす必要がある。以前は MIME 判定のために `io.MultiReader` で wrap
+// していたが、MultiReader は Seeker を実装しないので SDK が
+// "failed to seek body to start, request stream is not seekable" で即 fail し、
+// HTTP リクエストすら送出されず drive/files/create が常に 500 になっていた
+// (#523)。一度 []byte に集めて bytes.Reader (Seeker 実装) を渡すことで解消。
 func (s *S3Storage) Put(accessKey string, body io.Reader) (string, error) {
 	key := s.objectKey(accessKey)
 
-	// MIME type を判定するため先頭を読む
-	buf := make([]byte, 512)
-	n, _ := io.ReadAtLeast(body, buf, 1)
-	contentType := http.DetectContentType(buf[:n])
-	// 読んだ分を body の先頭に戻す
-	combined := io.MultiReader(strings.NewReader(string(buf[:n])), body)
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return "", fmt.Errorf("s3 read body for %s: %w", key, err)
+	}
+	sniff := data
+	if len(sniff) > 512 {
+		sniff = sniff[:512]
+	}
+	contentType := http.DetectContentType(sniff)
 
 	input := &s3.PutObjectInput{
 		Bucket:       aws.String(s.bucket),
 		Key:          aws.String(key),
-		Body:         combined,
+		Body:         bytes.NewReader(data),
 		ContentType:  aws.String(contentType),
 		CacheControl: aws.String("max-age=31536000, immutable"),
 	}

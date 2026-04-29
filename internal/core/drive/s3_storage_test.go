@@ -184,6 +184,48 @@ func TestS3Storage_Delete_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "s3 delete")
 }
 
+// S3 SDK は SigV4 payload hash 計算で Body を seek する。Body が
+// io.Seeker を満たしていなかった旧実装では SDK が即 fail していた (#523)。
+// 修正後の Put が PutObjectInput.Body に bytes.Reader (= io.Seeker 実装) を
+// 渡すこと、そして body 全文がそのまま伝わることを担保する。
+func TestS3Storage_Put_BodyIsSeekable(t *testing.T) {
+	mock := &mockS3API{}
+	st := NewS3Storage(S3StorageConfig{
+		Client: mock,
+		Bucket: "bucket",
+	})
+	payload := []byte("hello world payload >= 11 bytes")
+	// 渡す側は Seeker 非対応な io.Reader にして、Put 内部で seekable に
+	// 変換されることを確認する。
+	_, err := st.Put("k1", io.MultiReader(bytes.NewReader(payload)))
+	require.NoError(t, err)
+	require.NotNil(t, mock.putInput)
+
+	body, ok := mock.putInput.Body.(io.Seeker)
+	require.True(t, ok, "PutObjectInput.Body must implement io.Seeker for SigV4 payload hash")
+
+	// Body 内容が body 全文と一致すること
+	got, err := io.ReadAll(mock.putInput.Body)
+	require.NoError(t, err)
+	assert.Equal(t, payload, got)
+
+	// seek し直しても再読み込みできる (SDK の retry middleware が seek する)
+	_, err = body.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+	again, _ := io.ReadAll(mock.putInput.Body)
+	assert.Equal(t, payload, again)
+}
+
+// 512 byte 未満の小さい body でも正しく MIME 判定されて upload されること。
+func TestS3Storage_Put_SmallBody(t *testing.T) {
+	mock := &mockS3API{}
+	st := NewS3Storage(S3StorageConfig{Client: mock, Bucket: "bucket"})
+	_, err := st.Put("k", bytes.NewReader([]byte("tiny")))
+	require.NoError(t, err)
+	require.NotNil(t, mock.putInput)
+	assert.NotEmpty(t, *mock.putInput.ContentType)
+}
+
 func TestS3Storage_ObjectKey(t *testing.T) {
 	st := NewS3Storage(S3StorageConfig{Prefix: "uploads/"})
 	assert.Equal(t, "uploads/abc", st.objectKey("abc"))
