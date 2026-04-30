@@ -269,3 +269,43 @@ bench-down:
 
 bench-logs:
 	docker compose -f $(BENCH_COMPOSE) logs -f
+
+# Queue bench (#563): 3-way deliver/inbox throughput comparison across
+# Misskey TS (BullMQ), mk-go (asynq), mk-go (mkq).
+QUEUE_BENCH_COMPOSE=tests/queue-bench/docker-compose.queue-bench.yml
+
+queue-bench-up:
+	docker compose -f $(QUEUE_BENCH_COMPOSE) up -d --build
+
+queue-bench-seed:
+	docker compose -f $(QUEUE_BENCH_COMPOSE) --profile bench up --abort-on-container-exit seed
+	# meta cache (5min TTL) が古い federation='none' を握っているので、seed
+	# 後に app コンテナを再起動して新しい meta.federation='all' を読ませる。
+	docker compose -f $(QUEUE_BENCH_COMPOSE) restart app-asynq app-mkq app-ts
+	@echo "waiting for apps to become healthy after restart..."
+	@for i in $$(seq 1 30); do \
+		if docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-asynq app-mkq | grep -q "(healthy)" && \
+		   docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-asynq | grep -q "(healthy)" && \
+		   docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-mkq | grep -q "(healthy)"; then \
+			echo "ready"; exit 0; \
+		fi; \
+		sleep 2; \
+	done; \
+	echo "warning: apps did not become healthy in time"
+
+queue-bench-outbound:
+	docker compose -f $(QUEUE_BENCH_COMPOSE) --profile outbound up --abort-on-container-exit driver-outbound
+
+queue-bench-inbound:
+	docker compose -f $(QUEUE_BENCH_COMPOSE) --profile inbound up --abort-on-container-exit driver-inbound
+
+queue-bench-report:
+	docker compose -f $(QUEUE_BENCH_COMPOSE) --profile report up --abort-on-container-exit report
+
+queue-bench-all: queue-bench-seed queue-bench-outbound queue-bench-inbound queue-bench-report
+
+queue-bench-down:
+	docker compose -f $(QUEUE_BENCH_COMPOSE) down -v
+
+queue-bench-logs:
+	docker compose -f $(QUEUE_BENCH_COMPOSE) logs -f
