@@ -482,6 +482,56 @@ func TestRedisRateLimitStore_SeparateKeys(t *testing.T) {
 	assert.Equal(t, 0, info3.Remaining)
 }
 
+// TestRateLimiter_NilLimitsBypassesAllEndpoints verifies that passing a nil
+// limits map (used when disableEndpointRateLimits=true) lets every endpoint
+// through, even ones that would normally be capped (e.g. notes/create).
+func TestRateLimiter_NilLimitsBypassesAllEndpoints(t *testing.T) {
+	store := &mockLimitStore{}
+	rl := NewRateLimiter(store, true, nil)
+
+	e := echo.New()
+	handler := func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	}
+	mw := rl.Middleware()
+
+	for i := range 100 {
+		req := httptest.NewRequest(http.MethodPost, "/api/notes/create", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetPath("/api/notes/create")
+		c.Set(string(UserContextKey), &model.User{ID: "testuser"})
+		_ = mw(handler)(c)
+		require.Equal(t, http.StatusOK, rec.Code, "iter %d should always pass when limits is nil", i)
+	}
+
+	assert.Empty(t, store.calls, "store.Check must not be invoked when limits is nil")
+}
+
+// TestRateLimiter_EmptyLimitsBypassesAllEndpoints is structurally similar to
+// the nil-map case but exercises the explicit empty-map path so refactors
+// that swap nil for map[...]{} don't regress.
+func TestRateLimiter_EmptyLimitsBypassesAllEndpoints(t *testing.T) {
+	store := &mockLimitStore{}
+	rl := NewRateLimiter(store, true, map[string]*EndpointLimit{})
+
+	e := echo.New()
+	handler := func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	}
+	mw := rl.Middleware()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/notes/create", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPath("/api/notes/create")
+	c.Set(string(UserContextKey), &model.User{ID: "u"})
+	_ = mw(handler)(c)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, store.calls)
+}
+
 func TestNewRedisRateLimiter_Integration(t *testing.T) {
 	ctx := context.Background()
 	tr, err := testutil.SetupRedis(ctx)

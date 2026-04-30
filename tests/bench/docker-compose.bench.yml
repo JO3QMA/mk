@@ -50,6 +50,10 @@ services:
       TZ: Asia/Tokyo
       # レートリミット実装時(#273)にベンチが壊れないよう無効化しておく
       MK_ENABLEIPRATELIMIT: "false"
+      # per-endpoint rate limit を無効化して Misskey TS の NODE_ENV=development
+      # と公正比較できる状態にする。これが無いと notes/create が 300/hour/user
+      # で頭打ちになり 97% 強が 429 で弾かれる (#563)。production 用途厳禁。
+      MK_DISABLEENDPOINTRATELIMITS: "true"
       # bench で profile-collector が /debug/pprof/* に到達できるようにする (#500 / #413 #7)
       MK_ENABLEPPROF: "true"
     depends_on:
