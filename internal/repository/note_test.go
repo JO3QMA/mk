@@ -673,6 +673,17 @@ func TestNoteRepository_SearchByFilter(t *testing.T) {
 	assert.Len(t, out, 4)
 }
 
+func TestNoteRepository_SearchByFilter_PgroongaOperator(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	// pgroonga 拡張は CI / testcontainers の素の Postgres には存在しない。
+	// そこで `&@~` 演算子が解決されない (=エラーメッセージに `&@~` が
+	// 含まれる) ことを以て「Pgroonga ブランチが選択されその SQL が
+	// 実際に発行された」ことを検証する。
+	_, err := repo.SearchByFilter(model.NoteSearchFilter{Query: "hello", Pgroonga: true, Limit: 10})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "&@~")
+}
+
 // idsOf is a tiny helper to extract note IDs for assertion comparisons.
 func idsOf(notes []*model.Note) []string {
 	out := make([]string, 0, len(notes))

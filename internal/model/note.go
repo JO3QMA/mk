@@ -75,6 +75,11 @@ type NoteSearchFilter struct {
 	UntilID   string
 	SinceID   string
 	Limit     int
+	// Pgroonga, when true, switches the WHERE clause from ILIKE to the
+	// PGroonga `&@~` full-text match operator. Mirrors upstream Misskey TS
+	// SearchService.searchNoteByLike, which swaps the predicate when
+	// fulltextSearch.provider == "sqlPgroonga".
+	Pgroonga bool
 }
 
 // ReplyTargetCount is a (userID, count) pair returned by

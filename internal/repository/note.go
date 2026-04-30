@@ -321,15 +321,23 @@ func (r *noteRepository) ListChildrenOf(noteID string, untilID, sinceID string, 
 
 // SearchByFilter returns notes matching the filter criteria.
 // 検索バックエンド (core/search.SQLLikeProvider) から呼ばれる。
-// テキストは ILIKE 部分一致、可視性は public/home に限定する。
+// When f.Pgroonga is true the predicate uses the PGroonga `&@~` full-text
+// operator; otherwise it falls back to ILIKE substring match. Visibility is
+// always limited to public/home.
 func (r *noteRepository) SearchByFilter(f model.NoteSearchFilter) ([]*model.Note, error) {
 	var notes []*model.Note
-	q := preloadNoteRelations(r.db).
-		Where("text ILIKE ?", "%"+f.Query+"%").
-		Where("visibility IN ?", []string{
-			string(model.NoteVisibilityPublic),
-			string(model.NoteVisibilityHome),
-		})
+	q := preloadNoteRelations(r.db)
+	if f.Pgroonga {
+		// upstream TS では `note.text &@~ :q` を使用。`&@~` は PGroonga の
+		// "クエリ文字列モード" マッチで、空白区切りの AND/OR 等が解釈される。
+		q = q.Where("text &@~ ?", f.Query)
+	} else {
+		q = q.Where("text ILIKE ?", "%"+f.Query+"%")
+	}
+	q = q.Where("visibility IN ?", []string{
+		string(model.NoteVisibilityPublic),
+		string(model.NoteVisibilityHome),
+	})
 	if f.UserID != "" {
 		q = q.Where("\"userId\" = ?", f.UserID)
 	}

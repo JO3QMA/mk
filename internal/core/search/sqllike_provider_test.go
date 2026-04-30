@@ -85,6 +85,36 @@ func TestSQLLikeProvider_RepoErrorPropagated(t *testing.T) {
 	require.Error(t, err)
 }
 
+// stubFilterCapturingNoteRepo records the last NoteSearchFilter passed to
+// SearchByFilter so that tests can verify provider → filter wiring without
+// depending on the underlying SQL backend.
+type stubFilterCapturingNoteRepo struct {
+	*testutil.MockNoteRepository
+	lastFilter model.NoteSearchFilter
+}
+
+func (s *stubFilterCapturingNoteRepo) SearchByFilter(f model.NoteSearchFilter) ([]*model.Note, error) {
+	s.lastFilter = f
+	return s.MockNoteRepository.SearchByFilter(f)
+}
+
+func TestSQLPgroongaProvider_PropagatesPgroongaFlag(t *testing.T) {
+	repo := &stubFilterCapturingNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	p := NewSQLPgroongaProvider(repo, nil)
+	_, err := p.SearchNote(nil, "hello", SearchOpts{}, Pagination{Limit: 10})
+	require.NoError(t, err)
+	assert.True(t, p.pgroonga, "constructor should mark provider as pgroonga")
+	assert.True(t, repo.lastFilter.Pgroonga, "Pgroonga flag must reach the repository filter")
+}
+
+func TestSQLLikeProvider_DoesNotSetPgroongaFlag(t *testing.T) {
+	repo := &stubFilterCapturingNoteRepo{MockNoteRepository: testutil.NewMockNoteRepository()}
+	p := NewSQLLikeProvider(repo, nil)
+	_, err := p.SearchNote(nil, "hello", SearchOpts{}, Pagination{Limit: 10})
+	require.NoError(t, err)
+	assert.False(t, repo.lastFilter.Pgroonga)
+}
+
 func TestSQLLikeProvider_VisibilityFilterDropsHidden(t *testing.T) {
 	p, repo := newSQLLikeProviderForTest()
 	hello := "hello"
