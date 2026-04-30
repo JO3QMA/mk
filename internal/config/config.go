@@ -117,32 +117,36 @@ type SQLLoggingOptions struct {
 
 // Source represents the raw YAML configuration file structure.
 type Source struct {
-	URL                    string                 `mapstructure:"url"`
-	Port                   int                    `mapstructure:"port"`
-	Socket                 string                 `mapstructure:"socket"`
-	ChmodSocket            string                 `mapstructure:"chmodSocket"`
-	DisableHSTS            bool                   `mapstructure:"disableHsts"`
-	EnableIPRateLimit      *bool                  `mapstructure:"enableIpRateLimit"`
-	DB                     DBOptions              `mapstructure:"db"`
-	DBReplications         bool                   `mapstructure:"dbReplications"`
-	DBSlaves               []DBSlaveOptions       `mapstructure:"dbSlaves"`
-	Redis                  RedisOptions           `mapstructure:"redis"`
-	RedisForPubsub         *RedisOptions          `mapstructure:"redisForPubsub"`
-	RedisForJobQueue       *RedisOptions          `mapstructure:"redisForJobQueue"`
-	RedisForTimelines      *RedisOptions          `mapstructure:"redisForTimelines"`
-	RedisForReactions      *RedisOptions          `mapstructure:"redisForReactions"`
-	FulltextSearch         *FulltextSearchOptions `mapstructure:"fulltextSearch"`
-	Meilisearch            *MeilisearchOptions    `mapstructure:"meilisearch"`
-	SetupPassword          string                 `mapstructure:"setupPassword"`
-	Proxy                  string                 `mapstructure:"proxy"`
-	ProxySmtp              string                 `mapstructure:"proxySmtp"`
-	ProxyBypassHosts       []string               `mapstructure:"proxyBypassHosts"`
-	AllowedPrivateNetworks []string               `mapstructure:"allowedPrivateNetworks"`
-	MaxFileSize            *int64                 `mapstructure:"maxFileSize"`
-	ClusterLimit           *int                   `mapstructure:"clusterLimit"`
-	ID                     string                 `mapstructure:"id"`
-	OutgoingAddress        string                 `mapstructure:"outgoingAddress"`
-	OutgoingAddressFamily  string                 `mapstructure:"outgoingAddressFamily"`
+	URL               string `mapstructure:"url"`
+	Port              int    `mapstructure:"port"`
+	Socket            string `mapstructure:"socket"`
+	ChmodSocket       string `mapstructure:"chmodSocket"`
+	DisableHSTS       bool   `mapstructure:"disableHsts"`
+	EnableIPRateLimit *bool  `mapstructure:"enableIpRateLimit"`
+	// DisableEndpointRateLimits, when true, drops the per-endpoint rate
+	// limit table entirely. Intended for benchmarking parity with Misskey TS
+	// `NODE_ENV=development`. Never enable in production. Default false.
+	DisableEndpointRateLimits *bool                  `mapstructure:"disableEndpointRateLimits"`
+	DB                        DBOptions              `mapstructure:"db"`
+	DBReplications            bool                   `mapstructure:"dbReplications"`
+	DBSlaves                  []DBSlaveOptions       `mapstructure:"dbSlaves"`
+	Redis                     RedisOptions           `mapstructure:"redis"`
+	RedisForPubsub            *RedisOptions          `mapstructure:"redisForPubsub"`
+	RedisForJobQueue          *RedisOptions          `mapstructure:"redisForJobQueue"`
+	RedisForTimelines         *RedisOptions          `mapstructure:"redisForTimelines"`
+	RedisForReactions         *RedisOptions          `mapstructure:"redisForReactions"`
+	FulltextSearch            *FulltextSearchOptions `mapstructure:"fulltextSearch"`
+	Meilisearch               *MeilisearchOptions    `mapstructure:"meilisearch"`
+	SetupPassword             string                 `mapstructure:"setupPassword"`
+	Proxy                     string                 `mapstructure:"proxy"`
+	ProxySmtp                 string                 `mapstructure:"proxySmtp"`
+	ProxyBypassHosts          []string               `mapstructure:"proxyBypassHosts"`
+	AllowedPrivateNetworks    []string               `mapstructure:"allowedPrivateNetworks"`
+	MaxFileSize               *int64                 `mapstructure:"maxFileSize"`
+	ClusterLimit              *int                   `mapstructure:"clusterLimit"`
+	ID                        string                 `mapstructure:"id"`
+	OutgoingAddress           string                 `mapstructure:"outgoingAddress"`
+	OutgoingAddressFamily     string                 `mapstructure:"outgoingAddressFamily"`
 
 	DeliverJobConcurrency      *int `mapstructure:"deliverJobConcurrency"`
 	InboxJobConcurrency        *int `mapstructure:"inboxJobConcurrency"`
@@ -219,9 +223,10 @@ type Config struct {
 	AuthURL     string
 	DriveURL    string
 
-	DisableHSTS       bool
-	EnableIPRateLimit bool
-	SetupPassword     string
+	DisableHSTS               bool
+	EnableIPRateLimit         bool
+	DisableEndpointRateLimits bool
+	SetupPassword             string
 
 	DB             DBOptions
 	DBReplications bool
@@ -352,6 +357,7 @@ func bindEnvKeys(v *viper.Viper) {
 		"trustProxy",
 		"disableHsts",
 		"enableIpRateLimit",
+		"disableEndpointRateLimits",
 		"mediaProxy",
 		"logging.sql.disableQueryTruncation",
 		"logging.sql.enableQueryParamLogging",
@@ -384,6 +390,10 @@ func resolve(src *Source) (*Config, error) {
 	enableIPRateLimit := true
 	if src.EnableIPRateLimit != nil {
 		enableIPRateLimit = *src.EnableIPRateLimit
+	}
+	disableEndpointRateLimits := false
+	if src.DisableEndpointRateLimits != nil {
+		disableEndpointRateLimits = *src.DisableEndpointRateLimits
 	}
 
 	redis := resolveRedis(src.Redis, host)
@@ -434,9 +444,10 @@ func resolve(src *Source) (*Config, error) {
 		AuthURL:     fmt.Sprintf("%s://%s/auth", scheme, host),
 		DriveURL:    fmt.Sprintf("%s://%s/files", scheme, host),
 
-		DisableHSTS:       src.DisableHSTS,
-		EnableIPRateLimit: enableIPRateLimit,
-		SetupPassword:     src.SetupPassword,
+		DisableHSTS:               src.DisableHSTS,
+		EnableIPRateLimit:         enableIPRateLimit,
+		DisableEndpointRateLimits: disableEndpointRateLimits,
+		SetupPassword:             src.SetupPassword,
 
 		DB:             resolveDB(src.DB),
 		DBReplications: src.DBReplications,
@@ -504,6 +515,16 @@ func resolve(src *Source) (*Config, error) {
 
 	if cfg.EnablePprof {
 		slog.Warn("config: EnablePprof is enabled; /debug/pprof/* endpoints expose runtime internals. DO NOT enable this in production.",
+			"url", cfg.URL)
+	}
+
+	if cfg.DisableEndpointRateLimits {
+		// per-endpoint rate limit table を完全に無効化する flag。bench /
+		// test でしか使わない想定のため、production で有効化されていないか
+		// 気付けるよう強く警告する (TestMode / EnablePprof と同じ位置に
+		// まとめる、router 側でなく resolve 側で出すことで全 entrypoint
+		// を確実にカバー)。
+		slog.Warn("config: DisableEndpointRateLimits is enabled; per-endpoint rate limits will not enforce. DO NOT enable this in production.",
 			"url", cfg.URL)
 	}
 

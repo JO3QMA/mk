@@ -677,10 +677,20 @@ func (s *Server) setupRoutes() {
 	// Rate limiter: Redisバックエンドのsliding window、Misskey TS互換。
 	// auth.Authenticate()がグローバルミドルウェアとして先に実行されるため、
 	// GetUser(c)で認証済みユーザーを取得できる。
+	//
+	// disableEndpointRateLimits=true のとき per-endpoint table を nil に
+	// 落として全 endpoint で 429 を出さない (#560 / Misskey TS の
+	// `NODE_ENV=development` 相当)。production では絶対に有効にしない。
+	// 起動時の警告は config.resolve() 側で TestMode / EnablePprof と
+	// 揃えて出している。
+	rateLimitDefs := middleware.DefaultEndpointLimits
+	if s.config.DisableEndpointRateLimits {
+		rateLimitDefs = nil
+	}
 	rateLimiter := middleware.NewRedisRateLimiter(
 		s.redis.Default,
 		s.config.EnableIPRateLimit,
-		middleware.DefaultEndpointLimits,
+		rateLimitDefs,
 	)
 	api.Use(rateLimiter.Middleware())
 

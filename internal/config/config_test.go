@@ -80,9 +80,30 @@ func TestLoad_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, cfg.EnableIPRateLimit)
+	assert.False(t, cfg.DisableEndpointRateLimits)
 	assert.Equal(t, int64(262144000), cfg.MaxFileSize)
 	assert.Equal(t, 1000, cfg.PerChannelMaxNoteCacheCount)
 	assert.Equal(t, 500, cfg.PerUserNotificationsMaxCount)
+}
+
+func TestLoad_DisableEndpointRateLimitsTrue(t *testing.T) {
+	// disableEndpointRateLimits=true は bench / test 用の opt-in 設定。
+	// production 同梱 example には載せず、env / 個別 yml で明示指定する想定。
+	yaml := testYAML + "\ndisableEndpointRateLimits: true\n"
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.DisableEndpointRateLimits)
+}
+
+func TestLoad_DisableEndpointRateLimitsEnvOverride(t *testing.T) {
+	// MK_DISABLEENDPOINTRATELIMITS で yml 値を上書きできる。bench docker
+	// compose は env で渡す前提なのでこの経路をテストでカバーする。
+	t.Setenv("MK_DISABLEENDPOINTRATELIMITS", "true")
+	path := writeTestConfig(t, testYAML)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.DisableEndpointRateLimits)
 }
 
 func TestLoad_DBPortDefault(t *testing.T) {
