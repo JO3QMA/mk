@@ -14,8 +14,8 @@ import (
 // fulltextSearch.provider config key. Provider 選択は起動時に一度だけ走る。
 //
 //   - meilisearch (with meilisearch host configured) → MeilisearchProvider
-//   - sqlPgroonga                                    → SQLLikeProvider with
-//     PGroonga `&@~` 演算子 (要 pgroonga 拡張)
+//   - sqlPgroonga                                    → SQLLikeProvider using
+//     the PGroonga `&@~` operator (requires the pgroonga extension)
 //   - sqlLike / unset (with no meilisearch host)     → SQLLikeProvider (ILIKE)
 func buildSearchProvider(
 	cfg *config.Config,
