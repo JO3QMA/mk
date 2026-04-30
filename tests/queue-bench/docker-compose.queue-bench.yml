@@ -186,6 +186,14 @@ services:
       redis-ts: { condition: service_healthy }
     volumes:
       - ./common/ts.yml:/misskey/.config/default.yml:ro
+    healthcheck:
+      # Misskey の /api/ping は POST 専用 (本家 misskey-js も POST で叩いている)。
+      # curl は image に同梱済 (wget は無いので使えない)。
+      test: ["CMD", "curl", "-sf", "-X", "POST", "-H", "Content-Type: application/json", "-d", "{}", "http://127.0.0.1:3000/api/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
     networks: [bench]
 
   nginx-ts:

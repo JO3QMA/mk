@@ -283,15 +283,16 @@ queue-bench-seed:
 	# 後に app コンテナを再起動して新しい meta.federation='all' を読ませる。
 	docker compose -f $(QUEUE_BENCH_COMPOSE) restart app-asynq app-mkq app-ts
 	@echo "waiting for apps to become healthy after restart..."
-	@for i in $$(seq 1 30); do \
-		if docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-asynq app-mkq | grep -q "(healthy)" && \
-		   docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-asynq | grep -q "(healthy)" && \
-		   docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-mkq | grep -q "(healthy)"; then \
-			echo "ready"; exit 0; \
+	@for i in $$(seq 1 60); do \
+		ASYNQ=$$(docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-asynq --format json 2>/dev/null | grep -o '"Health":"healthy"' || true); \
+		MKQ=$$(docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-mkq --format json 2>/dev/null | grep -o '"Health":"healthy"' || true); \
+		TS=$$(docker compose -f $(QUEUE_BENCH_COMPOSE) ps app-ts --format json 2>/dev/null | grep -o '"Health":"healthy"' || true); \
+		if [ -n "$$ASYNQ" ] && [ -n "$$MKQ" ] && [ -n "$$TS" ]; then \
+			echo "ready (asynq+mkq+ts all healthy)"; exit 0; \
 		fi; \
 		sleep 2; \
 	done; \
-	echo "warning: apps did not become healthy in time"
+	echo "warning: not all apps became healthy in time" >&2; exit 1
 
 queue-bench-outbound:
 	docker compose -f $(QUEUE_BENCH_COMPOSE) --profile outbound up --abort-on-container-exit driver-outbound
