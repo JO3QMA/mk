@@ -321,8 +321,9 @@ func (r *noteRepository) ListChildrenOf(noteID string, untilID, sinceID string, 
 
 // SearchByFilter returns notes matching the filter criteria.
 // 検索バックエンド (core/search.SQLLikeProvider) から呼ばれる。
-// f.Pgroonga が true の場合は PGroonga の `&@~` 全文検索演算子を使い、
-// それ以外は ILIKE による部分一致で検索する。可視性は public/home に限定する。
+// When f.Pgroonga is true the predicate uses the PGroonga `&@~` full-text
+// operator; otherwise it falls back to ILIKE substring match. Visibility is
+// always limited to public/home.
 func (r *noteRepository) SearchByFilter(f model.NoteSearchFilter) ([]*model.Note, error) {
 	var notes []*model.Note
 	q := preloadNoteRelations(r.db)

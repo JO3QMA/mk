@@ -31,8 +31,9 @@ func NewSQLLikeProvider(noteRepo repository.NoteRepository, followingRepo reposi
 }
 
 // NewSQLPgroongaProvider returns a Provider that uses the PGroonga `&@~`
-// match operator instead of ILIKE. PGroonga 拡張がインストールされ
-// note.text に対する pgroonga index が貼られていることを前提とする。
+// match operator instead of ILIKE. The PGroonga extension must be installed
+// on the target database and a pgroonga index must exist on note.text;
+// extension installation is the operator's responsibility.
 func NewSQLPgroongaProvider(noteRepo repository.NoteRepository, followingRepo repository.FollowingRepository) *SQLLikeProvider {
 	return &SQLLikeProvider{noteRepo: noteRepo, followingRepo: followingRepo, pgroonga: true}
 }
