@@ -255,6 +255,103 @@ func TestInboxProcessor_VerifyFailureDropped(t *testing.T) {
 	assert.Empty(t, stub.calls)
 }
 
+// hostBlocker が "allowed=false" を返した場合も blocked 経路と同じく
+// silently drop されること (IsBlocked=false でも IsAllowed=false なら
+// federation policy 上 reject)。
+func TestInboxProcessor_DisallowedHostDropped(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+	host := "remote.example"
+	verifier := &stubVerifier{actor: &model.User{ID: "alice", Host: &host}, pubKey: pub}
+	blocker := &stubBlocker{
+		blocked: func(string) bool { return false },
+		allowed: func(string) bool { return false },
+	}
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+	p.SetHostBlockChecker(blocker)
+
+	payload := signedInboxPayload(t, key, []byte(`{}`))
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body:     mustEncode(t, payload),
+	}))
+	assert.Empty(t, stub.calls)
+}
+
+// host が nil な actor (= local) は blocked / tracker / chart 全て
+// no-op で素通りし Process まで到達する。
+func TestInboxProcessor_LocalActorSkipsHostDependentHooks(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+	verifier := &stubVerifier{actor: &model.User{ID: "alice", Host: nil}, pubKey: pub}
+	tracker := &stubInstanceTracker{}
+	chart := &stubInboxChartHook{}
+	blocker := &stubBlocker{}
+
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+	p.SetHostBlockChecker(blocker)
+	p.SetInstanceTracker(tracker)
+	p.SetChartHook(chart)
+
+	payload := signedInboxPayload(t, key, []byte(`{}`))
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body:     mustEncode(t, payload),
+	}))
+	require.Len(t, stub.calls, 1)
+	assert.Empty(t, tracker.hosts, "local actor must not trigger instance tracker")
+	assert.Empty(t, chart.hosts, "local actor must not trigger chart hook")
+}
+
+// signature header が壊れていれば parse 段階で失敗 → drop。
+func TestInboxProcessor_InvalidSignatureHeaderDropped(t *testing.T) {
+	verifier := &stubVerifier{actor: &model.User{ID: "alice"}, pubKey: "x"}
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+
+	payload := queue.InboxPayload{
+		Body:    []byte(`{}`),
+		Method:  "POST",
+		Path:    "/inbox",
+		Headers: map[string]string{"Signature": "not-a-valid-sig", "Host": "x", "Date": "today"},
+	}
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body:     mustEncode(t, payload),
+	}))
+	assert.Empty(t, stub.calls)
+}
+
+// resolver が actor を見つけられない (= ResolveActor error) と verify は
+// drop される (404 sender に伝えても解決しないため retry しない)。
+func TestInboxProcessor_ResolveActorErrorDropped(t *testing.T) {
+	priv, _, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	verifier := &stubVerifier{actor: nil, pubKey: ""}
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+
+	payload := signedInboxPayload(t, key, []byte(`{}`))
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body:     mustEncode(t, payload),
+	}))
+	assert.Empty(t, stub.calls)
+}
+
 // Headers が空の payload (= legacy 形式 / 同期 handler 経路) では verify
 // は skip され、Process が直接走る。後方互換のため。
 func TestInboxProcessor_LegacyPayloadSkipsVerify(t *testing.T) {
