@@ -93,18 +93,55 @@ func (h *Handler) SetChartHook(c ChartHook) {
 	h.chartHook = c
 }
 
+// signatureRelevantHeaders is the small set of HTTP headers worker-side
+// verification needs to reconstruct the signed request. Capturing the
+// full Header map would needlessly bloat the queue payload.
+var signatureRelevantHeaders = []string{
+	"Signature",
+	"Date",
+	"Host",
+	"Digest",
+	"Content-Type",
+	"Content-Length",
+	"Accept",
+}
+
+// captureSignatureHeaders extracts the headers needed to re-verify the
+// HTTP signature in the inbox worker. Only the small allowlist above is
+// included so the queue payload stays compact.
+//
+// Host は net/http で req.Host に格納される (Header map には入らない) た
+// め、明示的に補完してから capture する。これが無いと worker 側 verify が
+// `host: ""` で署名再構築して RSA verify が失敗する。
+func captureSignatureHeaders(req *http.Request) map[string]string {
+	out := make(map[string]string, len(signatureRelevantHeaders))
+	for _, h := range signatureRelevantHeaders {
+		if v := req.Header.Get(h); v != "" {
+			out[h] = v
+		}
+	}
+	if out["Host"] == "" && req.Host != "" {
+		out["Host"] = req.Host
+	}
+	return out
+}
+
 // Inbox handles POST /inbox and POST /users/:id/inbox.
 //
-// Userごとのinboxであっても処理は同じ (現状のシンプル実装ではshared inboxと
-// 同様にactivityをdispatchするだけ)。
+// User ごとの inbox であっても処理は同じ (現状のシンプル実装では shared
+// inbox と同様に activity を dispatch するだけ)。
 //
-// #534 で signature 検証 / host block / instance touch / chart hook の
-// 同期部分はそのままに、本処理 (federation.Processor.Process) を inbox
-// queue に逃がす設計に変更。順序保証は Misskey TS と同じく各 activity
-// handler の冪等性で吸収する (#534 issue body 参照)。
+// #565 で signature 検証 / host block / instance touch / chart hook を
+// すべて inbox worker (queue/processors) 側に移し、handler は body+
+// signature 関連 header を payload に詰めて 202 即返しする「fast write」
+// 設計に変更した。これにより HTTP handler の同期 RSA-2048 verify (~1-2ms)
+// が消え、faker.send rps が ~2x 改善する (#564 bench)。Misskey TS と同じ
+// アーキテクチャ (read-and-enqueue + verify-in-worker)。
 //
-// SetEnqueuer 未配線時は legacy synchronous mode で動作する — テストや
-// 旧来動作を想定する構成ではそのまま使える。
+// SetEnqueuer 未配線時は legacy synchronous mode に fallback し、handler
+// 内で従来通り verify + block + track + chart + process を実行する。これは
+// 単体テスト / 旧来配線を維持するためのもので、production 配線では
+// SetEnqueuer 経由の async path を踏む。
 func (h *Handler) Inbox(c echo.Context) error {
 	body, err := io.ReadAll(c.Request().Body)
 	if err != nil {
@@ -116,6 +153,31 @@ func (h *Handler) Inbox(c echo.Context) error {
 		c.Request().Header.Set("Host", c.Request().Host)
 	}
 
+	if h.enqueuer != nil {
+		// Fast write path. signature 検証は worker 側で再現するので
+		// handler では実施しない。最低限のチェックだけ handler で行う:
+		// Signature ヘッダの presence (= 明らかな malformed を 401 で
+		// 即返す)。これは O(1) の文字列存在 check で RSA は走らない。
+		if c.Request().Header.Get("Signature") == "" {
+			return c.NoContent(http.StatusUnauthorized)
+		}
+		payload := queue.InboxPayload{
+			Body:    body,
+			Method:  c.Request().Method,
+			Path:    c.Request().URL.Path,
+			Headers: captureSignatureHeaders(c.Request()),
+		}
+		if err := h.enqueuer.EnqueueInbox(c.Request().Context(), payload); err != nil {
+			// queue 障害時は 500 を返して上流に retry させる (best-effort
+			// を装って 202 で握りつぶすと activity が黙って消える)。
+			slog.Error("inbox enqueue failed", "err", err)
+			return c.NoContent(http.StatusInternalServerError)
+		}
+		return c.NoContent(http.StatusAccepted)
+	}
+
+	// Legacy synchronous fallback (enqueuer 未配線時)。テストや旧来配線を
+	// 維持するために残してある。
 	actor, err := h.verifySignature(c.Request())
 	if err != nil {
 		slog.Warn("inbox signature verification failed", "err", err)
@@ -129,23 +191,6 @@ func (h *Handler) Inbox(c echo.Context) error {
 	h.touchInstance(actor)
 	h.commitChart(actor)
 
-	host := ""
-	if actor != nil && actor.Host != nil {
-		host = *actor.Host
-	}
-	if h.enqueuer != nil {
-		if err := h.enqueuer.EnqueueInbox(c.Request().Context(), queue.InboxPayload{Body: body, Host: host}); err != nil {
-			// queue 障害時は 500 を返して上流に retry させる (best-effort
-			// を装って 202 で握りつぶすと activity が黙って消える)。
-			slog.Error("inbox enqueue failed", "err", err)
-			return c.NoContent(http.StatusInternalServerError)
-		}
-		return c.NoContent(http.StatusAccepted)
-	}
-
-	// Legacy synchronous fallback (enqueuer 未配線時)。テストや旧来配線を
-	// 維持するために残してある。worker 側の handler と同じ Process を
-	// 同期で呼ぶだけなので semantic は変わらない。
 	return h.processSynchronously(c, body)
 }
 

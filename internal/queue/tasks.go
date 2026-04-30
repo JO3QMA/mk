@@ -75,12 +75,22 @@ const TaskTypeInbox = "ap:inbox"
 
 // InboxPayload is the body of an inbox task. Body は受信した raw AP
 // activity の bytes そのまま (Process 側で再 normalize / decode する)。
-// Host は actor が属するリモートホスト名。empty なら local actor 由来
-// または signature 検証で host 抽出に失敗したケースで、worker 側で
-// チャート / instance 更新等の host 依存処理を skip するためのキー。
+//
+// #565 で signature 検証 / host block / instance touch / chart hook を
+// すべて worker 側に逃がす設計に変更した結果、payload は HTTP request の
+// 復元に必要な Method / Path / Headers (Signature / Date / Digest /
+// Host etc.) も運ぶ。Headers が non-nil の payload は worker 側で
+// signature を再 verify する責務がある。
+//
+// Host fields はレガシー互換 (Headers が無い旧 payload では Host を
+// 信頼してチャート / instance 更新する)。新 payload では Headers から
+// 抽出するため通常空。
 type InboxPayload struct {
-	Body []byte `json:"body"`
-	Host string `json:"host,omitempty"`
+	Body    []byte            `json:"body"`
+	Host    string            `json:"host,omitempty"`
+	Method  string            `json:"method,omitempty"`
+	Path    string            `json:"path,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // NewInboxTask serializes the payload into a driver.Task ready to pass
