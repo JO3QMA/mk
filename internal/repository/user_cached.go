@@ -38,6 +38,11 @@ type CachedUserRepository struct {
 	mu       sync.RWMutex
 	users    map[string]userCacheEntry
 	profiles map[string]profileCacheEntry
+	// byURI は AP 由来 URI → user のキャッシュ。inbox worker の hot path
+	// (federation.Resolver.ResolveActor) が毎リクエスト FindByURI を叩く
+	// ため、これを cache せずに DB に行くと PR #565 で軽量化した HTTP
+	// 受信 fast path に対して worker drain がボトルネックになる (#xxx)。
+	byURI map[string]uriCacheEntry
 }
 
 type userCacheEntry struct {
@@ -50,6 +55,12 @@ type userCacheEntry struct {
 
 type profileCacheEntry struct {
 	profile   *model.UserProfile
+	expiresAt time.Time
+	missing   bool
+}
+
+type uriCacheEntry struct {
+	user      *model.User
 	expiresAt time.Time
 	missing   bool
 }
@@ -92,6 +103,7 @@ func newCachedUserRepository(inner UserRepository, ttl time.Duration, maxEntries
 		maxEntries:     maxEntries,
 		users:          make(map[string]userCacheEntry),
 		profiles:       make(map[string]profileCacheEntry),
+		byURI:          make(map[string]uriCacheEntry),
 	}
 }
 
@@ -107,7 +119,9 @@ func (c *CachedUserRepository) SetMaxEntriesForTest(n int) {
 }
 
 // invalidate drops both user and profile entries for the given userID.
-// Mutation 系メソッドの末尾で呼ぶ。
+// Mutation 系メソッドの末尾で呼ぶ。byURI は per-userID で逆引きせず TTL に
+// 任せる (URI は actor の canonical id なので user lifetime 中は不変、
+// 古い entry が短時間残っても害は無い)。
 func (c *CachedUserRepository) invalidate(userID string) {
 	if userID == "" {
 		return
@@ -212,6 +226,58 @@ func (c *CachedUserRepository) storeProfileMissing(userID string) {
 	c.mu.Unlock()
 }
 
+// FindByURI returns the cached user for a remote AP URI, falling through
+// to the inner repo on miss / expiry. AP inbox worker の hot path から
+// 毎 request で呼ばれるため cache が effective: 同じ remote actor 由来の
+// activity が連続して届く federation 受信は典型的に高 hit-ratio。
+//
+// negative cache 含む semantic は FindByID と同じ。URI は actor の
+// canonical id (lifetime-stable) なので invalidate は通常 TTL 任せだが、
+// 別経路で user row が更新された場合に refresh されるよう同期 store する
+// FindByID 経路と TTL を揃える。
+func (c *CachedUserRepository) FindByURI(uri string) (*model.User, error) {
+	if uri == "" {
+		return c.UserRepository.FindByURI(uri)
+	}
+	c.mu.RLock()
+	if e, ok := c.byURI[uri]; ok && time.Now().Before(e.expiresAt) {
+		c.mu.RUnlock()
+		if e.missing {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return e.user, nil
+	}
+	c.mu.RUnlock()
+
+	u, err := c.UserRepository.FindByURI(uri)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.storeURIMissing(uri)
+			return nil, err
+		}
+		return nil, err
+	}
+	c.storeURI(uri, u)
+	// FindByID 経路の cache にも入れておく。worker は両方の lookup を
+	// する経路があり、片方 miss → DB → 反対側だけ updated は無駄なので。
+	c.storeUser(u.ID, u)
+	return u, nil
+}
+
+func (c *CachedUserRepository) storeURI(uri string, u *model.User) {
+	c.mu.Lock()
+	c.evictExpiredURIsLocked()
+	c.byURI[uri] = uriCacheEntry{user: u, expiresAt: time.Now().Add(c.ttl)}
+	c.mu.Unlock()
+}
+
+func (c *CachedUserRepository) storeURIMissing(uri string) {
+	c.mu.Lock()
+	c.evictExpiredURIsLocked()
+	c.byURI[uri] = uriCacheEntry{missing: true, expiresAt: time.Now().Add(c.ttl)}
+	c.mu.Unlock()
+}
+
 // evictExpiredUsersLocked は users map のサイズが userCacheMaxEntries を
 // 超えていたら、期限切れエントリを一括削除して memory growth を抑える。
 // 呼び出し側で c.mu.Lock 済みである必要がある。Devin #552: unbounded
@@ -236,6 +302,18 @@ func (c *CachedUserRepository) evictExpiredProfilesLocked() {
 	for k, e := range c.profiles {
 		if now.After(e.expiresAt) {
 			delete(c.profiles, k)
+		}
+	}
+}
+
+func (c *CachedUserRepository) evictExpiredURIsLocked() {
+	if len(c.byURI) < c.maxEntries {
+		return
+	}
+	now := time.Now()
+	for k, e := range c.byURI {
+		if now.After(e.expiresAt) {
+			delete(c.byURI, k)
 		}
 	}
 }

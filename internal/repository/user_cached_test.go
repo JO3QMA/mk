@@ -24,6 +24,7 @@ type countingUserRepo struct {
 
 	findByIDCalls            atomic.Int64
 	findProfileByUserIDCalls atomic.Int64
+	findByURICalls           atomic.Int64
 
 	updateUserErr      error
 	updateProfileErr   error
@@ -45,6 +46,16 @@ func (c *countingUserRepo) FindByID(id string) (*model.User, error) {
 	c.findByIDCalls.Add(1)
 	if u, ok := c.users[id]; ok {
 		return u, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (c *countingUserRepo) FindByURI(uri string) (*model.User, error) {
+	c.findByURICalls.Add(1)
+	for _, u := range c.users {
+		if u.URI != nil && *u.URI == uri {
+			return u, nil
+		}
 	}
 	return nil, gorm.ErrRecordNotFound
 }
@@ -137,6 +148,63 @@ func TestCachedUserRepository_FindProfileByUserIDHitsInnerOnce(t *testing.T) {
 	assert.Equal(t, int64(1), inner.findProfileByUserIDCalls.Load())
 }
 
+func TestCachedUserRepository_FindByURIHitsInnerOnce(t *testing.T) {
+	inner := newCountingUserRepo()
+	uri := "https://remote.example/users/alice"
+	inner.users["u1"] = &model.User{ID: "u1", Username: "alice", URI: &uri}
+	cached := repository.NewCachedUserRepository(inner)
+
+	for range 10 {
+		got, err := cached.FindByURI(uri)
+		require.NoError(t, err)
+		assert.Equal(t, "u1", got.ID)
+	}
+	assert.Equal(t, int64(1), inner.findByURICalls.Load(),
+		"10 cached URI lookups must hit inner exactly once")
+
+	// FindByURI 経由で FindByID 側にも cache が乗ること (worker hot path)。
+	_, err := cached.FindByID("u1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), inner.findByIDCalls.Load(),
+		"FindByID after FindByURI hit must not call inner")
+}
+
+func TestCachedUserRepository_FindByURINegativeCache(t *testing.T) {
+	inner := newCountingUserRepo()
+	cached := repository.NewCachedUserRepository(inner)
+
+	for range 5 {
+		_, err := cached.FindByURI("https://ghost/users/x")
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	}
+	assert.Equal(t, int64(1), inner.findByURICalls.Load(),
+		"missing URI must be negative-cached")
+}
+
+func TestCachedUserRepository_FindByURITransientErrorNotCached(t *testing.T) {
+	inner := &erroringUserRepo{}
+	cached := repository.NewCachedUserRepository(inner)
+	_, err := cached.FindByURI("https://x/users/a")
+	require.Error(t, err)
+	_, err = cached.FindByURI("https://x/users/a")
+	require.Error(t, err)
+	assert.Equal(t, int64(2), inner.calls.Load())
+}
+
+func TestCachedUserRepository_FindByURIRefreshesAfterTTL(t *testing.T) {
+	inner := newCountingUserRepo()
+	uri := "https://r/u/a"
+	inner.users["u1"] = &model.User{ID: "u1", URI: &uri}
+	cached := repository.NewCachedUserRepositoryWithTTL(inner, 1*time.Millisecond)
+
+	_, err := cached.FindByURI(uri)
+	require.NoError(t, err)
+	time.Sleep(2 * time.Millisecond)
+	_, err = cached.FindByURI(uri)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), inner.findByURICalls.Load())
+}
+
 func TestCachedUserRepository_NotFoundIsNegativeCached(t *testing.T) {
 	inner := newCountingUserRepo()
 	cached := repository.NewCachedUserRepository(inner)
@@ -162,6 +230,11 @@ func (e *erroringUserRepo) FindByID(_ string) (*model.User, error) {
 }
 
 func (e *erroringUserRepo) FindProfileByUserID(_ string) (*model.UserProfile, error) {
+	e.calls.Add(1)
+	return nil, errors.New("db down")
+}
+
+func (e *erroringUserRepo) FindByURI(_ string) (*model.User, error) {
 	e.calls.Add(1)
 	return nil, errors.New("db down")
 }
