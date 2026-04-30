@@ -40,8 +40,8 @@ type CachedUserRepository struct {
 	profiles map[string]profileCacheEntry
 	// byURI は AP 由来 URI → user のキャッシュ。inbox worker の hot path
 	// (federation.Resolver.ResolveActor) が毎リクエスト FindByURI を叩く
-	// ため、これを cache せずに DB に行くと PR #565 で軽量化した HTTP
-	// 受信 fast path に対して worker drain がボトルネックになる (#xxx)。
+	// ため、これを cache せずに DB に行くと PR #566 で軽量化した HTTP
+	// 受信 fast path に対して worker drain がボトルネックになる (#567)。
 	byURI map[string]uriCacheEntry
 }
 
@@ -118,10 +118,14 @@ func (c *CachedUserRepository) SetMaxEntriesForTest(n int) {
 	c.mu.Unlock()
 }
 
-// invalidate drops both user and profile entries for the given userID.
-// Mutation 系メソッドの末尾で呼ぶ。byURI は per-userID で逆引きせず TTL に
-// 任せる (URI は actor の canonical id なので user lifetime 中は不変、
-// 古い entry が短時間残っても害は無い)。
+// invalidate drops users[userID], profiles[userID], および byURI 内の同じ
+// userID を持つ entry をすべて削除する。Mutation 系メソッドの末尾で呼ぶ。
+//
+// 当初は byURI を TTL に任せる設計だったが、Devin review #568 BUG-2 の
+// 指摘通り FindByURI が cache 経由で stale な User struct (古い
+// FollowingCount / IsSuspended 等) を最大 5 分返してしまう問題があり、
+// FindByID 経路と一貫性が取れない。byURI map walk は最悪 O(maxEntries)
+// だが mutation 経由でのみ発火するので per-request hot path には影響無し。
 func (c *CachedUserRepository) invalidate(userID string) {
 	if userID == "" {
 		return
@@ -129,6 +133,11 @@ func (c *CachedUserRepository) invalidate(userID string) {
 	c.mu.Lock()
 	delete(c.users, userID)
 	delete(c.profiles, userID)
+	for uri, e := range c.byURI {
+		if !e.missing && e.user != nil && e.user.ID == userID {
+			delete(c.byURI, uri)
+		}
+	}
 	c.mu.Unlock()
 }
 
@@ -319,6 +328,44 @@ func (c *CachedUserRepository) evictExpiredURIsLocked() {
 }
 
 // --- mutating methods: delegate then invalidate -----------------------------
+
+// Create persists a new user row. URI が指定されている場合は byURI cache の
+// 該当 entry を必ず削除する (#567 / #568 fix): federation.Resolver は
+// FindByURI miss → DB miss → 負 cache → 同 URI で remote fetch + Create
+// → 次の FindByURI で stale 負 cache hit という flow を踏むため、Create
+// 時の URI cache invalidation が無いと作ったばかりの user を 404 として
+// 返してしまう。
+func (c *CachedUserRepository) Create(u *model.User) error {
+	if err := c.UserRepository.Create(u); err != nil {
+		return err
+	}
+	if u != nil {
+		c.invalidate(u.ID)
+		if u.URI != nil && *u.URI != "" {
+			c.invalidateURI(*u.URI)
+		}
+	}
+	return nil
+}
+
+// invalidateURI drops the byURI cache entry for the given uri. URI を
+// 知っている呼び出し側専用 (例: Create / Update でリモート user を作る /
+// 更新するとき)。byURI map の負 cache が CREATE と競合して 404 を返す
+// 問題への対処 (#568)。
+func (c *CachedUserRepository) invalidateURI(uri string) {
+	if uri == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.byURI, uri)
+	c.mu.Unlock()
+}
+
+// InvalidateURI is the public counterpart of invalidateURI for callers that
+// know they have just persisted a user with a given URI.
+func (c *CachedUserRepository) InvalidateURI(uri string) {
+	c.invalidateURI(uri)
+}
 
 func (c *CachedUserRepository) UpdateUser(userID string, fields map[string]any) error {
 	if err := c.UserRepository.UpdateUser(userID, fields); err != nil {

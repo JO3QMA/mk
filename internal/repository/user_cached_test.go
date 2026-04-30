@@ -50,6 +50,14 @@ func (c *countingUserRepo) FindByID(id string) (*model.User, error) {
 	return nil, gorm.ErrRecordNotFound
 }
 
+func (c *countingUserRepo) Create(u *model.User) error {
+	if u == nil {
+		return errors.New("nil user")
+	}
+	c.users[u.ID] = u
+	return nil
+}
+
 func (c *countingUserRepo) FindByURI(uri string) (*model.User, error) {
 	c.findByURICalls.Add(1)
 	for _, u := range c.users {
@@ -189,6 +197,50 @@ func TestCachedUserRepository_FindByURITransientErrorNotCached(t *testing.T) {
 	_, err = cached.FindByURI("https://x/users/a")
 	require.Error(t, err)
 	assert.Equal(t, int64(2), inner.calls.Load())
+}
+
+// 同一 URI で先に NotFound 負 cache が乗ったあと、Create で同 URI の user
+// を作っても次回 FindByURI で 404 を返さないこと (federation.Resolver の
+// resolve → fetch → Create flow がここで詰まると pre-#568 の e2e
+// regression と同じ「直前に作った remote user が 404」になる)。
+func TestCachedUserRepository_CreateInvalidatesNegativeURICache(t *testing.T) {
+	inner := newCountingUserRepo()
+	uri := "https://r/u/late"
+	cached := repository.NewCachedUserRepository(inner)
+
+	// 1. 先に存在しない URI を引いて負 cache を作る
+	_, err := cached.FindByURI(uri)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+	// 2. user を Create
+	require.NoError(t, cached.Create(&model.User{ID: "u1", URI: &uri}))
+
+	// 3. もう一度 FindByURI して、404 でなく作成した user が返ること
+	got, err := cached.FindByURI(uri)
+	require.NoError(t, err)
+	assert.Equal(t, "u1", got.ID)
+}
+
+// UpdateUser で URI が変わるケース (rename / move): byURI cache を userID
+// で逆引き invalidate する。
+func TestCachedUserRepository_UpdateUserInvalidatesURICache(t *testing.T) {
+	inner := newCountingUserRepo()
+	uri := "https://r/u/x"
+	inner.users["u1"] = &model.User{ID: "u1", URI: &uri}
+	cached := repository.NewCachedUserRepository(inner)
+
+	// warm cache via FindByURI
+	_, err := cached.FindByURI(uri)
+	require.NoError(t, err)
+
+	// update via cached repo (e.g. fields map で uri 変更想定)
+	require.NoError(t, cached.UpdateUser("u1", map[string]any{"uri": "https://r/u/y"}))
+
+	// FindByURI(old_uri) は inner に再度行くこと (cache hit せず)
+	prev := inner.findByURICalls.Load()
+	_, _ = cached.FindByURI(uri)
+	assert.Greater(t, inner.findByURICalls.Load(), prev,
+		"UpdateUser must invalidate URI cache for that user")
 }
 
 func TestCachedUserRepository_FindByURIRefreshesAfterTTL(t *testing.T) {
