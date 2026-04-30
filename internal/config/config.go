@@ -518,6 +518,16 @@ func resolve(src *Source) (*Config, error) {
 			"url", cfg.URL)
 	}
 
+	if cfg.DisableEndpointRateLimits {
+		// per-endpoint rate limit table を完全に無効化する flag。bench /
+		// test でしか使わない想定のため、production で有効化されていないか
+		// 気付けるよう強く警告する (TestMode / EnablePprof と同じ位置に
+		// まとめる、router 側でなく resolve 側で出すことで全 entrypoint
+		// を確実にカバー)。
+		slog.Warn("config: DisableEndpointRateLimits is enabled; per-endpoint rate limits will not enforce. DO NOT enable this in production.",
+			"url", cfg.URL)
+	}
+
 	// HTTP socket と TCP port は両立しない。両方設定されていた場合は
 	// socket を優先する旨警告ログを出し、運用者に気付けるようにする。
 	if cfg.Socket != "" && cfg.Port != 0 {

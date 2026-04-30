@@ -679,13 +679,12 @@ func (s *Server) setupRoutes() {
 	// GetUser(c)で認証済みユーザーを取得できる。
 	//
 	// disableEndpointRateLimits=true のとき per-endpoint table を nil に
-	// 落として全 endpoint で 429 を出さない (#561 で nginx port 枯渇を直し
-	// た後の bench で per-user limit が公正比較を阻害していた件 #563)。
-	// Misskey TS の `NODE_ENV=development` 相当。production では絶対に有効
-	// にしない。
+	// 落として全 endpoint で 429 を出さない (#560 / Misskey TS の
+	// `NODE_ENV=development` 相当)。production では絶対に有効にしない。
+	// 起動時の警告は config.resolve() 側で TestMode / EnablePprof と
+	// 揃えて出している。
 	rateLimitDefs := middleware.DefaultEndpointLimits
 	if s.config.DisableEndpointRateLimits {
-		slog.Warn("per-endpoint rate limits disabled (disableEndpointRateLimits=true) — for benchmarks only, never use in production")
 		rateLimitDefs = nil
 	}
 	rateLimiter := middleware.NewRedisRateLimiter(
