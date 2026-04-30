@@ -52,6 +52,8 @@ drive-files/
 tests/bench/results/*.json
 tests/bench/results/*.md
 tests/bench/results/profiles/
+tests/queue-bench/results/*.json
+tests/queue-bench/results/*.md
 !tests/bench/results/.gitkeep
 
 # Claude Code local state
