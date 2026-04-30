@@ -327,6 +327,12 @@ func (f *faker) preSign(req sendRequest) (map[string][]signedReq, error) {
 	}
 	var wg sync.WaitGroup
 	var firstErr atomic.Value
+	// Worker error 発生時に producer goroutine を停止させるための cancel。
+	// 全 worker が同時に error で抜けると producer が channel send で block
+	// したまま leak するため (#564 Devin BUG-1)、worker 側で cancel() を呼び
+	// producer は ctx.Done() を select する。
+	stopCtx, stop := context.WithCancel(context.Background())
+	defer stop()
 	for range workerCount {
 		wg.Add(1)
 		go func() {
@@ -335,6 +341,7 @@ func (f *faker) preSign(req sendRequest) (map[string][]signedReq, error) {
 				sr, err := f.buildSigned(j.target, j.index)
 				if err != nil {
 					firstErr.CompareAndSwap(nil, err)
+					stop()
 					return
 				}
 				out[j.target][j.index] = sr
@@ -346,7 +353,11 @@ func (f *faker) preSign(req sendRequest) (map[string][]signedReq, error) {
 		defer close(jobs)
 		for _, target := range req.Targets {
 			for i := range req.Count {
-				jobs <- job{target: target, index: i}
+				select {
+				case jobs <- job{target: target, index: i}:
+				case <-stopCtx.Done():
+					return
+				}
 			}
 		}
 	}()
