@@ -127,7 +127,7 @@ cp .config/docker.yml.example .config/docker.yml
 
 | キー | 型 | 説明 |
 |---|---|---|
-| `fulltextSearch.provider` | string | 検索プロバイダ名 |
+| `fulltextSearch.provider` | string | 検索プロバイダ名。`sqlLike` (デフォルト) / `sqlPgroonga` / `meilisearch` |
 | `meilisearch.host` | string | Meilisearchホスト |
 | `meilisearch.port` | int | Meilisearchポート |
 | `meilisearch.apiKey` | string | APIキー |
@@ -135,7 +135,25 @@ cp .config/docker.yml.example .config/docker.yml
 | `meilisearch.index` | string | インデックス名 |
 | `meilisearch.scope` | string | 検索スコープ |
 
-Meilisearch未設定時はSQL ILIKE検索にフォールバック。
+provider 別の挙動:
+
+- `sqlLike` (デフォルト) — `text ILIKE '%q%'` で全文検索する。追加の DB 拡張は不要だが、note 行数が増えると線形スキャンになるため大規模インスタンスでは遅くなる。
+- `sqlPgroonga` — PGroonga の `&@~` 演算子で全文検索する。日本語を含む高速な転置 index 検索が利用可能。**事前に PostgreSQL 側で pgroonga 拡張のインストールと note.text への index 作成が必要** (下記)。
+- `meilisearch` — 別プロセスの Meilisearch にノートを index する。`meilisearch.host` 必須。未設定時は自動的に `sqlLike` にフォールバックする。
+
+#### PGroonga セットアップ
+
+`sqlPgroonga` を使うには PostgreSQL に PGroonga 拡張が導入されている必要がある (公式 image には含まれていない)。インストール手順は [pgroonga.github.io](https://pgroonga.github.io/install/) を参照。導入後、各データベースで一度だけ拡張を有効化し、note.text に index を貼る:
+
+```sql
+-- DB ごとに 1 回だけ
+CREATE EXTENSION IF NOT EXISTS pgroonga;
+
+-- note.text 用の全文検索 index
+CREATE INDEX IF NOT EXISTS pgroonga_note_text_idx ON note USING pgroonga (text);
+```
+
+mk-go 側のマイグレーションには含めていない。pgroonga 拡張の有無は運用環境依存のため、operator が明示的に install/index 作成する責務とする (upstream Misskey TS と同じ方針)。
 
 ### パフォーマンス
 

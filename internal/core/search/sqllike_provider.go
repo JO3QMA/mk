@@ -11,11 +11,16 @@ import (
 // over public/home notes and supports the same filter options as the
 // Meilisearch backend (userId / channelId / host).
 //
+// When pgroonga is true the underlying query uses PGroonga's `&@~` operator
+// instead of ILIKE — upstream Misskey TS keeps both providers in the same
+// code path and only swaps the WHERE clause.
+//
 // Index / Unindex are no-ops because the canonical store is the database
 // itself; nothing extra has to happen on note creation / deletion.
 type SQLLikeProvider struct {
 	noteRepo      repository.NoteRepository
 	followingRepo repository.FollowingRepository
+	pgroonga      bool
 }
 
 // NewSQLLikeProvider returns a Provider backed by SearchByFilter on the
@@ -23,6 +28,13 @@ type SQLLikeProvider struct {
 // (note.CanSeeNote) で followers 可視性のチェックに使う。nil 可。
 func NewSQLLikeProvider(noteRepo repository.NoteRepository, followingRepo repository.FollowingRepository) *SQLLikeProvider {
 	return &SQLLikeProvider{noteRepo: noteRepo, followingRepo: followingRepo}
+}
+
+// NewSQLPgroongaProvider returns a Provider that uses the PGroonga `&@~`
+// match operator instead of ILIKE. PGroonga 拡張がインストールされ
+// note.text に対する pgroonga index が貼られていることを前提とする。
+func NewSQLPgroongaProvider(noteRepo repository.NoteRepository, followingRepo repository.FollowingRepository) *SQLLikeProvider {
+	return &SQLLikeProvider{noteRepo: noteRepo, followingRepo: followingRepo, pgroonga: true}
 }
 
 // IndexNote is a no-op for the SQL backend (the database is the index).
@@ -49,6 +61,7 @@ func (p *SQLLikeProvider) SearchNote(viewer *model.User, query string, opts Sear
 		UntilID:   page.UntilID,
 		SinceID:   page.SinceID,
 		Limit:     limit,
+		Pgroonga:  p.pgroonga,
 	})
 	if err != nil {
 		return nil, err

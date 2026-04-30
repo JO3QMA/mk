@@ -75,6 +75,10 @@ type NoteSearchFilter struct {
 	UntilID   string
 	SinceID   string
 	Limit     int
+	// Pgroonga が true のときは ILIKE ではなく PGroonga の `&@~` 演算子で
+	// 全文検索する。upstream Misskey TS の SearchService.searchNoteByLike が
+	// fulltextSearch.provider == "sqlPgroonga" でクエリを差し替えるのと同じ動き。
+	Pgroonga bool
 }
 
 // ReplyTargetCount is a (userID, count) pair returned by

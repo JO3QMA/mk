@@ -14,10 +14,9 @@ import (
 // fulltextSearch.provider config key. Provider 選択は起動時に一度だけ走る。
 //
 //   - meilisearch (with meilisearch host configured) → MeilisearchProvider
-//   - sqlLike / pgroonga / unset (with no meilisearch host) → SQLLikeProvider
-//
-// pgroonga は将来的にネイティブの `&@~` 演算子を使う予定だが、Phase 4.6 では
-// SQLLike と同じ ILIKE 経路で動かす。
+//   - sqlPgroonga                                    → SQLLikeProvider with
+//     PGroonga `&@~` 演算子 (要 pgroonga 拡張)
+//   - sqlLike / unset (with no meilisearch host)     → SQLLikeProvider (ILIKE)
 func buildSearchProvider(
 	cfg *config.Config,
 	noteRepo repository.NoteRepository,
@@ -43,7 +42,10 @@ func buildSearchProvider(
 		_ = mp.ApplyDefaultSettings()
 		return mp
 	}
-	// fulltextSearch.provider が "sqlLike" / "pgroonga" / 未設定 の場合は
+	if provider == "sqlpgroonga" {
+		return coresearch.NewSQLPgroongaProvider(noteRepo, followingRepo)
+	}
+	// fulltextSearch.provider が "sqlLike" / 未設定 / 不明な値の場合は
 	// SQL ILIKE フォールバック。
 	return coresearch.NewSQLLikeProvider(noteRepo, followingRepo)
 }
