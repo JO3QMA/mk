@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -46,7 +47,8 @@ def faker_send(targets: list[str], count: int, concurrency: int) -> dict[str, An
     return r.json()
 
 
-def drain_one(stack: str, info: dict[str, Any], expected: int) -> dict[str, Any]:
+def drain_one(stack: str, info: dict[str, Any], expected: int,
+              send_done: threading.Event) -> dict[str, Any]:
     kind, redis_host = STACK_PROBES[stack]
     probe = make_probe(stack, kind, redis_host, "inbox")
 
@@ -54,11 +56,20 @@ def drain_one(stack: str, info: dict[str, Any], expected: int) -> dict[str, Any]
     deadline = time.monotonic() + DRAIN_TIMEOUT_S
     start = time.monotonic()
     drained_at: float | None = None
+    saw_work = False  # True になった以降に depth=0 を観測したら drained と扱う
 
     while time.monotonic() < deadline:
         depth = probe.depth()
         samples.append({"t": time.monotonic() - start, "depth": depth})
-        if depth == 0 and len(samples) > 1:
+        if depth > 0:
+            saw_work = True
+        # drain 判定: faker.send がまだ走っている間は depth==0 を瞬間的に
+        # observe しても drained と扱わない。faker が送り終わって (send_done)、
+        # かつそれまでに少なくとも 1 度 depth>0 を見ている (saw_work)、かつ
+        # 現時点で depth==0 — の 3 条件揃って初めて drained 扱い。
+        # 例外: faker が瞬間的に終わって receiver workers が即処理した
+        # (= saw_work が立たない) ケースは send_done 後の depth==0 で抜ける。
+        if depth == 0 and send_done.is_set() and len(samples) > 1:
             drained_at = samples[-1]["t"]
             break
         time.sleep(POLL_INTERVAL_S)
@@ -74,6 +85,7 @@ def drain_one(stack: str, info: dict[str, Any], expected: int) -> dict[str, Any]
         "timed_out": timed_out,
         "throughput_jobs_per_sec": throughput,
         "peak_queue_depth": peak,
+        "saw_work": saw_work,
         "samples": samples[-200:],
     }
 
@@ -93,13 +105,13 @@ def main() -> int:
     # faker.send は同期的に blast 完了まで待つ。一方で receiver の inbox
     # ジョブは送出と同時にエンキューされ始めるので、receiver 側の drain
     # 監視は faker 呼び出しと並行で行う必要がある。並行 thread で立ち
-    # 上げる。
-    import threading
-
+    # 上げる。send_done event を共有して、drain 判定が faker 完了前に
+    # 早期 break しないようにする (#564 Devin BUG-1)。
     drain_results: dict[str, dict[str, Any]] = {}
+    send_done = threading.Event()
 
     def drain_thread(stack: str, info: dict[str, Any]) -> None:
-        drain_results[stack] = drain_one(stack, info, INBOUND_COUNT)
+        drain_results[stack] = drain_one(stack, info, INBOUND_COUNT, send_done)
 
     threads = [
         threading.Thread(target=drain_thread, args=(stack, info))
@@ -112,6 +124,7 @@ def main() -> int:
     send_start = time.monotonic()
     send_resp = faker_send(targets, INBOUND_COUNT, INBOUND_CONCURRENCY)
     send_elapsed = time.monotonic() - send_start
+    send_done.set()
     print(
         f"faker send done in {send_elapsed:.2f}s "
         f"(presign {send_resp['preSignMs']:.0f}ms, total {send_resp['totalMs']:.0f}ms)",
