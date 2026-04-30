@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/queue/processors"
@@ -78,6 +82,195 @@ func TestInboxProcessor_UnsupportedActivityIsSwallowed(t *testing.T) {
 		Body:     mustEncode(t, queue.InboxPayload{Body: []byte(`{}`)}),
 	})
 	assert.NoError(t, err, "unsupported type should not fail the worker")
+}
+
+// stubVerifier returns the supplied actor + pubkey deterministically so
+// worker-side signature verification can be exercised without the full
+// federation.Resolver dep chain.
+type stubVerifier struct {
+	actor  *model.User
+	pubKey string
+}
+
+func (s *stubVerifier) ResolveActor(_ string) (*model.User, error) {
+	if s.actor == nil {
+		return nil, errors.New("not found")
+	}
+	return s.actor, nil
+}
+
+func (s *stubVerifier) PublicKeyForActor(_ string) (string, error) {
+	if s.pubKey == "" {
+		return "", errors.New("no key")
+	}
+	return s.pubKey, nil
+}
+
+type stubBlocker struct{ blocked, allowed func(string) bool }
+
+func (s *stubBlocker) IsBlocked(h string) bool {
+	if s.blocked == nil {
+		return false
+	}
+	return s.blocked(h)
+}
+
+func (s *stubBlocker) IsAllowed(h string) bool {
+	if s.allowed == nil {
+		return true
+	}
+	return s.allowed(h)
+}
+
+type stubInstanceTracker struct{ hosts []string }
+
+func (s *stubInstanceTracker) MarkRequestReceived(host string) error {
+	s.hosts = append(s.hosts, host)
+	return nil
+}
+
+type stubInboxChartHook struct{ hosts []string }
+
+func (s *stubInboxChartHook) OnInboxReceived(host string) {
+	s.hosts = append(s.hosts, host)
+}
+
+// signed builds a payload whose Headers/Method/Path can be re-verified
+// against the supplied private key. Mirrors what the new handler emits.
+func signedInboxPayload(t *testing.T, key *activitypub.PrivateKey, body []byte) queue.InboxPayload {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/inbox", nil)
+	req.Host = "example.com"
+	digest := activitypub.SHA256Digest(body)
+	require.NoError(t, activitypub.SignRequest(req, key, digest, []string{"(request-target)", "date", "host", "digest"}))
+	headers := map[string]string{}
+	for _, h := range []string{"Signature", "Date", "Host", "Digest"} {
+		if v := req.Header.Get(h); v != "" {
+			headers[h] = v
+		}
+	}
+	if headers["Host"] == "" && req.Host != "" {
+		headers["Host"] = req.Host
+	}
+	return queue.InboxPayload{
+		Body:    body,
+		Method:  req.Method,
+		Path:    req.URL.Path,
+		Headers: headers,
+	}
+}
+
+// #565: payload に Headers が含まれている場合、worker は signature を
+// 再 verify し、成功時に instance tracker / chart hook を呼ぶ。
+func TestInboxProcessor_VerifiesSignatureAndCommitsHooks(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	host := "remote.example"
+	verifier := &stubVerifier{
+		actor:  &model.User{ID: "alice", Host: &host},
+		pubKey: pub,
+	}
+	tracker := &stubInstanceTracker{}
+	chart := &stubInboxChartHook{}
+
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+	p.SetInstanceTracker(tracker)
+	p.SetChartHook(chart)
+
+	body := []byte(`{"type":"Follow","actor":"https://remote.example/users/alice"}`)
+	payload := signedInboxPayload(t, key, body)
+
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body:     mustEncode(t, payload),
+	}))
+	require.Len(t, stub.calls, 1, "Process should run after verify")
+	assert.Equal(t, []string{host}, tracker.hosts)
+	assert.Equal(t, []string{host}, chart.hosts)
+}
+
+// host が blockedHosts に入っていれば verify 後に Process まで到達せず
+// silently drop される (sender に retry 要求しない)。
+func TestInboxProcessor_BlockedHostDropped(t *testing.T) {
+	priv, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	host := "remote.example"
+	verifier := &stubVerifier{
+		actor:  &model.User{ID: "alice", Host: &host},
+		pubKey: pub,
+	}
+	blocker := &stubBlocker{blocked: func(h string) bool { return h == host }}
+
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+	p.SetHostBlockChecker(blocker)
+
+	body := []byte(`{"type":"Follow"}`)
+	payload := signedInboxPayload(t, key, body)
+
+	err = p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body:     mustEncode(t, payload),
+	})
+	assert.NoError(t, err, "blocked host should not bubble up an error")
+	assert.Empty(t, stub.calls, "Process must NOT run for blocked host")
+}
+
+// signature 検証失敗 (例: pubkey 不一致) は drop で扱う。retry しても
+// 成功しない静的 error なので driver retry を抑止する。
+func TestInboxProcessor_VerifyFailureDropped(t *testing.T) {
+	priv, _, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	key, err := activitypub.NewPrivateKey("https://remote.example/users/alice#main-key", priv)
+	require.NoError(t, err)
+
+	// 別 keypair の pub を持たせる → verify が失敗する
+	_, otherPub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+
+	host := "remote.example"
+	verifier := &stubVerifier{
+		actor:  &model.User{ID: "alice", Host: &host},
+		pubKey: otherPub,
+	}
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+
+	payload := signedInboxPayload(t, key, []byte(`{"type":"Follow"}`))
+	err = p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body:     mustEncode(t, payload),
+	})
+	assert.NoError(t, err, "verify failures are dropped silently, not retried")
+	assert.Empty(t, stub.calls)
+}
+
+// Headers が空の payload (= legacy 形式 / 同期 handler 経路) では verify
+// は skip され、Process が直接走る。後方互換のため。
+func TestInboxProcessor_LegacyPayloadSkipsVerify(t *testing.T) {
+	verifier := &stubVerifier{} // never called
+	stub := &stubFedProcessor{}
+	p := processors.NewInboxProcessor(stub)
+	p.SetSignatureVerifier(verifier)
+
+	require.NoError(t, p.Handle(context.Background(), driver.RawTask{
+		TypeName: queue.TaskTypeInbox,
+		Body: mustEncode(t, queue.InboxPayload{
+			Body: []byte(`{"type":"Follow"}`),
+			Host: "legacy.example",
+		}),
+	}))
+	require.Len(t, stub.calls, 1, "legacy payload still reaches Process")
 }
 
 // 任意 error は driver の retry policy (inboxJobMaxAttempts) に任せるため

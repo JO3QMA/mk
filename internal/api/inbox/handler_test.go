@@ -453,9 +453,12 @@ func (r *recordingEnqueuer) EnqueueInbox(_ context.Context, p queue.InboxPayload
 	return nil
 }
 
-// SetEnqueuer 後は Inbox は Process を呼ばずに EnqueueInbox に委譲する。
-// followingRepo に書き込みが起きないこと、enqueuer が活動 body と host を
-// 受け取ること、HTTP は 202 Accepted を返すことを確認する。
+// SetEnqueuer 後は Inbox は Process / verifySignature を呼ばずに
+// EnqueueInbox に委譲する (#565)。followingRepo に書き込みが起きないこと、
+// enqueuer が body と signature 関連 header を受け取ること、HTTP は 202
+// Accepted を返すことを確認する。worker 側の verify に必要な Method /
+// Path / Headers (Signature / Date / Host / Digest) が payload に含まれて
+// いることも検証。
 func TestInbox_AsyncMode_DispatchesToQueue(t *testing.T) {
 	priv, pub, err := activitypub.GenerateRSAKeypair()
 	require.NoError(t, err)
@@ -479,9 +482,31 @@ func TestInbox_AsyncMode_DispatchesToQueue(t *testing.T) {
 	require.NoError(t, h.Inbox(c))
 	assert.Equal(t, http.StatusAccepted, rec.Code)
 	require.Len(t, enq.calls, 1, "activity should be enqueued, not processed synchronously")
-	assert.JSONEq(t, string(body), string(enq.calls[0].Body))
-	assert.Equal(t, "remote.example", enq.calls[0].Host)
+	got := enq.calls[0]
+	assert.JSONEq(t, string(body), string(got.Body))
+	assert.Equal(t, http.MethodPost, got.Method)
+	assert.Equal(t, "/inbox", got.Path)
+	assert.NotEmpty(t, got.Headers["Signature"], "Signature header must be captured")
+	assert.NotEmpty(t, got.Headers["Date"], "Date header must be captured")
+	assert.NotEmpty(t, got.Headers["Digest"], "Digest header must be captured")
 	assert.Empty(t, followingRepo.Followings, "Process should NOT have been invoked synchronously")
+}
+
+// signature ヘッダ無しは即 401。RSA verify は走らないので fast path 成立。
+func TestInbox_AsyncMode_RejectsMissingSignatureHeader(t *testing.T) {
+	_, pub, err := activitypub.GenerateRSAKeypair()
+	require.NoError(t, err)
+	h, _, _ := newHandler(t, pub)
+	enq := &recordingEnqueuer{}
+	h.SetEnqueuer(enq)
+
+	body := []byte(`{"type":"Follow"}`)
+	c, rec := newPost(t, body)
+	c.Request().Host = "example.com"
+
+	require.NoError(t, h.Inbox(c))
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Empty(t, enq.calls, "no enqueue when signature header is missing")
 }
 
 // queue 障害時は 500 を返して上流に retry を促す (202 で握り潰すと

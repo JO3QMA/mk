@@ -504,12 +504,17 @@ func (s *Server) setupRoutes() {
 	}
 	s.queueServer.Handle(queue.TaskTypeDeliver, deliverProcessor.Handle)
 
-	// Inbox (#534): HTTP handler が signature 検証 + host block + chart
-	// hook を同期で済ませた後、Process(body) だけを worker に逃がす。
-	// 順序保証は各 activity handler の冪等性で吸収する Misskey TS 互換
-	// 戦略。inboxJobConcurrency / inboxJobPerSec / inboxJobMaxAttempts
-	// は queue_factory で wire 済み。
+	// Inbox (#534 / #565): HTTP handler は body+signature 関連 header を
+	// payload に詰めて 202 即返し。worker 側 (本 processor) で signature
+	// 検証 + host block + instance touch + chart hook + Process を実行
+	// する。これにより handler 同期の RSA-2048 verify (~1-2ms) が消えて
+	// inbound throughput が ~2x に改善する (#565)。順序保証は各 activity
+	// handler の冪等性で吸収する Misskey TS 互換戦略。
 	inboxProcessor := processors.NewInboxProcessor(federationProcessor)
+	inboxProcessor.SetSignatureVerifier(federationResolver)
+	inboxProcessor.SetHostBlockChecker(instanceService)
+	inboxProcessor.SetInstanceTracker(instanceService)
+	// chartHook は後段で SetChartHook 注入する (deliverProcessor と同じ pattern)。
 	s.queueServer.Handle(queue.TaskTypeInbox, inboxProcessor.Handle)
 
 	// Remote notes cleaning (issue #46)
@@ -600,6 +605,7 @@ func (s *Server) setupRoutes() {
 	driveService.SetChartHook(chartHooks)
 	federationResolver.SetChartHook(chartHooks)
 	deliverProcessor.SetChartHook(chartHooks)
+	inboxProcessor.SetChartHook(chartHooks)
 
 	// Chart cron processor: tickCharts (毎時) / resyncCharts (毎日) /
 	// cleanCharts (毎日) を queue.Scheduler 経由で受け取る。Scheduler
