@@ -43,8 +43,9 @@ func (p *SQLLikeProvider) IndexNote(_ *model.Note) error { return nil }
 // UnindexNote is a no-op for the SQL backend.
 func (p *SQLLikeProvider) UnindexNote(_ *model.Note) error { return nil }
 
-// SearchNote runs an ILIKE-based search and post-filters the result for
-// viewer visibility.
+// SearchNote runs the configured SQL backend search (ILIKE substring match
+// by default, or PGroonga `&@~` when the provider was constructed via
+// NewSQLPgroongaProvider) and post-filters the result for viewer visibility.
 func (p *SQLLikeProvider) SearchNote(viewer *model.User, query string, opts SearchOpts, page Pagination) ([]*model.Note, error) {
 	if query == "" {
 		return nil, ErrEmptyQuery
