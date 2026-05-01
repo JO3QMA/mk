@@ -10,6 +10,14 @@ type AccessTokenRepository interface {
 	FindByHash(hash string) (*model.AccessToken, error)
 	FindByID(id string) (*model.AccessToken, error)
 	ListByUserID(userID string) ([]*model.AccessToken, error)
+	// ListByUserIDPreloadApp は /i/apps 用に App を JOIN し、sort で
+	// 順序を制御して返す。sort 値 (Misskey TS 互換):
+	//   "+createdAt" → token.id DESC (新しい順)
+	//   "-createdAt" → token.id ASC  (古い順)
+	//   "+lastUsedAt" → lastUsedAt DESC
+	//   "-lastUsedAt" → lastUsedAt ASC
+	//   それ以外 ("" 含む) → token.id ASC (TS の default)
+	ListByUserIDPreloadApp(userID, sort string) ([]*model.AccessToken, error)
 	DeleteByID(id string) error
 }
 
@@ -43,6 +51,31 @@ func (r *accessTokenRepository) FindByID(id string) (*model.AccessToken, error) 
 func (r *accessTokenRepository) ListByUserID(userID string) ([]*model.AccessToken, error) {
 	var tokens []*model.AccessToken
 	if err := r.db.Where(`"userId" = ?`, userID).Order(`"id" DESC`).Find(&tokens).Error; err != nil {
+		return nil, err
+	}
+	return tokens, nil
+}
+
+// ListByUserIDPreloadApp は /i/apps 用。Preload("App") で MiAuth app メタを
+// 同時取得し、sort パラメータで本家互換の順序付けを行う。
+func (r *accessTokenRepository) ListByUserIDPreloadApp(userID, sort string) ([]*model.AccessToken, error) {
+	q := r.db.Where(`"userId" = ?`, userID).Preload("App")
+	switch sort {
+	case "+createdAt":
+		q = q.Order(`"id" DESC`)
+	case "-createdAt":
+		q = q.Order(`"id" ASC`)
+	case "+lastUsedAt":
+		q = q.Order(`"lastUsedAt" DESC`)
+	case "-lastUsedAt":
+		q = q.Order(`"lastUsedAt" ASC`)
+	default:
+		// TS の default は token.id ASC (古い順)。Misskey TS 本家:
+		// packages/backend/src/server/api/endpoints/i/apps.ts:88
+		q = q.Order(`"id" ASC`)
+	}
+	var tokens []*model.AccessToken
+	if err := q.Find(&tokens).Error; err != nil {
 		return nil, err
 	}
 	return tokens, nil

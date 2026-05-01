@@ -23,6 +23,9 @@ type AccessToken struct {
 
 	// Relations
 	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	// App は MiAuth で登録された OAuth2 アプリケーション。
+	// access_token.appId が NULL の場合 (= owner-app 経由の token) は nil。
+	App *App `gorm:"foreignKey:AppID" json:"app,omitempty"`
 }
 
 func (AccessToken) TableName() string { return "access_token" }

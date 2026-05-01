@@ -373,3 +373,17 @@ func (m *MockDriveFileRepository) DeleteByUser(userID string) (int64, error) {
 	}
 	return n, nil
 }
+
+func (m *MockDriveFileRepository) DeleteByHost(host string) (int64, error) {
+	if host == "" {
+		return 0, nil
+	}
+	n := int64(0)
+	for id, f := range m.Files {
+		if f.UserHost != nil && *f.UserHost == host {
+			delete(m.Files, id)
+			n++
+		}
+	}
+	return n, nil
+}

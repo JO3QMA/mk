@@ -228,6 +228,19 @@ func (c *Client) EnqueueDeleteAccount(payload DeleteAccountPayload) error {
 	)
 }
 
+// EnqueueUnfollow schedules a single Unfollow job for the given pair.
+// admin/federation/remove-all-following が大量に enqueue する想定で、
+// per-pair retry を独立に効かせるため Unique は付けない (同じペアの
+// 重複 enqueue は worker 側で冪等吸収)。MaxRetry は federation hook の
+// AP delivery 失敗を吸収できる程度に設定。
+func (c *Client) EnqueueUnfollow(payload UnfollowPayload) error {
+	body := mustMarshal(payload)
+	return c.inner.Enqueue(context.Background(), TaskTypeUnfollow, body,
+		driver.WithQueue(QueueName),
+		driver.WithMaxRetry(3),
+	)
+}
+
 // Close releases the underlying client connection.
 func (c *Client) Close() error { return c.inner.Close() }
 

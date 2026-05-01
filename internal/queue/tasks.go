@@ -286,3 +286,33 @@ func DecodeDeleteAccountPayload(body []byte) (DeleteAccountPayload, error) {
 	}
 	return p, nil
 }
+
+// TaskTypeUnfollow is the task type for the per-pair Unfollow queue
+// job. Misskey TS の relationshipQueue の `unfollow` job 名と一致。
+// admin/federation/remove-all-following から大量に enqueue されるため
+// 個別 row 単位で retry 可能になる (#587)。
+const TaskTypeUnfollow = "relationship:unfollow"
+
+// UnfollowPayload identifies the (follower, followee) pair to detach.
+// 本家 TS の {from: ThinUser, to: ThinUser, silent: true} に相当。
+// silent flag は notification 抑制用だが mk-go の Unfollow は元々
+// notification を出さない実装なので payload に含めない。
+type UnfollowPayload struct {
+	FollowerID string `json:"followerId"`
+	FolloweeID string `json:"followeeId"`
+}
+
+// NewUnfollowTask serializes an UnfollowPayload into a driver.Task.
+func NewUnfollowTask(payload UnfollowPayload) driver.Task {
+	body, _ := json.Marshal(payload)
+	return driver.RawTask{TypeName: TaskTypeUnfollow, Body: body}
+}
+
+// DecodeUnfollowPayload extracts an UnfollowPayload from a task body.
+func DecodeUnfollowPayload(body []byte) (UnfollowPayload, error) {
+	var p UnfollowPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return UnfollowPayload{}, err
+	}
+	return p, nil
+}

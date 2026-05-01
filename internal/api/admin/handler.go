@@ -61,6 +61,16 @@ type SystemAccountFetcher interface {
 	Fetch(kind string) (*model.User, error)
 }
 
+// UnfollowEnqueuer schedules per-pair Unfollow background jobs, used by
+// admin/federation/remove-all-following to detach all incoming follows from
+// a host without blocking the HTTP request. The job is consumed by
+// processors.UnfollowProcessor which calls core/following.Service.Unfollow
+// (= Following row 削除 + Reject(Follow) 配送)。Misskey TS の
+// queueService.createUnfollowJob 相当。
+type UnfollowEnqueuer interface {
+	EnqueueUnfollow(payload queue.UnfollowPayload) error
+}
+
 // Handler handles admin API endpoints.
 type Handler struct {
 	signupService           *signup.Service
@@ -93,6 +103,8 @@ type Handler struct {
 	configSetupPassword     string
 	instanceMetadataFetcher InstanceMetadataFetcher
 	systemAccountFetcher    SystemAccountFetcher
+	followingRepo           repository.FollowingRepository
+	unfollowEnqueuer        UnfollowEnqueuer
 }
 
 // EmailSender sends a plain-text email (to, subject, body). Same signature
@@ -130,6 +142,20 @@ func (h *Handler) SetInstanceMetadataFetcher(f InstanceMetadataFetcher) {
 // proxy account.
 func (h *Handler) SetSystemAccountFetcher(f SystemAccountFetcher) {
 	h.systemAccountFetcher = f
+}
+
+// SetFollowingRepo attaches a FollowingRepository for admin endpoints that
+// need to enumerate Following rows by host (e.g.
+// admin/federation/remove-all-following).
+func (h *Handler) SetFollowingRepo(r repository.FollowingRepository) {
+	h.followingRepo = r
+}
+
+// SetUnfollowEnqueuer attaches the queue client used by
+// admin/federation/remove-all-following to schedule per-pair Unfollow
+// background jobs. Typically wired with the project-wide queue client.
+func (h *Handler) SetUnfollowEnqueuer(e UnfollowEnqueuer) {
+	h.unfollowEnqueuer = e
 }
 
 // SetRecipientRepo attaches an AbuseReportNotificationRecipientRepository for

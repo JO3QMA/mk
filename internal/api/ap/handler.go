@@ -343,11 +343,6 @@ func packUserForAPI(u *model.User) map[string]any {
 	}
 }
 
-// APNotes handles POST /api/ap/notes — stub returning empty array.
-func (h *Handler) APNotes(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
-}
-
 // Note handles GET /notes/:id with ActivityPub content negotiation.
 // AP clients receive the AS Note object; browser reloads are handed
 // off to the frontend fallback so the SPA renders the note permalink.
