@@ -125,7 +125,7 @@ func (h *Handler) Signup(c echo.Context) error {
 			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "emailAddress is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 		}
 		if verr := validateEmailWithMeta(c.Request().Context(), meta, req.EmailAddress); verr != nil {
-			return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a25440a9-451e-41de-b291-00a8f29fbca6"))
 		}
 		pending, perr := h.signupService.CreatePending(req.Username, req.EmailAddress, req.Password)
 		if perr != nil {
