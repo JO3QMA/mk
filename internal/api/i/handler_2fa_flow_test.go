@@ -126,3 +126,53 @@ func TestTwoFAUnregister_NoProfile(t *testing.T) {
 	rec := postExtra(h.TwoFAUnregister, `{"password":"pass"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
+
+// --- TwoFA / WebAuthn parameter validation ---
+//
+// 空 body での 400 を確認するだけの軽量テスト。flow と一緒に置いて TwoFA*
+// 関連の挙動が一覧で見つかるようにする。
+
+func TestTwoFARegister_NoPassword(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	// パスワード未指定 → BadRequest
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFARegister, `{}`, stubUser).Code)
+}
+
+func TestTwoFADone_NoToken(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	// トークン未指定 → BadRequest
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFADone, `{}`, stubUser).Code)
+}
+
+func TestTwoFAUnregister_NoPassword(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	// パスワード未指定 → BadRequest
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFAUnregister, `{}`, stubUser).Code)
+}
+
+// 5 つの WebAuthn handler は実装後はパラメータ必須なので、空 body で 400 を返す。
+// password 等を渡したケースでの正常系は別 webauthn テストに追加する。
+func TestTwoFARegisterKey(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFARegisterKey, `{}`, stubUser).Code)
+}
+
+func TestTwoFAKeyDone(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFAKeyDone, `{}`, stubUser).Code)
+}
+
+func TestTwoFARemoveKey(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFARemoveKey, `{}`, stubUser).Code)
+}
+
+func TestTwoFAUpdateKey(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFAUpdateKey, `{}`, stubUser).Code)
+}
+
+func TestTwoFAPasswordLess(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	assert.Equal(t, http.StatusBadRequest, postExtra(h.TwoFAPasswordLess, `{}`, stubUser).Code)
+}

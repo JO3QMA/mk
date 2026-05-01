@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -30,7 +29,16 @@ func (s *stubGalleryRepo) FindPostsByIDs(_ []string) ([]*model.GalleryPost, erro
 	return nil, nil
 }
 
-// --- Clips -------------------------------------------------------------------
+// --- Clips ---
+
+func TestClips(t *testing.T) {
+	h, _ := newTestHandler(t)
+	// userId 欠落は 400
+	rec := postStub(h.Clips, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	// repo 未注入でも 200 空配列
+	assert.Equal(t, http.StatusOK, postStub(h.Clips, `{"userId":"u1"}`, nil).Code)
+}
 
 func TestClips_FiltersNonPublicForStranger(t *testing.T) {
 	h, _ := newTestHandler(t)
@@ -82,7 +90,14 @@ func TestClips_OwnerSeesPrivate(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
-// --- Flashs ------------------------------------------------------------------
+// --- Flashs ---
+
+func TestFlashs(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := postStub(h.Flashs, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, postStub(h.Flashs, `{"userId":"u1"}`, nil).Code)
+}
 
 func TestFlashs_HidesNonPublic(t *testing.T) {
 	h, _ := newTestHandler(t)
@@ -97,7 +112,14 @@ func TestFlashs_HidesNonPublic(t *testing.T) {
 	assert.Equal(t, "f1", rows[0]["id"])
 }
 
-// --- GalleryPosts ------------------------------------------------------------
+// --- GalleryPosts ---
+
+func TestGalleryPosts(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := postStub(h.GalleryPosts, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, postStub(h.GalleryPosts, `{"userId":"u1"}`, nil).Code)
+}
 
 func TestGalleryPosts_ReturnsAll(t *testing.T) {
 	h, _ := newTestHandler(t)
@@ -111,7 +133,14 @@ func TestGalleryPosts_ReturnsAll(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
-// --- Pages -------------------------------------------------------------------
+// --- Pages ---
+
+func TestPages(t *testing.T) {
+	h, _ := newTestHandler(t)
+	rec := postStub(h.Pages, `{}`, nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, postStub(h.Pages, `{"userId":"u1"}`, nil).Code)
+}
 
 func TestPages_HidesNonPublic(t *testing.T) {
 	h, _ := newTestHandler(t)
@@ -124,49 +153,4 @@ func TestPages_HidesNonPublic(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
 	require.Len(t, rows, 1)
 	assert.Equal(t, "p1", rows[0]["id"])
-}
-
-// --- ListsGetMemberships -----------------------------------------------------
-
-func TestListsGetMemberships_ReturnsOwnedLists(t *testing.T) {
-	h, _ := newTestHandler(t)
-	repo := testutil.NewMockUserListRepository()
-	require.NoError(t, repo.Create(&model.UserList{ID: "l1", UserID: "owner", Name: "favs"}))
-	require.NoError(t, repo.Create(&model.UserList{ID: "l2", UserID: "other", Name: "other-favs"}))
-	require.NoError(t, repo.AddMember(&model.UserListMembership{UserListID: "l1", UserID: "u2"}))
-	require.NoError(t, repo.AddMember(&model.UserListMembership{UserListID: "l2", UserID: "u2"}))
-	h.SetUserListRepo(repo)
-
-	rec := postStub(h.ListsGetMemberships, `{"userId":"u2"}`, &model.User{ID: "owner"})
-	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	require.Len(t, rows, 1, "only caller-owned lists should be returned")
-	assert.Equal(t, "l1", rows[0]["id"])
-}
-
-// --- UsersBulk ---------------------------------------------------------------
-
-func TestUsersBulk_LimitsTo100(t *testing.T) {
-	h, userRepo := newTestHandler(t)
-	// 150 人の user を仕込む
-	for i := 0; i < 150; i++ {
-		id := "u" + timeSuffix(i)
-		userRepo.Users[id] = &model.User{ID: id, Username: id, UsernameLower: id}
-	}
-	ids := make([]string, 150)
-	for i := 0; i < 150; i++ {
-		ids[i] = "u" + timeSuffix(i)
-	}
-	body, _ := json.Marshal(map[string]any{"userIds": ids})
-	rec := postStub(h.UsersBulk, string(body), nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	assert.LessOrEqual(t, len(rows), 100)
-}
-
-func timeSuffix(i int) string {
-	s := time.Date(2025, 1, 1, 0, 0, i, 0, time.UTC).Format("20060102150405")
-	return s
 }

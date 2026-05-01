@@ -1,0 +1,64 @@
+package i
+
+import (
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+)
+
+// SigninHistory handles POST /api/i/signin-history.
+func (h *Handler) SigninHistory(c echo.Context) error {
+	if h.signinRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	u := middleware.GetUser(c)
+	var req struct {
+		Limit   *int    `json:"limit"`
+		SinceID *string `json:"sinceId"`
+		UntilID *string `json:"untilId"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid param.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+
+	limit := 10
+	if req.Limit != nil {
+		limit = *req.Limit
+		if limit < 1 {
+			limit = 1
+		}
+		if limit > 100 {
+			limit = 100
+		}
+	}
+	sinceID := ""
+	if req.SinceID != nil {
+		sinceID = *req.SinceID
+	}
+	untilID := ""
+	if req.UntilID != nil {
+		untilID = *req.UntilID
+	}
+
+	rows, err := h.signinRepo.ListByUserID(u.ID, limit, untilID, sinceID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	result := make([]map[string]any, len(rows))
+	for i, s := range rows {
+		entry := map[string]any{
+			"id":      s.ID,
+			"ip":      s.IP,
+			"headers": s.Headers,
+			"success": s.Success,
+		}
+		if t, err := h.idGen.ParseTime(s.ID); err == nil {
+			entry["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		}
+		result[i] = entry
+	}
+	return c.JSON(http.StatusOK, result)
+}
