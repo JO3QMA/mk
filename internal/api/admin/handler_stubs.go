@@ -239,19 +239,8 @@ func (h *Handler) ServerInfo(c echo.Context) error {
 	return c.JSON(http.StatusOK, serverstats.Empty())
 }
 
-// UnsetUserAvatar / UnsetUserBanner は moderation.go に移動済 (#574)。
-
-// UpdateAbuseUserReport handles POST /api/admin/update-abuse-user-report.
-func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
-	var req struct {
-		ReportID string `json:"reportId"`
-	}
-	_ = c.Bind(&req)
-	if req.ReportID != "" && h.abuseRepo != nil {
-		_ = h.abuseRepo.UpdateFields(req.ReportID, map[string]any{"resolved": true})
-	}
-	return c.NoContent(http.StatusNoContent)
-}
+// UnsetUserAvatar / UnsetUserBanner / UpdateAbuseUserReport は
+// moderation.go に移動済 (#574)。
 
 // UpdateProxyAccount handles POST /api/admin/update-proxy-account.
 //

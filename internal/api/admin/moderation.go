@@ -45,6 +45,20 @@ func (h *Handler) UpdateUserNote(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// UpdateAbuseUserReport handles POST /api/admin/update-abuse-user-report.
+// 該当 abuse report の resolved フラグを true に立てる moderation 操作。
+// reportId 欠落 / abuseRepo 未配線時は no-op で 204 を返す。
+func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
+	var req struct {
+		ReportID string `json:"reportId"`
+	}
+	_ = c.Bind(&req)
+	if req.ReportID != "" && h.abuseRepo != nil {
+		_ = h.abuseRepo.UpdateFields(req.ReportID, map[string]any{"resolved": true})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 // DeleteAllFilesOfUser handles POST /api/admin/delete-all-files-of-a-user.
 // driveFile レコードを user 単位で一括 DELETE する。S3 等 object storage の
 // 物理 file 削除は drive_file の deletion hook (別経路) で扱う想定。
