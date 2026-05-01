@@ -1,0 +1,120 @@
+package admin_test
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- /admin/unset-user-avatar ---
+
+func TestUnsetUserAvatar(t *testing.T) {
+	t.Run("missing userId returns 204 noop", func(t *testing.T) {
+		h, _, _, _ := newTestHandler(t)
+		assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserAvatar, `{}`, adminUser).Code)
+	})
+	t.Run("clears avatarId / avatarUrl / avatarBlurhash", func(t *testing.T) {
+		h, repo, _, _ := newTestHandler(t)
+		avatarID := "av1"
+		avatarURL := "https://x.example/a.webp"
+		avatarBlurhash := "blur"
+		repo.Users["u1"] = &model.User{
+			ID: "u1", AvatarID: &avatarID, AvatarURL: &avatarURL, AvatarBlurhash: &avatarBlurhash,
+		}
+		assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserAvatar, `{"userId":"u1"}`, adminUser).Code)
+		got := repo.Users["u1"]
+		assert.Nil(t, got.AvatarID, "avatarId must be cleared")
+		assert.Nil(t, got.AvatarURL, "avatarUrl must be cleared")
+		assert.Nil(t, got.AvatarBlurhash, "avatarBlurhash must be cleared")
+	})
+}
+
+// --- /admin/unset-user-banner ---
+
+func TestUnsetUserBanner(t *testing.T) {
+	t.Run("missing userId returns 204 noop", func(t *testing.T) {
+		h, _, _, _ := newTestHandler(t)
+		assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserBanner, `{}`, adminUser).Code)
+	})
+	t.Run("clears bannerId / bannerUrl / bannerBlurhash", func(t *testing.T) {
+		h, repo, _, _ := newTestHandler(t)
+		bannerID := "b1"
+		bannerURL := "https://x.example/b.webp"
+		bannerBlurhash := "blur"
+		repo.Users["u1"] = &model.User{
+			ID: "u1", BannerID: &bannerID, BannerURL: &bannerURL, BannerBlurhash: &bannerBlurhash,
+		}
+		assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserBanner, `{"userId":"u1"}`, adminUser).Code)
+		got := repo.Users["u1"]
+		assert.Nil(t, got.BannerID, "bannerId must be cleared")
+		assert.Nil(t, got.BannerURL, "bannerUrl must be cleared")
+		assert.Nil(t, got.BannerBlurhash, "bannerBlurhash must be cleared")
+	})
+}
+
+// --- /admin/update-user-note ---
+
+func TestUpdateUserNote(t *testing.T) {
+	t.Run("missing userId returns 204 noop", func(t *testing.T) {
+		h, _, _, _ := newTestHandler(t)
+		assert.Equal(t, http.StatusNoContent, doPost(h.UpdateUserNote, `{}`, adminUser).Code)
+	})
+	t.Run("writes moderationNote to user_profile", func(t *testing.T) {
+		h, repo, _, _ := newTestHandler(t)
+		repo.Profiles["u1"] = &model.UserProfile{UserID: "u1"}
+		body := `{"userId":"u1","text":"naughty user"}`
+		assert.Equal(t, http.StatusNoContent, doPost(h.UpdateUserNote, body, adminUser).Code)
+		got := repo.Profiles["u1"]
+		require.NotNil(t, got.ModerationNote)
+		assert.Equal(t, "naughty user", *got.ModerationNote)
+	})
+}
+
+// --- /admin/delete-all-files-of-a-user ---
+
+// TestDeleteAllFilesOfUser は param 検証 / repo 未配線 fallback パスを
+// 押さえる薄いテスト。handler_stubs_test.go から移動 (#581 review)。
+func TestDeleteAllFilesOfUser(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// userId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
+	// repo 未注入は 204
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser).Code)
+}
+
+// TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles は本来 accounts_test.go
+// にあったが、handler が moderation.go にあるため discoverability 改善で
+// こちらに移動した (#581 review INFO-1)。
+func TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockDriveFileRepository()
+	u1 := "u1"
+	u2 := "u2"
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "f1", UserID: &u1}))
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "f2", UserID: &u1}))
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "f3", UserID: &u2}))
+	h.SetDriveFileRepo(repo)
+
+	rec := doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.NotContains(t, repo.Files, "f1")
+	assert.NotContains(t, repo.Files, "f2")
+	assert.Contains(t, repo.Files, "f3", "other user's files must be kept")
+}
+
+// --- /admin/update-abuse-user-report ---
+
+// 旧 handler_stubs_test.go から移動。本 PR で refactor 範囲外の handler
+// (UpdateAbuseUserReport) のテストを誤って巻き込み削除してしまったので
+// 復元する (#581 review BUG-1)。本 endpoint は abuse report の resolved
+// フラグを立てる moderation 操作なので moderation_test.go が居場所として
+// 妥当。
+func TestUpdateAbuseUserReport(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateAbuseUserReport, `{}`, adminUser).Code)
+}
