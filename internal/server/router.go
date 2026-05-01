@@ -463,6 +463,13 @@ func (s *Server) setupRoutes() {
 	metadataFetcher := coreinstance.NewFetchMetadataService(instanceRepo, apFetcher)
 	instanceService.SetMetadataFetcher(metadataFetcher)
 
+	// inbox worker から呼ばれる MarkRequestReceived を per-host で 1s buffer
+	// に集約。同一 remote host の連続 inbox 受信で 10k UPDATE が 1 UPDATE に
+	// 縮退する (#569)。
+	instanceTouchBuffer := coreinstance.NewTouchBuffer(instanceService, time.Second)
+	instanceTouchBuffer.Start(context.Background())
+	s.registerShutdownHook(func() { instanceTouchBuffer.Close() })
+
 	// AP delivery: DeliverService + フック登録 + asynq processor 登録
 	deliverService := corefederation.NewDeliverService(s.queueClient, userRepo, followingRepo, keypairRepo, apURLs)
 	deliverService.SetHostBlockChecker(instanceService)
@@ -513,7 +520,7 @@ func (s *Server) setupRoutes() {
 	inboxProcessor := processors.NewInboxProcessor(federationProcessor)
 	inboxProcessor.SetSignatureVerifier(federationResolver)
 	inboxProcessor.SetHostBlockChecker(instanceService)
-	inboxProcessor.SetInstanceTracker(instanceService)
+	inboxProcessor.SetInstanceTracker(instanceTouchBuffer)
 	// chartHook は後段で SetChartHook 注入する (deliverProcessor と同じ pattern)。
 	s.queueServer.Handle(queue.TaskTypeInbox, inboxProcessor.Handle)
 

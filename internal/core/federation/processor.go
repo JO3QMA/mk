@@ -616,18 +616,50 @@ func (p *Processor) handleCreate(act genericActivity) error {
 		// Renote/Reply relation は IngestNote 直後では未ロード (ID だけ) な
 		// ので、ストリーミング payload で renote 先が null にならないように
 		// preload 付きで再取得する (#416)。
-		hydrated := hydrateNoteForFanout(p.noteRepo, note)
+		//
+		// Reply / Renote が無い「素の Create(Note)」(連合の大半を占める一般
+		// 投稿) では preload する relation が無いので reload を skip する
+		// (#569)。User 関係だけ caller の actor から手で詰める。これにより
+		// inbox worker drain time の支配的コストの 1 つだった redundant
+		// SELECT が消える。
+		hydrated := note
+		if note.ReplyID != nil || note.RenoteID != nil {
+			hydrated = hydrateNoteForFanout(p.noteRepo, note)
+		} else if note.User == nil {
+			note.User = actor
+		}
+		// fanoutHook / notificationHook はベストエフォートで、local note
+		// create 側 (note_create_service) では既に safeGo で非同期発火して
+		// いる。federation 側もこれに揃え、worker が Redis LPUSH / publish
+		// 待ちで block されないようにする (#569)。順序保証は Misskey TS と
+		// 同じく各 hook 側の冪等性で吸収する。
 		if p.fanoutHook != nil {
-			p.fanoutHook.OnNoteCreated(hydrated, actor)
+			safeGoFedHook(func() { p.fanoutHook.OnNoteCreated(hydrated, actor) })
 		}
 		if p.notificationHook != nil {
-			// reply / quote / mention 通知を local notifiee に対して生成する。
-			// hydrated.Reply / hydrated.Renote は preload 済みなので、
-			// notification hook 側で UserID を取れる (#415)。
-			p.notificationHook.OnNoteCreated(hydrated, actor, hydrated.Reply, hydrated.Renote)
+			safeGoFedHook(func() {
+				// reply / quote / mention 通知を local notifiee に対して
+				// 生成する。hydrated.Reply / hydrated.Renote は preload
+				// 済みなので、notification hook 側で UserID を取れる
+				// (#415)。
+				p.notificationHook.OnNoteCreated(hydrated, actor, hydrated.Reply, hydrated.Renote)
+			})
 		}
 	}
 	return nil
+}
+
+// safeGoFedHook runs fn in a new goroutine, recovering from panics. local
+// note service の safeGo と同じ振る舞い (`note_create_service.go`)。
+func safeGoFedHook(fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("recovered panic in federation best-effort hook", "panic", r)
+			}
+		}()
+		fn()
+	}()
 }
 
 // hydrateNoteForFanout reloads a freshly-created note via
