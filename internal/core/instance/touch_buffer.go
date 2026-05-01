@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,11 @@ type TouchBuffer struct {
 	stopCh  chan struct{}
 	doneCh  chan struct{}
 	flushIn time.Duration
+	// started=true は Start() が既に bg goroutine を起動済であることを表す。
+	// Close は started=false なら doneCh を待たずに pending だけ flush する
+	// (#580 Devin BUG: docstring 「Start を呼んでいない場合の Close は no-op」
+	// に対して旧実装は doneCh で deadlock していた)。
+	started atomic.Bool
 }
 
 // NewTouchBuffer returns a buffer that flushes every flushInterval.
@@ -48,15 +54,27 @@ func NewTouchBuffer(target TouchTarget, flushInterval time.Duration) *TouchBuffe
 	}
 }
 
-// Start spawns the background flush goroutine. Idempotent at the call-
-// site level: 上位は wire 時に 1 回だけ呼ぶ。
+// Start spawns the background flush goroutine. 二度目以降の呼び出しは
+// 何もせずに return する (idempotent)。
 func (b *TouchBuffer) Start(ctx context.Context) {
+	if !b.started.CompareAndSwap(false, true) {
+		return
+	}
 	go b.runLoop(ctx)
 }
 
 // Close stops the background flush goroutine and triggers a final flush.
-// graceful shutdown 用。Start を呼んでいない場合の Close は no-op。
+// graceful shutdown 用。Start を呼ばずに Close した場合は doneCh を待たず
+// に pending を best-effort で flush して return する (旧実装は doneCh で
+// deadlock した。#580 Devin BUG-1)。
 func (b *TouchBuffer) Close() {
+	if !b.started.Load() {
+		// Start を呼んでいないので runLoop は無く doneCh が close される
+		// ことはない。pending に積まれているもの (テスト等で直接
+		// MarkRequestReceived を叩いたケース) を best-effort で吐き出す。
+		b.flushOnce()
+		return
+	}
 	select {
 	case <-b.stopCh:
 		return

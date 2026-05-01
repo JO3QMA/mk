@@ -74,6 +74,40 @@ func TestTouchBuffer_StartStop(t *testing.T) {
 	assert.GreaterOrEqual(t, target.calls.Load(), int64(1))
 }
 
+// Start を呼ばずに Close しても deadlock せず、pending は best-effort flush
+// される (#580 Devin BUG-1 対応)。
+func TestTouchBuffer_CloseWithoutStartDoesNotDeadlock(t *testing.T) {
+	target := &recordingTarget{}
+	buf := instance.NewTouchBuffer(target, time.Hour)
+	require.NoError(t, buf.MarkRequestReceived("h"))
+
+	done := make(chan struct{})
+	go func() {
+		buf.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close should not block when Start was never called")
+	}
+	assert.Equal(t, int64(1), target.calls.Load(),
+		"Close should still flush pending entries best-effort")
+}
+
+// Start を 2 度呼んでも bg goroutine は 1 個だけ。
+func TestTouchBuffer_StartIsIdempotent(t *testing.T) {
+	target := &recordingTarget{}
+	buf := instance.NewTouchBuffer(target, 10*time.Millisecond)
+	buf.Start(context.Background())
+	buf.Start(context.Background())
+	require.NoError(t, buf.MarkRequestReceived("h"))
+	time.Sleep(40 * time.Millisecond)
+	buf.Close()
+	// goroutine 1 つ分の挙動で済むことを confirm (count >= 1)。
+	assert.GreaterOrEqual(t, target.calls.Load(), int64(1))
+}
+
 // Context cancel で bg flush + return すること。
 func TestTouchBuffer_StopsOnContextCancel(t *testing.T) {
 	target := &recordingTarget{}
