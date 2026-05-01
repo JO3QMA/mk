@@ -37,6 +37,24 @@ func newReq(t *testing.T, body string) (echo.Context, *httptest.ResponseRecorder
 	return e.NewContext(req, rec), rec
 }
 
+// postBody invokes a handler with the given JSON body and returns the recorded
+// response. Used by the per-handler test files (host_listings_test.go,
+// stats_test.go, update_remote_user_test.go).
+func postBody(handler func(echo.Context) error, body string) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	_ = handler(c)
+	return rec
+}
+
+// postStub is a shorthand for postBody with an empty JSON body.
+func postStub(handler func(echo.Context) error) *httptest.ResponseRecorder {
+	return postBody(handler, `{}`)
+}
+
 func seedInstance(t *testing.T, repo *testutil.MockInstanceRepository, host string) *model.Instance {
 	t.Helper()
 	inst := &model.Instance{
