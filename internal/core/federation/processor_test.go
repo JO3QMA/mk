@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 	coreblocking "github.com/shiroha-a/mk/internal/core/blocking"
@@ -1204,8 +1206,12 @@ func TestProcess_ChatMessage_MissingTo(t *testing.T) {
 
 // --- FanoutHook ---
 
-// fakeFanoutHook records OnNoteCreated calls for assertion.
+// fakeFanoutHook records OnNoteCreated calls for assertion. #569 で
+// federation processor の hook が async (safeGo 経由) になったので、
+// 並行 append safety のため mu を持つ。caller 側は assert.Eventually
+// 等で hook 反映を待つ。
 type fakeFanoutHook struct {
+	mu    sync.Mutex
 	calls []fakeFanoutCall
 }
 
@@ -1216,7 +1222,17 @@ type fakeFanoutCall struct {
 }
 
 func (f *fakeFanoutHook) OnNoteCreated(note *model.Note, author *model.User) {
+	f.mu.Lock()
 	f.calls = append(f.calls, fakeFanoutCall{noteID: note.ID, authorID: author.ID, note: note})
+	f.mu.Unlock()
+}
+
+func (f *fakeFanoutHook) snapshot() []fakeFanoutCall {
+	f.mu.Lock()
+	out := make([]fakeFanoutCall, len(f.calls))
+	copy(out, f.calls)
+	f.mu.Unlock()
+	return out
 }
 
 func TestProcess_CreateCallsFanoutHook(t *testing.T) {
@@ -1238,10 +1254,13 @@ func TestProcess_CreateCallsFanoutHook(t *testing.T) {
 	require.NoError(t, p.Process(body))
 	// ノートが取り込まれたこと
 	assert.True(t, len(noteRepo.Notes) > 0)
-	// fanoutHookが呼ばれたこと
-	require.Len(t, hook.calls, 1)
-	assert.NotEmpty(t, hook.calls[0].noteID)
-	assert.NotEmpty(t, hook.calls[0].authorID)
+	// fanoutHookが呼ばれたこと (#569 で async になったので Eventually で待つ)
+	require.Eventually(t, func() bool {
+		return len(hook.snapshot()) == 1
+	}, time.Second, 10*time.Millisecond)
+	calls := hook.snapshot()
+	assert.NotEmpty(t, calls[0].noteID)
+	assert.NotEmpty(t, calls[0].authorID)
 }
 
 func TestProcess_AnnounceCallsFanoutHook(t *testing.T) {
@@ -1324,6 +1343,7 @@ func TestProcess_AnnounceWithoutFanoutHook(t *testing.T) {
 
 // fakeNotificationHook records OnNoteCreated calls.
 type fakeNotificationHook struct {
+	mu    sync.Mutex
 	calls []fakeNotificationCall
 }
 
@@ -1335,12 +1355,22 @@ type fakeNotificationCall struct {
 }
 
 func (f *fakeNotificationHook) OnNoteCreated(note *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
+	f.mu.Lock()
 	f.calls = append(f.calls, fakeNotificationCall{
 		noteID:       note.ID,
 		authorID:     author.ID,
 		replyTarget:  replyTarget,
 		renoteTarget: renoteTarget,
 	})
+	f.mu.Unlock()
+}
+
+func (f *fakeNotificationHook) snapshot() []fakeNotificationCall {
+	f.mu.Lock()
+	out := make([]fakeNotificationCall, len(f.calls))
+	copy(out, f.calls)
+	f.mu.Unlock()
+	return out
 }
 
 func TestProcess_AnnounceCallsNotificationHook(t *testing.T) {
@@ -1399,9 +1429,12 @@ func TestProcess_CreateCallsNotificationHook(t *testing.T) {
 	require.NoError(t, p.Process(body))
 
 	assert.True(t, len(noteRepo.Notes) > 0)
-	require.Len(t, hook.calls, 1)
-	assert.Nil(t, hook.calls[0].replyTarget)
-	assert.Nil(t, hook.calls[0].renoteTarget)
+	require.Eventually(t, func() bool {
+		return len(hook.snapshot()) == 1
+	}, time.Second, 10*time.Millisecond)
+	calls := hook.snapshot()
+	assert.Nil(t, calls[0].replyTarget)
+	assert.Nil(t, calls[0].renoteTarget)
 }
 
 func TestProcess_CreateReplyPassesReplyTarget(t *testing.T) {
@@ -1433,9 +1466,12 @@ func TestProcess_CreateReplyPassesReplyTarget(t *testing.T) {
 	}`)
 	require.NoError(t, p.Process(body))
 
-	require.Len(t, hook.calls, 1)
-	require.NotNil(t, hook.calls[0].replyTarget, "replyTarget must be set for inReplyTo=local")
-	assert.Equal(t, "local-parent", hook.calls[0].replyTarget.ID)
+	require.Eventually(t, func() bool {
+		return len(hook.snapshot()) == 1
+	}, time.Second, 10*time.Millisecond)
+	calls := hook.snapshot()
+	require.NotNil(t, calls[0].replyTarget, "replyTarget must be set for inReplyTo=local")
+	assert.Equal(t, "local-parent", calls[0].replyTarget.ID)
 }
 
 func TestProcess_CreateWithoutNotificationHook(t *testing.T) {
