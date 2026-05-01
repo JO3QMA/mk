@@ -418,41 +418,76 @@ func TestQueueJobs_MultiQueueCappedAtLimit(t *testing.T) {
 	assert.Len(t, rows, 2, "multi-queue fan-out must still respect limit")
 }
 
-// --- Captcha ------------------------------------------------------------------
+// --- thin nil-inspector smoke tests ---
+//
+// nil queueInspector 経路 (newTestHandler は wire しない) で expected status
+// を返すことを担保。詳細テストは inspector を wire して実挙動を検証するので、
+// 本群は nil 分岐の coverage 補完。
 
-func TestCaptchaCurrent_WithHcaptchaEnabled(t *testing.T) {
-	h, _, metaRepo, _ := newTestHandler(t)
-	siteKey := "sk-hcap"
-	metaRepo.Meta.EnableHcaptcha = true
-	metaRepo.Meta.HcaptchaSiteKey = &siteKey
-	rec := doPost(h.CaptchaCurrent, `{}`, adminUser)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	var got map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.Equal(t, "hcaptcha", got["provider"])
-	assert.Equal(t, "sk-hcap", got["siteKey"])
-}
-
-func TestCaptchaCurrent_NoneEnabled(t *testing.T) {
+func TestQueueClear(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	rec := doPost(h.CaptchaCurrent, `{}`, adminUser)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	var got map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.Nil(t, got["provider"])
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueClear, `{}`, adminUser).Code)
 }
 
-func TestCaptchaSave_AppliesFlags(t *testing.T) {
-	h, _, metaRepo, _ := newTestHandler(t)
-	rec := doPost(h.CaptchaSave,
-		`{"provider":"turnstile","turnstileSiteKey":"sk","turnstileSecretKey":"ss"}`, adminUser)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.True(t, metaRepo.Meta.EnableTurnstile)
-	assert.False(t, metaRepo.Meta.EnableHcaptcha)
-}
-
-func TestCaptchaSave_UnknownProvider(t *testing.T) {
+func TestQueueDeliverDelayed(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	rec := doPost(h.CaptchaSave, `{"provider":"garbage"}`, adminUser)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueDeliverDelayed, `{}`, adminUser).Code)
+}
+
+func TestQueueInboxDelayed(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueInboxDelayed, `{}`, adminUser).Code)
+}
+
+func TestQueueJobs(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueJobs, `{}`, adminUser).Code)
+}
+
+func TestQueuePromoteJobs(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueuePromoteJobs, `{}`, adminUser).Code)
+}
+
+func TestQueueQueueStats(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueQueueStats, `{}`, adminUser).Code)
+}
+
+func TestQueueQueues(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueQueues, `{}`, adminUser).Code)
+}
+
+func TestQueueRemoveJob(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// queue/id 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueRemoveJob, `{}`, adminUser).Code)
+	// inspector 未注入は 204
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRemoveJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
+}
+
+func TestQueueRetryJob(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueRetryJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusNoContent, doPost(h.QueueRetryJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
+}
+
+func TestQueueShowJob(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// queue/id 欠落は 400、inspector 未注入 + 正規 bind は 404
+	assert.Equal(t, http.StatusBadRequest, doPost(h.QueueShowJob, `{}`, adminUser).Code)
+	assert.Equal(t, http.StatusNotFound, doPost(h.QueueShowJob, `{"queue":"deliver","id":"x"}`, adminUser).Code)
+}
+
+func TestQueueShowJobLogs(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.QueueShowJobLogs, `{}`, adminUser).Code)
+}
+
+func TestQueueStatsAdmin(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rec := doPost(h.QueueStats, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "deliver")
 }

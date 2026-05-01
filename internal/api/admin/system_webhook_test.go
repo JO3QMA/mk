@@ -155,3 +155,39 @@ func TestSystemWebhookTest_WithRepo(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent,
 		doPost(h.SystemWebhookTest, `{"webhookId":"w1","type":"abuseReport"}`, adminUser).Code)
 }
+
+// --- thin nil-repo smoke tests ---
+//
+// nil systemWebhookRepo 経路 (newTestHandler は wire しない) で expected
+// status を返すことを担保。詳細テストは repo を wire して実挙動を検証する
+// ので、本群は nil 分岐の coverage 補完。
+
+func TestSystemWebhookCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookCreate, `{}`, adminUser).Code)
+}
+
+func TestSystemWebhookDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookDelete, `{}`, adminUser).Code)
+}
+
+func TestSystemWebhookList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.SystemWebhookList, `{}`, adminUser).Code)
+}
+
+func TestSystemWebhookShow(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.SystemWebhookShow, `{}`, adminUser).Code)
+}
+
+func TestSystemWebhookTest(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookTest, `{}`, adminUser).Code)
+}
+
+func TestSystemWebhookUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookUpdate, `{}`, adminUser).Code)
+}

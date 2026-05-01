@@ -115,3 +115,34 @@ func TestRecipientUpdate_MissingID(t *testing.T) {
 	rec := doPost(h.AbuseReportNotificationRecipientUpdate, `{}`, adminUser)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+// --- thin nil-repo smoke tests ---
+//
+// nil recipientRepo 経路 (newTestHandler は wire しない) で expected status を
+// 返すことを担保。詳細テストは repo を wire して実挙動を検証するので、本群は
+// nil 分岐の coverage 補完。
+
+func TestAbuseReportNotificationRecipientCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AbuseReportNotificationRecipientCreate, `{}`, adminUser).Code)
+}
+
+func TestAbuseReportNotificationRecipientDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AbuseReportNotificationRecipientDelete, `{}`, adminUser).Code)
+}
+
+func TestAbuseReportNotificationRecipientList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.AbuseReportNotificationRecipientList, `{}`, adminUser).Code)
+}
+
+func TestAbuseReportNotificationRecipientShow(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.AbuseReportNotificationRecipientShow, `{}`, adminUser).Code)
+}
+
+func TestAbuseReportNotificationRecipientUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AbuseReportNotificationRecipientUpdate, `{}`, adminUser).Code)
+}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,22 @@ type failingListV2EmojiRepo struct {
 
 func (f *failingListV2EmojiRepo) ListV2(_ model.EmojiV2Filter) ([]*model.Emoji, error) {
 	return nil, assert.AnError
+}
+
+// stubEmojiImportEnqueuer records the last payload and optionally returns err.
+type stubEmojiImportEnqueuer struct {
+	lastUserID string
+	lastFileID string
+	err        error
+}
+
+func (s *stubEmojiImportEnqueuer) EnqueueImportCustomEmojis(p queue.ImportCustomEmojisPayload) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.lastUserID = p.UserID
+	s.lastFileID = p.FileID
+	return nil
 }
 
 func (f *failingListV2EmojiRepo) CountV2(_ model.EmojiV2Filter) (int64, error) {
@@ -546,5 +563,117 @@ func TestEmojiListV2_ListV2Error(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	h.SetEmojiRepo(&failingListV2EmojiRepo{testutil.NewMockEmojiRepository()})
 	rec := doPost(h.EmojiListV2, `{}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- thin nil-repo smoke tests ---
+//
+// nil repo 経路で 204 / 200 が返ることを担保する軽量テスト。
+
+func TestDriveCleanRemoteFiles(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.DriveCleanRemoteFiles, `{}`, adminUser).Code)
+}
+
+func TestDriveCleanup(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.DriveCleanup, `{}`, adminUser).Code)
+}
+
+func TestDriveFilesAdmin(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.DriveFiles, `{}`, adminUser).Code)
+}
+
+func TestDriveShowFile_Empty(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.DriveShowFile, `{}`, adminUser).Code)
+}
+
+func TestDriveShowFile_NotFound(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNotFound, doPost(h.DriveShowFile, `{"fileId":"ghost"}`, adminUser).Code)
+}
+
+func TestEmojiAddAliasesBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiAddAliasesBulk, `{}`, adminUser).Code)
+}
+
+func TestEmojiCopy(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// emojiId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.EmojiCopy, `{}`, adminUser).Code)
+}
+
+func TestEmojiDeleteBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiDeleteBulk, `{}`, adminUser).Code)
+}
+
+func TestEmojiListRemote(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.EmojiListRemote, `{}`, adminUser).Code)
+}
+
+func TestEmojiRemoveAliasesBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiRemoveAliasesBulk, `{}`, adminUser).Code)
+}
+
+func TestEmojiSetAliasesBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiSetAliasesBulk, `{}`, adminUser).Code)
+}
+
+func TestEmojiSetCategoryBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiSetCategoryBulk, `{}`, adminUser).Code)
+}
+
+func TestEmojiSetLicenseBulk(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiSetLicenseBulk, `{}`, adminUser).Code)
+}
+
+// --- EmojiImportZip 詳細 (旧 handler_stubs_test.go から移動) ---
+
+func TestEmojiImportZip_NoFileID(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// fileId missing → 400 InvalidParam
+	assert.Equal(t, http.StatusBadRequest, doPost(h.EmojiImportZip, `{}`, adminUser).Code)
+}
+
+func TestEmojiImportZip_MalformedJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusBadRequest, doPost(h.EmojiImportZip, `not-json`, adminUser).Code)
+}
+
+func TestEmojiImportZip_NoEnqueuer(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// enqueuer not set → 204 (no-op fallback so tests without worker still pass)
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiImportZip, `{"fileId":"f1"}`, adminUser).Code)
+}
+
+func TestEmojiImportZip_NilUser(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiImportEnqueuer(&stubEmojiImportEnqueuer{})
+	assert.Equal(t, http.StatusNoContent, doPost(h.EmojiImportZip, `{"fileId":"f1"}`, nil).Code)
+}
+
+func TestEmojiImportZip_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	stub := &stubEmojiImportEnqueuer{}
+	h.SetEmojiImportEnqueuer(stub)
+	rec := doPost(h.EmojiImportZip, `{"fileId":"f1"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "f1", stub.lastFileID)
+	assert.Equal(t, "admin1", stub.lastUserID)
+}
+
+func TestEmojiImportZip_EnqueueFailure(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiImportEnqueuer(&stubEmojiImportEnqueuer{err: assertError{}})
+	rec := doPost(h.EmojiImportZip, `{"fileId":"f1"}`, adminUser)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
