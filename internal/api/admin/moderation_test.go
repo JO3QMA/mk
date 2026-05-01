@@ -76,6 +76,17 @@ func TestUpdateUserNote(t *testing.T) {
 
 // --- /admin/delete-all-files-of-a-user ---
 
+// TestDeleteAllFilesOfUser は param 検証 / repo 未配線 fallback パスを
+// 押さえる薄いテスト。handler_stubs_test.go から移動 (#581 review)。
+func TestDeleteAllFilesOfUser(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	// userId 欠落は 400
+	assert.Equal(t, http.StatusBadRequest, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
+	// repo 未注入は 204
+	assert.Equal(t, http.StatusNoContent,
+		doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser).Code)
+}
+
 // TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles は本来 accounts_test.go
 // にあったが、handler が moderation.go にあるため discoverability 改善で
 // こちらに移動した (#581 review INFO-1)。

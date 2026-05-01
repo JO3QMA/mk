@@ -124,14 +124,6 @@ func TestAbuseReportNotificationRecipientUpdate(t *testing.T) {
 }
 
 // --- single endpoints ---
-func TestDeleteAllFilesOfUser(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	// userId 欠落は 400
-	assert.Equal(t, http.StatusBadRequest, doPost(h.DeleteAllFilesOfUser, `{}`, adminUser).Code)
-	// repo 未注入は 204
-	assert.Equal(t, http.StatusNoContent,
-		doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser).Code)
-}
 func TestForwardAbuseUserReport(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	// reportId 欠落は 204 (forwarder 未配線, abuseRepo 未配線 → no-op)
