@@ -1179,23 +1179,63 @@ func (h *Handler) RolesUnassign(c echo.Context) error {
 // RolesUsers handles POST /api/admin/roles/users.
 func (h *Handler) RolesUsers(c echo.Context) error {
 	var req struct {
-		RoleID string `json:"roleId"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		RoleID  string `json:"roleId"`
+		Limit   int    `json:"limit"`
+		SinceID string `json:"sinceId"`
+		UntilID string `json:"untilId"`
 	}
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
-	}
-	if _, err := h.roleService.Show(req.RoleID); err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 10
 	}
-	// RoleService にはListByRoleがないので直接は呼べないが、
-	// ここでは簡易版として空配列を返す (TODO: 実装)
-	return c.JSON(http.StatusOK, []any{})
+	if limit > 100 {
+		limit = 100
+	}
+
+	assignments, err := h.roleService.ListByRole(req.RoleID, req.UntilID, req.SinceID, limit)
+	if err != nil {
+		if err == role.ErrRoleNotFound {
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		}
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	// Profile を per-row 引いていた N+1 を 1 batch query に集約 (#503 と同じ動機)。
+	ids := make([]string, 0, len(assignments))
+	for _, a := range assignments {
+		if a.User != nil {
+			ids = append(ids, a.User.ID)
+		}
+	}
+	profiles, _ := h.userRepo.FindProfilesByUserIDs(ids)
+	profileByUser := make(map[string]*model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileByUser[p.UserID] = p
+	}
+
+	// Misskey TS は admin/roles/users の返却を { id, createdAt, user } の配列で
+	// 包むため互換のため同じ envelope に揃える (UI の Roles 詳細ページが
+	// assignment.user を直接参照している)。createdAt は assignment.id (ULID) から
+	// 復元 (User と同じく ID 由来 timestamp)。
+	result := make([]map[string]any, 0, len(assignments))
+	for _, a := range assignments {
+		if a.User == nil {
+			continue
+		}
+		createdAt := ""
+		if t, err := h.idGen.ParseTime(a.ID); err == nil {
+			createdAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		}
+		result = append(result, map[string]any{
+			"id":        a.ID,
+			"createdAt": createdAt,
+			"user":      h.packAdminUser(a.User, profileByUser[a.User.ID]),
+		})
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 // RolesUpdateDefaultPolicies handles POST /api/admin/roles/update-default-policies.

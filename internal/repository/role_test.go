@@ -115,7 +115,7 @@ func TestRoleAssignmentRepository_CRUD(t *testing.T) {
 	assert.Equal(t, "Mod", assignments[0].Role.Name)
 
 	// ListByRole (with user preload)
-	byRole, err := assignRepo.ListByRole(role.ID, 10, 0)
+	byRole, err := assignRepo.ListByRole(role.ID, "", "", 10)
 	require.NoError(t, err)
 	assert.Len(t, byRole, 1)
 
@@ -159,20 +159,27 @@ func TestRoleAssignmentRepository_ListByRole_WithPagination(t *testing.T) {
 	require.NoError(t, assignRepo.Create(&model.RoleAssignment{ID: "pag_a2", UserID: "pag_u2", RoleID: role.ID}))
 
 	// limit=1
-	result, err := assignRepo.ListByRole(role.ID, 1, 0)
+	result, err := assignRepo.ListByRole(role.ID, "", "", 1)
 	require.NoError(t, err)
 	assert.Len(t, result, 1)
 
-	// offset=1
-	result, err = assignRepo.ListByRole(role.ID, 10, 1)
+	// untilID で keyset cursor (id DESC で pag_a2 → pag_a1 と進む途中)
+	result, err = assignRepo.ListByRole(role.ID, "pag_a2", "", 10)
 	require.NoError(t, err)
-	assert.Len(t, result, 1)
+	require.Len(t, result, 1)
+	assert.Equal(t, "pag_a1", result[0].ID)
+
+	// sinceID で ASC cursor (pag_a1 の次は pag_a2)
+	result, err = assignRepo.ListByRole(role.ID, "", "pag_a1", 10)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "pag_a2", result[0].ID)
 }
 
 func TestRoleAssignmentRepository_ListByRole_Error(t *testing.T) {
 	db := cancelledDB(t)
 	repo := NewRoleAssignmentRepository(db)
-	_, err := repo.ListByRole("x", 10, 0)
+	_, err := repo.ListByRole("x", "", "", 10)
 	assert.Error(t, err)
 }
 
@@ -213,7 +220,7 @@ func TestRoleAssignmentRepository_ExpiredExcluded(t *testing.T) {
 	assert.False(t, exists)
 
 	// ListByRole — expired excluded
-	byRole, err := assignRepo.ListByRole(role.ID, 10, 0)
+	byRole, err := assignRepo.ListByRole(role.ID, "", "", 10)
 	require.NoError(t, err)
 	assert.Empty(t, byRole)
 
