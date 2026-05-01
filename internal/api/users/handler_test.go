@@ -48,6 +48,23 @@ func addTestUser(repo *testutil.MockUserRepository) *model.User {
 	return user
 }
 
+// postStub invokes a handler with the given JSON body, optionally setting an
+// authenticated user on the context, and returns the recorded response. Shared
+// by per-handler test files (achievements_test.go, content_lists_test.go,
+// recommendation_test.go, lists_test.go).
+func postStub(handler func(echo.Context) error, body string, user *model.User) *httptest.ResponseRecorder {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	if user != nil {
+		c.Set(string(middleware.UserContextKey), user)
+	}
+	_ = handler(c)
+	return rec
+}
+
 func TestShow_ByUserID(t *testing.T) {
 	h, userRepo := newTestHandler(t)
 	addTestUser(userRepo)
@@ -1039,4 +1056,17 @@ func TestShow_PinnedFields_Defaults(t *testing.T) {
 	assert.Empty(t, ids)
 	assert.Nil(t, resp["pinnedPageId"])
 	assert.Nil(t, resp["pinnedPage"])
+}
+
+// --- Show with isFollowing ---
+
+func TestShow_IsFollowing(t *testing.T) {
+	h, repo := newTestHandler(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice", AvatarDecorations: datatypes.JSON("[]")}
+	repo.Users["u2"] = &model.User{ID: "u2", Username: "bob", AvatarDecorations: datatypes.JSON("[]")}
+	fRepo := h.followingRepo
+	_ = fRepo // followingRepoがセットされていない場合のテスト
+
+	rec := postStub(h.Show, `{"userId":"u2"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusOK, rec.Code)
 }

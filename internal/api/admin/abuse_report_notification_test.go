@@ -1,0 +1,117 @@
+package admin_test
+
+import (
+	"encoding/json"
+	"net/http"
+	"testing"
+
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- AbuseReportNotificationRecipient ---
+
+func TestRecipientCreate_Success(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	h.SetRecipientRepo(repo)
+
+	rec := doPost(h.AbuseReportNotificationRecipientCreate,
+		`{"name":"ops","method":"email"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var got model.AbuseReportNotificationRecipient
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "ops", got.Name)
+	assert.Equal(t, "email", got.Method)
+	assert.True(t, got.IsActive)
+}
+
+func TestRecipientCreate_DefaultMethod(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRecipientRepo(testutil.NewMockAbuseReportNotificationRecipientRepository())
+	rec := doPost(h.AbuseReportNotificationRecipientCreate, `{"name":"ops"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var got model.AbuseReportNotificationRecipient
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "email", got.Method)
+}
+
+func TestRecipientCreate_RepoError(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	repo.CreateErr = assertError{}
+	h.SetRecipientRepo(repo)
+	rec := doPost(h.AbuseReportNotificationRecipientCreate, `{"name":"x"}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestRecipientList_ReturnsRows(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	require.NoError(t, repo.Create(&model.AbuseReportNotificationRecipient{ID: "r1", Name: "a", Method: "email"}))
+	require.NoError(t, repo.Create(&model.AbuseReportNotificationRecipient{ID: "r2", Name: "b", Method: "webhook"}))
+	h.SetRecipientRepo(repo)
+
+	rec := doPost(h.AbuseReportNotificationRecipientList, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var rows []model.AbuseReportNotificationRecipient
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	assert.Len(t, rows, 2)
+}
+
+func TestRecipientShow_FoundAndNotFound(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	require.NoError(t, repo.Create(&model.AbuseReportNotificationRecipient{ID: "r1", Name: "ops", Method: "email"}))
+	h.SetRecipientRepo(repo)
+
+	rec := doPost(h.AbuseReportNotificationRecipientShow, `{"id":"r1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	rec2 := doPost(h.AbuseReportNotificationRecipientShow, `{"id":"missing"}`, adminUser)
+	assert.Equal(t, http.StatusNotFound, rec2.Code)
+}
+
+func TestRecipientDelete_Removes(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	require.NoError(t, repo.Create(&model.AbuseReportNotificationRecipient{ID: "r1"}))
+	h.SetRecipientRepo(repo)
+
+	rec := doPost(h.AbuseReportNotificationRecipientDelete, `{"id":"r1"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.NotContains(t, repo.Recipients, "r1")
+}
+
+func TestRecipientUpdate_PartialFields(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	require.NoError(t, repo.Create(&model.AbuseReportNotificationRecipient{
+		ID: "r1", Name: "old", Method: "email", IsActive: true,
+	}))
+	h.SetRecipientRepo(repo)
+
+	rec := doPost(h.AbuseReportNotificationRecipientUpdate,
+		`{"id":"r1","name":"new","method":"webhook","isActive":false}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "new", repo.Recipients["r1"].Name)
+	assert.Equal(t, "webhook", repo.Recipients["r1"].Method)
+	assert.False(t, repo.Recipients["r1"].IsActive)
+}
+
+func TestRecipientUpdate_NotFound(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRecipientRepo(testutil.NewMockAbuseReportNotificationRecipientRepository())
+	rec := doPost(h.AbuseReportNotificationRecipientUpdate, `{"id":"missing","name":"x"}`, adminUser)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestRecipientUpdate_MissingID(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRecipientRepo(testutil.NewMockAbuseReportNotificationRecipientRepository())
+	rec := doPost(h.AbuseReportNotificationRecipientUpdate, `{}`, adminUser)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}

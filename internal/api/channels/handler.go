@@ -69,6 +69,13 @@ func (h *Handler) emojiLookup() entity.EmojiLookup {
 	return h.emojiRepo
 }
 
+// SetFollowingRepo attaches a ChannelFollowingChecker so Show / list
+// endpoints can embed `isFollowing` for the authenticated viewer (#522).
+// nil leaves the field unset (compat with anonymous flows).
+func (h *Handler) SetFollowingRepo(r ChannelFollowingChecker) {
+	h.followingRepo = r
+}
+
 // ChannelFavoriteRepository is the interface for channel favorite operations.
 type ChannelFavoriteRepository interface {
 	Create(fav *model.ChannelFavorite) error

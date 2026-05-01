@@ -1,0 +1,124 @@
+package i
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
+	coreemail "github.com/shiroha-a/mk/internal/core/email"
+	"github.com/shiroha-a/mk/internal/server/middleware"
+	"golang.org/x/crypto/bcrypt"
+)
+
+// generateVerifyCode returns a random 16-char hex code for email verification.
+func generateVerifyCode() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// verifyURL builds the email verification URL.
+func (h *Handler) verifyURL(code string) string {
+	base := h.serverURL
+	if base == "" {
+		base = "https://localhost"
+	}
+	return base + "/verify-email/" + code
+}
+
+// UpdateEmail handles POST /api/i/update-email.
+// 本家 Misskey と同じフロー:
+//  1. パスワード検証 (必須)
+//  2. email が null → emailRequiredForSignup ならエラー、そうでなければクリア
+//  3. email が非null → フォーマット + banned + active/API 検証
+//  4. profile の email / emailVerified / emailVerifyCode を更新
+//  5. 新 email があれば確認メールを送信
+func (h *Handler) UpdateEmail(c echo.Context) error {
+	u := middleware.GetUser(c)
+	var req struct {
+		Password string  `json:"password"`
+		Email    *string `json:"email"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return apierr.JSONInvalidParam(c)
+	}
+
+	profile := h.userService.GetProfile(u.ID)
+	if profile == nil || profile.Password == nil {
+		return apierr.JSONInternalError(c)
+	}
+
+	// パスワード検証
+	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(req.Password)); err != nil {
+		return c.JSON(http.StatusForbidden, apierr.Error("INCORRECT_PASSWORD", "Incorrect password.", "e86c14a4-0da8-4571-8f36-8a2e9f9b3a00"))
+	}
+
+	fields := map[string]any{
+		"emailVerified":   false,
+		"emailVerifyCode": nil,
+	}
+
+	if req.Email == nil {
+		// email クリア。emailRequiredForSignup 時はクリア不可。
+		if h.metaRepo != nil {
+			if m, err := h.metaRepo.Fetch(); err == nil && m.EmailRequiredForSignup {
+				return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+			}
+		}
+		fields["email"] = nil
+	} else {
+		addr := *req.Email
+		// email validation (banned + format + active/API)
+		if h.metaRepo != nil {
+			if m, err := h.metaRepo.Fetch(); err == nil {
+				svc := coreemail.NewService(m)
+				if verr := svc.Validate(c.Request().Context(), addr); verr != nil {
+					return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+				}
+			}
+		}
+		fields["email"] = addr
+
+		// 確認コード生成 + メール送信
+		code := generateVerifyCode()
+		fields["emailVerifyCode"] = code
+
+		if h.emailSender != nil {
+			go h.emailSender(addr, "Verify your email",
+				"Click the link to verify your email:\n"+h.verifyURL(code))
+		}
+	}
+
+	if err := h.userService.UpdateProfileFields(u.ID, fields); err != nil {
+		return apierr.JSONInternalError(c)
+	}
+
+	return h.Me(c)
+}
+
+// VerifyEmail handles POST /api/verify-email.
+// emailVerifyCode が一致すれば emailVerified を true にする。
+func (h *Handler) VerifyEmail(c echo.Context) error {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind(&req); err != nil || req.Code == "" {
+		return apierr.JSONInvalidParam(c)
+	}
+
+	profile, err := h.userService.FindProfileByVerifyCode(req.Code)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_CODE", "No such code.", "1e53842e-b7f4-4e1c-8f1e-8d0a2d9b0c7e"))
+	}
+
+	if verr := h.userService.UpdateProfileFields(profile.UserID, map[string]any{
+		"emailVerified":   true,
+		"emailVerifyCode": nil,
+	}); verr != nil {
+		return apierr.JSONInternalError(c)
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}

@@ -1,0 +1,130 @@
+package admin
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/model"
+)
+
+// AbuseReportNotificationRecipientCreate handles POST /api/admin/abuse-report/notification-recipient/create.
+func (h *Handler) AbuseReportNotificationRecipientCreate(c echo.Context) error {
+	if h.recipientRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		Name            string  `json:"name"`
+		Method          string  `json:"method"`
+		UserID          *string `json:"userId"`
+		SystemWebhookID *string `json:"systemWebhookId"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if req.Method == "" {
+		req.Method = "email"
+	}
+	r := &model.AbuseReportNotificationRecipient{
+		ID:              h.idGen.Generate(time.Now()),
+		Name:            req.Name,
+		Method:          req.Method,
+		UserID:          req.UserID,
+		SystemWebhookID: req.SystemWebhookID,
+		IsActive:        true,
+	}
+	if err := h.recipientRepo.Create(r); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, r)
+}
+
+// AbuseReportNotificationRecipientDelete handles POST /api/admin/abuse-report/notification-recipient/delete.
+func (h *Handler) AbuseReportNotificationRecipientDelete(c echo.Context) error {
+	if h.recipientRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	_ = h.recipientRepo.Delete(req.ID)
+	return c.NoContent(http.StatusNoContent)
+}
+
+// AbuseReportNotificationRecipientList handles POST /api/admin/abuse-report/notification-recipient/list.
+func (h *Handler) AbuseReportNotificationRecipientList(c echo.Context) error {
+	if h.recipientRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	rows, err := h.recipientRepo.List()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	// nil を明示的に空配列化 (クライアント互換)
+	if rows == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	return c.JSON(http.StatusOK, rows)
+}
+
+// AbuseReportNotificationRecipientShow handles POST /api/admin/abuse-report/notification-recipient/show.
+func (h *Handler) AbuseReportNotificationRecipientShow(c echo.Context) error {
+	if h.recipientRepo == nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = c.Bind(&req)
+	r, err := h.recipientRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, r)
+}
+
+// AbuseReportNotificationRecipientUpdate handles POST /api/admin/abuse-report/notification-recipient/update.
+func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
+	if h.recipientRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	var req struct {
+		ID              string  `json:"id"`
+		Name            *string `json:"name"`
+		Method          *string `json:"method"`
+		IsActive        *bool   `json:"isActive"`
+		UserID          *string `json:"userId"`
+		SystemWebhookID *string `json:"systemWebhookId"`
+	}
+	if err := c.Bind(&req); err != nil || req.ID == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+	}
+	fields := map[string]any{}
+	if req.Name != nil {
+		fields["name"] = *req.Name
+	}
+	if req.Method != nil {
+		fields["method"] = *req.Method
+	}
+	if req.IsActive != nil {
+		fields["isActive"] = *req.IsActive
+	}
+	if req.UserID != nil {
+		fields["userId"] = *req.UserID
+	}
+	if req.SystemWebhookID != nil {
+		fields["systemWebhookId"] = *req.SystemWebhookID
+	}
+	// GORM Updates(map) は対象なしでも nil を返すため、ここでのエラーは DB 障害
+	// 等の真の失敗。NotFound は続く FindByID で検出する。
+	if err := h.recipientRepo.Update(req.ID, fields); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	r, err := h.recipientRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	return c.JSON(http.StatusOK, r)
+}

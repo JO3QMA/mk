@@ -54,6 +54,18 @@ func setupUserWithPassword(repo *testutil.MockUserRepository, uid, password stri
 	return user
 }
 
+// stubUser is the throwaway authenticated principal used by per-handler test
+// files (apps_test.go, signin_history_test.go, email_update_test.go, etc.).
+var stubUser = &model.User{ID: "u1"}
+
+// hashPassword returns a bcrypt hash for the given plaintext password. Used by
+// per-handler test files that exercise password-protected endpoints
+// (email_update_test.go, move_test.go).
+func hashPassword(pw string) string {
+	h, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.MinCost)
+	return string(h)
+}
+
 // --- ChangePassword ---
 
 func TestChangePassword_Success(t *testing.T) {
