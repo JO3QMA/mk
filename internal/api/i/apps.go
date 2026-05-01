@@ -4,18 +4,97 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
 // Apps handles POST /api/i/apps.
-// Owned OAuth2 application registration/management は本家 Misskey でも
-// 現状未使用 (app 登録 UI が削除されている) ので常に空配列を返す。
-// OAuth owner-apps listing を復活させる場合は別 issue で扱う。
+//
+// 本家 Misskey の i/apps と同 shape (access_token + app の JOIN) を返す。
+// 旧実装は誤って空配列を返しており frontend "Apps" 一覧が常に空だったため
+// #587 で本実装化した。Misskey TS 本家 ref:
+// packages/backend/src/server/api/endpoints/i/apps.ts。
+//
+// sort 値は +/-createdAt / +/-lastUsedAt。未指定時は token.id ASC (本家 default)。
+// 各 token の name / permission / description は app へフォールバックする
+// (例: token.name が NULL なら app.name を使う、本家と同じ ?? チェーン)。
 func (h *Handler) Apps(c echo.Context) error {
-	return c.JSON(http.StatusOK, []any{})
+	if h.accessTokenRepo == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	u := middleware.GetUser(c)
+	var req struct {
+		Sort string `json:"sort"`
+	}
+	_ = c.Bind(&req)
+	tokens, err := h.accessTokenRepo.ListByUserIDPreloadApp(u.ID, req.Sort)
+	if err != nil {
+		return apierr.JSONInternalError(c)
+	}
+	const tsFormat = "2006-01-02T15:04:05.000Z"
+	out := make([]map[string]any, 0, len(tokens))
+	for _, t := range tokens {
+		entry := map[string]any{
+			"id":         t.ID,
+			"name":       coalesceString(t.Name, appName(t.App)),
+			"lastUsedAt": formatNullableTime(t.LastUsedAt, tsFormat),
+			"permission": []string(tokenPermission(t)),
+			"iconUrl":    t.IconURL,
+			"description": coalesceString(
+				t.Description,
+				appDescription(t.App),
+			),
+		}
+		if ct, err := h.idGen.ParseTime(t.ID); err == nil {
+			entry["createdAt"] = ct.UTC().Format(tsFormat)
+		}
+		out = append(out, entry)
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// coalesceString は本家の `a ?? b` チェーン相当。a が nil/"" なら b を返す。
+func coalesceString(a, b *string) *string {
+	if a != nil && *a != "" {
+		return a
+	}
+	return b
+}
+
+func appName(a *model.App) *string {
+	if a == nil {
+		return nil
+	}
+	return &a.Name
+}
+
+func appDescription(a *model.App) *string {
+	if a == nil {
+		return nil
+	}
+	return &a.Description
+}
+
+// tokenPermission は本家と同じ分岐: app があれば app.permission、無ければ
+// token.permission (本家 i/apps.ts:98)。
+func tokenPermission(t *model.AccessToken) []string {
+	if t.App != nil {
+		return []string(t.App.Permission)
+	}
+	return []string(t.Permission)
+}
+
+// formatNullableTime は *time.Time が nil の場合 nil を返し、そうでなければ
+// 指定 layout で UTC 文字列に整形する。
+func formatNullableTime(t *time.Time, layout string) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC().Format(layout)
 }
 
 // AuthorizedApps handles POST /api/i/authorized-apps.

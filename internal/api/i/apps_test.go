@@ -15,7 +15,93 @@ import (
 
 func TestApps(t *testing.T) {
 	h, _ := newExtraHandler(t)
-	assert.Equal(t, http.StatusOK, postExtra(h.Apps, `{}`, stubUser).Code)
+	// accessTokenRepo 未配線時は空配列で graceful fallback
+	rec := postExtra(h.Apps, `{}`, stubUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
+}
+
+// /i/apps は本家 Misskey 互換で access_token + app の JOIN を返す。
+// owner-app 経由 (token.appId 指定あり) と raw token (app 無し) の混在を
+// テスト。本実装化は #587 で行った (旧実装は常に空配列を返す stub)。
+func TestApps_ReturnsTokensWithApp(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	tokens := testutil.NewMockAccessTokenRepository()
+	idGen, _ := id.NewGenerator("aidx")
+
+	// owner-app 経由の token: app メタを app テーブルから引く
+	appID := "app1"
+	tokens.SetApp(&model.App{
+		ID:          appID,
+		Name:        "Misskey IDE",
+		Description: "OAuth2 demo app",
+		Permission:  []string{"read:account"},
+	})
+	tApp := idGen.Generate(time.Now())
+	tokens.Tokens["h1"] = &model.AccessToken{
+		ID: tApp, Hash: "h1", UserID: stubUser.ID, AppID: &appID,
+	}
+
+	// raw token (app なし): token 自身の name / permission を使う
+	tRaw := idGen.Generate(time.Now())
+	rawName := "personal token"
+	tokens.Tokens["h2"] = &model.AccessToken{
+		ID: tRaw, Hash: "h2", UserID: stubUser.ID,
+		Name:       &rawName,
+		Permission: []string{"write:notes"},
+	}
+
+	// 別ユーザーの token は除外
+	tokens.Tokens["h3"] = &model.AccessToken{ID: "other", Hash: "h3", UserID: "other"}
+
+	h.SetAccessTokenRepo(tokens)
+
+	rec := postExtra(h.Apps, `{}`, stubUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got, 2)
+
+	// default sort = id ASC のため、ID 順に並ぶ。
+	byID := map[string]map[string]any{}
+	for _, e := range got {
+		byID[e["id"].(string)] = e
+	}
+	// owner-app 経由: name は app.name、permission は app.permission
+	app := byID[tApp]
+	assert.Equal(t, "Misskey IDE", app["name"])
+	perm, _ := app["permission"].([]any)
+	require.Len(t, perm, 1)
+	assert.Equal(t, "read:account", perm[0])
+	assert.Equal(t, "OAuth2 demo app", app["description"])
+
+	// raw token: name は token.name、permission は token.permission
+	raw := byID[tRaw]
+	assert.Equal(t, "personal token", raw["name"])
+	perm2, _ := raw["permission"].([]any)
+	require.Len(t, perm2, 1)
+	assert.Equal(t, "write:notes", perm2[0])
+}
+
+// sort=+createdAt は新しい順 (ID DESC)。
+func TestApps_SortByCreatedAtDesc(t *testing.T) {
+	h, _ := newExtraHandler(t)
+	tokens := testutil.NewMockAccessTokenRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	t1 := idGen.Generate(time.Now())
+	t2 := idGen.Generate(time.Now().Add(time.Second))
+	tokens.Tokens["h1"] = &model.AccessToken{ID: t1, Hash: "h1", UserID: stubUser.ID}
+	tokens.Tokens["h2"] = &model.AccessToken{ID: t2, Hash: "h2", UserID: stubUser.ID}
+	h.SetAccessTokenRepo(tokens)
+
+	rec := postExtra(h.Apps, `{"sort":"+createdAt"}`, stubUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got, 2)
+	// 新しい順 = t2 が先
+	assert.Equal(t, t2, got[0]["id"])
+	assert.Equal(t, t1, got[1]["id"])
 }
 
 func TestAuthorizedApps(t *testing.T) {

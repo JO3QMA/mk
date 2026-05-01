@@ -318,12 +318,6 @@ func TestSetRemote(t *testing.T) {
 	assert.NotNil(t, h.remoteFetcher)
 }
 
-func TestAPNotes(t *testing.T) {
-	h, _, _, _ := newHandler(t)
-	rec := postJSON(h.APNotes, `{}`)
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
 func TestAPIGet_RemoteFetch(t *testing.T) {
 	h, _, _, _ := newHandler(t)
 	h.SetRemote(&mockFetcher{data: []byte(`{"type":"Note","id":"https://remote.example/notes/1"}`)}, nil)

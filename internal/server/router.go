@@ -554,6 +554,12 @@ func (s *Server) setupRoutes() {
 	// バックグラウンド処理。note / drive_file / following 関連行を掃除する。
 	deleteAccountProcessor := processors.NewDeleteAccountProcessor(noteRepo, driveFileRepo, followingRepo)
 	s.queueServer.Handle(queue.TaskTypeDeleteAccount, deleteAccountProcessor.Handle)
+
+	// Per-pair Unfollow job (#587): admin/federation/remove-all-following
+	// が enqueue するペアごとに Service.Unfollow を呼んで row 削除 + Reject
+	// 配送を行う。Misskey TS の relationshipQueue 'unfollow' job 相当。
+	unfollowProcessor := processors.NewUnfollowProcessor(followingService)
+	s.queueServer.Handle(queue.TaskTypeUnfollow, unfollowProcessor.Handle)
 	if bufMeta, err := metaRepo.Fetch(); err == nil && bufMeta.EnableReactionsBuffering {
 		go func() {
 			ticker := time.NewTicker(30 * time.Second)
@@ -1629,6 +1635,13 @@ func (s *Server) setupRoutes() {
 	}
 	adminHandler.SetInstanceMetadataFetcher(metadataFetcher)
 	adminHandler.SetSystemAccountFetcher(sysAcctSvc)
+	// admin/federation/remove-all-following が host 単位で全 follower を
+	// detach するために followingRepo + Unfollow enqueuer が必要 (#587)。
+	// 実 row 削除と Reject(Follow) 配送は worker (UnfollowProcessor) が
+	// followingService.Unfollow を呼んで行う。本家 TS の queueService.
+	// createUnfollowJob と等価。
+	adminHandler.SetFollowingRepo(followingRepo)
+	adminHandler.SetUnfollowEnqueuer(s.queueClient)
 	api.POST("/admin/accounts/create", adminHandler.AccountsCreate)
 	api.POST("/admin/show-user", adminHandler.ShowUser, middleware.RequireModerator(roleService))
 	api.POST("/admin/show-users", adminHandler.ShowUsers, middleware.RequireModerator(roleService))
@@ -1754,9 +1767,10 @@ func (s *Server) setupRoutes() {
 	api.POST("/my/apps", appHandler.MyApps, middleware.RequireAuth())
 
 	// ap/* — ActivityPub API lookup (実データ: ローカルオブジェクト解決)
+	// /api/ap/notes は upstream Misskey にも存在しない vestigial route だった
+	// ため #587 で削除済 (旧実装は常に空配列返却の stub)。
 	api.POST("/ap/get", apHandler.APIGet, middleware.RequireAdmin(roleService))
 	api.POST("/ap/show", apHandler.APIShow, middleware.RequireAuth())
-	api.POST("/ap/notes", apHandler.APNotes)
 
 	// sw/* — Service Worker push notifications (実データ)
 	swHandler := apisw.NewHandler(swSubRepo, metaRepo, idGen)

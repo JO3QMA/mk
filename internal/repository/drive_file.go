@@ -36,6 +36,10 @@ type DriveFileRepository interface {
 	// DeleteByUser removes every drive_file owned by userID. Returns affected
 	// count. Used by admin/delete-all-files-of-a-user.
 	DeleteByUser(userID string) (int64, error)
+	// DeleteByHost removes every drive_file whose userHost matches the given
+	// remote instance host. Returns affected count. Used by
+	// admin/federation/delete-all-files (#587)。
+	DeleteByHost(host string) (int64, error)
 }
 
 type driveFileRepository struct {
@@ -228,5 +232,15 @@ func (r *driveFileRepository) DeleteByUser(userID string) (int64, error) {
 		return 0, nil
 	}
 	tx := r.db.Where(`"userId" = ?`, userID).Delete(&model.DriveFile{})
+	return tx.RowsAffected, tx.Error
+}
+
+func (r *driveFileRepository) DeleteByHost(host string) (int64, error) {
+	if host == "" {
+		return 0, nil
+	}
+	// userHost が remote のリモートユーザーアップロード分のみ削除。
+	// ローカル user (userHost IS NULL) は誤って巻き込まないよう明示一致のみ。
+	tx := r.db.Where(`"userHost" = ?`, host).Delete(&model.DriveFile{})
 	return tx.RowsAffected, tx.Error
 }

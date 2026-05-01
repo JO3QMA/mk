@@ -744,5 +744,32 @@ func TestDecodeDeleteAccountPayload_MalformedReturnsError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestClient_EnqueueUnfollow(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueUnfollow(queue.UnfollowPayload{
+		FollowerID: "rA", FolloweeID: "localA",
+	}))
+}
+
+func TestNewUnfollowTask_RoundTrip(t *testing.T) {
+	payload := queue.UnfollowPayload{FollowerID: "rA", FolloweeID: "localA"}
+	task := queue.NewUnfollowTask(payload)
+	require.Equal(t, queue.TaskTypeUnfollow, task.Type())
+	got, err := queue.DecodeUnfollowPayload(task.Payload())
+	require.NoError(t, err)
+	require.Equal(t, "rA", got.FollowerID)
+	require.Equal(t, "localA", got.FolloweeID)
+}
+
+func TestDecodeUnfollowPayload_MalformedReturnsError(t *testing.T) {
+	_, err := queue.DecodeUnfollowPayload([]byte(`not-json`))
+	require.Error(t, err)
+}
+
 // ensure errors package referenced for completeness in CI builds.
 var _ = errors.New

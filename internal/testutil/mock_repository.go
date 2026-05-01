@@ -1791,10 +1791,25 @@ func (m *MockMetaRepository) EnsureInitial(id string) error {
 // MockAccessTokenRepository is a test double for repository.AccessTokenRepository.
 type MockAccessTokenRepository struct {
 	Tokens map[string]*model.AccessToken // keyed by hash
+	// Apps は ListByUserIDPreloadApp 用の App map。テスト側で SetApp 経由で
+	// 埋めると、AppID 経由で Token に Preload された状態のコピーが返る。
+	Apps map[string]*model.App
 }
 
 func NewMockAccessTokenRepository() *MockAccessTokenRepository {
-	return &MockAccessTokenRepository{Tokens: make(map[string]*model.AccessToken)}
+	return &MockAccessTokenRepository{
+		Tokens: make(map[string]*model.AccessToken),
+		Apps:   make(map[string]*model.App),
+	}
+}
+
+// SetApp wires an App into the mock so ListByUserIDPreloadApp は AppID 経由
+// で Token に App を埋めて返す。
+func (m *MockAccessTokenRepository) SetApp(app *model.App) {
+	if m.Apps == nil {
+		m.Apps = make(map[string]*model.App)
+	}
+	m.Apps[app.ID] = app
 }
 
 func (m *MockAccessTokenRepository) FindByHash(hash string) (*model.AccessToken, error) {
@@ -1822,6 +1837,56 @@ func (m *MockAccessTokenRepository) ListByUserID(userID string) ([]*model.Access
 		}
 	}
 	return out, nil
+}
+
+// ListByUserIDPreloadApp は実 repo の Preload("App") + sort 順を再現する。
+// sort 値は Misskey TS 互換 (+/-createdAt, +/-lastUsedAt, default は id ASC)。
+func (m *MockAccessTokenRepository) ListByUserIDPreloadApp(userID, sort string) ([]*model.AccessToken, error) {
+	out := make([]*model.AccessToken, 0)
+	for _, t := range m.Tokens {
+		if t.UserID != userID {
+			continue
+		}
+		// shallow copy + AppID で App を埋める。元の Token を mutate しないため。
+		c := *t
+		if c.AppID != nil {
+			if app, ok := m.Apps[*c.AppID]; ok {
+				c.App = app
+			}
+		}
+		out = append(out, &c)
+	}
+	mockSortAccessTokens(out, sort)
+	return out, nil
+}
+
+// mockSortAccessTokens は実 repo の Order を簡易 insertion sort で再現する。
+func mockSortAccessTokens(out []*model.AccessToken, sort string) {
+	less := func(i, j int) bool { return out[i].ID < out[j].ID } // default = id ASC
+	switch sort {
+	case "+createdAt":
+		less = func(i, j int) bool { return out[i].ID > out[j].ID }
+	case "+lastUsedAt":
+		less = func(i, j int) bool {
+			return mockLastUsedAtNS(out[i]) > mockLastUsedAtNS(out[j])
+		}
+	case "-lastUsedAt":
+		less = func(i, j int) bool {
+			return mockLastUsedAtNS(out[i]) < mockLastUsedAtNS(out[j])
+		}
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && less(j, j-1); j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+}
+
+func mockLastUsedAtNS(t *model.AccessToken) int64 {
+	if t == nil || t.LastUsedAt == nil {
+		return 0
+	}
+	return t.LastUsedAt.UnixNano()
 }
 
 func (m *MockAccessTokenRepository) DeleteByID(id string) error {
