@@ -4,13 +4,23 @@ package instance
 
 import (
 	"errors"
-	"slices"
+	"strings"
 	"time"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
+
+// hostMatchCaser folds host names case-insensitively in a Unicode-aware
+// manner. Misskey TS uses String.prototype.toLowerCase() which works on
+// arbitrary Unicode (e.g. \`Ä\` → \`ä\`); strings.ToLower in Go only handles
+// ASCII, so raw IDN representations would diverge between TS and mk-go
+// without this caser. cases.Caser instances are safe for concurrent use.
+var hostMatchCaser = cases.Lower(language.Und)
 
 // Errors returned by Service.
 var (
@@ -140,7 +150,7 @@ func (s *Service) RecordResponseError(host string) error {
 	})
 }
 
-// IsBlocked reports whether the host appears in meta.blockedHosts.
+// IsBlocked reports whether the host matches an entry in meta.blockedHosts.
 // meta が読めない場合は false を返す (ベストエフォート)。
 func (s *Service) IsBlocked(host string) bool {
 	if host == "" {
@@ -150,10 +160,10 @@ func (s *Service) IsBlocked(host string) bool {
 	if err != nil {
 		return false
 	}
-	return slices.Contains(meta.BlockedHosts, host)
+	return hostMatchesAny(meta.BlockedHosts, host)
 }
 
-// IsSilenced reports whether the host appears in meta.silencedHosts.
+// IsSilenced reports whether the host matches an entry in meta.silencedHosts.
 func (s *Service) IsSilenced(host string) bool {
 	if host == "" {
 		return false
@@ -162,7 +172,7 @@ func (s *Service) IsSilenced(host string) bool {
 	if err != nil {
 		return false
 	}
-	return slices.Contains(meta.SilencedHosts, host)
+	return hostMatchesAny(meta.SilencedHosts, host)
 }
 
 // IsAllowed reports whether the local instance is willing to federate with
@@ -170,12 +180,20 @@ func (s *Service) IsSilenced(host string) bool {
 // federation mode + blockedHosts の組み合わせで判定する (#536)。
 //
 //   - federation == "none": 連合無効、全 host を deny
-//   - federation == "specified": federationHosts に列挙した host だけ allow
+//   - federation == "specified": federationHosts に列挙した host (または
+//     その配下サブドメイン) だけ allow
 //   - その他 ("all" / 既定): blockedHosts に含まれない host を allow
 //
 // 引数の host が空文字 (= local) は常に true を返す。meta が読めない場合は
 // 安全側に倒さず true を返す (起動時の transient error で連合が落ちると
 // drop-in 互換が大幅に崩れるため、ベストエフォートを優先)。
+//
+// host とリスト要素の比較は Misskey TS UtilityService と同じ
+// **case-insensitive な suffix match** で行う (#590)。例えば
+// federationHosts に \`example.com\` を入れると \`example.com\` 自身に加え
+// \`sub.example.com\` も透過する。`x` 単独で `.foo.x` も `bar.x` も拾えるよう、
+// 比較は \`.\` を前置した文字列同士の endsWith。これにより whitelist 設定が
+// 直感どおりに効く。
 func (s *Service) IsAllowed(host string) bool {
 	if host == "" {
 		return true
@@ -188,11 +206,41 @@ func (s *Service) IsAllowed(host string) bool {
 	case "none":
 		return false
 	case "specified":
-		if !slices.Contains(meta.FederationHosts, host) {
+		if !hostMatchesAny(meta.FederationHosts, host) {
 			return false
 		}
 	}
-	return !slices.Contains(meta.BlockedHosts, host)
+	return !hostMatchesAny(meta.BlockedHosts, host)
+}
+
+// hostMatchesAny reports whether host (case-insensitive, Unicode-aware)
+// matches any of the given patterns under Misskey TS's suffix-match rule.
+// A pattern matches if host equals it, or host ends with `.<pattern>`
+// (i.e. host is a subdomain).
+//
+// 比較ロジックは TS の \`UtilityService.isBlockedHost\` (および
+// \`isFederationAllowedHost\`) と等価:
+//
+//	patterns.some(x => `.${host.toLowerCase()}`.endsWith(`.${x.toLowerCase()}`))
+//
+// host が空文字なら常に false。空 pattern は意図的に skip する (\`host == ""\`
+// ガードが既に効くので "." 単独が任意 host に誤マッチすることは無いが、
+// admin が誤って空エントリを混入させた場合に "全 host を allow / block" に
+// 化けない defensive guard を残す)。
+func hostMatchesAny(patterns []string, host string) bool {
+	if host == "" {
+		return false
+	}
+	needle := "." + hostMatchCaser.String(host)
+	for _, p := range patterns {
+		if p == "" {
+			continue
+		}
+		if strings.HasSuffix(needle, "."+hostMatchCaser.String(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Suspend updates the suspensionState column for the host. 引数の state には

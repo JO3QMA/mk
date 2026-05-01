@@ -53,3 +53,38 @@ func TestApplyUserFields_MovedAndAlsoKnownAs_BothForms(t *testing.T) {
 	require.NotNil(t, got.AlsoKnownAs)
 	assert.Equal(t, aka2, *got.AlsoKnownAs)
 }
+
+// MockMetaRepository.Update は real repo の挙動に近づけるため、varchar[]
+// 列に nil / 非 string element 含む []any / 不明型を渡すと error を返す
+// (#590 review #4)。これにより handler 側の coerce 漏れが mock テストでも
+// 検出できるようになり、real DB を使わない handler テストでも regression
+// detection が効く。
+func TestMockMeta_Update_RejectsInvalidArrayValue(t *testing.T) {
+	t.Run("nil for varchar[] column errors", func(t *testing.T) {
+		repo := NewMockMetaRepository()
+		err := repo.Update(map[string]any{"blockedHosts": nil})
+		require.Error(t, err)
+	})
+	t.Run("non-string element in []any errors", func(t *testing.T) {
+		repo := NewMockMetaRepository()
+		err := repo.Update(map[string]any{"blockedHosts": []any{"ok.example", 42}})
+		require.Error(t, err)
+	})
+	t.Run("unsupported type errors", func(t *testing.T) {
+		repo := NewMockMetaRepository()
+		err := repo.Update(map[string]any{"blockedHosts": "not-an-array"})
+		require.Error(t, err)
+	})
+	t.Run("pq.StringArray succeeds", func(t *testing.T) {
+		repo := NewMockMetaRepository()
+		err := repo.Update(map[string]any{"blockedHosts": []string{"ok.example"}})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ok.example"}, []string(repo.Meta.BlockedHosts))
+	})
+	t.Run("[]any of strings succeeds", func(t *testing.T) {
+		repo := NewMockMetaRepository()
+		err := repo.Update(map[string]any{"blockedHosts": []any{"ok.example"}})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ok.example"}, []string(repo.Meta.BlockedHosts))
+	})
+}

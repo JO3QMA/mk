@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
@@ -845,6 +846,15 @@ func (h *Handler) UpdateMeta(c echo.Context) error {
 	// alias が frontend から来たら DB カラム名に translate して渡す。
 	renameUpdateMetaFields(fields)
 
+	// JSON Bind 後の []any{...} (中身は string) を pq.StringArray に揃える
+	// (#590)。GORM は map[string]any を Updates() に渡すと値の型をそのまま
+	// driver に流すため、pq.StringArray (= driver.Valuer 実装) に変換しない
+	// と varchar[] 列の UPDATE が `expression is of type record` で失敗する。
+	// これは federationHosts / blockedHosts / silencedHosts / langs 等
+	// すべての varchar[] 列に影響していたバグで、admin が whitelist 連合や
+	// host ブロックを保存しても永続化されない原因だった。
+	coerceMetaArrayFields(fields)
+
 	// VAPID 鍵 auto-generate (#492): Service Worker 有効化時に
 	// swPublicKey / swPrivateKey が両方空のとき backend で生成して詰める。
 	// 既存鍵 (片方だけ欠けの中途状態 含む) は触らないことで、運用者が
@@ -939,6 +949,78 @@ func renameUpdateMetaFields(fields map[string]any) {
 			fields[canonical] = v
 			delete(fields, alias)
 		}
+	}
+}
+
+// metaArrayColumns enumerates every varchar[] column on `meta` that admin
+// can touch through /api/admin/update-meta. Each column is declared
+// `NOT NULL DEFAULT '{}'` (see migration 000001_initial.up.sql), so any
+// JSON null or untyped slice the frontend sends has to be coerced before
+// it reaches lib/pq — otherwise the entire UPDATE rolls back. The set is
+// kept narrow to avoid touching unrelated fields. Add new entries here
+// when a varchar[] meta column is introduced.
+var metaArrayColumns = map[string]struct{}{
+	"langs":                        {},
+	"pinnedUsers":                  {},
+	"hiddenTags":                   {},
+	"blockedHosts":                 {},
+	"silencedHosts":                {},
+	"mediaSilencedHosts":           {},
+	"sensitiveWords":               {},
+	"prohibitedWords":              {},
+	"prohibitedWordsForNameOfUser": {},
+	"serverRules":                  {},
+	"federationHosts":              {},
+	"bannedEmailDomains":           {},
+	"preservedUsernames":           {},
+}
+
+// coerceMetaArrayFields normalises array-shaped values bound from JSON
+// into pq.StringArray for known varchar[] columns on the meta row. It is
+// the admin/update-meta only helper — every meta varchar[] column listed
+// in metaArrayColumns is NOT NULL with DEFAULT '{}'.
+//
+// 必要な理由 (#590): JSON decoder は array を []any に decode するが、
+// lib/pq の Value driver は []any を varchar[] に変換できず
+// "expression is of type record" で PostgreSQL 側エラーになり、UPDATE 全体
+// が rollback する。さらに JSON null を送られると nil が pq.StringArray
+// 列に流れて NOT NULL 制約違反でも rollback する。両方を空配列もしくは
+// pq.StringArray に揃えることで、admin の whitelist / blocklist 設定が
+// 期待どおり永続化される。
+//
+// 関連列以外 (例: rootUserId のような nullable string) は触らない。
+// metaArrayColumns に列挙された key のみが coerce 対象。
+func coerceMetaArrayFields(fields map[string]any) {
+	for k, v := range fields {
+		if _, ok := metaArrayColumns[k]; !ok {
+			continue
+		}
+		switch arr := v.(type) {
+		case nil:
+			// JSON null は admin の「リスト解除」意図と解釈し、空配列に
+			// 揃えて NOT NULL 制約違反を避ける (Misskey TS は配列型で
+			// declared、null 自体を弾くので mk-go 側で寄せる)。
+			fields[k] = pq.StringArray{}
+		case []any:
+			// 全要素 string なら pq.StringArray、不正型混入 (string 以外)
+			// は実 repo に流して error にさせる (型エラーを silently 飲み
+			// 込まないため)。
+			strs := make([]string, 0, len(arr))
+			allStrings := true
+			for _, e := range arr {
+				s, isStr := e.(string)
+				if !isStr {
+					allStrings = false
+					break
+				}
+				strs = append(strs, s)
+			}
+			if allStrings {
+				fields[k] = pq.StringArray(strs)
+			}
+		}
+		// pq.StringArray / []string が来ているケースは driver.Valuer 互換
+		// なのでそのまま real repo に流す。
 	}
 }
 
