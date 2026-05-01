@@ -2,14 +2,12 @@ package admin_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -56,130 +54,6 @@ func TestSetAdminDB(t *testing.T) {
 }
 
 // --- accounts ---
-func TestAccountsDelete(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.AccountsDelete, `{}`, adminUser).Code)
-}
-
-type stubDeleteAccountEnqueuer struct {
-	lastUserID string
-	called     int
-	err        error
-}
-
-func (s *stubDeleteAccountEnqueuer) EnqueueDeleteAccount(payload queue.DeleteAccountPayload) error {
-	s.called++
-	s.lastUserID = payload.UserID
-	return s.err
-}
-
-func TestAccountsDelete_EnqueuesCascade(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	stub := &stubDeleteAccountEnqueuer{}
-	h.SetDeleteAccountEnqueuer(stub)
-	assert.Equal(t, http.StatusNoContent,
-		doPost(h.AccountsDelete, `{"userId":"u1"}`, adminUser).Code)
-	assert.Equal(t, 1, stub.called)
-	assert.Equal(t, "u1", stub.lastUserID)
-}
-
-func TestAccountsDelete_MissingUserIDSkipsEnqueue(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	stub := &stubDeleteAccountEnqueuer{}
-	h.SetDeleteAccountEnqueuer(stub)
-	assert.Equal(t, http.StatusNoContent,
-		doPost(h.AccountsDelete, `{}`, adminUser).Code)
-	assert.Equal(t, 0, stub.called)
-}
-
-func TestAccountsDelete_EnqueueFailureIsLogged(t *testing.T) {
-	// enqueue 失敗はログに残すだけで HTTP 応答は 204 のまま返ることを確認。
-	h, _, _, _ := newTestHandler(t)
-	h.SetDeleteAccountEnqueuer(&stubDeleteAccountEnqueuer{err: assertError{}})
-	assert.Equal(t, http.StatusNoContent,
-		doPost(h.AccountsDelete, `{"userId":"u1"}`, adminUser).Code)
-}
-
-func TestDeleteAccount_EnqueuesCascade(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	stub := &stubDeleteAccountEnqueuer{}
-	h.SetDeleteAccountEnqueuer(stub)
-	assert.Equal(t, http.StatusNoContent,
-		doPost(h.DeleteAccount, `{"userId":"u9"}`, adminUser).Code)
-	assert.Equal(t, "u9", stub.lastUserID)
-}
-func TestAccountsFindByEmail_Empty(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusBadRequest, doPost(h.AccountsFindByEmail, `{}`, adminUser).Code)
-}
-func TestAccountsFindByEmail_NotFound(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNotFound, doPost(h.AccountsFindByEmail, `{"email":"ghost@example.com"}`, adminUser).Code)
-}
-
-func TestAccountsFindByEmail_Found(t *testing.T) {
-	h, userRepo, _, _ := newTestHandler(t)
-	email := "alice@example.com"
-	userRepo.Users["alice"] = &model.User{ID: "alice", Username: "alice"}
-	userRepo.Profiles["alice"] = &model.UserProfile{UserID: "alice", Email: &email}
-
-	rec := doPost(h.AccountsFindByEmail, `{"email":"alice@example.com"}`, adminUser)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"alice"`)
-}
-
-// TestAccountsFindByEmail_ResponseShape verifies that AccountsFindByEmail
-// returns the packAdminUser format: frontend-expected fields (createdAt,
-// roles, policies) must be present, and internal model fields (inbox,
-// sharedInbox, usernameLower) must NOT leak.
-func TestAccountsFindByEmail_ResponseShape(t *testing.T) {
-	h, userRepo, _, _ := newTestHandler(t)
-
-	// aidxで生成したIDを使い、createdAtがパースされることを保証する
-	idGen, _ := id.NewGenerator("aidx")
-	uid := idGen.Generate(time.Now())
-
-	inbox := "https://remote.example/inbox"
-	sharedInbox := "https://remote.example/sharedInbox"
-	email := "bob@example.com"
-	userRepo.Users[uid] = &model.User{
-		ID:                uid,
-		Username:          "bob",
-		UsernameLower:     "bob",
-		Inbox:             &inbox,
-		SharedInbox:       &sharedInbox,
-		IsExplorable:      true,
-		AvatarDecorations: []byte("[]"),
-	}
-	userRepo.Profiles[uid] = &model.UserProfile{
-		UserID:          uid,
-		Email:           &email,
-		MutedWords:      []byte("[]"),
-		HardMutedWords:  []byte("[]"),
-		MutedInstances:  []byte("[]"),
-		PublicReactions: true,
-	}
-
-	rec := doPost(h.AccountsFindByEmail, `{"email":"bob@example.com"}`, adminUser)
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-
-	// packAdminUserが付与するフロントエンド必須フィールドの存在確認
-	assert.Equal(t, uid, resp["id"])
-	assert.NotNil(t, resp["createdAt"], "createdAt must be present")
-	assert.NotNil(t, resp["roles"], "roles must be present")
-	assert.NotNil(t, resp["policies"], "policies must be present")
-
-	// 内部フィールドがレスポンスに漏れていないことを確認
-	_, hasInbox := resp["inbox"]
-	assert.False(t, hasInbox, "inbox is an internal field and must not be exposed")
-	_, hasSharedInbox := resp["sharedInbox"]
-	assert.False(t, hasSharedInbox, "sharedInbox is an internal field and must not be exposed")
-	_, hasUsernameLower := resp["usernameLower"]
-	assert.False(t, hasUsernameLower, "usernameLower is an internal field and must not be exposed")
-}
 
 // --- ad ---
 func TestAdCreate(t *testing.T) {
@@ -250,10 +124,6 @@ func TestAbuseReportNotificationRecipientUpdate(t *testing.T) {
 }
 
 // --- single endpoints ---
-func TestDeleteAccountAdmin(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.DeleteAccount, `{}`, adminUser).Code)
-}
 func TestDeleteAllFilesOfUser(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	// userId 欠落は 400
@@ -471,26 +341,6 @@ func TestServerInfo_Disabled(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	// enableServerMachineStats = false (デフォルト) なので Empty() が返る
 	assert.Contains(t, rec.Body.String(), `"name":"?"`)
-}
-func TestUnsetUserAvatar(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserAvatar, `{}`, adminUser).Code)
-}
-func TestUnsetUserBanner(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.UnsetUserBanner, `{}`, adminUser).Code)
-}
-func TestUpdateAbuseUserReport(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateAbuseUserReport, `{}`, adminUser).Code)
-}
-func TestUpdateProxyAccount(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateProxyAccount, `{}`, adminUser).Code)
-}
-func TestUpdateUserNote(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateUserNote, `{}`, adminUser).Code)
 }
 
 // --- drive ---

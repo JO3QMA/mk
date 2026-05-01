@@ -21,92 +21,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// --- accounts ---
-
-// AccountsDelete handles POST /api/admin/accounts/delete.
-func (h *Handler) AccountsDelete(c echo.Context) error {
-	var req struct {
-		UserID string `json:"userId"`
-	}
-	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.NoContent(http.StatusNoContent)
-	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
-	h.scheduleAccountCascade(req.UserID)
-	return c.NoContent(http.StatusNoContent)
-}
-
-// AccountsFindByEmail handles POST /api/admin/accounts/find-by-email.
-// user_profile.email 列を検索して、紐づく user を返す。本家 Misskey の
-// admin/accounts/find-by-email と同等。
-func (h *Handler) AccountsFindByEmail(c echo.Context) error {
-	var req struct {
-		Email string `json:"email"`
-	}
-	if err := c.Bind(&req); err != nil || req.Email == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "email is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
-	}
-	profile, err := h.userRepo.FindProfileByEmail(req.Email)
-	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
-	}
-	user, err := h.userRepo.FindByID(profile.UserID)
-	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
-	}
-	// 他の admin エンドポイント (ShowUser 等) と同じ packAdminUser を通して
-	// Misskey 本家互換のレスポンス整形をする。生 model.User を返すと
-	// inbox / sharedInbox / usernameLower 等の内部フィールドが漏れ、
-	// createdAt / roles / policies 等のフロントが期待するフィールドが欠落する。
-	return c.JSON(http.StatusOK, h.packAdminUser(user, profile))
-}
-
-// --- single endpoints ---
-
-// DeleteAccount handles POST /api/admin/delete-account.
-func (h *Handler) DeleteAccount(c echo.Context) error {
-	var req struct {
-		UserID string `json:"userId"`
-	}
-	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.NoContent(http.StatusNoContent)
-	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
-	h.scheduleAccountCascade(req.UserID)
-	return c.NoContent(http.StatusNoContent)
-}
-
-// scheduleAccountCascade queues the background cascade deletion. Errors
-// from the enqueuer are logged but never surfaced — the admin flag flip
-// is the user-visible source of truth, so a failed enqueue only delays
-// the cleanup until the next manual retry.
-func (h *Handler) scheduleAccountCascade(userID string) {
-	if h.deleteAccountEnqueuer == nil || userID == "" {
-		return
-	}
-	if err := h.deleteAccountEnqueuer.EnqueueDeleteAccount(queue.DeleteAccountPayload{UserID: userID}); err != nil {
-		slog.Warn("admin: enqueue delete-account failed", "userId", userID, "err", err)
-	}
-}
-
-// DeleteAllFilesOfUser handles POST /api/admin/delete-all-files-of-a-user.
-func (h *Handler) DeleteAllFilesOfUser(c echo.Context) error {
-	var req struct {
-		UserID string `json:"userId"`
-	}
-	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "00000000-0000-0000-0000-000000000000"))
-	}
-	if h.driveFileRepo == nil {
-		return c.NoContent(http.StatusNoContent)
-	}
-	// 単一の DELETE 文で完結するため同期実行。大量ファイル (数万) の場合も
-	// PostgreSQL で 1 秒未満に収まる想定。将来バッチが必要なら queue へ。
-	if _, err := h.driveFileRepo.DeleteByUser(req.UserID); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
-	}
-	return c.NoContent(http.StatusNoContent)
-}
+// AccountsDelete / AccountsFindByEmail / DeleteAccount /
+// scheduleAccountCascade は accounts.go に移動済 (#574)。
+// DeleteAllFilesOfUser は moderation.go に移動済 (#574)。
 
 // ForwardAbuseUserReport handles POST /api/admin/forward-abuse-user-report.
 //
@@ -322,29 +239,7 @@ func (h *Handler) ServerInfo(c echo.Context) error {
 	return c.JSON(http.StatusOK, serverstats.Empty())
 }
 
-// UnsetUserAvatar handles POST /api/admin/unset-user-avatar.
-func (h *Handler) UnsetUserAvatar(c echo.Context) error {
-	var req struct {
-		UserID string `json:"userId"`
-	}
-	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.NoContent(http.StatusNoContent)
-	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"avatarId": nil, "avatarUrl": nil, "avatarBlurhash": nil})
-	return c.NoContent(http.StatusNoContent)
-}
-
-// UnsetUserBanner handles POST /api/admin/unset-user-banner.
-func (h *Handler) UnsetUserBanner(c echo.Context) error {
-	var req struct {
-		UserID string `json:"userId"`
-	}
-	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.NoContent(http.StatusNoContent)
-	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"bannerId": nil, "bannerUrl": nil, "bannerBlurhash": nil})
-	return c.NoContent(http.StatusNoContent)
-}
+// UnsetUserAvatar / UnsetUserBanner は moderation.go に移動済 (#574)。
 
 // UpdateAbuseUserReport handles POST /api/admin/update-abuse-user-report.
 func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
@@ -389,18 +284,7 @@ func (h *Handler) UpdateProxyAccount(c echo.Context) error {
 	return c.JSON(http.StatusOK, entity.PackUserDetailed(proxy, profile))
 }
 
-// UpdateUserNote handles POST /api/admin/update-user-note.
-func (h *Handler) UpdateUserNote(c echo.Context) error {
-	var req struct {
-		UserID string `json:"userId"`
-		Text   string `json:"text"`
-	}
-	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.NoContent(http.StatusNoContent)
-	}
-	_ = h.userRepo.UpdateProfile(req.UserID, map[string]any{"moderationNote": req.Text})
-	return c.NoContent(http.StatusNoContent)
-}
+// UpdateUserNote は moderation.go に移動済 (#574)。
 
 // --- drive ---
 

@@ -540,6 +540,10 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 			if b, ok := v.(bool); ok {
 				p.AlwaysMarkNsfw = b
 			}
+		case "moderationNote":
+			if s, ok := v.(string); ok {
+				p.ModerationNote = &s
+			}
 		case "autoSensitive":
 			if b, ok := v.(bool); ok {
 				p.AutoSensitive = b
