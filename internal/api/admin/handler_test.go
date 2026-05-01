@@ -48,6 +48,32 @@ func doPost(h func(echo.Context) error, body string, user *model.User) *httptest
 	return rec
 }
 
+// adminUser is the throwaway admin principal shared across the per-handler
+// test files (forward_abuse_report_test.go, server_stats_test.go, etc.).
+var adminUser = &model.User{ID: "admin1"}
+
+// assertError is a trivial error used to exercise error branches of handlers
+// without pulling in a real mock that fails. Shared by tests that need a
+// repository to surface a generic failure (e.g. ResetPassword fallback paths,
+// AbuseReport recipient repo errors, emoji import enqueue failures).
+type assertError struct{}
+
+func (assertError) Error() string { return "stub failure" }
+
+// TestSetDriveFileRepo / TestSetAdminDB exist only to ensure the public
+// setters keep compiling; the real wiring is exercised end-to-end by the
+// per-handler tests.
+
+func TestSetDriveFileRepo(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetDriveFileRepo(testutil.NewMockDriveFileRepository())
+}
+
+func TestSetAdminDB(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAdminDB(nil)
+}
+
 // --- AccountsCreate ---
 
 func TestAccountsCreate_InitialSetup(t *testing.T) {

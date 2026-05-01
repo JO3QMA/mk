@@ -346,3 +346,63 @@ func TestPromoCreate_AlreadyPromoted(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "ALREADY_PROMOTED", errField["code"])
 }
+
+// --- thin nil-repo smoke tests ---
+//
+// nil repo 経路 (newTestHandler は ad / avatar / invite / promo の repo を
+// wire しない) で 204 / 200 が返ることを担保する軽量テスト。
+
+func TestAdCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AdCreate, `{}`, adminUser).Code)
+}
+
+func TestAdDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AdDelete, `{}`, adminUser).Code)
+}
+
+func TestAdList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.AdList, `{}`, adminUser).Code)
+}
+
+func TestAdUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AdUpdate, `{}`, adminUser).Code)
+}
+
+func TestAvatarDecorationsCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AvatarDecorationsCreate, `{}`, adminUser).Code)
+}
+
+func TestAvatarDecorationsDelete(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AvatarDecorationsDelete, `{}`, adminUser).Code)
+}
+
+func TestAvatarDecorationsList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.AvatarDecorationsList, `{}`, adminUser).Code)
+}
+
+func TestAvatarDecorationsUpdate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.AvatarDecorationsUpdate, `{}`, adminUser).Code)
+}
+
+func TestInviteCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.InviteCreate, `{}`, adminUser).Code)
+}
+
+func TestInviteList(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusOK, doPost(h.InviteList, `{}`, adminUser).Code)
+}
+
+func TestPromoCreate(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.PromoCreate, `{}`, adminUser).Code)
+}
