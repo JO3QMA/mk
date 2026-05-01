@@ -853,13 +853,30 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Signup (public)
+	userPendingRepo := repository.NewUserPendingRepository(s.db)
+	signupService.SetUserPendingRepo(userPendingRepo)
 	signupHandler := apisignup.NewHandler(signupService, metaRepo, idGen)
 	if captchaSvc != nil {
 		signupHandler.SetCaptcha(captchaSvc)
 	}
 	signupHandler.SetTicketStore(&gormTicketStore{db: s.db})
 	signupHandler.SetTestMode(s.config.TestMode)
+	// emailRequiredForSignup フローの確認メール送信。SMTP infra が enabled の
+	// ときのみ closure を渡す (reset-password と同じパターン)。
+	if signupSmtpMeta, err := metaRepo.Fetch(); err == nil && signupSmtpMeta.EnableEmail && signupSmtpMeta.Email != nil && signupSmtpMeta.SmtpHost != nil {
+		fromAddr := *signupSmtpMeta.Email
+		host := *signupSmtpMeta.SmtpHost
+		port := 587
+		if signupSmtpMeta.SmtpPort != nil {
+			port = *signupSmtpMeta.SmtpPort
+		}
+		smtpUser, smtpPass := signupSmtpMeta.SmtpUser, signupSmtpMeta.SmtpPass
+		signupHandler.SetEmailSender(s.config.URL, func(to, subject, body string) {
+			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
+		})
+	}
 	api.POST("/signup", signupHandler.Signup)
+	api.POST("/signup-pending", signupHandler.SignupPending)
 
 	// Username availability check (フロントエンドの signup フォームが呼ぶ)
 	api.POST("/username/available", func(c echo.Context) error {

@@ -157,11 +157,109 @@ func TestSignup_MetaFetchError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-func TestSignup_EmailRequired(t *testing.T) {
+// emailRequiredForSignup=true で emailAddress 未指定 → 400
+func TestSignup_EmailRequired_NoAddress(t *testing.T) {
 	h, _, metaRepo := newTestHandler(t)
 	metaRepo.Meta.EmailRequiredForSignup = true
 	rec := doPost(h.Signup, `{"username":"alice","password":"pass"}`)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// emailRequiredForSignup=true + 有効 email → user_pending row 作成 + 確認メール送信 + 204
+func TestSignup_EmailRequired_CreatesPendingAndSendsEmail(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	var sentTo, sentSubject, sentBody string
+	done := make(chan struct{})
+	h.SetEmailSender("https://example.test", func(to, subject, body string) {
+		sentTo, sentSubject, sentBody = to, subject, body
+		close(done)
+	})
+
+	rec := doPost(h.Signup, `{"username":"alice","password":"pass1234","emailAddress":"alice@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.Len(t, pendingRepo.Rows, 1)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emailSender was not invoked")
+	}
+	assert.Equal(t, "alice@example.com", sentTo)
+	assert.Contains(t, sentSubject, "Confirm")
+	assert.Contains(t, sentBody, "https://example.test/signup-complete/")
+	// confirmation link に pending.code が埋まっている
+	for _, row := range pendingRepo.Rows {
+		assert.Contains(t, sentBody, row.Code)
+	}
+}
+
+// emailRequiredForSignup=true でも username が空なら通常の INVALID_PARAM 経路
+func TestSignup_EmailRequired_DuplicateUsername(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}))
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	rec := doPost(h.Signup, `{"username":"alice","password":"pass","emailAddress":"a@example.com"}`)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Empty(t, pendingRepo.Rows)
+}
+
+// --- SignupPending (#595) ---
+
+func TestSignupPending_Success(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	row, err := svc.CreatePending("bob", "bob@example.com", "secret")
+	require.NoError(t, err)
+
+	rec := doPost(h.SignupPending, `{"code":"`+row.Code+`"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	resp := parseResp(t, rec)
+	assert.NotEmpty(t, resp["id"])
+	assert.NotEmpty(t, resp["i"])
+	assert.Empty(t, pendingRepo.Rows)
+}
+
+func TestSignupPending_InvalidParam(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rec := doPost(h.SignupPending, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSignupPending_NotFound(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	rec := doPost(h.SignupPending, `{"code":"ghost"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // --- Registration disabled (invitation code) ---
@@ -312,4 +410,115 @@ func TestSignup_ResponseShape(t *testing.T) {
 		_, exists := resp[f]
 		assert.True(t, exists, "missing field: %s", f)
 	}
+}
+
+// emailRequiredForSignup=true で email validation 失敗 (banned domain)
+func TestSignup_EmailRequired_BannedDomain(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true, BannedEmailDomains: []string{"bad.example"}}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	rec := doPost(h.Signup, `{"username":"alice","password":"pass","emailAddress":"x@bad.example"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, pendingRepo.Rows)
+}
+
+// signupConfirmURL fallback (serverURL 未設定)
+func TestSignup_EmailRequired_DefaultURL(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	var sentBody string
+	done := make(chan struct{})
+	// SetEmailSender("", ...) で serverURL 空 → "https://localhost" fallback
+	h.SetEmailSender("", func(_, _, body string) {
+		sentBody = body
+		close(done)
+	})
+	rec := doPost(h.Signup, `{"username":"al","password":"pw","emailAddress":"al@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emailSender was not invoked")
+	}
+	assert.Contains(t, sentBody, "https://localhost/signup-complete/")
+}
+
+// SignupPending: expired path
+func TestSignupPending_Expired(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	row, err := svc.CreatePending("expu", "exp@example.com", "pw")
+	require.NoError(t, err)
+	// 25h 前の ULID に書き換えて expired path を踏ませる
+	old := idGen.Generate(time.Now().Add(-25 * time.Hour))
+	delete(pendingRepo.Rows, row.ID)
+	row.ID = old
+	pendingRepo.Rows[old] = row
+
+	rec := doPost(h.SignupPending, `{"code":"`+row.Code+`"}`)
+	assert.Equal(t, http.StatusGone, rec.Code)
+}
+
+// SignupPending: username clash 後の Conflict
+func TestSignupPending_UsernameClash(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	row, err := svc.CreatePending("clash2", "c2@example.com", "pw")
+	require.NoError(t, err)
+	require.NoError(t, userRepo.Create(&model.User{ID: "u_c2", Username: "Clash2", UsernameLower: "clash2"}))
+
+	rec := doPost(h.SignupPending, `{"code":"`+row.Code+`"}`)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
+// emailSender が未設定でも pending row 自体は作られて 204 を返す (テスト用 setup)
+func TestSignup_EmailRequired_NoSender(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	rec := doPost(h.Signup, `{"username":"ns","password":"pw","emailAddress":"ns@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, pendingRepo.Rows, 1)
+}
+
+func TestSetTestMode(t *testing.T) {
+	h, _, metaRepo := newTestHandler(t)
+	metaRepo.Meta.EmailRequiredForSignup = true
+	// testMode で email-required branch をバイパスして通常 path に流す
+	h.SetTestMode(true)
+	rec := doPost(h.Signup, `{"username":"alice","password":"pass1234"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }

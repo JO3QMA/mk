@@ -23,7 +23,17 @@ var (
 	// meta.preservedUsernames (case-insensitive). 初回セットアップ時は root
 	// ユーザー作成を妨げないため、このチェックはスキップする。
 	ErrUsernameReserved = errors.New("username is reserved")
+	// ErrPendingNotFound is returned when no user_pending row matches the code.
+	ErrPendingNotFound = errors.New("pending signup not found")
+	// ErrPendingExpired is returned when the pending signup is past its TTL.
+	// TTL は ID (ULID) 由来 timestamp から算出する (createdAt カラム不在のため)。
+	ErrPendingExpired = errors.New("pending signup expired")
 )
+
+// PendingSignupTTL is the default lifetime of a pending signup row. Misskey TS
+// 実装では明示的な TTL は無いが、放置 row の蓄積を避けるため 24h で運用する。
+// ID (ULID) の timestamp と比較して PromotePending 時に判定する。
+const PendingSignupTTL = 24 * time.Hour
 
 // WebhookHook is invoked after a new local user has been created so that
 // system webhooks subscribed to `userCreated` can fire. 循環依存を避けるため
@@ -37,6 +47,7 @@ type Service struct {
 	userRepo    repository.UserRepository
 	metaRepo    repository.MetaRepository
 	keypairRepo repository.UserKeypairRepository
+	pendingRepo repository.UserPendingRepository
 	webhookHook WebhookHook
 	idGen       id.Generator
 }
@@ -44,6 +55,13 @@ type Service struct {
 // NewService creates a new SignupService.
 func NewService(userRepo repository.UserRepository, metaRepo repository.MetaRepository, idGen id.Generator) *Service {
 	return &Service{userRepo: userRepo, metaRepo: metaRepo, idGen: idGen}
+}
+
+// SetUserPendingRepo wires the user_pending repository so CreatePending /
+// PromotePending become available. emailRequiredForSignup フローを使う場合は
+// 必須。未設定でも通常の Signup は動く。
+func (s *Service) SetUserPendingRepo(r repository.UserPendingRepository) {
+	s.pendingRepo = r
 }
 
 // SetKeypairRepo wires the user keypair repository. When set, Signup will
@@ -156,6 +174,124 @@ func generateToken() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// generatePendingCode creates a 32-char (16 byte) hex code used both as the
+// user_pending.code column and the email confirmation link path segment.
+// signup native token と区別するため長め。
+func generatePendingCode() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// CreatePending stores a pending signup row and returns it. Username重複と
+// 予約名チェックは通常 Signup と揃え、password は bcrypt で hash 済を保管
+// (PromotePending 時に再 hash しない)。emailRequiredForSignup=true 用。
+func (s *Service) CreatePending(username, email, password string) (*model.UserPending, error) {
+	username = strings.TrimSpace(username)
+	if username == "" || len(username) > 128 {
+		return nil, ErrInvalidUsername
+	}
+	lower := strings.ToLower(username)
+
+	// 確定済 user との衝突チェック (この段階で押さえておかないと、後段の
+	// PromotePending 直前まで気付けず無駄なメール送信になる)。
+	if _, err := s.userRepo.FindByUsernameLower(lower, nil); err == nil {
+		return nil, ErrUsernameAlreadyExists
+	}
+	if meta, err := s.metaRepo.Fetch(); err == nil && isReservedUsername(lower, meta.PreservedUsernames) {
+		return nil, ErrUsernameReserved
+	}
+
+	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	now := time.Now()
+	row := &model.UserPending{
+		ID:       s.idGen.Generate(now),
+		Code:     generatePendingCode(),
+		Username: username,
+		Email:    email,
+		Password: string(hash),
+	}
+	if err := s.pendingRepo.Create(row); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// PromotePending finalizes a pending signup: looks up by code, confirms the
+// row hasn't expired, then creates the user using the stored hashed password
+// (再 hash しない)。成功時に user_pending row を delete する。
+//
+// 失敗パターン:
+//   - ErrPendingNotFound: code が無い / DB error
+//   - ErrPendingExpired:  ID (ULID) timestamp が PendingSignupTTL を超過
+//   - ErrUsernameAlreadyExists: 確認 link 待ちの間に同名 user が登録されたケース
+func (s *Service) PromotePending(code string) (*SignupResult, error) {
+	pending, err := s.pendingRepo.FindByCode(code)
+	if err != nil {
+		return nil, ErrPendingNotFound
+	}
+	// ID (ULID) から作成時刻を引き、TTL を過ぎていれば拒否。row 自体は
+	// 残しておく (cron での bulk cleanup を前提)。
+	if t, err := s.idGen.ParseTime(pending.ID); err == nil {
+		if time.Since(t) > PendingSignupTTL {
+			return nil, ErrPendingExpired
+		}
+	}
+
+	lower := strings.ToLower(pending.Username)
+	if _, err := s.userRepo.FindByUsernameLower(lower, nil); err == nil {
+		return nil, ErrUsernameAlreadyExists
+	}
+
+	token := generateToken()
+	now := time.Now()
+	userID := s.idGen.Generate(now)
+	user := &model.User{
+		ID:                userID,
+		Username:          pending.Username,
+		UsernameLower:     lower,
+		Token:             &token,
+		IsExplorable:      true,
+		AvatarDecorations: []byte("[]"),
+	}
+	if err := s.userRepo.Create(user); err != nil {
+		return nil, err
+	}
+	storedHash := pending.Password
+	profile := &model.UserProfile{
+		UserID:             userID,
+		Email:              &pending.Email,
+		EmailVerified:      true,
+		Password:           &storedHash,
+		AutoAcceptFollowed: true,
+		PreventAiLearning:  true,
+		PublicReactions:    true,
+	}
+	if err := s.userRepo.CreateProfile(profile); err != nil {
+		return nil, err
+	}
+	if s.keypairRepo != nil {
+		privPEM, pubPEM, err := activitypub.GenerateRSAKeypair()
+		if err != nil {
+			return nil, err
+		}
+		if err := s.keypairRepo.Create(&model.UserKeypair{
+			UserID:     userID,
+			PublicKey:  pubPEM,
+			PrivateKey: privPEM,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	// pending を削除 (失敗してもユーザー作成自体は成功なので無視)。
+	_ = s.pendingRepo.Delete(pending.ID)
+
+	if s.webhookHook != nil {
+		s.webhookHook.OnUserCreated(user)
+	}
+	return &SignupResult{User: user, Token: token}, nil
 }
 
 // isReservedUsername reports whether lower (already lowercased) matches any
