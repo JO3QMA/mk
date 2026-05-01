@@ -10,29 +10,9 @@ import (
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
-	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// --- DeleteAllFilesOfUser ----------------------------------------------------
-
-func TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles(t *testing.T) {
-	h, _, _, _ := newTestHandler(t)
-	repo := testutil.NewMockDriveFileRepository()
-	u1 := "u1"
-	u2 := "u2"
-	require.NoError(t, repo.Create(&model.DriveFile{ID: "f1", UserID: &u1}))
-	require.NoError(t, repo.Create(&model.DriveFile{ID: "f2", UserID: &u1}))
-	require.NoError(t, repo.Create(&model.DriveFile{ID: "f3", UserID: &u2}))
-	h.SetDriveFileRepo(repo)
-
-	rec := doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.NotContains(t, repo.Files, "f1")
-	assert.NotContains(t, repo.Files, "f2")
-	assert.Contains(t, repo.Files, "f3", "other user's files must be kept")
-}
 
 // --- UpdateProxyAccount ------------------------------------------------------
 

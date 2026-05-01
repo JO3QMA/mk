@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,4 +72,38 @@ func TestUpdateUserNote(t *testing.T) {
 		require.NotNil(t, got.ModerationNote)
 		assert.Equal(t, "naughty user", *got.ModerationNote)
 	})
+}
+
+// --- /admin/delete-all-files-of-a-user ---
+
+// TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles は本来 accounts_test.go
+// にあったが、handler が moderation.go にあるため discoverability 改善で
+// こちらに移動した (#581 review INFO-1)。
+func TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockDriveFileRepository()
+	u1 := "u1"
+	u2 := "u2"
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "f1", UserID: &u1}))
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "f2", UserID: &u1}))
+	require.NoError(t, repo.Create(&model.DriveFile{ID: "f3", UserID: &u2}))
+	h.SetDriveFileRepo(repo)
+
+	rec := doPost(h.DeleteAllFilesOfUser, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.NotContains(t, repo.Files, "f1")
+	assert.NotContains(t, repo.Files, "f2")
+	assert.Contains(t, repo.Files, "f3", "other user's files must be kept")
+}
+
+// --- /admin/update-abuse-user-report ---
+
+// 旧 handler_stubs_test.go から移動。本 PR で refactor 範囲外の handler
+// (UpdateAbuseUserReport) のテストを誤って巻き込み削除してしまったので
+// 復元する (#581 review BUG-1)。本 endpoint は abuse report の resolved
+// フラグを立てる moderation 操作なので moderation_test.go が居場所として
+// 妥当。
+func TestUpdateAbuseUserReport(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateAbuseUserReport, `{}`, adminUser).Code)
 }
