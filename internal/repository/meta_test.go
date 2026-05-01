@@ -3,6 +3,7 @@ package repository
 import (
 	"testing"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,6 +48,54 @@ func TestMetaRepository_Update(t *testing.T) {
 	found, err := repo.Fetch()
 	require.NoError(t, err)
 	assert.Equal(t, &newName, found.Name)
+}
+
+// pq.StringArray を varchar[] 列に Update できることを担保する。admin
+// handler 側の coerceMetaArrayFields が []any → pq.StringArray 変換を
+// 行った後で、ここで実 DB 経由で永続化されることを最後の砦として確認。
+// #590 で修正したバグの regression test。
+func TestMetaRepository_Update_FederationHosts(t *testing.T) {
+	repo := NewMetaRepository(testDB)
+
+	meta := &model.Meta{ID: "m_fh_1", Federation: "all"}
+	require.NoError(t, testDB.Create(meta).Error)
+	defer testDB.Exec(`DELETE FROM "meta" WHERE id = ?`, meta.ID)
+
+	require.NoError(t, repo.Update(map[string]any{
+		"federation":      "specified",
+		"federationHosts": pq.StringArray{"allowed.example", "trusted.example"},
+		"blockedHosts":    pq.StringArray{"bad.example"},
+	}))
+
+	found, err := repo.Fetch()
+	require.NoError(t, err)
+	assert.Equal(t, "specified", found.Federation)
+	assert.Equal(t, []string{"allowed.example", "trusted.example"}, []string(found.FederationHosts))
+	assert.Equal(t, []string{"bad.example"}, []string(found.BlockedHosts))
+}
+
+// 旧バグ ([]any{"x"} を直接渡すと "expression is of type record" で UPDATE
+// 失敗) の boundary を実 DB で明示する。Update 自体が error を返し、その
+// 結果として string 列の federation も更新されないことを記録する。これに
+// より将来 admin handler の coerce を外したり、別経路で同じ落とし穴に
+// 嵌まったときに即座に気付ける。
+func TestMetaRepository_Update_RawAnySliceFails(t *testing.T) {
+	repo := NewMetaRepository(testDB)
+
+	meta := &model.Meta{ID: "m_fhraw_1", Federation: "all"}
+	require.NoError(t, testDB.Create(meta).Error)
+	defer testDB.Exec(`DELETE FROM "meta" WHERE id = ?`, meta.ID)
+
+	err := repo.Update(map[string]any{
+		"federation":      "specified",
+		"federationHosts": []any{"allowed.example"},
+	})
+	require.Error(t, err, "varchar[] 列に []any を直接渡すと PostgreSQL がエラーを返す")
+
+	// 同 transaction 内の string 列も巻き戻る。
+	found, err := repo.Fetch()
+	require.NoError(t, err)
+	assert.Equal(t, "all", found.Federation, "UPDATE 全体がロールバックされる")
 }
 
 func TestMetaRepository_EnsureInitial_Creates(t *testing.T) {

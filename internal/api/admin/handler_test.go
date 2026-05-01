@@ -385,6 +385,81 @@ func TestUpdateMeta_SwPublickeyAliasIsTranslated(t *testing.T) {
 	assert.Equal(t, "KEY", *metaRepo.Meta.SwPublicKey)
 }
 
+// JSON で送られてくる array は []any{...} に decode されるが、そのまま
+// repo.Update に流すと lib/pq が varchar[] 列に書けず "expression is of
+// type record" で UPDATE 全体が落ちる。handler 側の coerceMetaArrayFields
+// が []any → pq.StringArray に変換することで永続化できることを確認 (#590)。
+//
+// このテストは MockMetaRepository の Update が array 型を反映するよう
+// 拡張した上で成立する。実 DB 側は repository/meta_test.go の
+// TestMetaRepository_Update_FederationHosts でカバー。
+func TestUpdateMeta_FederationHostsArray(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	rec := doPost(h.UpdateMeta,
+		`{"federation":"specified","federationHosts":["allowed.example","trusted.example"]}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "specified", metaRepo.Meta.Federation)
+	assert.Equal(t,
+		[]string{"allowed.example", "trusted.example"},
+		[]string(metaRepo.Meta.FederationHosts))
+}
+
+// blockedHosts / silencedHosts も同じ varchar[] 列なので同じ変換経路を
+// 通す。代表的な host モデレーション設定をすべて 1 リクエストで保存する
+// 統合テスト。
+func TestUpdateMeta_HostListArrays(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	rec := doPost(h.UpdateMeta,
+		`{"blockedHosts":["bad.example"],"silencedHosts":["noisy.example"]}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, []string{"bad.example"}, []string(metaRepo.Meta.BlockedHosts))
+	assert.Equal(t, []string{"noisy.example"}, []string(metaRepo.Meta.SilencedHosts))
+}
+
+// 空配列も正しく永続化される (= リスト解除動作)。空 []any はゼロ要素の
+// pq.StringArray に変換される必要がある。
+func TestUpdateMeta_EmptyHostArrayClearsList(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	// 事前に値を持たせる
+	metaRepo.Meta.BlockedHosts = []string{"oldblock.example"}
+
+	rec := doPost(h.UpdateMeta, `{"blockedHosts":[]}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, []string(metaRepo.Meta.BlockedHosts))
+}
+
+// JSON null は coerceMetaArrayFields が空配列に揃える (#590 review #2)。
+// varchar[] 列は migration で NOT NULL DEFAULT '{}' なので、null を素通し
+// すると real repo で制約違反になり UPDATE 全体が rollback する。admin の
+// 「リスト解除」操作を確実に成功させるため、handler 側で nil → 空配列に
+// coerce してから repo に渡す。
+func TestUpdateMeta_NullArrayClearsList(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	metaRepo.Meta.BlockedHosts = []string{"oldblock.example"}
+
+	rec := doPost(h.UpdateMeta, `{"blockedHosts":null}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, []string(metaRepo.Meta.BlockedHosts),
+		"null は coerce 後に空配列で永続化されるべき")
+}
+
+// metaArrayColumns に列挙されていない field の null は触らない (= 既存挙動
+// を保つ)。例: rootUserId (nullable string) は null 渡しで本当に nil 化
+// したい用途があるため、coerce が誤発火しないことを保証。
+func TestUpdateMeta_NullForNonArrayColumnIsNotTouched(t *testing.T) {
+	h, _, metaRepo, _ := newTestHandler(t)
+	rootID := "u1"
+	metaRepo.Meta.RootUserID = &rootID
+
+	// proxyAccountId は nullable string で nil 化を許容する設計。null で
+	// クリアできる挙動を pre-existing テストで確認できているので、coerce
+	// 後でも壊れないことを担保。
+	rec := doPost(h.UpdateMeta, `{"proxyAccountId":null}`, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Nil(t, metaRepo.Meta.ProxyAccountID,
+		"非 array 列の null は素通しされ、ポインタ列は nil 化される")
+}
+
 // Service Worker を有効化する request で keys が空なら backend が
 // auto-generate して DB に persist すること (#492)。frontend からは
 // toggle ON + 空欄保存で完結し、リロードすると生成済の鍵が表示される

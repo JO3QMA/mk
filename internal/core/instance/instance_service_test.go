@@ -198,6 +198,62 @@ func TestService_IsAllowed_MetaError(t *testing.T) {
 	assert.True(t, svc.IsAllowed("any.example"))
 }
 
+// host とリスト要素の比較は Misskey TS と同じ case-insensitive な suffix
+// match で行う (#590)。下記マトリクスでは IsAllowed (specified モード) /
+// IsBlocked / IsSilenced すべてが同じ helper を共有している前提を確認する。
+func TestService_HostMatching(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		host    string
+		want    bool
+	}{
+		{name: "exact match", pattern: "example.com", host: "example.com", want: true},
+		{name: "subdomain match", pattern: "example.com", host: "sub.example.com", want: true},
+		{name: "deep subdomain match", pattern: "example.com", host: "a.b.c.example.com", want: true},
+		{name: "case-insensitive host", pattern: "example.com", host: "Example.Com", want: true},
+		{name: "case-insensitive pattern", pattern: "Example.Com", host: "example.com", want: true},
+		{name: "non-matching host", pattern: "example.com", host: "other.com", want: false},
+		// 部分一致のように見えるが TS と同じく "." prefix 比較なので
+		// 別ドメインとして弾く。e.g. evilexample.com は example.com に含まれない。
+		{name: "non-matching prefix similar host", pattern: "example.com", host: "evilexample.com", want: false},
+		// pattern が "." を含まない 1 階層 TLD-like なケース。`x` が
+		// `bar.x` / `baz.x` / `x` のいずれにもマッチする (TS と同じ)。
+		{name: "single-label pattern matches subdomains", pattern: "x", host: "bar.x", want: true},
+		{name: "single-label pattern exact match", pattern: "x", host: "x", want: true},
+		{name: "single-label pattern non-match", pattern: "x", host: "y", want: false},
+		// 空 pattern は意図的に skip する (host="" guard が既に効くので
+		// "." 単独で任意 host にマッチする実害は無いが、admin が誤って
+		// 空エントリを混入させたとき "全 host allow/block" に化けないよう
+		// defensive guard)。
+		{name: "empty pattern never matches", pattern: "", host: "example.com", want: false},
+		// IDN raw 表記 (Punycode 化前) でも case-insensitive で一致すること。
+		// strings.ToLower は ASCII 専用だが hostMatchesAny は Unicode-aware
+		// な x/text/cases.Caser を通しているので、TS の String.toLowerCase()
+		// と同じ挙動を保てる (#590 review #5)。
+		{name: "unicode case-insensitive (German)", pattern: "müNSTer.example", host: "MÜNSTER.example", want: true},
+		{name: "unicode subdomain match", pattern: "müNSTer.example", host: "sub.münster.example", want: true},
+	}
+	for _, tc := range cases {
+		t.Run("IsAllowed_specified/"+tc.name, func(t *testing.T) {
+			svc, _, metaRepo := newService(t)
+			metaRepo.Meta.Federation = "specified"
+			metaRepo.Meta.FederationHosts = pq.StringArray{tc.pattern}
+			assert.Equal(t, tc.want, svc.IsAllowed(tc.host))
+		})
+		t.Run("IsBlocked/"+tc.name, func(t *testing.T) {
+			svc, _, metaRepo := newService(t)
+			metaRepo.Meta.BlockedHosts = pq.StringArray{tc.pattern}
+			assert.Equal(t, tc.want, svc.IsBlocked(tc.host))
+		})
+		t.Run("IsSilenced/"+tc.name, func(t *testing.T) {
+			svc, _, metaRepo := newService(t)
+			metaRepo.Meta.SilencedHosts = pq.StringArray{tc.pattern}
+			assert.Equal(t, tc.want, svc.IsSilenced(tc.host))
+		})
+	}
+}
+
 func TestService_Suspend(t *testing.T) {
 	svc, repo, _ := newService(t)
 	repo.Instances["alpha.example"] = &model.Instance{ID: "i1", Host: "alpha.example"}

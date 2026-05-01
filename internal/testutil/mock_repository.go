@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -1707,6 +1708,20 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 	if m.Meta == nil {
 		m.Meta = &model.Meta{ID: "x"}
 	}
+	// real repo は varchar[] 列に不正型を渡すと PostgreSQL から error が
+	// 返る。mock も最初の error を保持して最後に返すことで挙動を揃える
+	// (#590 review #4)。後続フィールドの処理は続けるが target は更新しない。
+	var firstErr error
+	setStrArr := func(target *pq.StringArray, column string, v any) {
+		arr, err := mockMetaCoerceStringArray(column, v)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			return
+		}
+		*target = arr
+	}
 	for k, v := range fields {
 		switch k {
 		case "rootUserId":
@@ -1776,9 +1791,78 @@ func (m *MockMetaRepository) Update(fields map[string]any) error {
 			if s, ok := v.(string); ok {
 				m.Meta.Name = &s
 			}
+		case "federation":
+			if s, ok := v.(string); ok {
+				m.Meta.Federation = s
+			}
+		case "federationHosts":
+			setStrArr(&m.Meta.FederationHosts, k, v)
+		case "blockedHosts":
+			setStrArr(&m.Meta.BlockedHosts, k, v)
+		case "silencedHosts":
+			setStrArr(&m.Meta.SilencedHosts, k, v)
+		case "mediaSilencedHosts":
+			setStrArr(&m.Meta.MediaSilencedHosts, k, v)
+		case "langs":
+			setStrArr(&m.Meta.Langs, k, v)
+		case "pinnedUsers":
+			setStrArr(&m.Meta.PinnedUsers, k, v)
+		case "hiddenTags":
+			setStrArr(&m.Meta.HiddenTags, k, v)
+		case "sensitiveWords":
+			setStrArr(&m.Meta.SensitiveWords, k, v)
+		case "prohibitedWords":
+			setStrArr(&m.Meta.ProhibitedWords, k, v)
+		case "prohibitedWordsForNameOfUser":
+			setStrArr(&m.Meta.ProhibitedWordsForNameOfUser, k, v)
+		case "serverRules":
+			setStrArr(&m.Meta.ServerRules, k, v)
+		case "bannedEmailDomains":
+			setStrArr(&m.Meta.BannedEmailDomains, k, v)
+		case "preservedUsernames":
+			setStrArr(&m.Meta.PreservedUsernames, k, v)
 		}
 	}
-	return nil
+	return firstErr
+}
+
+// mockMetaCoerceStringArray normalises any array-shaped value handed to
+// MockMetaRepository.Update into pq.StringArray. The real repository goes
+// through GORM + lib/pq's driver.Valuer machinery and refuses anything other
+// than pq.StringArray for varchar[] columns; this helper lets tests call
+// Update with either pq.StringArray or the raw []any produced by JSON
+// decoding so admin handler tests can exercise both code paths.
+//
+// 不正な型 (string 以外を含む []any、nil 等) は error を返すことで real
+// repo の挙動 ("expression is of type record" / NOT NULL 違反で UPDATE
+// rollback) に近づける。これにより handler 側で coerceMetaArrayFields の
+// 漏れが起きたとき、mock 経由のテストでも気付ける (#590 review #4)。
+func mockMetaCoerceStringArray(column string, v any) (pq.StringArray, error) {
+	switch arr := v.(type) {
+	case pq.StringArray:
+		out := make(pq.StringArray, len(arr))
+		copy(out, arr)
+		return out, nil
+	case []string:
+		out := make(pq.StringArray, len(arr))
+		copy(out, arr)
+		return out, nil
+	case nil:
+		// real repo は NOT NULL 制約違反でエラーになる挙動を再現。
+		return nil, fmt.Errorf("mock meta: nil cannot be assigned to NOT NULL varchar[] column %q", column)
+	case []any:
+		out := make(pq.StringArray, 0, len(arr))
+		for _, e := range arr {
+			s, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("mock meta: column %q: non-string element %T in []any cannot be coerced to varchar[]", column, e)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("mock meta: column %q: unsupported type %T for varchar[]", column, v)
+	}
 }
 
 func (m *MockMetaRepository) EnsureInitial(id string) error {
