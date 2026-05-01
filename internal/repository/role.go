@@ -58,7 +58,7 @@ type RoleAssignmentRepository interface {
 	Create(a *model.RoleAssignment) error
 	Delete(userID, roleID string) error
 	ListByUser(userID string) ([]*model.RoleAssignment, error)
-	ListByRole(roleID string, limit, offset int) ([]*model.RoleAssignment, error)
+	ListByRole(roleID string, untilID, sinceID string, limit int) ([]*model.RoleAssignment, error)
 	Exists(userID, roleID string) (bool, error)
 }
 
@@ -91,17 +91,25 @@ func (r *roleAssignmentRepository) ListByUser(userID string) ([]*model.RoleAssig
 	return assignments, nil
 }
 
-func (r *roleAssignmentRepository) ListByRole(roleID string, limit, offset int) ([]*model.RoleAssignment, error) {
+func (r *roleAssignmentRepository) ListByRole(roleID string, untilID, sinceID string, limit int) ([]*model.RoleAssignment, error) {
 	var assignments []*model.RoleAssignment
 	now := time.Now()
 	q := r.db.Preload("User").
-		Where("\"roleId\" = ? AND (\"expiresAt\" IS NULL OR \"expiresAt\" > ?)", roleID, now).
-		Order("id DESC")
+		Where("\"roleId\" = ? AND (\"expiresAt\" IS NULL OR \"expiresAt\" > ?)", roleID, now)
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	if sinceID != "" {
+		q = q.Where("id > ?", sinceID)
+	}
+	// sinceID 指定時は ASC で keyset cursor を進ませる Misskey TS 互換
+	if sinceID != "" && untilID == "" {
+		q = q.Order("id ASC")
+	} else {
+		q = q.Order("id DESC")
+	}
 	if limit > 0 {
 		q = q.Limit(limit)
-	}
-	if offset > 0 {
-		q = q.Offset(offset)
 	}
 	if err := q.Find(&assignments).Error; err != nil {
 		return nil, err

@@ -4597,6 +4597,10 @@ func (m *MockRoleRepository) Delete(id string) error {
 type MockRoleAssignmentRepository struct {
 	Assignments map[string]*model.RoleAssignment // keyed by "userId:roleId"
 	RoleRepo    *MockRoleRepository
+	// UserRepo はテストで紐付けると ListByRole が User を Preload 風に
+	// セットするので、admin/roles/users の handler テストで User を直接
+	// 参照するパスが組める。
+	UserRepo *MockUserRepository
 }
 
 func NewMockRoleAssignmentRepository(roleRepo *MockRoleRepository) *MockRoleAssignmentRepository {
@@ -4637,22 +4641,49 @@ func (m *MockRoleAssignmentRepository) ListByUser(userID string) ([]*model.RoleA
 	return result, nil
 }
 
-func (m *MockRoleAssignmentRepository) ListByRole(roleID string, limit, offset int) ([]*model.RoleAssignment, error) {
+func (m *MockRoleAssignmentRepository) ListByRole(roleID string, untilID, sinceID string, limit int) ([]*model.RoleAssignment, error) {
 	var result []*model.RoleAssignment
 	now := time.Now()
 	for _, a := range m.Assignments {
-		if a.RoleID == roleID && (a.ExpiresAt == nil || a.ExpiresAt.After(now)) {
-			result = append(result, a)
+		if a.RoleID != roleID {
+			continue
+		}
+		if a.ExpiresAt != nil && !a.ExpiresAt.After(now) {
+			continue
+		}
+		if untilID != "" && a.ID >= untilID {
+			continue
+		}
+		if sinceID != "" && a.ID <= sinceID {
+			continue
+		}
+		// User をプロダクションの Preload("User") と同様に紐付ける
+		if m.UserRepo != nil {
+			if u, ok := m.UserRepo.Users[a.UserID]; ok {
+				a.User = u
+			}
+		}
+		result = append(result, a)
+	}
+	// sinceID 指定時は ASC、それ以外は DESC (Misskey TS 互換 keyset)
+	asc := sinceID != "" && untilID == ""
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			swap := false
+			if asc {
+				swap = result[i].ID > result[j].ID
+			} else {
+				swap = result[i].ID < result[j].ID
+			}
+			if swap {
+				result[i], result[j] = result[j], result[i]
+			}
 		}
 	}
-	if offset >= len(result) {
-		return nil, nil
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
 	}
-	end := min(offset+limit, len(result))
-	if limit <= 0 {
-		end = len(result)
-	}
-	return result[offset:end], nil
+	return result, nil
 }
 
 func (m *MockRoleAssignmentRepository) Exists(userID, roleID string) (bool, error) {

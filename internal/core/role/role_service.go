@@ -296,6 +296,17 @@ func (s *Service) List() ([]*model.Role, error) {
 	return s.roleRepo.List()
 }
 
+// ListByRole returns role assignments (with User preloaded) for the given
+// role, paginated by untilID/sinceID (assignment.id keyset). Misskey TS の
+// admin/roles/users 互換 envelope ({id, createdAt, user}) を組み立てるため
+// User だけでなく RoleAssignment 自体を返す。
+func (s *Service) ListByRole(roleID, untilID, sinceID string, limit int) ([]*model.RoleAssignment, error) {
+	if _, err := s.roleRepo.FindByID(roleID); err != nil {
+		return nil, ErrRoleNotFound
+	}
+	return s.assignmentRepo.ListByRole(roleID, untilID, sinceID, limit)
+}
+
 // Delete removes a role.
 func (s *Service) Delete(id string) error {
 	if _, err := s.roleRepo.FindByID(id); err != nil {

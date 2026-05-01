@@ -838,11 +838,81 @@ func TestRolesUnassign_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestRolesUsers_Success(t *testing.T) {
-	h, _, _, roleRepo := newTestHandler(t)
+// rolesUsersFixture wires user / role / assignment 用の handler を組み立てる。
+// 個別 test で Service.ListByRole の戻りに手を入れたいので、Mock 系を直接
+// 受け渡せる関数として切り出している (newTestHandler は roleRepo しか返さない)。
+func rolesUsersFixture(t *testing.T) (
+	*apiadmin.Handler,
+	*testutil.MockUserRepository,
+	*testutil.MockRoleRepository,
+	*testutil.MockRoleAssignmentRepository,
+) {
+	t.Helper()
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	roleRepo := testutil.NewMockRoleRepository()
+	assignRepo := testutil.NewMockRoleAssignmentRepository(roleRepo)
+	// MockRoleAssignmentRepository は UserRepo を持っていれば
+	// ListByRole の戻りに User を埋めてくれる (handler が a.User を見るため)。
+	assignRepo.UserRepo = userRepo
+	idGen, _ := id.NewGenerator("aidx")
+	signupSvc := signup.NewService(userRepo, metaRepo, idGen)
+	roleSvc := role.NewService(roleRepo, assignRepo, metaRepo, idGen)
+	h := apiadmin.NewHandler(signupSvc, roleSvc, metaRepo, userRepo, idGen)
+	return h, userRepo, roleRepo, assignRepo
+}
+
+func TestRolesUsers_Success_ReturnsAssignmentEnvelope(t *testing.T) {
+	h, userRepo, roleRepo, assignRepo := rolesUsersFixture(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1"}
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "alice"}))
+	require.NoError(t, assignRepo.Create(&model.RoleAssignment{ID: "9c2bw9q5fa0000000000000000", UserID: "u1", RoleID: "r1"}))
+
+	rec := doPost(h.RolesUsers, `{"roleId":"r1","limit":10}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "9c2bw9q5fa0000000000000000", resp[0]["id"])
+	assert.NotEmpty(t, resp[0]["createdAt"])
+	user, _ := resp[0]["user"].(map[string]any)
+	require.NotNil(t, user)
+	assert.Equal(t, "u1", user["id"])
+	assert.Equal(t, "alice", user["username"])
+}
+
+func TestRolesUsers_Success_Empty(t *testing.T) {
+	h, _, roleRepo, _ := rolesUsersFixture(t)
 	roleRepo.Roles["r1"] = &model.Role{ID: "r1"}
 	rec := doPost(h.RolesUsers, `{"roleId":"r1"}`, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
+}
+
+func TestRolesUsers_LimitClamping(t *testing.T) {
+	h, userRepo, roleRepo, assignRepo := rolesUsersFixture(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1"}
+	// limit=0 → default 10、limit>100 → 100 にクランプされていることを 3 件 seed で確認
+	for i := 0; i < 3; i++ {
+		uid := fmt.Sprintf("user%d", i)
+		require.NoError(t, userRepo.Create(&model.User{ID: uid}))
+		// ID は ULID 風文字列。順序を保つために i を後ろに付ける
+		aid := fmt.Sprintf("9c2bw9q5fa%016d", i)
+		require.NoError(t, assignRepo.Create(&model.RoleAssignment{ID: aid, UserID: uid, RoleID: "r1"}))
+	}
+	// limit=2 で 2 件のみ
+	rec := doPost(h.RolesUsers, `{"roleId":"r1","limit":2}`, nil)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 2)
+
+	// limit=999 → 100 にクランプ。ここでは seed 3 件なので 3 件返るだけだが、
+	// クランプ自体は handler の if limit > 100 分岐をカバーする。
+	rec = doPost(h.RolesUsers, `{"roleId":"r1","limit":999}`, nil)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp, 3)
 }
 
 func TestRolesUsers_NotFound(t *testing.T) {
@@ -855,6 +925,30 @@ func TestRolesUsers_InvalidParam(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	rec := doPost(h.RolesUsers, `{}`, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// failingListByRoleRepo は ListByRole で error を返す stub。Service が
+// repo error をそのまま伝播して handler が 500 を返す経路をカバーする。
+type failingListByRoleRepo struct {
+	*testutil.MockRoleAssignmentRepository
+}
+
+func (f *failingListByRoleRepo) ListByRole(_, _, _ string, _ int) ([]*model.RoleAssignment, error) {
+	return nil, assert.AnError
+}
+
+func TestRolesUsers_ListError(t *testing.T) {
+	roleRepo := testutil.NewMockRoleRepository()
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1"}
+	assignRepo := &failingListByRoleRepo{testutil.NewMockRoleAssignmentRepository(roleRepo)}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	userRepo := testutil.NewMockUserRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	roleSvc := role.NewService(roleRepo, assignRepo, metaRepo, idGen)
+	h := apiadmin.NewHandler(signup.NewService(userRepo, metaRepo, idGen), roleSvc, metaRepo, userRepo, idGen)
+	rec := doPost(h.RolesUsers, `{"roleId":"r1"}`, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 func TestRolesUpdateDefaultPolicies_Success(t *testing.T) {

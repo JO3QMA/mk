@@ -604,3 +604,49 @@ func TestAssign_FailedDoesNotInvalidate(t *testing.T) {
 	assert.Equal(t, 1, assignRepo.listByUserCalls,
 		"failed Assign must not invalidate cache")
 }
+
+// --- ListByRole ---
+
+func TestListByRole_RoleNotFound(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	_, err := svc.ListByRole("ghost", "", "", 10)
+	assert.ErrorIs(t, err, role.ErrRoleNotFound)
+}
+
+func TestListByRole_PreloadsUser(t *testing.T) {
+	svc, roleRepo, assignRepo, _ := newTestService(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1"}
+	// MockRoleAssignmentRepository は UserRepo がセットされていれば
+	// ListByRole の戻りに User を埋める。
+	userRepo := testutil.NewMockUserRepository()
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "alice"}))
+	assignRepo.UserRepo = userRepo
+	assignRepo.Assignments["u1:r1"] = &model.RoleAssignment{ID: "a1", UserID: "u1", RoleID: "r1"}
+
+	got, err := svc.ListByRole("r1", "", "", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].User)
+	assert.Equal(t, "alice", got[0].User.Username)
+}
+
+func TestListByRole_RepoError(t *testing.T) {
+	roleRepo := testutil.NewMockRoleRepository()
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1"}
+	assignRepo := &failingListByRoleAssignRepo{testutil.NewMockRoleAssignmentRepository(roleRepo)}
+	metaRepo := testutil.NewMockMetaRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := role.NewService(roleRepo, assignRepo, metaRepo, idGen)
+
+	_, err := svc.ListByRole("r1", "", "", 10)
+	assert.Error(t, err)
+}
+
+// failingListByRoleAssignRepo は ListByRole で error を返す stub。
+type failingListByRoleAssignRepo struct {
+	*testutil.MockRoleAssignmentRepository
+}
+
+func (f *failingListByRoleAssignRepo) ListByRole(_, _, _ string, _ int) ([]*model.RoleAssignment, error) {
+	return nil, assert.AnError
+}
