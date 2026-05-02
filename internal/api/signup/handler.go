@@ -127,7 +127,13 @@ func (h *Handler) Signup(c echo.Context) error {
 		if verr := validateEmailWithMeta(c.Request().Context(), meta, req.EmailAddress); verr != nil {
 			return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a25440a9-451e-41de-b291-00a8f29fbca6"))
 		}
-		pending, perr := h.signupService.CreatePending(req.Username, req.EmailAddress, req.Password)
+		// 招待制併用時は ticket.ID を pending row に保存しておき、
+		// PromotePending 完了時に MarkUsed で消費する (#600 item 5)。
+		var ticketID *string
+		if ticket != nil {
+			ticketID = &ticket.ID
+		}
+		pending, perr := h.signupService.CreatePending(req.Username, req.EmailAddress, req.Password, ticketID)
 		if perr != nil {
 			if perr == coresignup.ErrUsernameAlreadyExists {
 				return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "0a504947-b888-4a99-9f62-8c4a0f3a3dab"))
@@ -140,11 +146,6 @@ func (h *Handler) Signup(c echo.Context) error {
 			}
 			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
-		// invitation code は本登録 (signup-pending) 完了時に消費したいが、
-		// pending row との結びつけ schema が無い。ここで消費せず後続 PromotePending
-		// では code を再投入させずに再発行は許さないだけに留める (既存挙動と同じ
-		// best-effort)。
-		_ = ticket
 		if h.emailSender != nil {
 			siteName := "Misskey"
 			if meta.Name != nil && *meta.Name != "" {
@@ -201,6 +202,11 @@ func (h *Handler) SignupPending(c echo.Context) error {
 		default:
 			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
+	}
+	// 招待コード消費 (招待制 + email 確認制併用時)。Signup 直接 path
+	// と同様 best-effort で MarkUsed する (#600 item 5)。
+	if result.InvitationTicketID != nil && h.ticketStore != nil {
+		_ = h.ticketStore.MarkUsed(*result.InvitationTicketID, result.User.ID)
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"id": result.User.ID,

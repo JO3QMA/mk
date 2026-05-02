@@ -84,6 +84,10 @@ type UserPending struct {
 	Username string `gorm:"column:username;type:varchar(128);not null" json:"username"`
 	Email    string `gorm:"column:email;type:varchar(128);not null" json:"email"`
 	Password string `gorm:"column:password;type:varchar(128);not null" json:"-"`
+	// InvitationTicketID は招待制 + email 確認制の併用時に消費した
+	// registration_ticket の ID。PromotePending 完了時に MarkUsed する。
+	// 通常 (招待制無効) signup では nil。
+	InvitationTicketID *string `gorm:"column:invitationTicketId;type:varchar(32)" json:"invitationTicketId,omitempty"`
 }
 
 func (UserPending) TableName() string { return "user_pending" }

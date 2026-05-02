@@ -230,7 +230,7 @@ func TestSignupPending_Success(t *testing.T) {
 	svc.SetUserPendingRepo(pendingRepo)
 	h := apisignup.NewHandler(svc, metaRepo, idGen)
 
-	row, err := svc.CreatePending("bob", "bob@example.com", "secret")
+	row, err := svc.CreatePending("bob", "bob@example.com", "secret", nil)
 	require.NoError(t, err)
 
 	rec := doPost(h.SignupPending, `{"code":"`+row.Code+`"}`)
@@ -467,7 +467,7 @@ func TestSignupPending_Expired(t *testing.T) {
 	svc.SetUserPendingRepo(pendingRepo)
 	h := apisignup.NewHandler(svc, metaRepo, idGen)
 
-	row, err := svc.CreatePending("expu", "exp@example.com", "pw")
+	row, err := svc.CreatePending("expu", "exp@example.com", "pw", nil)
 	require.NoError(t, err)
 	// 25h 前の ULID に書き換えて expired path を踏ませる
 	old := idGen.Generate(time.Now().Add(-25 * time.Hour))
@@ -490,7 +490,7 @@ func TestSignupPending_UsernameClash(t *testing.T) {
 	svc.SetUserPendingRepo(pendingRepo)
 	h := apisignup.NewHandler(svc, metaRepo, idGen)
 
-	row, err := svc.CreatePending("clash2", "c2@example.com", "pw")
+	row, err := svc.CreatePending("clash2", "c2@example.com", "pw", nil)
 	require.NoError(t, err)
 	require.NoError(t, userRepo.Create(&model.User{ID: "u_c2", Username: "Clash2", UsernameLower: "clash2"}))
 
@@ -521,4 +521,45 @@ func TestSetTestMode(t *testing.T) {
 	h.SetTestMode(true)
 	rec := doPost(h.Signup, `{"username":"alice","password":"pass1234"}`)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// 招待制 + email 確認制の併用: signup で ticket.ID が pending row に保存され、
+// SignupPending 経由で本登録時に MarkUsed が呼ばれて消費されることを検証
+// (#600 item 5)。
+func TestSignupPending_MarksInvitationTicketUsed(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	// 招待制 + email 確認制を同時に有効化
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true, DisableRegistration: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	tickets := newMockTicketStore()
+	tickets.tickets["INV1"] = &model.RegistrationTicket{ID: "ticket_inv1"}
+	h.SetTicketStore(tickets)
+
+	// signup → email 確認待ちに pending 作成
+	rec := doPost(h.Signup, `{"username":"invu","password":"pw","emailAddress":"inv@example.com","invitationCode":"INV1"}`)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Len(t, pendingRepo.Rows, 1)
+	// pending row に ticket.ID が保存されている
+	var stored *model.UserPending
+	for _, p := range pendingRepo.Rows {
+		stored = p
+	}
+	require.NotNil(t, stored.InvitationTicketID)
+	assert.Equal(t, "ticket_inv1", *stored.InvitationTicketID)
+
+	// signup-pending → user 確定 + ticket 消費
+	rec = doPost(h.SignupPending, `{"code":"`+stored.Code+`"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	resp := parseResp(t, rec)
+	userID, _ := resp["id"].(string)
+	require.NotEmpty(t, userID)
+	// MarkUsed が呼ばれて ticket.ID → user.ID が記録される
+	assert.Equal(t, userID, tickets.markUsed["ticket_inv1"])
 }
