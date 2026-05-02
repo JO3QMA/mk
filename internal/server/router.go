@@ -1472,8 +1472,8 @@ func (s *Server) setupRoutes() {
 	streamRegistry.Register("userList", channels.NewUserList)
 	streamRegistry.Register("roleTimeline", channels.NewRoleTimeline)
 	streamRegistry.Register("admin", channels.NewAdminFactory(roleService).New)
-	streamRegistry.Register("serverStats", channels.NewServerStats)
-	streamRegistry.Register("queueStats", channels.NewQueueStats)
+	// serverStats / queueStats は publisher を後段で構築するため、ここでは
+	// 仮 register せず、publisher 生成後に登録する (1497 行付近)。
 
 	// 3. Connection manager + 各 publisher の生成
 	streamManager := stream.NewManager(streamRegistry, streamBus)
@@ -1494,13 +1494,20 @@ func (s *Server) setupRoutes() {
 	// server / queue stats publishers (#344)。起動時から tick を回して
 	// `serverStats` / `queueStats` トピックへ定期 publish する。
 	// ShutdownでStop()を呼ぶ (server.go 側でdefer)。
+	// publisher が ring buffer を持つので、channel factory に StatsLogProvider
+	// として渡して requestLog 応答に historical 値を返せるようにする (#571 item 2)。
 	serverStatsPub := stream.NewServerStatsPublisher(streamPubSub, 0)
 	serverStatsPub.Start()
 	s.registerShutdownHook(serverStatsPub.Stop)
+	streamRegistry.Register("serverStats", channels.NewServerStatsFactory(serverStatsPub))
 	if s.queueInspector != nil {
 		queueStatsPub := stream.NewQueueStatsPublisher(&queueStatsInspectorAdapter{inner: s.queueInspector}, streamPubSub, 0)
 		queueStatsPub.Start()
 		s.registerShutdownHook(queueStatsPub.Stop)
+		streamRegistry.Register("queueStats", channels.NewQueueStatsFactory(queueStatsPub))
+	} else {
+		// queueInspector が無い起動 (テスト等) では fallback factory で空配列のみ返す
+		streamRegistry.Register("queueStats", channels.NewQueueStats)
 	}
 
 	// 4. 既存サービスへ publisher を注入する。これらはいずれも nil 安全な

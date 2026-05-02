@@ -40,7 +40,14 @@ type QueueStatsPublisher struct {
 	wg        sync.WaitGroup
 	started   bool
 	mu        sync.Mutex
+
+	// logBuf: server_stats と同等の O(1) circular buffer (新しい順、
+	// 最大 QueueStatsLogMax 件)。requestLog 応答用。
+	logBuf *statsRingBuffer
 }
+
+// QueueStatsLogMax は requestLog 応答で返す最大件数。TS 本家と同じ 200。
+const QueueStatsLogMax = 200
 
 // NewQueueStatsPublisher constructs a QueueStatsPublisher. interval<=0 は
 // デフォルト (3秒) を使用する。
@@ -53,6 +60,7 @@ func NewQueueStatsPublisher(inspector QueueInspector, pub PubSubPublisher, inter
 		pub:       pub,
 		interval:  interval,
 		stopCh:    make(chan struct{}),
+		logBuf:    newStatsRingBuffer(QueueStatsLogMax),
 	}
 }
 
@@ -124,9 +132,17 @@ func (p *QueueStatsPublisher) tick() {
 		slog.Warn("queue stats: marshal failed", "err", err)
 		return
 	}
-	if err := p.pub.Publish(context.Background(), "queueStats", json.RawMessage(raw)); err != nil {
+	rawMsg := json.RawMessage(raw)
+	p.logBuf.Append(rawMsg)
+	if err := p.pub.Publish(context.Background(), "queueStats", rawMsg); err != nil {
 		slog.Warn("queue stats: publish failed", "err", err)
 	}
+}
+
+// Log returns the most recent up to maxLen snapshots, newest first. server_stats
+// の Log と同じ semantics。
+func (p *QueueStatsPublisher) Log(maxLen int) []json.RawMessage {
+	return p.logBuf.Log(maxLen)
 }
 
 // deliverQueueName は本番のasynq queue名。テストで差し替えられるように
