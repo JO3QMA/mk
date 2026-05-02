@@ -2,8 +2,11 @@ package federation
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
+
+	"gorm.io/gorm"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -121,29 +124,64 @@ func (h *ReactionDeliveryHook) fanout(reactor *model.User, target *model.Note, b
 // directInboxes returns the explicit DirectRecipe inboxes: note author (if
 // remote) + visible specified users (if remote). 作者が local の場合は省く
 // (TS と同じ条件)。
+//
+// gorm.ErrRecordNotFound (= 削除済み user) と DB transient error を分けて
+// log する (#644)。VisibleUserIDs に target.UserID が含まれているケースは
+// skip して FindManyByIDs の N+1 を避ける。
 func (h *ReactionDeliveryHook) directInboxes(target *model.Note) []string {
 	var inboxes []string
-	if author, err := h.userRepo.FindByID(target.UserID); err == nil {
+	author, err := h.userRepo.FindByID(target.UserID)
+	switch {
+	case err == nil:
 		if !author.IsLocal() {
 			if inbox := preferredInbox(author); inbox != "" {
 				inboxes = append(inboxes, inbox)
 			}
 		}
-	} else {
-		slog.Warn("reaction delivery: author not found",
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		// 投稿時点で著者が消えているケース。ログ過剰を避けて debug 止まり。
+		slog.Debug("reaction delivery: author no longer exists",
+			"noteId", target.ID, "userId", target.UserID)
+	default:
+		slog.Warn("reaction delivery: author lookup failed",
 			"noteId", target.ID, "userId", target.UserID, "err", err)
 	}
-	if target.Visibility == model.NoteVisibilitySpecified {
+
+	if target.Visibility == model.NoteVisibilitySpecified && len(target.VisibleUserIDs) > 0 {
+		// 著者は上で済んでいるので uid == target.UserID は除外して bulk
+		// fetch する (#644 #5 / #7)。
+		uniqueIDs := make([]string, 0, len(target.VisibleUserIDs))
+		seen := make(map[string]struct{}, len(target.VisibleUserIDs))
 		for _, uid := range target.VisibleUserIDs {
-			u, err := h.userRepo.FindByID(uid)
-			if err != nil || u == nil {
+			if uid == "" || uid == target.UserID {
 				continue
 			}
-			if u.IsLocal() {
+			if _, dup := seen[uid]; dup {
 				continue
 			}
-			if inbox := preferredInbox(u); inbox != "" {
-				inboxes = append(inboxes, inbox)
+			seen[uid] = struct{}{}
+			uniqueIDs = append(uniqueIDs, uid)
+		}
+		if len(uniqueIDs) > 0 {
+			users, err := h.userRepo.FindManyByIDs(uniqueIDs)
+			if err != nil {
+				slog.Warn("reaction delivery: visible users lookup failed",
+					"noteId", target.ID, "count", len(uniqueIDs), "err", err)
+			} else {
+				// missing rows は repo 側で silent skip される。debug log
+				// で skip 件数だけ残しておく (#644 #2)。
+				if len(users) < len(uniqueIDs) {
+					slog.Debug("reaction delivery: some visible users missing",
+						"noteId", target.ID, "requested", len(uniqueIDs), "found", len(users))
+				}
+				for _, u := range users {
+					if u == nil || u.IsLocal() {
+						continue
+					}
+					if inbox := preferredInbox(u); inbox != "" {
+						inboxes = append(inboxes, inbox)
+					}
+				}
 			}
 		}
 	}
