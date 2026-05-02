@@ -2,6 +2,7 @@ package signup_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -184,3 +185,157 @@ func TestSignup_KeypairCreateError(t *testing.T) {
 	_, err := svc.Signup("alice", "pass", false)
 	assert.Error(t, err)
 }
+
+// --- Pending signup (#595) ---
+
+func TestCreatePending_Success(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	row, err := svc.CreatePending("alice", "alice@example.com", "secret123")
+	require.NoError(t, err)
+	assert.Equal(t, "alice", row.Username)
+	assert.Equal(t, "alice@example.com", row.Email)
+	assert.NotEmpty(t, row.Code)
+	// Password は bcrypt hash 済 (再 hash 防止)。
+	assert.NotEqual(t, "secret123", row.Password)
+	assert.Len(t, pendingRepo.Rows, 1)
+}
+
+func TestCreatePending_DuplicateUsername(t *testing.T) {
+	svc, userRepo, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}))
+
+	_, err := svc.CreatePending("Alice", "a@example.com", "pw")
+	assert.ErrorIs(t, err, signup.ErrUsernameAlreadyExists)
+}
+
+func TestCreatePending_ReservedUsername(t *testing.T) {
+	svc, _, metaRepo := newTestService(t)
+	metaRepo.Meta.PreservedUsernames = []string{"admin"}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	_, err := svc.CreatePending("admin", "a@example.com", "pw")
+	assert.ErrorIs(t, err, signup.ErrUsernameReserved)
+}
+
+func TestCreatePending_InvalidUsername(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	_, err := svc.CreatePending("", "a@example.com", "pw")
+	assert.ErrorIs(t, err, signup.ErrInvalidUsername)
+}
+
+func TestPromotePending_Success(t *testing.T) {
+	svc, userRepo, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	row, err := svc.CreatePending("bob", "bob@example.com", "pw123")
+	require.NoError(t, err)
+
+	result, err := svc.PromotePending(row.Code)
+	require.NoError(t, err)
+	assert.Equal(t, "bob", result.User.Username)
+	assert.NotEmpty(t, result.Token)
+	// pending row が消費されている
+	assert.Empty(t, pendingRepo.Rows)
+	// profile に email + emailVerified=true がセット
+	prof := userRepo.Profiles[result.User.ID]
+	require.NotNil(t, prof)
+	require.NotNil(t, prof.Email)
+	assert.Equal(t, "bob@example.com", *prof.Email)
+	assert.True(t, prof.EmailVerified)
+	// Password ハッシュは Pending と完全一致 (再 hash されていない)
+	require.NotNil(t, prof.Password)
+	assert.Equal(t, row.Password, *prof.Password)
+}
+
+func TestPromotePending_NotFound(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	_, err := svc.PromotePending("ghost")
+	assert.ErrorIs(t, err, signup.ErrPendingNotFound)
+}
+
+func TestPromotePending_UsernameClash(t *testing.T) {
+	svc, userRepo, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	row, err := svc.CreatePending("clash", "c@example.com", "pw")
+	require.NoError(t, err)
+
+	// pending 確定前に同名 user が登録されたケースを再現
+	require.NoError(t, userRepo.Create(&model.User{ID: "u_clash", Username: "Clash", UsernameLower: "clash"}))
+
+	_, err = svc.PromotePending(row.Code)
+	assert.ErrorIs(t, err, signup.ErrUsernameAlreadyExists)
+}
+
+func TestPromotePending_ExpiredViaTTLBypass(t *testing.T) {
+	// PendingSignupTTL = 24h と十分長く、ParseTime も成功するため通常 path で
+	// expired を再現するのは難しい。idGen が ParseTime に失敗する ID を強制
+	// 注入してフォールスルーする経路を踏ませる代わりに、Create 後に row.ID を
+	// 24h+ 前の ULID に書き換える。
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	row, err := svc.CreatePending("expuser", "exp@example.com", "pw")
+	require.NoError(t, err)
+
+	// ULID を 25h 前の時刻で再生成 (idGen は newTestService で aidx 固定)。
+	idGen, _ := id.NewGenerator("aidx")
+	old := idGen.Generate(time.Now().Add(-25 * time.Hour))
+	delete(pendingRepo.Rows, row.ID)
+	row.ID = old
+	pendingRepo.Rows[old] = row
+
+	_, err = svc.PromotePending(row.Code)
+	assert.ErrorIs(t, err, signup.ErrPendingExpired)
+}
+
+func TestPromotePending_WithKeypair(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+	keypairRepo := testutil.NewMockUserKeypairRepository()
+	svc.SetKeypairRepo(keypairRepo)
+
+	row, err := svc.CreatePending("kpuser", "kp@example.com", "pw")
+	require.NoError(t, err)
+
+	result, err := svc.PromotePending(row.Code)
+	require.NoError(t, err)
+	_, ok := keypairRepo.Keypairs[result.User.ID]
+	assert.True(t, ok, "keypair must be created during PromotePending")
+}
+
+func TestPromotePending_WebhookHookFires(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+	hook := &recordingHook{}
+	svc.SetWebhookHook(hook)
+
+	row, err := svc.CreatePending("hookuser", "hook@example.com", "pw")
+	require.NoError(t, err)
+
+	_, err = svc.PromotePending(row.Code)
+	require.NoError(t, err)
+	assert.Equal(t, 1, hook.calls, "OnUserCreated must fire after promotion")
+}
+
+// recordingHook は WebhookHook の呼び出し回数を数える。
+type recordingHook struct{ calls int }
+
+func (r *recordingHook) OnUserCreated(_ *model.User) { r.calls++ }

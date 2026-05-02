@@ -1,6 +1,7 @@
 package signup
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/core/captcha"
+	coreemail "github.com/shiroha-a/mk/internal/core/email"
 	"github.com/shiroha-a/mk/internal/core/role"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/entity"
@@ -31,6 +33,12 @@ type Handler struct {
 	captchaSvc    *captcha.Service // optional
 	ticketStore   TicketStore      // optional, invitation code検証用
 	testMode      bool             // true のとき disableRegistration / captcha をバイパス (本家 TS と同じ)
+	// emailSender は EmailRequiredForSignup フローで確認メールを送る callback。
+	// router 配線時に SMTP infra を closure に閉じ込めて注入する。未設定の場合は
+	// 確認メールが送られないだけで pending row 自体は作る (テスト用)。
+	emailSender func(to, subject, body string)
+	// serverURL は確認 link の base。emailSender とセットで設定。
+	serverURL string
 }
 
 // SetTestMode enables test-mode bypass (本家 `process.env.NODE_ENV !== 'test'` 相当).
@@ -53,9 +61,17 @@ func (h *Handler) SetTicketStore(ts TicketStore) {
 	h.ticketStore = ts
 }
 
+// SetEmailSender wires a callback used to send signup confirmation emails.
+// reset-password handler と同じ pattern。serverURL は 確認 link 生成に使う。
+func (h *Handler) SetEmailSender(serverURL string, send func(to, subject, body string)) {
+	h.serverURL = serverURL
+	h.emailSender = send
+}
+
 type signupRequest struct {
 	Username       string `json:"username"`
 	Password       string `json:"password"`
+	EmailAddress   string `json:"emailAddress"`
 	InvitationCode string `json:"invitationCode"`
 	// CAPTCHA tokens (フィールド名はTS版スキーマに準拠)
 	HcaptchaResponse    string `json:"hcaptcha-response"`
@@ -75,13 +91,6 @@ func (h *Handler) Signup(c echo.Context) error {
 	meta, err := h.metaRepo.Fetch()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
-	}
-
-	// メール認証フローは #165 (P4-5 admin/accounts + email) で実装予定。
-	// 現状は meta.EmailRequiredForSignup を真にすると INVALID_PARAM で登録を
-	// 拒否するのみで、実際の確認メール送信は行わない。testMode 下は完全バイパス。
-	if !h.testMode && meta.EmailRequiredForSignup {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Email-required signup is not yet supported.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
 	// 登録無効時はinvitation code必須 (テストモードではバイパス — 本家 TS 互換)
@@ -108,6 +117,47 @@ func (h *Handler) Signup(c echo.Context) error {
 		}
 	}
 
+	// emailRequiredForSignup=true: 即時に user は作らず user_pending に積み、
+	// 確認メールを送って /api/signup-pending で本登録させる Misskey TS 互換フロー。
+	// testMode は完全バイパスしてフロント test での通常 signup を妨げない。
+	if !h.testMode && meta.EmailRequiredForSignup {
+		if req.EmailAddress == "" {
+			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "emailAddress is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		}
+		if verr := validateEmailWithMeta(c.Request().Context(), meta, req.EmailAddress); verr != nil {
+			return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a25440a9-451e-41de-b291-00a8f29fbca6"))
+		}
+		pending, perr := h.signupService.CreatePending(req.Username, req.EmailAddress, req.Password)
+		if perr != nil {
+			if perr == coresignup.ErrUsernameAlreadyExists {
+				return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			}
+			if perr == coresignup.ErrInvalidUsername {
+				return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+			}
+			if perr == coresignup.ErrUsernameReserved {
+				return c.JSON(http.StatusBadRequest, apierr.Error("USED_USERNAME", "That username is reserved.", "4b54bee6-2c25-42c3-a10f-7d0d1fbd91f9"))
+			}
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		}
+		// invitation code は本登録 (signup-pending) 完了時に消費したいが、
+		// pending row との結びつけ schema が無い。ここで消費せず後続 PromotePending
+		// では code を再投入させずに再発行は許さないだけに留める (既存挙動と同じ
+		// best-effort)。
+		_ = ticket
+		if h.emailSender != nil {
+			siteName := "Misskey"
+			if meta.Name != nil && *meta.Name != "" {
+				siteName = *meta.Name
+			}
+			body := "Welcome to " + siteName + "! Click the link to complete your signup:\n" +
+				h.signupConfirmURL(pending.Code)
+			go h.emailSender(req.EmailAddress, "Confirm your account", body)
+		}
+		// TS 互換: 本体は何も返さない (frontend は確認メールを待つ)。
+		return c.NoContent(http.StatusNoContent)
+	}
+
 	result, err := h.signupService.Signup(req.Username, req.Password, false)
 	if err != nil {
 		if err == coresignup.ErrUsernameAlreadyExists {
@@ -128,6 +178,52 @@ func (h *Handler) Signup(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, packSignupResponse(result.User, result.Token, h.idGen))
+}
+
+// SignupPending handles POST /api/signup-pending. Misskey TS 互換: code を
+// 受け取り、対応する user_pending を本登録に昇格して { id, i: token } を返す。
+func (h *Handler) SignupPending(c echo.Context) error {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind(&req); err != nil || req.Code == "" {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "code is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	result, err := h.signupService.PromotePending(req.Code)
+	if err != nil {
+		switch err {
+		case coresignup.ErrPendingNotFound:
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_CODE", "No such pending registration.", "1e53842e-b7f4-4e1c-8f1e-8d0a2d9b0c7e"))
+		case coresignup.ErrPendingExpired:
+			return c.JSON(http.StatusGone, apierr.Error("EXPIRED", "Pending registration has expired.", "9c2bc685-fa0a-4e6f-bf6f-5f4f8c0c3a3a"))
+		case coresignup.ErrUsernameAlreadyExists:
+			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		default:
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"id": result.User.ID,
+		"i":  result.Token,
+	})
+}
+
+// signupConfirmURL builds the email confirmation link Misskey TS uses
+// (`/signup-complete/<code>`)。frontend がこの path を hand-off する想定。
+func (h *Handler) signupConfirmURL(code string) string {
+	base := h.serverURL
+	if base == "" {
+		base = "https://localhost"
+	}
+	return base + "/signup-complete/" + code
+}
+
+// validateEmailWithMeta runs the same validators i/UpdateEmail uses, so
+// signup と email 変更で挙動が乖離しないようにする (banned domains / format /
+// active check 等)。
+func validateEmailWithMeta(ctx context.Context, meta *model.Meta, addr string) error {
+	svc := coreemail.NewService(meta)
+	return svc.Validate(ctx, addr)
 }
 
 // validateInvitationCode checks the ticket store for a valid invitation code.

@@ -4698,6 +4698,35 @@ func (m *MockRoleAssignmentRepository) Exists(userID, roleID string) (bool, erro
 	return true, nil
 }
 
+// MockUserPendingRepository is a test double for repository.UserPendingRepository.
+type MockUserPendingRepository struct {
+	Rows map[string]*model.UserPending // keyed by ID
+}
+
+// NewMockUserPendingRepository creates an empty MockUserPendingRepository.
+func NewMockUserPendingRepository() *MockUserPendingRepository {
+	return &MockUserPendingRepository{Rows: make(map[string]*model.UserPending)}
+}
+
+func (m *MockUserPendingRepository) Create(p *model.UserPending) error {
+	m.Rows[p.ID] = p
+	return nil
+}
+
+func (m *MockUserPendingRepository) FindByCode(code string) (*model.UserPending, error) {
+	for _, r := range m.Rows {
+		if r.Code == code {
+			return r, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockUserPendingRepository) Delete(id string) error {
+	delete(m.Rows, id)
+	return nil
+}
+
 // MockUserMemoRepository is a test double for repository.UserMemoRepository.
 type MockUserMemoRepository struct {
 	// keyed by "userID:targetUserID"
