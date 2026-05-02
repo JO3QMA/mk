@@ -131,8 +131,11 @@ func TestEncodeWebP_RoundTrip_SolidColor(t *testing.T) {
 	assert.Equal(t, w, dec.Bounds().Dx())
 	assert.Equal(t, h, dec.Bounds().Dy())
 
+	// libwebp は YUV 変換 + DCT 量子化を経るため、q=77 でも solid color で
+	// 1 channel あたり ±15 程度の誤差が出る (gen2brain/wazero 実測)。色空間
+	// 反転なら 100+ の差になるので、16 は regression 検出に十分 strict。
 	r, g, b, _ := dec.At(w/2, h/2).RGBA()
-	const tol = 8.0
+	const tol = 16.0
 	assert.InDelta(t, int(red.R), int(r>>8), tol)
 	assert.InDelta(t, int(red.G), int(g>>8), tol)
 	assert.InDelta(t, int(red.B), int(b>>8), tol)

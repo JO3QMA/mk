@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/bbrks/go-blurhash"
-	"github.com/chai2010/webp"
+	"github.com/gen2brain/webp"
 	"github.com/kovidgoyal/imaging"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
@@ -90,11 +90,15 @@ func isAnimatedMime(mime string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// DefaultImageProcessor — pure Go + chai2010/webp (CGo) implementation
+// DefaultImageProcessor — pure Go + gen2brain/webp (libwebp on wazero/WASM)
 // ---------------------------------------------------------------------------
 
 // DefaultImageProcessor implements ImageProcessor using pure Go libraries
-// (disintegration/imaging) and chai2010/webp for WebP encoding.
+// (disintegration/imaging) and gen2brain/webp for WebP encoding.
+//
+// gen2brain/webp は libwebp を WASM 化して wazero で実行するため cgo-free。
+// Quality は int (0-100)、ただし 100 は lossless 扱いになる罠あり。本パッケージ
+// は webpQuality = 77 固定なのでこの罠には踏み込まないが、定数を変える際は注意。
 type DefaultImageProcessor struct{}
 
 // NewDefaultImageProcessor creates a new DefaultImageProcessor.
@@ -121,7 +125,7 @@ var pngEncoderFunc = defaultEncodePNG
 
 func defaultEncodeWebP(img image.Image, quality int) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := webp.Encode(&buf, img, &webp.Options{Quality: float32(quality)}); err != nil {
+	if err := webp.Encode(&buf, img, webp.Options{Quality: quality}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
