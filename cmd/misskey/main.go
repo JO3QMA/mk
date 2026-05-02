@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/core/cache"
@@ -16,9 +18,18 @@ import (
 	"github.com/shiroha-a/mk/internal/server"
 )
 
+// healthcheckTimeout is the maximum time the -healthcheck mode waits for
+// the local /healthz endpoint to respond.
+const healthcheckTimeout = 3 * time.Second
+
 func main() {
 	configPath := flag.String("config", ".config/default.yml", "path to configuration file")
+	healthcheckMode := flag.Bool("healthcheck", false, "perform a healthcheck (GET /healthz against the configured port) and exit 0/1")
 	flag.Parse()
+
+	if *healthcheckMode {
+		os.Exit(runHealthcheck(*configPath))
+	}
 
 	// ロガーの初期化
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -95,4 +106,29 @@ func main() {
 	}
 
 	fmt.Println("Misskey stopped.")
+}
+
+// runHealthcheck performs a single HTTP GET against http://127.0.0.1:<port>/healthz
+// using the port resolved from the same config the running server uses.
+// distroless image には wget/curl が無いので、healthcheck をこの binary
+// 自身で完結させるための専用モード (#621)。
+func runHealthcheck(configPath string) int {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: failed to load config: %v\n", err)
+		return 1
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)
+	client := &http.Client{Timeout: healthcheckTimeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck: status %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }

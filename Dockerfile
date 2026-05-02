@@ -50,9 +50,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
 # Stage 2: Runtime
-FROM alpine:3.21
-
-RUN apk add --no-cache ca-certificates tzdata
+#
+# distroless/static-debian13 (#621) を採用。Step 3 で binary が完全 static に
+# なったので、shell / pkg manager / wget / coreutils 等を持たない最小 image
+# でも起動できる。ca-certificates / tzdata は distroless に同梱されている
+# ので apk add は不要。
+#
+# 注意: distroless は shell も wget も持たないので、healthcheck は
+# `/app/misskey -healthcheck` で binary 自身に叩かせる (cmd/misskey/main.go
+# の -healthcheck フラグ)。docker-compose.dropin*.mk.yml /
+# docker-compose.federation.misskey.yml で使用。
+FROM gcr.io/distroless/static-debian13
 
 WORKDIR /app
 
