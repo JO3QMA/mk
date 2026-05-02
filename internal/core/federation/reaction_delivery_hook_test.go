@@ -160,3 +160,168 @@ func TestReactionHook_DeliverErrorDoesNotPanic(t *testing.T) {
 	hook.OnReactionAdded(reactor, target, "🎉")
 	hook.OnReactionRemoved(reactor, target, "🎉")
 }
+
+// ---------------------------------------------------------------------------
+// #636 Fanout coverage
+// ---------------------------------------------------------------------------
+
+// newReactionHookWithFollowers wires a follower inbox list onto the same
+// repo set used elsewhere so per-test fanout assertions stay terse.
+func newReactionHookWithFollowers(t *testing.T, reactorID string, followerInboxes []string) (
+	*federation.ReactionDeliveryHook,
+	*stubEnqueuer,
+	*testutil.MockUserRepository,
+	*testutil.MockUserKeypairRepository,
+	*testutil.MockFollowingRepository,
+) {
+	t.Helper()
+	enq := &stubEnqueuer{}
+	userRepo := testutil.NewMockUserRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	keypairRepo := testutil.NewMockUserKeypairRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	deliver := federation.NewDeliverService(enq, userRepo, followingRepo, keypairRepo, urls)
+	renderer := activitypub.NewRenderer(urls)
+	idGen, _ := id.NewGenerator("aidx")
+	hook := federation.NewReactionDeliveryHook(deliver, renderer, urls, idGen, userRepo)
+	if len(followerInboxes) > 0 {
+		followingRepo.RemoteInboxes[reactorID] = followerInboxes
+	}
+	return hook, enq, userRepo, keypairRepo, followingRepo
+}
+
+func collectInboxes(enq *stubEnqueuer) []string {
+	out := make([]string, 0, len(enq.calls))
+	for _, c := range enq.calls {
+		out = append(out, c.Inbox)
+	}
+	return out
+}
+
+// public note へのリアクションは note 作者 (remote) + reactor の remote
+// followers 全員に Like が届くこと (#636)。
+func TestReactionHook_Added_PublicNote_FanoutToFollowers(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		"https://c.example/users/charlie/inbox",
+		"https://d.example/inbox",
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	_, target := remoteAuthor(userRepo)
+	target.Visibility = model.NoteVisibilityPublic
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	inboxes := collectInboxes(enq)
+	assert.Contains(t, inboxes, "https://remote.example/users/bob/inbox")
+	assert.Contains(t, inboxes, "https://c.example/users/charlie/inbox")
+	assert.Contains(t, inboxes, "https://d.example/inbox")
+	assert.Len(t, inboxes, 3)
+}
+
+// 自分の public note へのリアクションでも remote followers にだけは fanout
+// する (target 作者 local なので DirectRecipe は無し)。TS の DeliverManager
+// と同じ条件 (#636)。
+func TestReactionHook_Added_LocalAuthorPublicNote_FanoutToFollowersOnly(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		"https://c.example/users/charlie/inbox",
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bob"} // local author
+	target := &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	inboxes := collectInboxes(enq)
+	assert.Equal(t, []string{"https://c.example/users/charlie/inbox"}, inboxes)
+}
+
+// followers / home visibility も public と同じく follower fanout 対象。
+func TestReactionHook_Added_FollowersVisibility_FanoutsToFollowers(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		"https://c.example/users/charlie/inbox",
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+	target := &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityFollowers}
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	assert.Equal(t, []string{"https://c.example/users/charlie/inbox"}, collectInboxes(enq))
+}
+
+func TestReactionHook_Added_HomeVisibility_FanoutsToFollowers(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		"https://c.example/users/charlie/inbox",
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+	target := &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityHome}
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	assert.Equal(t, []string{"https://c.example/users/charlie/inbox"}, collectInboxes(enq))
+}
+
+// specified visibility は follower fanout 無しで visibleUserIds のうち
+// remote な user 全員に DirectRecipe (#636)。
+func TestReactionHook_Added_SpecifiedNote_DirectToVisibleRemoteUsers(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		// 来てはいけない follower inbox。
+		"https://c.example/users/charlie/inbox",
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	bob, _ := remoteAuthor(userRepo)
+	host2 := "remote2.example"
+	uri2 := "https://remote2.example/users/dave"
+	inbox2 := "https://remote2.example/users/dave/inbox"
+	dave := &model.User{ID: "dave", Username: "dave", Host: &host2, URI: &uri2, Inbox: &inbox2}
+	userRepo.Users["dave"] = dave
+	// bob ローカル user (visibleUserIds に local が混じっても skip)
+	userRepo.Users["eve"] = &model.User{ID: "eve", Username: "eve"}
+
+	target := &model.Note{
+		ID:             "n1",
+		UserID:         bob.ID,
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: []string{"dave", "eve"},
+	}
+	noteURI := "https://remote.example/notes/n1"
+	target.URI = &noteURI
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	inboxes := collectInboxes(enq)
+	assert.Contains(t, inboxes, "https://remote.example/users/bob/inbox")
+	assert.Contains(t, inboxes, "https://remote2.example/users/dave/inbox")
+	assert.NotContains(t, inboxes, "https://c.example/users/charlie/inbox", "specified は follower fanout 不要")
+	assert.Len(t, inboxes, 2)
+}
+
+// localOnly な note に対してリアクションした場合は何も配信しない。
+func TestReactionHook_Added_LocalOnlySkipped(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		"https://c.example/users/charlie/inbox",
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	_, target := remoteAuthor(userRepo)
+	target.Visibility = model.NoteVisibilityPublic
+	target.LocalOnly = true
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	assert.Empty(t, enq.calls)
+}
+
+// Undo Like も同じ recipient 集合に届く (#636)。
+func TestReactionHook_Removed_PublicNote_FanoutToFollowers(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		"https://c.example/users/charlie/inbox",
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	_, target := remoteAuthor(userRepo)
+	target.Visibility = model.NoteVisibilityPublic
+
+	hook.OnReactionRemoved(reactor, target, "🎉")
+	inboxes := collectInboxes(enq)
+	assert.Contains(t, inboxes, "https://remote.example/users/bob/inbox")
+	assert.Contains(t, inboxes, "https://c.example/users/charlie/inbox")
+
+	// 中身が Undo であることも軽く確認
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(enq.calls[0].Body, &got))
+	assert.Equal(t, "Undo", got["type"])
+}
