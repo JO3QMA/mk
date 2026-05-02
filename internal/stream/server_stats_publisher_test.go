@@ -107,3 +107,66 @@ func TestDiffPerSec(t *testing.T) {
 	// zero elapsed clamps to 0
 	assert.Equal(t, uint64(0), diffPerSec(200, 100, 0))
 }
+
+// publisher が ring buffer に snapshot を貯めて Log() で返せること (#571 item 2)
+func TestServerStatsPublisher_LogReturnsRecentSnapshots(t *testing.T) {
+	pub := &capturePubSub{}
+	p := NewServerStatsPublisher(pub, 10*time.Millisecond)
+	p.Start()
+	time.Sleep(50 * time.Millisecond)
+	p.Stop()
+
+	logs := p.Log(0) // default
+	require.NotEmpty(t, logs, "Log should accumulate snapshots from each tick")
+	// 各 entry は serverStatsSnapshot 形式の JSON
+	for _, raw := range logs {
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(raw, &body))
+		assert.Contains(t, body, "cpu")
+		assert.Contains(t, body, "mem")
+	}
+	// publisher snapshot 数 == capture pub の call 数 (各 tick で 1:1 対応)
+	calls := pub.snapshot()
+	assert.LessOrEqual(t, len(logs), len(calls), "log entry count should match tick count")
+}
+
+// Log(maxLen) で件数が制限されること
+func TestServerStatsPublisher_LogRespectsMaxLen(t *testing.T) {
+	pub := &capturePubSub{}
+	p := NewServerStatsPublisher(pub, 5*time.Millisecond)
+	p.Start()
+	time.Sleep(50 * time.Millisecond)
+	p.Stop()
+
+	logs := p.Log(2)
+	assert.LessOrEqual(t, len(logs), 2, "Log(2) should return at most 2 entries")
+}
+
+// ring buffer は最大 ServerStatsLogMax 件で頭打ち
+func TestServerStatsPublisher_LogCapAtMax(t *testing.T) {
+	pub := &capturePubSub{}
+	p := NewServerStatsPublisher(pub, 0) // default 2s — manually feed
+	// 直接 appendLog を叩いて 250 件詰める (max=200 なので 200 で頭打ち)
+	for i := 0; i < 250; i++ {
+		p.appendLog(json.RawMessage(`{}`))
+	}
+	logs := p.Log(0)
+	assert.Equal(t, ServerStatsLogMax, len(logs), "ring buffer caps at ServerStatsLogMax")
+}
+
+// Log の戻り値は publisher 内部 buffer を mutate しても影響しない (defensive copy)
+func TestServerStatsPublisher_LogDefensiveCopy(t *testing.T) {
+	pub := &capturePubSub{}
+	p := NewServerStatsPublisher(pub, 0)
+	original := json.RawMessage(`{"k":1}`)
+	p.appendLog(original)
+
+	logs := p.Log(0)
+	require.Len(t, logs, 1)
+
+	// caller が後から同 slot を書き換えても publisher 内部に影響しない
+	logs[0] = json.RawMessage(`{"k":2}`)
+	logs2 := p.Log(0)
+	require.Len(t, logs2, 1)
+	assert.JSONEq(t, `{"k":1}`, string(logs2[0]), "internal buffer must not be aliased")
+}

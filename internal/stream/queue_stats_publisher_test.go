@@ -94,3 +94,46 @@ func TestQueueStatsPublisher_DoubleStopSafe(t *testing.T) {
 	p.Stop()
 	p.Stop() // no panic
 }
+
+// publisher が ring buffer に snapshot を貯めて Log() で返せること (#571 item 2)
+func TestQueueStatsPublisher_LogReturnsRecentSnapshots(t *testing.T) {
+	insp := &stubQueueInspector{info: &QueueStatsInfo{Active: 1, Pending: 2, Scheduled: 3}}
+	pub := &capturePubSub{}
+	p := NewQueueStatsPublisher(insp, pub, 10*time.Millisecond)
+	p.Start()
+	time.Sleep(50 * time.Millisecond)
+	p.Stop()
+
+	logs := p.Log(0)
+	require.NotEmpty(t, logs, "Log should accumulate snapshots from each tick")
+	for _, raw := range logs {
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(raw, &body))
+		assert.Contains(t, body, "deliver")
+		assert.Contains(t, body, "inbox")
+	}
+}
+
+// Log(maxLen) で件数制限
+func TestQueueStatsPublisher_LogRespectsMaxLen(t *testing.T) {
+	insp := &stubQueueInspector{info: &QueueStatsInfo{}}
+	pub := &capturePubSub{}
+	p := NewQueueStatsPublisher(insp, pub, 5*time.Millisecond)
+	p.Start()
+	time.Sleep(50 * time.Millisecond)
+	p.Stop()
+
+	logs := p.Log(2)
+	assert.LessOrEqual(t, len(logs), 2)
+}
+
+// ring buffer は QueueStatsLogMax 件で頭打ち
+func TestQueueStatsPublisher_LogCapAtMax(t *testing.T) {
+	insp := &stubQueueInspector{info: &QueueStatsInfo{}}
+	pub := &capturePubSub{}
+	p := NewQueueStatsPublisher(insp, pub, 0)
+	for i := 0; i < 250; i++ {
+		p.appendLog(json.RawMessage(`{}`))
+	}
+	assert.Equal(t, QueueStatsLogMax, len(p.Log(0)))
+}
