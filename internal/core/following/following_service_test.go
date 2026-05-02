@@ -1061,3 +1061,107 @@ func TestService_FederationHook_OnAccept_UserLookupFailure(t *testing.T) {
 	require.NoError(t, svc.AcceptRequest("alice", "bob"))
 	assert.Empty(t, hook.accepts)
 }
+
+// --- Instance counter incremental hook (#596) ---
+
+// remote follower → local followee: instance(remote).followersCount += 1
+func TestFollow_RemoteFollower_BumpsInstanceFollowers(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	instanceRepo := testutil.NewMockInstanceRepository()
+	host := "remote.example"
+	instanceRepo.Instances[host] = &model.Instance{Host: host}
+	svc.SetInstanceRepo(instanceRepo)
+
+	addUser(t, userRepo, "alice_local", false)
+	remote := addUser(t, userRepo, "remote_user", false)
+	remote.Host = &host
+
+	_, err := svc.Follow("remote_user", "alice_local")
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, instanceRepo.Instances[host].FollowersCount)
+	assert.Equal(t, 0, instanceRepo.Instances[host].FollowingCount)
+}
+
+// local follower → remote followee: instance(remote).followingCount += 1
+func TestFollow_LocalFollowsRemote_BumpsInstanceFollowing(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	instanceRepo := testutil.NewMockInstanceRepository()
+	host := "remote.example"
+	instanceRepo.Instances[host] = &model.Instance{Host: host}
+	svc.SetInstanceRepo(instanceRepo)
+
+	addUser(t, userRepo, "alice_local", false)
+	remote := addUser(t, userRepo, "remote_user", false)
+	remote.Host = &host
+
+	_, err := svc.Follow("alice_local", "remote_user")
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, instanceRepo.Instances[host].FollowersCount)
+	assert.Equal(t, 1, instanceRepo.Instances[host].FollowingCount)
+}
+
+// Unfollow で counter -1
+func TestUnfollow_DecrementsInstanceCounters(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	instanceRepo := testutil.NewMockInstanceRepository()
+	host := "remote.example"
+	instanceRepo.Instances[host] = &model.Instance{Host: host, FollowersCount: 5, FollowingCount: 3}
+	svc.SetInstanceRepo(instanceRepo)
+
+	addUser(t, userRepo, "alice_local", false)
+	remote := addUser(t, userRepo, "remote_user", false)
+	remote.Host = &host
+
+	_, err := svc.Follow("remote_user", "alice_local")
+	require.NoError(t, err)
+	assert.Equal(t, 6, instanceRepo.Instances[host].FollowersCount)
+
+	require.NoError(t, svc.Unfollow("remote_user", "alice_local"))
+	assert.Equal(t, 5, instanceRepo.Instances[host].FollowersCount)
+}
+
+// Local→local follow ではどの instance counter も動かない (host=nil)
+func TestFollow_LocalLocal_DoesNotTouchInstance(t *testing.T) {
+	svc, userRepo, _, _ := newSvc(t)
+	instanceRepo := testutil.NewMockInstanceRepository()
+	svc.SetInstanceRepo(instanceRepo)
+
+	addUser(t, userRepo, "alice", false)
+	addUser(t, userRepo, "bob", false)
+	_, err := svc.Follow("alice", "bob")
+	require.NoError(t, err)
+
+	assert.Empty(t, instanceRepo.Instances, "local-only follow は instance row を触らない")
+}
+
+// AcceptRequest 経由でも counter += 1
+func TestAcceptRequest_BumpsInstanceCounters(t *testing.T) {
+	svc, userRepo, _, frRepo := newSvc(t)
+	instanceRepo := testutil.NewMockInstanceRepository()
+	host := "remote.example"
+	instanceRepo.Instances[host] = &model.Instance{Host: host}
+	svc.SetInstanceRepo(instanceRepo)
+
+	addUser(t, userRepo, "alice_local", true)
+	remote := addUser(t, userRepo, "remote_user", false)
+	remote.Host = &host
+	frRepo.Requests["req1"] = &model.FollowRequest{
+		ID: "req1", FollowerID: "remote_user", FolloweeID: "alice_local", FollowerHost: &host,
+	}
+
+	require.NoError(t, svc.AcceptRequest("alice_local", "remote_user"))
+	// follower=remote → followersCount on remote host += 1
+	assert.Equal(t, 1, instanceRepo.Instances[host].FollowersCount)
+}
+
+// SetInstanceRepo 未配線でも従来 path は動く (regression 防止)
+func TestFollow_NoInstanceRepoStillWorks(t *testing.T) {
+	svc, userRepo, fRepo, _ := newSvc(t)
+	addUser(t, userRepo, "a", false)
+	addUser(t, userRepo, "b", false)
+	_, err := svc.Follow("a", "b")
+	require.NoError(t, err)
+	assert.Len(t, fRepo.Followings, 1)
+}

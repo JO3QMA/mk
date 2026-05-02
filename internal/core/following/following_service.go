@@ -4,6 +4,7 @@ package following
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/entity"
@@ -96,6 +97,7 @@ type Service struct {
 	userRepo            repository.UserRepository
 	followingRepo       repository.FollowingRepository
 	followRequestRepo   repository.FollowRequestRepository
+	instanceRepo        repository.InstanceRepository // optional, for #596 incremental counters
 	idGen               id.Generator
 	notificationHook    NotificationHook
 	blockingChecker     BlockingChecker
@@ -152,6 +154,46 @@ func (s *Service) SetWebhookHook(h WebhookHook) {
 // nil disables emit.
 func (s *Service) SetMainStreamPublisher(p MainStreamPublisher) {
 	s.mainStreamPublisher = p
+}
+
+// SetInstanceRepo wires an InstanceRepository so Follow / Unfollow /
+// AcceptRequest 経路で remote host の followersCount / followingCount を
+// incremental に保つ (#596)。未配線でも core 機能には影響しないが、admin
+// dashboard の federation pie chart が起動直後以外で実値を反映しなくなる。
+func (s *Service) SetInstanceRepo(r repository.InstanceRepository) {
+	s.instanceRepo = r
+}
+
+// adjustInstanceCountsForFollowing は Following 行の create / delete 時に
+// 該当 remote instance の followersCount / followingCount を delta 分動かす。
+// delta は +1 (create) / -1 (delete)。両 host が non-nil なら両方更新。
+// best-effort: 失敗しても呼び出し元には伝えない (起動時 RecomputeFollowCounts
+// で eventually 復旧)。
+//
+// IMPORTANT: blocking.Service.removeFollowing も同等の調整を inline で
+// 行っている。循環依存回避のため共通 helper にしていないので、本関数の
+// counter 調整ロジックを変えるときは blocking 側も **mirror で維持** する
+// (PR #626 review)。
+func (s *Service) adjustInstanceCountsForFollowing(f *model.Following, delta int) {
+	if s.instanceRepo == nil || delta == 0 {
+		return
+	}
+	// instance(followerHost).followersCount: その host の user が follower
+	// として参加している follow 行の数。
+	if f.FollowerHost != nil {
+		if err := s.instanceRepo.IncrementFollowersCount(*f.FollowerHost, delta); err != nil {
+			slog.Warn("instance counter: followersCount adjust failed",
+				"host", *f.FollowerHost, "delta", delta, "err", err)
+		}
+	}
+	// instance(followeeHost).followingCount: その host の user が followee
+	// として参加している follow 行の数。
+	if f.FolloweeHost != nil {
+		if err := s.instanceRepo.IncrementFollowingCount(*f.FolloweeHost, delta); err != nil {
+			slog.Warn("instance counter: followingCount adjust failed",
+				"host", *f.FolloweeHost, "delta", delta, "err", err)
+		}
+	}
 }
 
 // Follow creates a following relationship from follower to followee.
@@ -253,6 +295,9 @@ func (s *Service) Follow(followerID, followeeID string) (*FollowResult, error) {
 	if err := s.userRepo.IncrementFollowersCount(followeeID, 1); err != nil {
 		return nil, err
 	}
+	// remote instance の集計列を incremental 更新 (#596)。failure は warn-log
+	// のみで握り潰し、起動時 RecomputeFollowCounts が安全網。
+	s.adjustInstanceCountsForFollowing(f, 1)
 
 	if s.notificationHook != nil {
 		s.notificationHook.OnFollowed(followerID, followeeID)
@@ -304,6 +349,8 @@ func (s *Service) Unfollow(followerID, followeeID string) error {
 	if err := s.userRepo.IncrementFollowersCount(followeeID, -1); err != nil {
 		return err
 	}
+	// remote instance counter -1 (#596)
+	s.adjustInstanceCountsForFollowing(f, -1)
 	// hook 呼び出しに必要なユーザー情報を一度だけロードして使い回す。
 	// 失敗してもベストエフォートで continue する。
 	if s.federationHook != nil || s.chartHook != nil || s.webhookHook != nil || s.mainStreamPublisher != nil {
@@ -357,6 +404,8 @@ func (s *Service) AcceptRequest(followeeID, followerID string) error {
 	if err := s.userRepo.IncrementFollowersCount(req.FolloweeID, 1); err != nil {
 		return err
 	}
+	// remote instance counter +1 (#596)
+	s.adjustInstanceCountsForFollowing(f, 1)
 	if s.notificationHook != nil {
 		// follower側には「follow request accepted」、followee側には通常の
 		// follow と同じく「follow」通知を作る (TS本家 insertFollowingDoc が
