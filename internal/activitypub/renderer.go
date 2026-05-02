@@ -620,6 +620,14 @@ func (r *Renderer) RenderReject(actorID string, inner any) *Reject {
 // RenderLike returns a Like activity for the given reaction.
 // targetURI は対象ノートの canonical URI (リモートなら note.URI、ローカルなら
 // urls.NoteURI(note.ID))。
+//
+// reaction が custom emoji 形式 (`:name:` / `:name@.:` / `:name@host:`) の
+// 場合は addEmojiTags で Like.Tag に Emoji オブジェクトを 1 件詰める。
+// 連合相手側 (mk-go 受信側 / Misskey TS / CherryPick) は extractEmojiTags
+// で Tag を拾って icon URL を local emoji table に upsert する設計なので、
+// ここで Tag を出さないと remote 側で custom emoji 解決できず、heart
+// fallback / 表示なしになる (#634)。Unicode 絵文字や fallback heart は
+// `:` で囲まれていないので Tag 不要。
 func (r *Renderer) RenderLike(reactor *model.User, targetURI string, reaction string, likeID string) *Like {
 	l := &Like{
 		Activity: Activity{
@@ -633,8 +641,39 @@ func (r *Renderer) RenderLike(reactor *model.User, targetURI string, reaction st
 		Content:         reaction,
 		MisskeyReaction: reaction,
 	}
+	if name, host, ok := parseCustomEmojiReactionForTag(reaction); ok {
+		var hostPtr *string
+		if host != "" {
+			h := host
+			hostPtr = &h
+		}
+		r.addEmojiTags(&l.Tag, []string{name}, hostPtr)
+	}
 	AddContext(l)
 	return l
+}
+
+// parseCustomEmojiReactionForTag extracts (name, host) from a canonical
+// reaction string for emoji Tag emission. Returns ok=false for unicode
+// (no surrounding colons) and fallback reactions. Local canonical "@."
+// suffix is normalised to host="".
+//
+// activitypub 層に entity.parseCustomEmojiReaction と等価のミニ実装を持
+// たせる: layer 規則上 activitypub → entity の依存は禁止 (entity →
+// activitypub.Renderer の逆向き依存は許容) なので、両側で別々に持つ。
+func parseCustomEmojiReactionForTag(s string) (name, host string, ok bool) {
+	if len(s) < 3 || s[0] != ':' || s[len(s)-1] != ':' {
+		return "", "", false
+	}
+	inner := s[1 : len(s)-1]
+	if at := strings.Index(inner, "@"); at >= 0 {
+		host = inner[at+1:]
+		if host == "." {
+			host = ""
+		}
+		return inner[:at], host, true
+	}
+	return inner, "", true
 }
 
 // RenderUndoLike wraps a previously emitted Like in an Undo activity.

@@ -349,6 +349,81 @@ func TestRenderer_RenderLike_MisskeyReactionField(t *testing.T) {
 	assert.Equal(t, "⭐", l.MisskeyReaction)
 }
 
+// Custom emoji リアクションは Like.Tag に Emoji オブジェクトを 1 件詰めて
+// 連合先で icon URL を解決させる必要がある (#634)。
+func TestRenderer_RenderLike_LocalCustomEmojiTag(t *testing.T) {
+	r := newRenderer()
+	r.SetEmojiResolver(&stubEmojiResolver{emojis: map[string]*model.Emoji{
+		"smile": {Name: "smile", PublicURL: "https://example.com/files/smile.webp"},
+	}})
+	reactor := &model.User{ID: "alice"}
+	// canonical local form (TS が `:name@.:` で送るのを mk-go も再現)
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", ":smile@.:", "https://example.com/likes/l3")
+	require.Len(t, l.Tag, 1)
+	et, ok := l.Tag[0].(EmojiTag)
+	require.True(t, ok)
+	assert.Equal(t, "Emoji", et.Type)
+	assert.Equal(t, ":smile:", et.Name)
+	assert.Equal(t, "https://example.com/files/smile.webp", et.Icon.URL)
+}
+
+func TestRenderer_RenderLike_RemoteCustomEmojiTag(t *testing.T) {
+	r := newRenderer()
+	r.SetEmojiResolver(&stubEmojiResolver{emojis: map[string]*model.Emoji{
+		"foo": {Name: "foo", PublicURL: "https://remote.example/emojis/foo.webp"},
+	}})
+	reactor := &model.User{ID: "alice"}
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", ":foo@remote.example:", "https://example.com/likes/l4")
+	require.Len(t, l.Tag, 1)
+	et, ok := l.Tag[0].(EmojiTag)
+	require.True(t, ok)
+	assert.Equal(t, ":foo:", et.Name)
+	assert.Equal(t, "https://remote.example/emojis/foo.webp", et.Icon.URL)
+}
+
+func TestRenderer_RenderLike_LegacyLocalNoSuffix(t *testing.T) {
+	r := newRenderer()
+	r.SetEmojiResolver(&stubEmojiResolver{emojis: map[string]*model.Emoji{
+		"legacy": {Name: "legacy", PublicURL: "https://example.com/files/legacy.webp"},
+	}})
+	reactor := &model.User{ID: "alice"}
+	// `:name:` (no `@.` suffix) — TS 旧形式の reaction 文字列がたまたま渡ってきても tag を出せること
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", ":legacy:", "https://example.com/likes/l5")
+	require.Len(t, l.Tag, 1)
+	et, ok := l.Tag[0].(EmojiTag)
+	require.True(t, ok)
+	assert.Equal(t, ":legacy:", et.Name)
+}
+
+func TestRenderer_RenderLike_UnicodeEmojiNoTag(t *testing.T) {
+	// Unicode 絵文字は Tag 不要 (MFM 上で `:` で囲まれていない)。
+	r := newRenderer()
+	reactor := &model.User{ID: "alice"}
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", "🎉", "https://example.com/likes/l6")
+	assert.Empty(t, l.Tag)
+}
+
+func TestRenderer_RenderLike_UnknownCustomEmojiNoTag(t *testing.T) {
+	// emojiResolver にヒットしない名前は Tag に何も詰まらない (silent skip)。
+	// 連合相手は icon URL なしで text fallback、reaction 文字列だけは Content
+	// に残すので heart fallback には落ちない。
+	r := newRenderer()
+	r.SetEmojiResolver(&stubEmojiResolver{emojis: map[string]*model.Emoji{}})
+	reactor := &model.User{ID: "alice"}
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", ":missing@.:", "https://example.com/likes/l7")
+	assert.Empty(t, l.Tag)
+	assert.Equal(t, ":missing@.:", l.Content)
+}
+
+func TestRenderer_RenderLike_NoEmojiResolverNoTag(t *testing.T) {
+	// emojiResolver 未配線時 (テスト simplification 等) は Tag を出さない。
+	// existing TestRenderer_RenderLike (unicode) のロジックを壊さない確認。
+	r := newRenderer()
+	reactor := &model.User{ID: "alice"}
+	l := r.RenderLike(reactor, "https://remote.example/notes/n1", ":any@.:", "https://example.com/likes/l8")
+	assert.Empty(t, l.Tag)
+}
+
 func TestRenderer_RenderUndoLike(t *testing.T) {
 	r := newRenderer()
 	reactor := &model.User{ID: "alice"}
