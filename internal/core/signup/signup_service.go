@@ -12,6 +12,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 var (
@@ -28,6 +29,11 @@ var (
 	// ErrPendingExpired is returned when the pending signup is past its TTL.
 	// TTL は ID (ULID) 由来 timestamp から算出する (createdAt カラム不在のため)。
 	ErrPendingExpired = errors.New("pending signup expired")
+	// ErrInvitationAlreadyUsed is returned when the invitation ticket linked to
+	// a pending signup has already been consumed by another user. transaction
+	// 経路で SELECT FOR UPDATE 後に usedById を確認することで concurrent burst
+	// の race を完全に閉じる (#604)。
+	ErrInvitationAlreadyUsed = errors.New("invitation already used")
 )
 
 // PendingSignupTTL is the default lifetime of a pending signup row. Misskey TS
@@ -48,6 +54,11 @@ type Service struct {
 	metaRepo    repository.MetaRepository
 	keypairRepo repository.UserKeypairRepository
 	pendingRepo repository.UserPendingRepository
+	ticketRepo  repository.RegistrationTicketRepository
+	// db は PromotePending を transaction 化して partial failure rollback と
+	// invitation ticket の SELECT FOR UPDATE ロックを実現する用途。未設定 (nil)
+	// なら従来の repo-based 非 tx パスにフォールバックする (mock テスト用)。
+	db          *gorm.DB
 	webhookHook WebhookHook
 	idGen       id.Generator
 }
@@ -55,6 +66,21 @@ type Service struct {
 // NewService creates a new SignupService.
 func NewService(userRepo repository.UserRepository, metaRepo repository.MetaRepository, idGen id.Generator) *Service {
 	return &Service{userRepo: userRepo, metaRepo: metaRepo, idGen: idGen}
+}
+
+// SetDB wires the GORM database handle so PromotePending can run inside a
+// transaction. production の router 配線時に呼ぶ。設定しない場合は repo-based
+// 非 tx パスで動作する (mock テスト用)。
+func (s *Service) SetDB(db *gorm.DB) {
+	s.db = db
+}
+
+// SetTicketRepo wires the RegistrationTicketRepository so PromotePending tx
+// path で invitation ticket を SELECT FOR UPDATE ロックして MarkUsed まで
+// 同一 transaction で完結できる。emailRequiredForSignup + DisableRegistration
+// 併用時の race fix (#604) に必須。
+func (s *Service) SetTicketRepo(r repository.RegistrationTicketRepository) {
+	s.ticketRepo = r
 }
 
 // SetUserPendingRepo wires the user_pending repository so CreatePending /
@@ -82,9 +108,11 @@ type SignupResult struct {
 	User  *model.User
 	Token string
 	// InvitationTicketID は PromotePending 経路で pending row から復元した
-	// 招待コード ticket ID。handler はこれを受けて TicketStore.MarkUsed を
-	// 呼び消費を確定させる。通常 Signup や非招待 PromotePending では nil。
+	// 招待コード ticket ID。通常 Signup や非招待 PromotePending では nil。
 	InvitationTicketID *string
+	// InvitationTicketConsumed は Service が tx 内で MarkUsed 済かどうか。
+	// 非 tx 経路 (mock) で false なら handler 側で best-effort consume する。
+	InvitationTicketConsumed bool
 }
 
 // Signup creates a new local user with the given username and password.
@@ -232,10 +260,18 @@ func (s *Service) CreatePending(username, email, password string, invitationTick
 // row hasn't expired, then creates the user using the stored hashed password
 // (再 hash しない)。成功時に user_pending row を delete する。
 //
+// db が SetDB で wire されている場合は GORM transaction 内で処理し、partial
+// failure を rollback で巻き戻す (#600 item 2)。さらに invitation 経由なら
+// ticket を SELECT FOR UPDATE で lock して concurrent burst による「1 招待で
+// 複数 user 作成」 race を完全に閉じる (#604)。MarkUsed も同 tx で完了する。
+//
+// db 未配線時は repo-based 非 tx パスに fallback (mock テスト互換)。
+//
 // 失敗パターン:
 //   - ErrPendingNotFound: code が無い / DB error
-//   - ErrPendingExpired:  ID (ULID) timestamp が PendingSignupTTL を超過
+//   - ErrPendingExpired: ID (ULID) timestamp が PendingSignupTTL を超過
 //   - ErrUsernameAlreadyExists: 確認 link 待ちの間に同名 user が登録されたケース
+//   - ErrInvitationAlreadyUsed: tx 経路で ticket がすでに別 user に消費済 (#604)
 func (s *Service) PromotePending(code string) (*SignupResult, error) {
 	pending, err := s.pendingRepo.FindByCode(code)
 	if err != nil {
@@ -249,6 +285,129 @@ func (s *Service) PromotePending(code string) (*SignupResult, error) {
 		}
 	}
 
+	if s.db != nil && s.ticketRepo != nil {
+		return s.promotePendingTx(pending)
+	}
+	return s.promotePendingNoTx(pending)
+}
+
+// promotePendingTx は db.Transaction 内で user 作成 / ticket 消費 / pending
+// 削除を atomic に行う本番経路。
+func (s *Service) promotePendingTx(pending *model.UserPending) (*SignupResult, error) {
+	lower := strings.ToLower(pending.Username)
+	token := generateToken()
+	now := time.Now()
+	userID := s.idGen.Generate(now)
+
+	var resultUser *model.User
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		// invitation ticket がある場合は最初に SELECT FOR UPDATE で lock し、
+		// 既に usedById がセットされていれば早期 return。これで concurrent
+		// promote 試行は直列化される (#604 race fix)。
+		var lockedTicketID string
+		if pending.InvitationTicketID != nil {
+			ticket, err := s.ticketRepo.FindByIDForUpdateTx(tx, *pending.InvitationTicketID)
+			if err != nil {
+				// ticket が消えている等 — pending 経由の登録は成立させない
+				return ErrInvitationAlreadyUsed
+			}
+			if ticket.UsedByID != nil {
+				return ErrInvitationAlreadyUsed
+			}
+			lockedTicketID = ticket.ID
+		}
+
+		// username collision チェック (tx の visibility で in-flight 行も見える)
+		var existing model.User
+		switch err := tx.Where(`"usernameLower" = ? AND "host" IS NULL`, lower).First(&existing).Error; {
+		case err == nil:
+			return ErrUsernameAlreadyExists
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			// 続行
+		default:
+			return err
+		}
+
+		// user 行作成
+		user := &model.User{
+			ID:                userID,
+			Username:          pending.Username,
+			UsernameLower:     lower,
+			Token:             &token,
+			IsExplorable:      true,
+			AvatarDecorations: []byte("[]"),
+		}
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+
+		// profile 作成 (failure 時は user 含めて tx rollback で消える)
+		storedHash := pending.Password
+		profile := &model.UserProfile{
+			UserID:             userID,
+			Email:              &pending.Email,
+			EmailVerified:      true,
+			Password:           &storedHash,
+			AutoAcceptFollowed: true,
+			PreventAiLearning:  true,
+			PublicReactions:    true,
+		}
+		if err := tx.Create(profile).Error; err != nil {
+			return err
+		}
+
+		// keypair (federation 用) — keypairRepo が wire されているときのみ
+		if s.keypairRepo != nil {
+			privPEM, pubPEM, err := activitypub.GenerateRSAKeypair()
+			if err != nil {
+				return err
+			}
+			if err := tx.Create(&model.UserKeypair{
+				UserID:     userID,
+				PublicKey:  pubPEM,
+				PrivateKey: privPEM,
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		// pending row 削除
+		if err := tx.Where("id = ?", pending.ID).Delete(&model.UserPending{}).Error; err != nil {
+			return err
+		}
+
+		// ticket 消費 (lock 中なので 100% 自分が最初)
+		if lockedTicketID != "" {
+			if err := s.ticketRepo.MarkUsedTx(tx, lockedTicketID, userID); err != nil {
+				return err
+			}
+		}
+
+		resultUser = user
+		return nil
+	})
+	if txErr != nil {
+		return nil, txErr
+	}
+
+	// webhook hook は tx 完了後 (ベストエフォート、commit 後の non-critical 副作用)
+	if s.webhookHook != nil {
+		s.webhookHook.OnUserCreated(resultUser)
+	}
+	return &SignupResult{
+		User:               resultUser,
+		Token:              token,
+		InvitationTicketID: pending.InvitationTicketID,
+		// 招待 ticket がある場合のみ tx 内で MarkUsedTx 済 → consumed = true。
+		// 非招待 pending では nil なので consumed = false で返し、handler 側でも
+		// 何もしない (InvitationTicketID nil で早期 return)。
+		InvitationTicketConsumed: pending.InvitationTicketID != nil,
+	}, nil
+}
+
+// promotePendingNoTx は db 未配線の mock テスト経路 (transaction 無し)。
+// production では使わない (router 配線時に SetDB 必須)。
+func (s *Service) promotePendingNoTx(pending *model.UserPending) (*SignupResult, error) {
 	lower := strings.ToLower(pending.Username)
 	if _, err := s.userRepo.FindByUsernameLower(lower, nil); err == nil {
 		return nil, ErrUsernameAlreadyExists
@@ -294,7 +453,6 @@ func (s *Service) PromotePending(code string) (*SignupResult, error) {
 			return nil, err
 		}
 	}
-	// pending を削除 (失敗してもユーザー作成自体は成功なので無視)。
 	_ = s.pendingRepo.Delete(pending.ID)
 
 	if s.webhookHook != nil {

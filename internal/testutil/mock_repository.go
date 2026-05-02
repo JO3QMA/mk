@@ -5767,3 +5767,38 @@ func (m *MockRegistrationTicketRepository) Delete(id string) error {
 	delete(m.Tickets, id)
 	return nil
 }
+
+func (m *MockRegistrationTicketRepository) FindByCode(code string) (*model.RegistrationTicket, error) {
+	for _, t := range m.Tickets {
+		if t.Code == code {
+			return t, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// FindByIDForUpdateTx は real repo の SELECT FOR UPDATE 相当だが、Mock は
+// in-memory で直列実行されるためロック相当はノーオプ。tx 引数も使わない。
+func (m *MockRegistrationTicketRepository) FindByIDForUpdateTx(_ *gorm.DB, id string) (*model.RegistrationTicket, error) {
+	t, ok := m.Tickets[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return t, nil
+}
+
+func (m *MockRegistrationTicketRepository) MarkUsed(ticketID, userID string) error {
+	t, ok := m.Tickets[ticketID]
+	if !ok {
+		return ErrNotFound
+	}
+	uid := userID
+	t.UsedByID = &uid
+	now := time.Now()
+	t.UsedAt = &now
+	return nil
+}
+
+func (m *MockRegistrationTicketRepository) MarkUsedTx(_ *gorm.DB, ticketID, userID string) error {
+	return m.MarkUsed(ticketID, userID)
+}

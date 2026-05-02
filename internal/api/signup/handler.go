@@ -199,13 +199,16 @@ func (h *Handler) SignupPending(c echo.Context) error {
 			return c.JSON(http.StatusGone, apierr.Error("EXPIRED", "Pending registration has expired.", "9c2bc685-fa0a-4e6f-bf6f-5f4f8c0c3a3a"))
 		case coresignup.ErrUsernameAlreadyExists:
 			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "0a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		case coresignup.ErrInvitationAlreadyUsed:
+			return c.JSON(http.StatusConflict, apierr.Error("INVITATION_ALREADY_USED", "Invitation already used.", "5b81b5e2-2c0b-4d8a-9b71-1a3e1d4d3f6a"))
 		default:
 			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
 	}
-	// 招待コード消費 (招待制 + email 確認制併用時)。Signup 直接 path
-	// と同様 best-effort で MarkUsed する (#600 item 5)。
-	if result.InvitationTicketID != nil && h.ticketStore != nil {
+	// 招待コード消費 — Service の tx 経路では tx 内で MarkUsed 済 (#604)。
+	// 非 tx 経路 (mock テスト等) のみ handler 側で best-effort consume。
+	// Service が consume したかは SignupResult.InvitationTicketConsumed で判別。
+	if result.InvitationTicketID != nil && !result.InvitationTicketConsumed && h.ticketStore != nil {
 		_ = h.ticketStore.MarkUsed(*result.InvitationTicketID, result.User.ID)
 	}
 	return c.JSON(http.StatusOK, map[string]any{

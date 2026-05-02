@@ -7,6 +7,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func cleanupInvite(t *testing.T, ids ...string) {
@@ -73,4 +74,71 @@ func collectIDs(rows []*model.RegistrationTicket) []string {
 		out[i] = r.ID
 	}
 	return out
+}
+
+// FindByCode / MarkUsed / FindByIDForUpdateTx / MarkUsedTx の挙動検証
+// (#600 item 2 + #604 で追加されたメソッド)。
+func TestRegistrationTicketRepository_FindByCodeAndMarkUsed(t *testing.T) {
+	repo := NewRegistrationTicketRepository(testDB)
+	cleanupInvite(t, "rt_fc")
+	defer cleanupInvite(t, "rt_fc")
+
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_fc", Code: "rtfc_code"}))
+
+	// FindByCode happy path
+	got, err := repo.FindByCode("rtfc_code")
+	require.NoError(t, err)
+	assert.Equal(t, "rt_fc", got.ID)
+
+	// FindByCode: not found
+	_, err = repo.FindByCode("nonexistent")
+	assert.Error(t, err)
+
+	// MarkUsed happy path
+	createTestUser(t, "rt_fc_user")
+	defer testDB.Exec(`DELETE FROM "user" WHERE id = ?`, "rt_fc_user")
+	require.NoError(t, repo.MarkUsed("rt_fc", "rt_fc_user"))
+
+	got2, err := repo.FindByCode("rtfc_code")
+	require.NoError(t, err)
+	require.NotNil(t, got2.UsedByID)
+	assert.Equal(t, "rt_fc_user", *got2.UsedByID)
+	require.NotNil(t, got2.UsedAt)
+}
+
+// FindByIDForUpdateTx と MarkUsedTx は同 transaction 内で動作する想定。
+// transaction を張って 2 操作を回し、commit 後に反映を確認する。
+func TestRegistrationTicketRepository_TxMethods(t *testing.T) {
+	repo := NewRegistrationTicketRepository(testDB)
+	cleanupInvite(t, "rt_tx")
+	defer cleanupInvite(t, "rt_tx")
+
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_tx", Code: "rttx_code"}))
+	createTestUser(t, "rt_tx_user")
+	defer testDB.Exec(`DELETE FROM "user" WHERE id = ?`, "rt_tx_user")
+
+	err := testDB.Transaction(func(tx *gorm.DB) error {
+		ticket, err := repo.FindByIDForUpdateTx(tx, "rt_tx")
+		if err != nil {
+			return err
+		}
+		assert.Equal(t, "rt_tx", ticket.ID)
+		return repo.MarkUsedTx(tx, "rt_tx", "rt_tx_user")
+	})
+	require.NoError(t, err)
+
+	got, err := repo.FindByCode("rttx_code")
+	require.NoError(t, err)
+	require.NotNil(t, got.UsedByID)
+	assert.Equal(t, "rt_tx_user", *got.UsedByID)
+}
+
+// FindByIDForUpdateTx で存在しない ID を引いたら error
+func TestRegistrationTicketRepository_FindByIDForUpdateTx_NotFound(t *testing.T) {
+	repo := NewRegistrationTicketRepository(testDB)
+	err := testDB.Transaction(func(tx *gorm.DB) error {
+		_, err := repo.FindByIDForUpdateTx(tx, "nonexistent")
+		return err
+	})
+	assert.Error(t, err)
 }
