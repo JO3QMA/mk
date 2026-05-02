@@ -17,6 +17,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -32,9 +33,10 @@ type RoleProvider interface {
 	GetUserPolicies(userID string) map[string]any
 }
 
-// EmailSender sends an email (subject + plain text body). SMTP 設定は
-// 実装側が Meta から読み取る。テストではスタブを注入する。
-type EmailSender func(to, subject, body string)
+// EmailSender sends an email message (subject + text + optional HTML).
+// SMTP 設定は実装側が Meta から読み取る。テストではスタブを注入する。
+// HTML 同送が必要なら Message.HTML を設定する (#600 item 4)。
+type EmailSender func(to string, msg miscsmtp.Message)
 
 // AccountMover performs the i/move workflow (AP delivery + user row updates).
 // 具体実装は core/move.Service。循環依存を避けるため handler 側には narrow

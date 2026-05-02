@@ -1076,8 +1076,8 @@ func (s *Server) setupRoutes() {
 			port = *smtpMeta.SmtpPort
 		}
 		smtpUser, smtpPass := smtpMeta.SmtpUser, smtpMeta.SmtpPass
-		iHandler.SetEmailSender(func(to, subject, body string) {
-			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
+		iHandler.SetEmailSender(func(to string, msg miscsmtp.Message) {
+			miscsmtp.SendMessage(host, port, smtpUser, smtpPass, fromAddr, to, msg, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
 	if webauthnSvc != nil {

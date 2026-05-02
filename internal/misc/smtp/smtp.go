@@ -8,11 +8,14 @@ package smtp
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net"
 	gosmtp "net/smtp"
 	"net/url"
@@ -129,26 +132,55 @@ func SendMessage(host string, port int, user, pass *string, from, to string, msg
 
 // buildMessage assembles the RFC 5322 message body. text-only または
 // multipart/alternative のどちらかを返す。HTML が空なら従来通り text/plain。
+//
+// Subject は非 ASCII を含む可能性があるので RFC 2047 encoded-word で送出する
+// (PR #611 review で指摘)。Content-Transfer-Encoding は UTF-8 charset と整合
+// するよう 8bit を宣言する。modern SMTP server は 8BITMIME 拡張対応済が前提
+// (RFC 6152)。multipart の boundary は crypto/rand 由来で per-message に変える。
 func buildMessage(from, to, subject, text, html string) string {
+	encodedSubject := encodeSubject(subject)
 	if html == "" {
-		return fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-			from, to, subject, text)
+		return fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s",
+			from, to, encodedSubject, text)
 	}
-	// multipart/alternative — boundary は固定文字列で OK (caller 側で 8bit
-	// データを混ぜない前提)。MUA は html を優先表示し、対応していなければ
-	// text にフォールバックする (Misskey TS の挙動と同じ)。
-	const boundary = "----=_MK_GO_BOUNDARY"
+	boundary := randomBoundary()
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\n", from, to, subject)
+	fmt.Fprintf(&b, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\n", from, to, encodedSubject)
 	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", boundary)
 	// text part
-	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n%s\r\n",
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n",
 		boundary, text)
 	// html part
-	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n%s\r\n",
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n",
 		boundary, html)
 	fmt.Fprintf(&b, "--%s--\r\n", boundary)
 	return b.String()
+}
+
+// encodeSubject applies RFC 2047 encoded-word formatting when the subject
+// contains non-ASCII bytes. ASCII-only ならそのまま返す (encoded-word でラップ
+// すると一部の MUA が読みにくく表示するため)。
+func encodeSubject(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			return mime.BEncoding.Encode("UTF-8", s)
+		}
+	}
+	return s
+}
+
+// randomBoundary は crypto/rand 由来の 16 byte hex 文字列を boundary に使う。
+// 固定 boundary だと body 内に同文字列が含まれた場合 MIME 解析が崩壊する
+// (RFC 2046)。実害はほぼ無いが defensive に毎メッセージ別 boundary にする。
+func randomBoundary() string {
+	var buf [16]byte
+	if _, err := cryptorand.Read(buf[:]); err != nil {
+		// crypto/rand が失敗するのは process が壊れているレベルの異常事態
+		// なので fallback は時刻ベースの dummy で済ませる (送信失敗より
+		// 何か送る方が良い、UTC 秒で衝突確率ほぼ無視できる)。
+		return fmt.Sprintf("----=_MK_GO_BOUNDARY_%d", time.Now().UnixNano())
+	}
+	return "----=_MK_GO_BOUNDARY_" + hex.EncodeToString(buf[:])
 }
 
 // dialSMTP opens a TCP connection to addr (SMTP server). When proxyURL is

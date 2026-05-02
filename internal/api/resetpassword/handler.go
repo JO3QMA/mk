@@ -82,9 +82,12 @@ func (h *Handler) RequestReset(c echo.Context) error {
 		lead := "Use the following link to reset your password:"
 		text, bodyHTML := coreemail.LinkText(lead, "Reset password", link)
 		html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
-			SiteURL:  h.serverURL,
-			Subject:  "Password reset",
-			BodyHTML: bodyHTML,
+			SiteURL: h.serverURL,
+			Subject: "Password reset",
+			// reset-password は認証済 user 向けなので email-settings 二段 footer
+			// を出す (TS の sendEmail と同じ二段構造)。
+			EmailSettingsURL: h.serverURL + "/settings/email",
+			BodyHTML:         bodyHTML,
 		})
 		go h.email(*profile.Email, miscsmtp.Message{
 			Subject: "Password reset",

@@ -28,6 +28,10 @@ type HTMLWrapInput struct {
 	// link 等を組んで渡す。改行は <br/> または <p> で表現する想定で、
 	// WrapHTML は escape しない (caller responsibility)。
 	BodyHTML string
+	// EmailSettingsURL は <main> 内 <footer> に置く「メール設定」link の宛先。
+	// 認証済 user 向けメール (reset-password 等) で設定。signup-pending のような
+	// 未認証ユーザー向けメールでは空にして footer 自体省略 (TS と同じ運用)。
+	EmailSettingsURL string
 }
 
 // WrapHTML returns an Misskey TS-style HTML email body suitable for the html
@@ -53,10 +57,19 @@ func WrapHTML(in HTMLWrapInput) string {
 		fmt.Fprintf(&header, `<span style="color:#fff;font-weight:bold;font-size:16px">%s</span>`, siteNameEsc)
 	}
 
-	var footer strings.Builder
+	var nav strings.Builder
 	if in.SiteURL != "" {
-		fmt.Fprintf(&footer, `<a href="%s" style="color:#888;text-decoration:none">%s</a>`,
+		fmt.Fprintf(&nav, `<a href="%s" style="color:#888;text-decoration:none">%s</a>`,
 			html.EscapeString(in.SiteURL), siteNameEsc)
+	}
+
+	// EmailSettingsURL がある場合のみ <main> 内 <footer> を生成する (TS の
+	// 二段構造に揃える)。空なら footer ごと省略してすっきり見せる。
+	var innerFooter string
+	if in.EmailSettingsURL != "" {
+		innerFooter = fmt.Sprintf(
+			`<footer style="padding:32px;border-top:solid 1px #eee"><a href="%s" style="color:#86b300;text-decoration:none">Email setting</a></footer>`,
+			html.EscapeString(in.EmailSettingsURL))
 	}
 
 	return fmt.Sprintf(`<!doctype html>
@@ -65,10 +78,10 @@ func WrapHTML(in HTMLWrapInput) string {
 <main style="max-width:500px;margin:0 auto;background:#fff;color:#555">
   <header style="padding:32px;background:#86b300">%s</header>
   <article style="padding:32px"><h1 style="margin:0 0 1em 0">%s</h1>%s</article>
-</main>
+  %s</main>
 <nav style="max-width:500px;margin:16px auto 0 auto;padding:0 32px">%s</nav>
 </body></html>`,
-		subject, header.String(), subject, in.BodyHTML, footer.String())
+		subject, header.String(), subject, in.BodyHTML, innerFooter, nav.String())
 }
 
 // LinkText is a convenience for callers who want a single-CTA email body. It

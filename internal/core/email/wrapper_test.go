@@ -66,3 +66,29 @@ func TestLinkText(t *testing.T) {
 	assert.Contains(t, html, "Click here")
 	assert.Contains(t, html, "<p>Welcome!</p>")
 }
+
+// EmailSettingsURL を渡すと <main> 内 <footer> が出る (#600 item 4 review)。
+func TestWrapHTML_EmailSettingsFooter(t *testing.T) {
+	got := coreemail.WrapHTML(coreemail.HTMLWrapInput{
+		Subject:          "Hi",
+		BodyHTML:         "x",
+		EmailSettingsURL: "https://example.test/settings/email",
+	})
+	if !strings.Contains(got, `<footer style="padding:32px;border-top:solid 1px #eee">`) {
+		t.Errorf("inner footer block missing; got: %s", got)
+	}
+	if !strings.Contains(got, `href="https://example.test/settings/email"`) {
+		t.Errorf("settings link missing")
+	}
+}
+
+// EmailSettingsURL 未指定なら footer 自体省略
+func TestWrapHTML_NoFooterWhenSettingsAbsent(t *testing.T) {
+	got := coreemail.WrapHTML(coreemail.HTMLWrapInput{
+		Subject:  "Hi",
+		BodyHTML: "x",
+	})
+	if strings.Contains(got, "<footer") {
+		t.Errorf("footer should be omitted when EmailSettingsURL empty")
+	}
+}

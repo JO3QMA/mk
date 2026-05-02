@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreemail "github.com/shiroha-a/mk/internal/core/email"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -86,8 +87,19 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 		fields["emailVerifyCode"] = code
 
 		if h.emailSender != nil {
-			go h.emailSender(addr, "Verify your email",
-				"Click the link to verify your email:\n"+h.verifyURL(code))
+			lead := "Click the link to verify your email:"
+			text, bodyHTML := coreemail.LinkText(lead, "Verify email", h.verifyURL(code))
+			html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
+				SiteURL:          h.serverURL,
+				Subject:          "Verify your email",
+				EmailSettingsURL: h.serverURL + "/settings/email",
+				BodyHTML:         bodyHTML,
+			})
+			go h.emailSender(addr, miscsmtp.Message{
+				Subject: "Verify your email",
+				Text:    text,
+				HTML:    html,
+			})
 		}
 	}
 
