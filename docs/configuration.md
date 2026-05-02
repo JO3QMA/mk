@@ -39,7 +39,7 @@ cp .config/docker.yml.example .config/docker.yml
 | `disableEndpointRateLimits` | bool | `false` | per-endpoint rate limit table 全体を無効化。Misskey TS の `NODE_ENV=development` 相当で、ベンチマーク等で公正比較する用途専用。**本番で絶対に使わない** |
 | `pidFile` | string | - | PIDファイルパス |
 | `testMode` | bool | `false` | テスト用エンドポイント(/api/reset-db)を有効化。**本番で絶対に使わない** |
-| `jobQueueDriver` | string | `"asynq"` | ジョブキュー実装の選択。`asynq` (デフォルト) または `mkq` (BullMQ互換)。`mkq`にすると admin queue 画面が BullMQ 前提の Misskey TS frontend と wire-compatible になる。`MK_JOBQUEUEDRIVER`で上書き可。 |
+| `jobQueueDriver` | string | `"mkq"` | ジョブキュー実装の選択。`mkq` (デフォルト、推奨) または `asynq` (legacy)。`mkq` は BullMQ wire-compatible で admin queue 画面が Misskey TS frontend 前提のまま動く + per-queue concurrency / rate-limit が効く。`asynq` は **将来削除予定** (mkq の安定性確保後) のため新規 deploy は `mkq` 推奨。`MK_JOBQUEUEDRIVER`で上書き可。 |
 
 ### データベース (`db.*`)
 

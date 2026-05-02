@@ -629,17 +629,22 @@ func resolveRedisOrDefault(opts *RedisOptions, fallback RedisOptions, host strin
 }
 
 // resolveJobQueueDriver normalises the jobQueueDriver config value.
-// Empty / whitespace falls back to "asynq". Unknown non-empty values
-// return an error: silently swapping a typo (e.g. "mkqq") for asynq
-// hides operator intent, especially given that internal/server/
-// queue_factory.go also rejects unknown driver names — surfacing the
-// failure here keeps the two layers consistent and the boot log
-// readable.
+// Empty / whitespace falls back to "mkq" (recommended driver、#571 audit)。
+// Unknown non-empty values return an error: silently swapping a typo
+// (e.g. "mkqq") for the default hides operator intent, especially given
+// that internal/server/queue_factory.go also rejects unknown driver
+// names — surfacing the failure here keeps the two layers consistent
+// and the boot log readable.
+//
+// asynq driver は legacy / future-deprecation candidate。mkq の安定性が
+// 確保され次第削除予定なので、新規 deploy は明示的に "asynq" を選ぶ
+// 必要はない。default が mkq に変更されたが、既存運用で "asynq" を明示
+// 指定している operator は影響を受けない。
 func resolveJobQueueDriver(raw string) (string, error) {
 	v := strings.ToLower(strings.TrimSpace(raw))
 	switch v {
 	case "":
-		return "asynq", nil
+		return "mkq", nil
 	case "asynq", "mkq":
 		return v, nil
 	default:

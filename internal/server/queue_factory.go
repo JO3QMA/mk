@@ -34,8 +34,12 @@ func buildQueueDriver(ctx context.Context, cfg *config.Config) (driver.Driver, e
 	queueConcurrency := perQueueConcurrencyFromConfig(cfg)
 	queueRateLimits := perQueueRatesFromConfig(cfg)
 
+	// 空 string は config.resolveJobQueueDriver で "mkq" に正規化されている
+	// 想定だが、queue_factory が直接 *config.Config を受けるテスト経由など
+	// 正規化されない経路もあるので、ここでも "" → "mkq" に倒す。
+	// asynq driver は legacy / future-deprecation candidate (#571 audit)。
 	switch cfg.JobQueueDriver {
-	case "mkq":
+	case "mkq", "":
 		dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		return mkqdriver.New(dialCtx, mkqdriver.Config{
@@ -44,7 +48,7 @@ func buildQueueDriver(ctx context.Context, cfg *config.Config) (driver.Driver, e
 			QueueConcurrency: queueConcurrency,
 			QueueRateLimits:  queueRateLimits,
 		})
-	case "asynq", "":
+	case "asynq":
 		return asynqdriver.New(
 			asynqdriver.BuildRedisOpt(cfg.RedisForJobQueue),
 			asynqdriver.ServerConfig{

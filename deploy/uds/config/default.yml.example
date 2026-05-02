@@ -146,13 +146,16 @@ redis:
 
 # mk-go specific: select the job queue runtime.
 #
-#   - 'asynq' (default): hibiken/asynq based runtime.
-#   - 'mkq':              shiroha-a/mkq based, BullMQ wire-compatible
-#                         (makes the admin queue dashboard render
-#                          correctly under the upstream Misskey TS
-#                          frontend).
+#   - 'mkq' (default, recommended): shiroha-a/mkq based, BullMQ wire-
+#                         compatible (makes the admin queue dashboard
+#                         render correctly under the upstream Misskey
+#                         TS frontend) + supports per-queue concurrency
+#                         and rate-limit knobs.
+#   - 'asynq': legacy hibiken/asynq based runtime. **Future-deprecation
+#                         candidate** — once mkq is fully battle-tested
+#                         we plan to remove asynq entirely.
 #
-#jobQueueDriver: asynq
+#jobQueueDriver: mkq
 
 #   ┌───────────────────────────────┐
 #───┘ Fulltext search configuration └─────────────────────────────
