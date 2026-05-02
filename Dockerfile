@@ -50,9 +50,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
 # Stage 2: Runtime
-FROM alpine:3.21
-
-RUN apk add --no-cache ca-certificates tzdata
+#
+# distroless/static-debian13 (#621) を採用。Step 3 で binary が完全 static に
+# なったので、shell / pkg manager / wget / coreutils 等を持たない最小 image
+# でも起動できる。ca-certificates / tzdata は distroless に同梱されている
+# ので apk add は不要。
+#
+# 注意: distroless は shell も wget も持たないので、healthcheck は
+# `/app/misskey -healthcheck` で binary 自身に叩かせる (cmd/misskey/main.go
+# の -healthcheck フラグ)。docker-compose.dropin*.mk.yml /
+# docker-compose.federation.misskey.yml で使用。
+FROM gcr.io/distroless/static-debian13
 
 WORKDIR /app
 
@@ -85,6 +93,14 @@ ENV MISSKEY_TWEMOJI_DIR=/app/twemoji
 COPY .config/docker.yml.example /app/.config/default.yml
 
 EXPOSE 3000
+
+# Misskey TS の Dockerfile が `useradd -u 991 -g 991 misskey` で UID/GID 991
+# を採用しているので、drop-in 互換 (host volume `./files` の所有権が両者で
+# 一致する) のため mk-go も同じ UID 991 で起動する (#621)。distroless static
+# には UID 991 の /etc/passwd エントリは無いが、mk-go は os/user.Current()
+# を呼ばないので numeric UID で問題なく動く。`:nonroot` tag (UID 65532) は
+# drop-in 互換を壊すので使わない。
+USER 991:991
 
 ENTRYPOINT ["/app/misskey"]
 CMD ["-config", ".config/default.yml"]
