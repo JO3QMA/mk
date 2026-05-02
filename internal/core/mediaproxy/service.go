@@ -153,7 +153,8 @@ type Service struct {
 	httpClient       *http.Client
 	userAgent        string
 	driveLookup      DriveFileLookup // optional, #637 M1
-	videoThumbGen    string          // optional, #637 M2 (Misskey TS videoThumbnailGenerator URL)
+	videoThumbGen    string          // optional, #637 M2 (videoThumbnailGenerator base URL)
+	videoThumbMode   string          // "post" (default) | "get" — wire selection
 	videoThumbClient *http.Client    // built lazily from videoThumbGen, supports unix:// scheme
 }
 
@@ -187,12 +188,11 @@ func (s *Service) SetDriveStorage(st coredrive.Storage) {
 	s.driveStorage = st
 }
 
-// SetVideoThumbnailGenerator wires an external thumbnail generator. The URL
-// follows Misskey TS' `videoThumbnailGenerator` API:
-// `<base>/thumbnail.webp?thumbnail=1&url=<original video URL>`. For UDS
-// deployments pass `unix:///path/to/socket` and the proxy will dial the
-// socket directly, ignoring the URL host. Empty disables the feature
-// (default — proxy returns dummy PNG for video MIME, #637 M2)。
+// SetVideoThumbnailGenerator wires an external thumbnail generator with the
+// default wire mode (POST multipart). For UDS deployments pass
+// `unix:///path/to/socket` and the proxy will dial the socket directly,
+// ignoring the URL host. Empty disables the feature (default — proxy
+// returns dummy PNG for video MIME, #637 M2).
 //
 // このコール先は operator-trusted endpoint (内部 sidecar / 自前 SaaS 想定)
 // のため、`config.proxy` (#638 outbound forward proxy) は意図的に経由しな
@@ -200,7 +200,21 @@ func (s *Service) SetDriveStorage(st coredrive.Storage) {
 // fetcher.go`) と同じ pattern。`config.proxy` を強制したい運用は別途
 // nginx / sidecar 側で出力経路を制御する。
 func (s *Service) SetVideoThumbnailGenerator(genURL string) {
+	s.SetVideoThumbnailGeneratorWithMode(genURL, "post")
+}
+
+// SetVideoThumbnailGeneratorWithMode is the explicit form. mode = "post"
+// (multipart upload, nekonoverse/video-thumb compat) or "get" (URL-based
+// Misskey TS videoThumbnailGenerator API). 不正値は "post" にフォール
+// バック。
+func (s *Service) SetVideoThumbnailGeneratorWithMode(genURL, mode string) {
 	s.videoThumbGen = genURL
+	switch mode {
+	case "get":
+		s.videoThumbMode = "get"
+	default:
+		s.videoThumbMode = "post"
+	}
 	s.videoThumbClient = newVideoThumbnailClient(genURL)
 }
 
@@ -420,20 +434,18 @@ const (
 // in the requested output format (WebP / AVIF). Badge と passThrough は
 // format negotiation の対象外で常に PNG / 元 MIME を返す。
 //
-// video/* MIME は image pipeline に直接乗らないので、設定済みの
-// videoThumbnailGenerator (Misskey TS 互換 API) に GET を投げて返ってきた
-// 静止画を再帰的に image pipeline に通す。generator 未設定 / 呼び出し失敗
-// / local /files/ source (generator から取り直せない) のときは dummy PNG
-// にフォールバックして frontend を壊さない (#637 M2)。
+// video/* MIME は image pipeline に直接乗らないので、download 済の bytes
+// をそのまま videoThumbnailGenerator に POST multipart で投げて静止画
+// thumbnail を取得し、再帰的に image pipeline に通す。generator 未設定 /
+// 呼び出し失敗のときは dummy PNG にフォールバックして frontend を壊さない
+// (#637 M2)。bytes 経由なので local /files/ source も remote URL も同じ
+// path で扱える。
 func (s *Service) processAndReturn(ctx context.Context, data []byte, contentType string, mode ProxyMode, out OutputFormat, sourceURL string) (*ProxyResult, error) {
 	if isVideoMIME(contentType) && isResizeMode(mode) {
-		// Generator は外部 URL を fetch する前提なので、local /files/ への
-		// 戻り迂回は避ける (M1 variant swap で既に解決済のはず)。
-		// generator 未設定 / local source なら早期に dummy PNG fallback。
-		if s.videoThumbClient == nil || strings.HasPrefix(sourceURL, s.instanceURL+"/files/") {
+		if s.videoThumbClient == nil {
 			return makeDummyPNG(), nil
 		}
-		frame, frameMIME, err := s.fetchVideoThumbnail(ctx, sourceURL)
+		frame, frameMIME, err := s.fetchVideoThumbnail(ctx, data, contentType, sourceURL)
 		if err != nil {
 			slog.Warn("mediaproxy: video thumbnail generator failed",
 				"url", sourceURL, "err", err)

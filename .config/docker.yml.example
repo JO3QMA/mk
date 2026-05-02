@@ -181,8 +181,11 @@ proxyBypassHosts:
 #mediaProxy: https://example.com/proxy
 
 # Video thumbnail generator. The bundled docker-compose ships a `video-thumb`
-# service reachable at this address inside the Compose network.
-videoThumbnailGenerator: http://video-thumb:8080
+# service (nekonoverse/video-thumb, listens on 8005). Default wire mode
+# "post" forwards multipart bytes — see default.yml.example for the "get"
+# Misskey TS-compat alternative.
+videoThumbnailGenerator: http://video-thumb:8005
+#videoThumbnailGeneratorMode: post
 
 #allowedPrivateNetworks:
 #  - '127.0.0.1/32'
