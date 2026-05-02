@@ -100,6 +100,24 @@ var DefaultEndpointLimits = map[string]*EndpointLimit{
 
 	// ── Password Reset ─────────────────────────────────
 	"request-reset-password": {Duration: time.Hour, Max: 3},
+	// reset-password 自体 (トークン消費) は brute-force 対策で 1h あたり 30。
+	// 確認 link を踏んだ正当ユーザーが何度か失敗してもブロックされない程度。
+	"reset-password": {Duration: time.Hour, Max: 30},
+
+	// ── Auth (signup / signin) ─────────────────────────
+	// signup spam (大量 user_pending row 作成 + 確認メール乱発) 対策。
+	// 1h あたり 5 で十分。実運用では captcha / invitation 制が併用される
+	// 想定だが、それらが無効でも spam を抑える last-line guard。
+	"signup": {Duration: time.Hour, Max: 5},
+	// signup-pending (確認 code 入力) は brute-force 対策で 1h あたり 30
+	// (1 確認 code 試行を 30 回まで許容、TTL 内で総当たりされても 16 byte
+	// hex の探索空間 (2^128) には到底届かない)。
+	"signup-pending": {Duration: time.Hour, Max: 30},
+	// signin / signin-flow は credential brute force 対策。1h 60 回。
+	// 正当な打ち間違い (typo, password manager 不発等) をブロックしない
+	// 最低限のしきい値。
+	"signin":      {Duration: time.Hour, Max: 60},
+	"signin-flow": {Duration: time.Hour, Max: 60},
 
 	// ── Admin ──────────────────────────────────────────
 	"admin/system-webhook/test": {Duration: 15 * time.Minute, Max: 60},
