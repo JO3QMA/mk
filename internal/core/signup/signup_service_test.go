@@ -193,7 +193,7 @@ func TestCreatePending_Success(t *testing.T) {
 	pendingRepo := testutil.NewMockUserPendingRepository()
 	svc.SetUserPendingRepo(pendingRepo)
 
-	row, err := svc.CreatePending("alice", "alice@example.com", "secret123")
+	row, err := svc.CreatePending("alice", "alice@example.com", "secret123", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "alice", row.Username)
 	assert.Equal(t, "alice@example.com", row.Email)
@@ -209,7 +209,7 @@ func TestCreatePending_DuplicateUsername(t *testing.T) {
 	svc.SetUserPendingRepo(pendingRepo)
 	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}))
 
-	_, err := svc.CreatePending("Alice", "a@example.com", "pw")
+	_, err := svc.CreatePending("Alice", "a@example.com", "pw", nil)
 	assert.ErrorIs(t, err, signup.ErrUsernameAlreadyExists)
 }
 
@@ -219,7 +219,7 @@ func TestCreatePending_ReservedUsername(t *testing.T) {
 	pendingRepo := testutil.NewMockUserPendingRepository()
 	svc.SetUserPendingRepo(pendingRepo)
 
-	_, err := svc.CreatePending("admin", "a@example.com", "pw")
+	_, err := svc.CreatePending("admin", "a@example.com", "pw", nil)
 	assert.ErrorIs(t, err, signup.ErrUsernameReserved)
 }
 
@@ -228,7 +228,7 @@ func TestCreatePending_InvalidUsername(t *testing.T) {
 	pendingRepo := testutil.NewMockUserPendingRepository()
 	svc.SetUserPendingRepo(pendingRepo)
 
-	_, err := svc.CreatePending("", "a@example.com", "pw")
+	_, err := svc.CreatePending("", "a@example.com", "pw", nil)
 	assert.ErrorIs(t, err, signup.ErrInvalidUsername)
 }
 
@@ -237,7 +237,7 @@ func TestPromotePending_Success(t *testing.T) {
 	pendingRepo := testutil.NewMockUserPendingRepository()
 	svc.SetUserPendingRepo(pendingRepo)
 
-	row, err := svc.CreatePending("bob", "bob@example.com", "pw123")
+	row, err := svc.CreatePending("bob", "bob@example.com", "pw123", nil)
 	require.NoError(t, err)
 
 	result, err := svc.PromotePending(row.Code)
@@ -271,7 +271,7 @@ func TestPromotePending_UsernameClash(t *testing.T) {
 	pendingRepo := testutil.NewMockUserPendingRepository()
 	svc.SetUserPendingRepo(pendingRepo)
 
-	row, err := svc.CreatePending("clash", "c@example.com", "pw")
+	row, err := svc.CreatePending("clash", "c@example.com", "pw", nil)
 	require.NoError(t, err)
 
 	// pending 確定前に同名 user が登録されたケースを再現
@@ -289,7 +289,7 @@ func TestPromotePending_Expired(t *testing.T) {
 	pendingRepo := testutil.NewMockUserPendingRepository()
 	svc.SetUserPendingRepo(pendingRepo)
 
-	row, err := svc.CreatePending("expuser", "exp@example.com", "pw")
+	row, err := svc.CreatePending("expuser", "exp@example.com", "pw", nil)
 	require.NoError(t, err)
 
 	// ULID を 25h 前の時刻で再生成 (idGen は newTestService で aidx 固定)。
@@ -310,7 +310,7 @@ func TestPromotePending_WithKeypair(t *testing.T) {
 	keypairRepo := testutil.NewMockUserKeypairRepository()
 	svc.SetKeypairRepo(keypairRepo)
 
-	row, err := svc.CreatePending("kpuser", "kp@example.com", "pw")
+	row, err := svc.CreatePending("kpuser", "kp@example.com", "pw", nil)
 	require.NoError(t, err)
 
 	result, err := svc.PromotePending(row.Code)
@@ -326,7 +326,7 @@ func TestPromotePending_WebhookHookFires(t *testing.T) {
 	hook := &recordingHook{}
 	svc.SetWebhookHook(hook)
 
-	row, err := svc.CreatePending("hookuser", "hook@example.com", "pw")
+	row, err := svc.CreatePending("hookuser", "hook@example.com", "pw", nil)
 	require.NoError(t, err)
 
 	_, err = svc.PromotePending(row.Code)
@@ -338,3 +338,45 @@ func TestPromotePending_WebhookHookFires(t *testing.T) {
 type recordingHook struct{ calls int }
 
 func (r *recordingHook) OnUserCreated(_ *model.User) { r.calls++ }
+
+// invitationTicketID を渡すと pending row に保存され、PromotePending
+// 完了時に SignupResult.InvitationTicketID として伝搬される (#600 item 5)。
+func TestCreatePending_StoresInvitationTicketID(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	tid := "ticket_abc"
+	row, err := svc.CreatePending("inv", "inv@example.com", "pw", &tid)
+	require.NoError(t, err)
+	require.NotNil(t, row.InvitationTicketID)
+	assert.Equal(t, "ticket_abc", *row.InvitationTicketID)
+}
+
+func TestPromotePending_PropagatesInvitationTicketID(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	tid := "ticket_xyz"
+	row, err := svc.CreatePending("invuser", "invu@example.com", "pw", &tid)
+	require.NoError(t, err)
+
+	result, err := svc.PromotePending(row.Code)
+	require.NoError(t, err)
+	require.NotNil(t, result.InvitationTicketID)
+	assert.Equal(t, "ticket_xyz", *result.InvitationTicketID)
+}
+
+func TestPromotePending_NoTicketIDReturnsNil(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+
+	row, err := svc.CreatePending("noinv", "noinv@example.com", "pw", nil)
+	require.NoError(t, err)
+
+	result, err := svc.PromotePending(row.Code)
+	require.NoError(t, err)
+	assert.Nil(t, result.InvitationTicketID, "non-invitation pending では nil で伝搬する")
+}

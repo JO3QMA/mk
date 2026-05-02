@@ -81,6 +81,10 @@ func (s *Service) SetWebhookHook(h WebhookHook) {
 type SignupResult struct {
 	User  *model.User
 	Token string
+	// InvitationTicketID は PromotePending 経路で pending row から復元した
+	// 招待コード ticket ID。handler はこれを受けて TicketStore.MarkUsed を
+	// 呼び消費を確定させる。通常 Signup や非招待 PromotePending では nil。
+	InvitationTicketID *string
 }
 
 // Signup creates a new local user with the given username and password.
@@ -188,7 +192,11 @@ func generatePendingCode() string {
 // CreatePending stores a pending signup row and returns it. Username重複と
 // 予約名チェックは通常 Signup と揃え、password は bcrypt で hash 済を保管
 // (PromotePending 時に再 hash しない)。emailRequiredForSignup=true 用。
-func (s *Service) CreatePending(username, email, password string) (*model.UserPending, error) {
+//
+// invitationTicketID が non-nil なら pending row に保存し、PromotePending
+// 成功時に SignupResult.InvitationTicketID 経由で handler に伝える
+// (招待制 + email 確認制併用時の MarkUsed 用)。
+func (s *Service) CreatePending(username, email, password string, invitationTicketID *string) (*model.UserPending, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || len(username) > 128 {
 		return nil, ErrInvalidUsername
@@ -207,11 +215,12 @@ func (s *Service) CreatePending(username, email, password string) (*model.UserPe
 	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	now := time.Now()
 	row := &model.UserPending{
-		ID:       s.idGen.Generate(now),
-		Code:     generatePendingCode(),
-		Username: username,
-		Email:    email,
-		Password: string(hash),
+		ID:                 s.idGen.Generate(now),
+		Code:               generatePendingCode(),
+		Username:           username,
+		Email:              email,
+		Password:           string(hash),
+		InvitationTicketID: invitationTicketID,
 	}
 	if err := s.pendingRepo.Create(row); err != nil {
 		return nil, err
@@ -291,7 +300,11 @@ func (s *Service) PromotePending(code string) (*SignupResult, error) {
 	if s.webhookHook != nil {
 		s.webhookHook.OnUserCreated(user)
 	}
-	return &SignupResult{User: user, Token: token}, nil
+	return &SignupResult{
+		User:               user,
+		Token:              token,
+		InvitationTicketID: pending.InvitationTicketID,
+	}, nil
 }
 
 // isReservedUsername reports whether lower (already lowercased) matches any
