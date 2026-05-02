@@ -180,6 +180,10 @@ proxyBypassHosts:
 
 #mediaProxy: https://example.com/proxy
 
+# Video thumbnail generator. The bundled docker-compose ships a `video-thumb`
+# service reachable at this address inside the Compose network.
+videoThumbnailGenerator: http://video-thumb:8080
+
 #allowedPrivateNetworks:
 #  - '127.0.0.1/32'
 

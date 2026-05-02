@@ -8,6 +8,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.99.0
 	github.com/bbrks/go-blurhash v1.2.0
+	github.com/gen2brain/avif v0.4.4
+	github.com/gen2brain/heic v0.4.9
+	github.com/gen2brain/jpegxl v0.4.5
 	github.com/gen2brain/webp v0.5.5
 	github.com/getsentry/sentry-go v0.45.1
 	github.com/go-webauthn/webauthn v0.16.4

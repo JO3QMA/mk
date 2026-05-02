@@ -146,6 +146,9 @@ func TestHandle_ValidHMACSignature(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "image/png", rec.Header().Get("Content-Type"))
 	assert.Contains(t, rec.Header().Get("Cache-Control"), "max-age=31536000")
+	// Output format negotiation depends on the request's Accept header, so
+	// shared caches MUST key on Accept (#637 review UR-012).
+	assert.Equal(t, "Accept", rec.Header().Get("Vary"))
 }
 
 func TestHandle_AllowlistedURL(t *testing.T) {

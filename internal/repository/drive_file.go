@@ -11,6 +11,7 @@ type DriveFileRepository interface {
 	FindByID(id string) (*model.DriveFile, error)
 	FindByIDs(ids []string) ([]*model.DriveFile, error)
 	FindByMD5(userID, md5 string) (*model.DriveFile, error)
+	FindByAccessKey(accessKey string) (*model.DriveFile, error)
 	// FindByURI looks up a drive_file by its AP `uri` field. Used for
 	// deduping remote attachments on inbound Note ingest (#378).
 	FindByURI(uri string) (*model.DriveFile, error)
@@ -92,6 +93,26 @@ func (r *driveFileRepository) FindByURI(uri string) (*model.DriveFile, error) {
 	}
 	var f model.DriveFile
 	if err := r.db.Where("uri = ?", uri).First(&f).Error; err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// FindByAccessKey looks up a DriveFile whose primary access key matches.
+// Returns gorm.ErrRecordNotFound when none match. Used by the media proxy
+// to swap a `?preview` request for the cached webpublic / thumbnail variant
+// when serving a local file (#637 M1)。
+//
+// 旧実装は thumbnail/webpublic access key も OR で引いていたが、呼び出し
+// 側 (mediaproxy.swapToVariant) は primary key 一致のときしか swap しない
+// ため、それらの match は dead clause だった。primary 単独 + unique index
+// で planner も最短経路に落とせる (#637 review UR-014)。
+func (r *driveFileRepository) FindByAccessKey(accessKey string) (*model.DriveFile, error) {
+	if accessKey == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var f model.DriveFile
+	if err := r.db.Where("\"accessKey\" = ?", accessKey).First(&f).Error; err != nil {
 		return nil, err
 	}
 	return &f, nil

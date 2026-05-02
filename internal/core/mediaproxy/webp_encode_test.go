@@ -144,6 +144,9 @@ func TestEncodeWebP_RoundTrip_SolidColor(t *testing.T) {
 // TestEncodeWebP_AllInputFormats_ProcessResize feeds JPEG/PNG/GIF/BMP/TIFF/
 // WebP through processResize and verifies that the resulting bytes are valid
 // WebP. WebP encoder swap 後も全ての入力フォーマットで成立することを保証する。
+//
+// AVIF / HEIC / JPEG XL は wazero ベースの decoder で別途 sanity check する
+// (TestEncodeWebP_GeneratedAVIFInput / TestProcessResize_AVIFOutput)。
 func TestEncodeWebP_AllInputFormats_ProcessResize(t *testing.T) {
 	cases := []struct {
 		name string
@@ -160,7 +163,7 @@ func TestEncodeWebP_AllInputFormats_ProcessResize(t *testing.T) {
 	s := testService(nil)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := s.processResize(tc.body, tc.mime, 0, 80)
+			result, err := s.processResize(tc.body, tc.mime, 0, 80, FormatWebP)
 			require.NoError(t, err)
 			defer result.Body.Close()
 			assert.Equal(t, "image/webp", result.ContentType)
