@@ -15,6 +15,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/notification"
 	coreuser "github.com/shiroha-a/mk/internal/core/user"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -1227,7 +1228,7 @@ func TestSetServerURL(t *testing.T) {
 
 func TestSetEmailSender(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	h.SetEmailSender(func(to, subject, body string) {})
+	h.SetEmailSender(func(_ string, _ miscsmtp.Message) {})
 }
 
 // --- Phase 7-2 (#244): 未読系フィールド実装 ---

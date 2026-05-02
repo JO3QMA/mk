@@ -15,6 +15,7 @@ import (
 	"github.com/shiroha-a/mk/internal/core/captcha"
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -176,10 +177,11 @@ func TestSignup_EmailRequired_CreatesPendingAndSendsEmail(t *testing.T) {
 	svc.SetUserPendingRepo(pendingRepo)
 	h := apisignup.NewHandler(svc, metaRepo, idGen)
 
-	var sentTo, sentSubject, sentBody string
+	var sentTo string
+	var sent miscsmtp.Message
 	done := make(chan struct{})
-	h.SetEmailSender("https://example.test", func(to, subject, body string) {
-		sentTo, sentSubject, sentBody = to, subject, body
+	h.SetEmailSender("https://example.test", func(to string, msg miscsmtp.Message) {
+		sentTo, sent = to, msg
 		close(done)
 	})
 
@@ -193,11 +195,13 @@ func TestSignup_EmailRequired_CreatesPendingAndSendsEmail(t *testing.T) {
 		t.Fatal("emailSender was not invoked")
 	}
 	assert.Equal(t, "alice@example.com", sentTo)
-	assert.Contains(t, sentSubject, "Confirm")
-	assert.Contains(t, sentBody, "https://example.test/signup-complete/")
+	assert.Contains(t, sent.Subject, "Confirm")
+	assert.Contains(t, sent.Text, "https://example.test/signup-complete/")
+	assert.Contains(t, sent.HTML, "https://example.test/signup-complete/", "HTML body にも link が含まれる")
+	assert.Contains(t, sent.HTML, "<!doctype html>", "HTML wrapper が適用される (#600 item 4)")
 	// confirmation link に pending.code が埋まっている
 	for _, row := range pendingRepo.Rows {
-		assert.Contains(t, sentBody, row.Code)
+		assert.Contains(t, sent.Text, row.Code)
 	}
 }
 
@@ -439,11 +443,11 @@ func TestSignup_EmailRequired_DefaultURL(t *testing.T) {
 	svc.SetUserPendingRepo(pendingRepo)
 	h := apisignup.NewHandler(svc, metaRepo, idGen)
 
-	var sentBody string
+	var sent miscsmtp.Message
 	done := make(chan struct{})
 	// SetEmailSender("", ...) で serverURL 空 → "https://localhost" fallback
-	h.SetEmailSender("", func(_, _, body string) {
-		sentBody = body
+	h.SetEmailSender("", func(_ string, msg miscsmtp.Message) {
+		sent = msg
 		close(done)
 	})
 	rec := doPost(h.Signup, `{"username":"al","password":"pw","emailAddress":"al@example.com"}`)
@@ -453,7 +457,7 @@ func TestSignup_EmailRequired_DefaultURL(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("emailSender was not invoked")
 	}
-	assert.Contains(t, sentBody, "https://localhost/signup-complete/")
+	assert.Contains(t, sent.Text, "https://localhost/signup-complete/")
 }
 
 // SignupPending: expired path

@@ -876,8 +876,8 @@ func (s *Server) setupRoutes() {
 			port = *signupSmtpMeta.SmtpPort
 		}
 		smtpUser, smtpPass := signupSmtpMeta.SmtpUser, signupSmtpMeta.SmtpPass
-		signupHandler.SetEmailSender(s.config.URL, func(to, subject, body string) {
-			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
+		signupHandler.SetEmailSender(s.config.URL, func(to string, msg miscsmtp.Message) {
+			miscsmtp.SendMessage(host, port, smtpUser, smtpPass, fromAddr, to, msg, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
 	api.POST("/signup", signupHandler.Signup)
@@ -924,8 +924,8 @@ func (s *Server) setupRoutes() {
 			port = *smtpMeta2.SmtpPort
 		}
 		smtpUser, smtpPass := smtpMeta2.SmtpUser, smtpMeta2.SmtpPass
-		resetHandler.SetEmailSender(func(to, subject, body string) {
-			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
+		resetHandler.SetEmailSender(func(to string, msg miscsmtp.Message) {
+			miscsmtp.SendMessage(host, port, smtpUser, smtpPass, fromAddr, to, msg, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
 	api.POST("/request-reset-password", resetHandler.RequestReset)
@@ -1076,8 +1076,8 @@ func (s *Server) setupRoutes() {
 			port = *smtpMeta.SmtpPort
 		}
 		smtpUser, smtpPass := smtpMeta.SmtpUser, smtpMeta.SmtpPass
-		iHandler.SetEmailSender(func(to, subject, body string) {
-			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
+		iHandler.SetEmailSender(func(to string, msg miscsmtp.Message) {
+			miscsmtp.SendMessage(host, port, smtpUser, smtpPass, fromAddr, to, msg, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
 	if webauthnSvc != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -179,12 +180,13 @@ func TestRequestReset_Success(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	var sentTo, sentSubject string
-	h.SetEmailSender(func(to, subject, body string) {
+	var sentTo string
+	var sent miscsmtp.Message
+	h.SetEmailSender(func(to string, msg miscsmtp.Message) {
 		mu.Lock()
 		defer mu.Unlock()
 		sentTo = to
-		sentSubject = subject
+		sent = msg
 	})
 
 	rec := post(h.RequestReset, `{"username":"testuser","email":"test@example.com"}`)
@@ -197,7 +199,9 @@ func TestRequestReset_Success(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	assert.Equal(t, "test@example.com", sentTo)
-	assert.Equal(t, "Password reset", sentSubject)
+	assert.Equal(t, "Password reset", sent.Subject)
+	assert.NotEmpty(t, sent.Text, "text body は必須")
+	assert.Contains(t, sent.HTML, "<!doctype html>", "HTML wrapper が同送される (#600 item 4)")
 	mu.Unlock()
 }
 

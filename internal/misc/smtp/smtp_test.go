@@ -705,3 +705,106 @@ func copyConn(dst net.Conn, src interface{ Read([]byte) (int, error) }) (int64, 
 		}
 	}
 }
+
+// buildMessage は internal helper だが、multipart/alternative の構造が
+// 正しく組まれているかを直接 unit test しておく (#600 item 4)。SendMessage 経由
+// は fake SMTP server で end-to-end カバーできるが boundary や header の
+// 詳細は文字列単位の assertion が早い。
+func TestBuildMessage_TextOnly(t *testing.T) {
+	got := buildMessage("from@example.test", "to@example.test", "Hi", "plain body", "")
+	if !strings.Contains(got, "Content-Type: text/plain; charset=UTF-8") {
+		t.Errorf("expected text/plain header, got: %s", got)
+	}
+	if strings.Contains(got, "multipart") {
+		t.Errorf("html 空のとき multipart を使ってはいけない")
+	}
+	if !strings.Contains(got, "plain body") {
+		t.Errorf("body should be embedded")
+	}
+}
+
+func TestBuildMessage_Multipart(t *testing.T) {
+	got := buildMessage("from@example.test", "to@example.test", "Hi", "plain body", "<p>html body</p>")
+	if !strings.Contains(got, "Content-Type: multipart/alternative") {
+		t.Errorf("expected multipart/alternative, got: %s", got)
+	}
+	if !strings.Contains(got, `boundary="----=_MK_GO_BOUNDARY_`) {
+		t.Errorf("expected randomized boundary header (prefix ----=_MK_GO_BOUNDARY_)")
+	}
+	// text / html part の本体検証 (Transfer-Encoding は 8bit に統一)
+	if !strings.Contains(got, "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\nplain body") {
+		t.Errorf("text part missing or malformed")
+	}
+	if !strings.Contains(got, "Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n<p>html body</p>") {
+		t.Errorf("html part missing or malformed")
+	}
+	// closing boundary は randomized なので prefix で確認
+	if !strings.Contains(got, "----=_MK_GO_BOUNDARY_") || !strings.Contains(got, "--\r\n") {
+		t.Errorf("closing boundary marker missing")
+	}
+}
+
+// 非 ASCII subject (#600 item 4 review): RFC 2047 encoded-word で
+// `=?UTF-8?B?<base64>?=` 形式に encode されること。
+func TestBuildMessage_NonASCIISubjectIsEncoded(t *testing.T) {
+	got := buildMessage("from@example.test", "to@example.test", "確認メール", "body", "")
+	if !strings.Contains(got, "=?UTF-8?b?") && !strings.Contains(got, "=?UTF-8?B?") {
+		t.Errorf("non-ASCII subject must be RFC 2047 encoded-word, got: %s", got)
+	}
+	// 生 UTF-8 bytes が subject 行に残っていない
+	if strings.Contains(got, "Subject: 確認メール") {
+		t.Errorf("raw UTF-8 subject must not appear; got: %s", got)
+	}
+}
+
+// ASCII-only subject はそのまま (encoded-word でラップしない)
+func TestBuildMessage_ASCIISubjectIsNotEncoded(t *testing.T) {
+	got := buildMessage("from@example.test", "to@example.test", "Hello", "body", "")
+	if !strings.Contains(got, "Subject: Hello\r\n") {
+		t.Errorf("ASCII subject should be passed verbatim, got: %s", got)
+	}
+}
+
+// Content-Transfer-Encoding 8bit (#600 item 4 review)
+func TestBuildMessage_TransferEncodingIs8bit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		html string
+	}{
+		{"text-only", "body", ""},
+		{"multipart", "body", "<p>x</p>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildMessage("f@e.test", "t@e.test", "S", tc.text, tc.html)
+			if !strings.Contains(got, "Content-Transfer-Encoding: 8bit") {
+				t.Errorf("must declare 8bit transfer encoding, got: %s", got)
+			}
+			if strings.Contains(got, "Content-Transfer-Encoding: 7bit") {
+				t.Errorf("must not declare 7bit (incorrect for UTF-8), got: %s", got)
+			}
+		})
+	}
+}
+
+// random boundary (#600 item 4 review): 同じ入力でも 2 回呼ぶと boundary が変わる
+func TestBuildMessage_RandomBoundary(t *testing.T) {
+	a := buildMessage("f@e.test", "t@e.test", "S", "x", "<p>x</p>")
+	b := buildMessage("f@e.test", "t@e.test", "S", "x", "<p>x</p>")
+	// boundary 行を抽出して比較
+	pickBoundary := func(s string) string {
+		for _, line := range strings.Split(s, "\r\n") {
+			if strings.HasPrefix(line, "Content-Type: multipart/alternative; boundary=") {
+				return line
+			}
+		}
+		return ""
+	}
+	ba, bb := pickBoundary(a), pickBoundary(b)
+	if ba == "" || bb == "" {
+		t.Fatalf("boundary header missing")
+	}
+	if ba == bb {
+		t.Errorf("boundary should be randomized per message; both=%s", ba)
+	}
+}
