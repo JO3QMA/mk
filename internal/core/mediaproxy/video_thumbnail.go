@@ -1,9 +1,118 @@
 package mediaproxy
 
-import "strings"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
 
-// IsVideoMIME reports whether contentType is a video/* MIME type the proxy
+// ErrVideoThumbnailUnavailable is returned by fetchVideoThumbnail when no
+// videoThumbnailGenerator is configured or the upstream call failed.
+var ErrVideoThumbnailUnavailable = errors.New("mediaproxy: video thumbnail unavailable")
+
+// videoThumbnailTimeout caps the round-trip to the external thumbnail
+// generator. Generators normally finish in well under a second; longer
+// than this we suspect a stalled decoder or unreachable service.
+const videoThumbnailTimeout = 30 * time.Second
+
+// isVideoMIME reports whether contentType is a video/* MIME type the proxy
 // should attempt to extract a still frame from.
-func IsVideoMIME(contentType string) bool {
+func isVideoMIME(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(contentType), "video/")
+}
+
+// newVideoThumbnailClient returns an *http.Client wired to talk to genURL.
+//
+//   - `unix:///path/to/socket`  → HTTP over a Unix domain socket. The URL
+//     authority (host) is ignored and replaced with a constant placeholder
+//     when building requests; the dialer connects to the socket path.
+//   - everything else            → ordinary HTTP/HTTPS over TCP.
+//
+// The generator is operator-configured and assumed trusted, so SSRF guard
+// is intentionally not applied (mirroring urlpreview's proxyClient pattern,
+// #638). Returns nil when genURL is empty (feature disabled).
+func newVideoThumbnailClient(genURL string) *http.Client {
+	if genURL == "" {
+		return nil
+	}
+	if strings.HasPrefix(genURL, "unix:") {
+		u, err := url.Parse(genURL)
+		if err != nil || u.Path == "" {
+			return nil
+		}
+		socketPath := u.Path
+		return &http.Client{
+			Timeout: videoThumbnailTimeout,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+				},
+			},
+		}
+	}
+	return &http.Client{Timeout: videoThumbnailTimeout}
+}
+
+// videoThumbnailRequestURL builds the GET URL the generator expects.
+// Misskey TS' videoThumbnailGenerator API: `<base>/thumbnail.webp?thumbnail=1&url=<encoded>`.
+//
+// For UDS the host part is irrelevant — net/http requires a non-empty host
+// for parsing, so we substitute a placeholder.
+func videoThumbnailRequestURL(genURL, sourceURL string) (string, error) {
+	if strings.HasPrefix(genURL, "unix:") {
+		u, err := url.Parse(genURL)
+		if err != nil {
+			return "", err
+		}
+		base := "http://video-thumb-uds" + strings.TrimRight(u.RawQuery, "")
+		// Note: any URL path component in the unix:// URL is the socket path
+		// itself, NOT an HTTP path prefix. We don't honour it here.
+		return base + "/thumbnail.webp?thumbnail=1&url=" + url.QueryEscape(sourceURL), nil
+	}
+	return strings.TrimRight(genURL, "/") + "/thumbnail.webp?thumbnail=1&url=" + url.QueryEscape(sourceURL), nil
+}
+
+// fetchVideoThumbnail asks the configured external generator for a still
+// frame thumbnail of sourceURL. The returned bytes are an image (typically
+// WebP) that the caller will pipe through processAndReturn for further
+// resizing / format negotiation.
+func (s *Service) fetchVideoThumbnail(ctx context.Context, sourceURL string) ([]byte, string, error) {
+	if s.videoThumbClient == nil {
+		return nil, "", ErrVideoThumbnailUnavailable
+	}
+	target, err := videoThumbnailRequestURL(s.videoThumbGen, sourceURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %v", ErrVideoThumbnailUnavailable, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %v", ErrVideoThumbnailUnavailable, err)
+	}
+	req.Header.Set("User-Agent", s.userAgent)
+	resp, err := s.videoThumbClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %v", ErrVideoThumbnailUnavailable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("%w: status %d", ErrVideoThumbnailUnavailable, resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: read body: %v", ErrVideoThumbnailUnavailable, err)
+	}
+	if int64(len(data)) > maxDownload {
+		return nil, "", ErrTooLarge
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	return data, contentType, nil
 }

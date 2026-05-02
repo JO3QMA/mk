@@ -56,6 +56,16 @@ const (
 	maxDownload   = 32 << 20 // 32 MB
 )
 
+// maxDecodedPixels caps width*height *after* decode so a pixel-bomb input
+// (a few hundred kB AVIF/HEIC/JXL that decodes to 30000x30000 = 3.6 GB
+// raster) cannot OOM the proxy. Mirrors sharp's `limitInputPixels`
+// default. 8192*8192 = 64 MP keeps every realistic phone/camera input
+// flowing while rejecting clearly malicious payloads (#637 review UR-016).
+//
+// var (not const) so tests can shadow the limit without synthesizing a 64 MP
+// fixture. Production paths must not assign to it.
+var maxDecodedPixels int64 = 8192 * 8192
+
 var (
 	ErrUnauthorized = errors.New("mediaproxy: unauthorized URL")
 	ErrNotFound     = errors.New("mediaproxy: resource not found")
@@ -123,21 +133,28 @@ type DriveFileLookup interface {
 // DriveFileVariants exposes only the access-key fields the proxy needs.
 // repository 側でこの shape を直接返さない (model.DriveFile が大きすぎる)
 // ので、wire 層で adapter を書いて変換する。
+//
+// MimeType は upload 時に確定した値で、`http.DetectContentType` が認識
+// しない HEIC/HEIF/AVIF/JXL を proxy が誤って `application/octet-stream`
+// として扱うのを防ぐ (#637 review UR-017)。
 type DriveFileVariants struct {
 	AccessKey          *string
 	ThumbnailAccessKey *string
 	WebpublicAccessKey *string
+	MimeType           string
 }
 
 // Service handles media proxy authorization and fetching.
 type Service struct {
-	instanceURL  string
-	driveStorage coredrive.Storage
-	allowlist    AllowlistChecker
-	hmacSecret   []byte
-	httpClient   *http.Client
-	userAgent    string
-	driveLookup  DriveFileLookup // optional, #637 M1
+	instanceURL      string
+	driveStorage     coredrive.Storage
+	allowlist        AllowlistChecker
+	hmacSecret       []byte
+	httpClient       *http.Client
+	userAgent        string
+	driveLookup      DriveFileLookup // optional, #637 M1
+	videoThumbGen    string          // optional, #637 M2 (Misskey TS videoThumbnailGenerator URL)
+	videoThumbClient *http.Client    // built lazily from videoThumbGen, supports unix:// scheme
 }
 
 // NewService creates a new media proxy Service.
@@ -162,6 +179,23 @@ func NewService(instanceURL, userAgent string, driveStorage coredrive.Storage, a
 // against local files (#637 M1)。
 func (s *Service) SetDriveLookup(l DriveFileLookup) {
 	s.driveLookup = l
+}
+
+// SetDriveStorage replaces the storage backend (test ergonomics, #637 M1
+// review nit).
+func (s *Service) SetDriveStorage(st coredrive.Storage) {
+	s.driveStorage = st
+}
+
+// SetVideoThumbnailGenerator wires an external thumbnail generator. The URL
+// follows Misskey TS' `videoThumbnailGenerator` API:
+// `<base>/thumbnail.webp?thumbnail=1&url=<original video URL>`. For UDS
+// deployments pass `unix:///path/to/socket` and the proxy will dial the
+// socket directly, ignoring the URL host. Empty disables the feature
+// (default — proxy returns dummy PNG for video MIME, #637 M2)。
+func (s *Service) SetVideoThumbnailGenerator(genURL string) {
+	s.videoThumbGen = genURL
+	s.videoThumbClient = newVideoThumbnailClient(genURL)
 }
 
 // SignURL generates an HMAC-SHA256 signature for the given URL.
@@ -194,39 +228,67 @@ func (s *Service) Fetch(ctx context.Context, rawURL string, mode ProxyMode, out 
 	// ローカルファイルの場合はdriveStorageから直接取得
 	filesPrefix := s.instanceURL + "/files/"
 	if strings.HasPrefix(rawURL, filesPrefix) {
-		return s.resolveLocal(rawURL, filesPrefix, mode, out)
+		return s.resolveLocal(ctx, rawURL, filesPrefix, mode, out)
 	}
 
 	return s.fetchRemote(ctx, rawURL, mode, out)
 }
 
 // resolveLocal fetches a file from local drive storage by access key.
-func (s *Service) resolveLocal(rawURL, filesPrefix string, mode ProxyMode, out OutputFormat) (*ProxyResult, error) {
-	accessKey := strings.TrimPrefix(rawURL, filesPrefix)
+func (s *Service) resolveLocal(ctx context.Context, rawURL, filesPrefix string, mode ProxyMode, out OutputFormat) (*ProxyResult, error) {
+	primaryKey := strings.TrimPrefix(rawURL, filesPrefix)
 	// パスに/が含まれる場合は先頭のセグメントだけを使う
-	if idx := strings.Index(accessKey, "/"); idx >= 0 {
-		accessKey = accessKey[:idx]
+	if idx := strings.Index(primaryKey, "/"); idx >= 0 {
+		primaryKey = primaryKey[:idx]
 	}
-	if accessKey == "" {
+	if primaryKey == "" {
 		return nil, ErrBadRequest
 	}
 
+	accessKey := primaryKey
+	storedMIME := ""
+
 	// 既に存在する thumbnail / webpublic variant を提供できる mode なら、
 	// 元データを再 decode + resize せずに variant を直接返して CPU を節約
-	// する (#637 M1)。SetDriveLookup されていない / 該当 variant が無い
-	// 場合は従来通り元データを取得して proxy 側で resize する。
-	if s.driveLookup != nil {
-		if swapped, ok := s.swapToVariant(accessKey, mode); ok {
+	// する (#637 M1)。SetDriveLookup されていない / resize しないモード /
+	// 該当 variant が無い場合は従来通り元データを取得して proxy 側で
+	// resize する。default mode で DB を引かないようにする (#637 review
+	// UR-014)。
+	if s.driveLookup != nil && isResizeMode(mode) {
+		if swapped, mt, ok := s.swapToVariant(primaryKey, mode); ok {
 			accessKey = swapped
+			storedMIME = mt
+		} else {
+			// swap しないが lookup は成功している場合、stored MIME を後段
+			// MIME 判定で活用する (HEIC/AVIF/JXL の DetectContentType
+			// 誤判定対策、#637 review UR-017)。
+			if v, err := s.driveLookup.FindByAccessKey(primaryKey); err == nil {
+				storedMIME = v.MimeType
+			}
 		}
 	}
 
 	body, err := s.driveStorage.Get(accessKey)
 	if err != nil {
 		if errors.Is(err, coredrive.ErrObjectNotFound) {
-			return nil, ErrNotFound
+			// Variant blob が S3 lifecycle 等で消えた場合、primary を
+			// 再フェッチして resize 経路に戻す (#637 review UR-001)。
+			if accessKey != primaryKey {
+				body, err = s.driveStorage.Get(primaryKey)
+				if err == nil {
+					accessKey = primaryKey
+					storedMIME = "" // primary の MIME は後段で判定し直す
+				}
+			}
+			if err != nil {
+				if errors.Is(err, coredrive.ErrObjectNotFound) {
+					return nil, ErrNotFound
+				}
+				return nil, fmt.Errorf("mediaproxy: local file access: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("mediaproxy: local file access: %w", err)
 		}
-		return nil, fmt.Errorf("mediaproxy: local file access: %w", err)
 	}
 
 	// ローカルファイルの場合はMIME判定して画像処理
@@ -239,42 +301,53 @@ func (s *Service) resolveLocal(rawURL, filesPrefix string, mode ProxyMode, out O
 		return nil, ErrTooLarge
 	}
 
-	contentType := http.DetectContentType(data)
-	return s.processAndReturn(data, contentType, mode, out)
+	// stored MIME が分かっていればそちらを優先 (HEIC/AVIF/JXL は
+	// http.DetectContentType が認識せず octet-stream を返す)。fetchRemote
+	// と同じ挙動に揃える。
+	contentType := storedMIME
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(data)
+	}
+	return s.processAndReturn(ctx, data, contentType, mode, out, rawURL)
 }
 
 // swapToVariant looks up the DriveFile by access key and returns the
-// thumbnail / webpublic access key when one matches the requested mode.
-// Returns (newKey, true) on swap, ("", false) otherwise.
-func (s *Service) swapToVariant(accessKey string, mode ProxyMode) (string, bool) {
+// thumbnail / webpublic access key when one matches the requested mode,
+// along with the variant's expected MIME (which `http.DetectContentType`
+// can sniff but stored MIME is more reliable). Returns (key, mime, true)
+// on swap, ("", "", false) otherwise.
+func (s *Service) swapToVariant(accessKey string, mode ProxyMode) (string, string, bool) {
 	v, err := s.driveLookup.FindByAccessKey(accessKey)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	// 既に primary 以外 (= 既に variant の access key) を要求されているなら
 	// 二重に swap しない。
 	if v.AccessKey == nil || *v.AccessKey != accessKey {
-		return "", false
+		return "", "", false
 	}
+	// Variant の MIME は driveFile 上に直接持たないので空文字を返し、
+	// 呼び出し側で `http.DetectContentType` フォールバックさせる。stored
+	// thumbnail/webpublic は通常 image/jpeg or image/webp なので sniffer
+	// で正しく判別できる。
 	switch mode {
 	case ModeEmoji, ModeAvatar, ModePreview, ModeBadge:
 		// 小サイズ系: thumbnail があれば優先、無ければ webpublic を試す。
 		if v.ThumbnailAccessKey != nil && *v.ThumbnailAccessKey != "" {
-			return *v.ThumbnailAccessKey, true
+			return *v.ThumbnailAccessKey, "", true
 		}
 		if v.WebpublicAccessKey != nil && *v.WebpublicAccessKey != "" {
-			return *v.WebpublicAccessKey, true
+			return *v.WebpublicAccessKey, "", true
 		}
 	case ModeStatic:
-		// 中サイズ: webpublic 優先、無ければ thumbnail を流用 (静止 + 縮小)。
+		// 498x422 用 mid-size mode。thumbnail (典型的に小さすぎる) には
+		// fallback しない: upscale 表示や ratio 崩れを防ぐ (#637 review
+		// 自 #2)。webpublic が無ければ swap せず原本を resize する。
 		if v.WebpublicAccessKey != nil && *v.WebpublicAccessKey != "" {
-			return *v.WebpublicAccessKey, true
-		}
-		if v.ThumbnailAccessKey != nil && *v.ThumbnailAccessKey != "" {
-			return *v.ThumbnailAccessKey, true
+			return *v.WebpublicAccessKey, "", true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // fetchRemote downloads a file from a remote URL.
@@ -327,7 +400,7 @@ func (s *Service) fetchRemote(ctx context.Context, rawURL string, mode ProxyMode
 		contentType = http.DetectContentType(data)
 	}
 
-	return s.processAndReturn(data, contentType, mode, out)
+	return s.processAndReturn(ctx, data, contentType, mode, out, rawURL)
 }
 
 // OutputFormat selects the encoder used by resize-class processing modes.
@@ -346,19 +419,28 @@ const (
 // in the requested output format (WebP / AVIF). Badge と passThrough は
 // format negotiation の対象外で常に PNG / 元 MIME を返す。
 //
-// video/* MIME はそのまま resize 経路に乗せず、まず still frame を ffmpeg で
-// 抽出してから image pipeline に渡す。ffmpeg build tag 無しでは
-// extractVideoThumbnailFrame が ErrVideoThumbnailUnavailable を返すので
-// dummy PNG にフォールバックする (#637 M2)。
-func (s *Service) processAndReturn(data []byte, contentType string, mode ProxyMode, out OutputFormat) (*ProxyResult, error) {
-	if IsVideoMIME(contentType) && isResizeMode(mode) {
-		frame, err := extractVideoThumbnailFrame(data, contentType)
-		if err != nil {
+// video/* MIME は image pipeline に直接乗らないので、設定済みの
+// videoThumbnailGenerator (Misskey TS 互換 API) に GET を投げて返ってきた
+// 静止画を再帰的に image pipeline に通す。generator 未設定 / 呼び出し失敗
+// / local /files/ source (generator から取り直せない) のときは dummy PNG
+// にフォールバックして frontend を壊さない (#637 M2)。
+func (s *Service) processAndReturn(ctx context.Context, data []byte, contentType string, mode ProxyMode, out OutputFormat, sourceURL string) (*ProxyResult, error) {
+	if isVideoMIME(contentType) && isResizeMode(mode) {
+		// Generator は外部 URL を fetch する前提なので、local /files/ への
+		// 戻り迂回は避ける (M1 variant swap で既に解決済のはず)。
+		if s.videoThumbClient != nil && !strings.HasPrefix(sourceURL, s.instanceURL+"/files/") {
+			frame, frameMIME, err := s.fetchVideoThumbnail(ctx, sourceURL)
+			if err == nil {
+				data = frame
+				contentType = frameMIME
+			} else {
+				slog.Warn("mediaproxy: video thumbnail generator failed",
+					"url", sourceURL, "err", err)
+				return makeDummyPNG(), nil
+			}
+		} else {
 			return makeDummyPNG(), nil
 		}
-		// still frame は image/jpeg として image pipeline に渡す。
-		data = frame
-		contentType = "image/jpeg"
 	}
 	switch mode {
 	case ModeEmoji:
@@ -400,6 +482,12 @@ func (s *Service) processResize(data []byte, contentType string, width, height i
 		// デコード失敗時は元データをそのまま返す
 		return makeResult(data, contentType), nil
 	}
+	if exceedsPixelCap(img) {
+		// pixel-bomb (32MB AVIF/HEIC/JXL が 30000x30000 に展開される類) は
+		// resize/encode で多 GB のバッファを抱えるので dummy PNG にして
+		// proxy の OOM を防ぐ (#637 review UR-016)。
+		return makeDummyPNG(), nil
+	}
 
 	var resized image.Image
 	if width == 0 {
@@ -412,15 +500,30 @@ func (s *Service) processResize(data []byte, contentType string, width, height i
 	if out == FormatAVIF {
 		if encoded, err := encodeAVIF(resized); err == nil {
 			return makeResult(encoded, "image/avif"), nil
+		} else {
+			// AVIF 失敗時は WebP に fallback。原因は libavif (wazero) 側の
+			// memory limit / 入力色空間など多岐に渡るので observability の
+			// ため warn level で残す (UR review nit #6)。
+			slog.Warn("mediaproxy: avif encode failed, falling back to webp",
+				"err", err)
 		}
-		// AVIF 失敗時は WebP に fallback (元データに戻すと sensitive な
-		// resize 結果が伝わらないため)
 	}
 	encoded, err := encodeWebP(resized)
 	if err != nil {
 		return makeResult(data, contentType), nil
 	}
 	return makeResult(encoded, "image/webp"), nil
+}
+
+// exceedsPixelCap returns true when the decoded image's pixel count exceeds
+// maxDecodedPixels. Used to refuse processing pixel-bomb inputs.
+func exceedsPixelCap(img image.Image) bool {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return true
+	}
+	return int64(w)*int64(h) > maxDecodedPixels
 }
 
 // processBadge creates a 96x96 greyscale PNG badge.
@@ -430,6 +533,9 @@ func (s *Service) processBadge(data []byte, contentType string) (*ProxyResult, e
 	}
 
 	img, err := decodeImage(data)
+	if err == nil && exceedsPixelCap(img) {
+		return makeDummyPNG(), nil
+	}
 	if err != nil {
 		return makeResult(data, contentType), nil
 	}

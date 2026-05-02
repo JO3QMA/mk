@@ -98,19 +98,21 @@ func (r *driveFileRepository) FindByURI(uri string) (*model.DriveFile, error) {
 	return &f, nil
 }
 
-// FindByAccessKey looks up a DriveFile whose primary, thumbnail, or webpublic
-// access key matches. Returns gorm.ErrRecordNotFound when none match. Used by
-// the media proxy to swap a `?preview` request for the cached webpublic /
-// thumbnail variant when serving a local file (#637 M1)。
+// FindByAccessKey looks up a DriveFile whose primary access key matches.
+// Returns gorm.ErrRecordNotFound when none match. Used by the media proxy
+// to swap a `?preview` request for the cached webpublic / thumbnail variant
+// when serving a local file (#637 M1)。
+//
+// 旧実装は thumbnail/webpublic access key も OR で引いていたが、呼び出し
+// 側 (mediaproxy.swapToVariant) は primary key 一致のときしか swap しない
+// ため、それらの match は dead clause だった。primary 単独 + unique index
+// で planner も最短経路に落とせる (#637 review UR-014)。
 func (r *driveFileRepository) FindByAccessKey(accessKey string) (*model.DriveFile, error) {
 	if accessKey == "" {
 		return nil, gorm.ErrRecordNotFound
 	}
 	var f model.DriveFile
-	if err := r.db.Where(
-		"\"accessKey\" = ? OR \"thumbnailAccessKey\" = ? OR \"webpublicAccessKey\" = ?",
-		accessKey, accessKey, accessKey,
-	).First(&f).Error; err != nil {
+	if err := r.db.Where("\"accessKey\" = ?", accessKey).First(&f).Error; err != nil {
 		return nil, err
 	}
 	return &f, nil

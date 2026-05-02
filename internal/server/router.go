@@ -1331,6 +1331,12 @@ func (s *Server) setupRoutes() {
 	// Local drive file の thumbnail / webpublic 変種を proxy 側で再 encode
 	// せず直接返せるようにする (#637 M1)。
 	proxyService.SetDriveLookup(driveFileLookupAdapter{repo: driveFileRepo})
+	// 動画 still frame の生成は外部 service に委譲する (#637 M2 redesign)。
+	// config.videoThumbnailGenerator が空のときは disabled (proxy は dummy
+	// PNG を返す)。`unix:///path/socket` 形式で UDS deployment にも対応。
+	if s.config.VideoThumbnailGenerator != "" {
+		proxyService.SetVideoThumbnailGenerator(s.config.VideoThumbnailGenerator)
+	}
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)
 

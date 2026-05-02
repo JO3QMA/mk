@@ -23,5 +23,6 @@ func (a driveFileLookupAdapter) FindByAccessKey(accessKey string) (coremediaprox
 		AccessKey:          f.AccessKey,
 		ThumbnailAccessKey: f.ThumbnailAccessKey,
 		WebpublicAccessKey: f.WebpublicAccessKey,
+		MimeType:           f.Type,
 	}, nil
 }

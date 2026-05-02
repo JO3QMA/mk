@@ -97,6 +97,11 @@ func (h *Handler) Handle(c echo.Context) error {
 
 	c.Response().Header().Set("Cache-Control", "max-age=31536000, immutable")
 	c.Response().Header().Set("Content-Type", result.ContentType)
+	// Output format depends on the client's Accept header (image/avif → AVIF,
+	// otherwise WebP), so shared caches MUST key on Accept to avoid serving
+	// AVIF to a Safari 15 / WebP-only client cached behind a CDN, and
+	// vice-versa (#637 review UR-012).
+	c.Response().Header().Set("Vary", "Accept")
 	c.Response().WriteHeader(http.StatusOK)
 	_, _ = io.Copy(c.Response(), result.Body)
 	return nil

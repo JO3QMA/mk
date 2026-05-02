@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	coredrive "github.com/shiroha-a/mk/internal/core/drive"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +49,7 @@ func TestResolveLocal_SwapsToThumbnail(t *testing.T) {
 	store.put("thumb-key", makePNG())
 
 	s := testService(map[string]bool{"https://example.com/files/primary-key": true})
-	s.driveStorage = store
+	s.SetDriveStorage(store)
 	s.SetDriveLookup(stubLookup{primary: "primary-key", thumbKey: "thumb-key"})
 
 	res, err := s.Fetch(context.Background(), "https://example.com/files/primary-key", ModePreview, FormatWebP)
@@ -67,7 +68,7 @@ func TestResolveLocal_FallsBackWhenLookupMisses(t *testing.T) {
 	store.put("primary-key", makePNG())
 
 	s := testService(map[string]bool{"https://example.com/files/primary-key": true})
-	s.driveStorage = store
+	s.SetDriveStorage(store)
 	s.SetDriveLookup(stubLookup{notFoundOn: "primary-key"})
 
 	res, err := s.Fetch(context.Background(), "https://example.com/files/primary-key", ModePreview, FormatWebP)
@@ -86,7 +87,7 @@ func TestResolveLocal_StaticPrefersWebpublic(t *testing.T) {
 	store.put("webpub-key", makePNG())
 
 	s := testService(map[string]bool{"https://example.com/files/primary-key": true})
-	s.driveStorage = store
+	s.SetDriveStorage(store)
 	s.SetDriveLookup(stubLookup{primary: "primary-key", thumbKey: "thumb-key", webpubKey: "webpub-key"})
 
 	_, err := s.Fetch(context.Background(), "https://example.com/files/primary-key", ModeStatic, FormatWebP)
@@ -94,20 +95,23 @@ func TestResolveLocal_StaticPrefersWebpublic(t *testing.T) {
 	assert.Contains(t, store.reads, "webpub-key")
 }
 
-// TestResolveLocal_StaticFallsBackToThumbnail : when webpublic is missing,
-// Static falls back to thumbnail.
-func TestResolveLocal_StaticFallsBackToThumbnail(t *testing.T) {
+// TestResolveLocal_StaticDoesNotSwapToThumbnail : when webpublic is missing,
+// Static must NOT fall back to thumbnail (its smaller resolution would
+// degrade Static's 498x422 target). Behaviour change vs prior PR-642
+// initial implementation per #637 review feedback.
+func TestResolveLocal_StaticDoesNotSwapToThumbnail(t *testing.T) {
 	store := newStubDriveStorage()
 	store.put("primary-key", makePNG())
 	store.put("thumb-key", makePNG())
 
 	s := testService(map[string]bool{"https://example.com/files/primary-key": true})
-	s.driveStorage = store
+	s.SetDriveStorage(store)
 	s.SetDriveLookup(stubLookup{primary: "primary-key", thumbKey: "thumb-key"})
 
 	_, err := s.Fetch(context.Background(), "https://example.com/files/primary-key", ModeStatic, FormatWebP)
 	require.NoError(t, err)
-	assert.Contains(t, store.reads, "thumb-key")
+	assert.Contains(t, store.reads, "primary-key", "Static must serve primary when only thumbnail variant exists")
+	assert.NotContains(t, store.reads, "thumb-key")
 }
 
 // TestResolveLocal_RequestingVariantKeyDirectly : if the URL points at the
@@ -118,7 +122,7 @@ func TestResolveLocal_RequestingVariantKeyDirectly(t *testing.T) {
 	store.put("thumb-key", makePNG())
 
 	s := testService(map[string]bool{"https://example.com/files/thumb-key": true})
-	s.driveStorage = store
+	s.SetDriveStorage(store)
 	s.SetDriveLookup(stubLookup{primary: "primary-key", thumbKey: "thumb-key"})
 
 	_, err := s.Fetch(context.Background(), "https://example.com/files/thumb-key", ModePreview, FormatWebP)
@@ -134,7 +138,7 @@ func TestResolveLocal_PreviewWithOnlyWebpublic(t *testing.T) {
 	store.put("webpub-key", makePNG())
 
 	s := testService(map[string]bool{"https://example.com/files/primary-key": true})
-	s.driveStorage = store
+	s.SetDriveStorage(store)
 	s.SetDriveLookup(stubLookup{primary: "primary-key", webpubKey: "webpub-key"})
 
 	_, err := s.Fetch(context.Background(), "https://example.com/files/primary-key", ModePreview, FormatWebP)
@@ -150,13 +154,33 @@ func TestResolveLocal_DefaultModeNoSwap(t *testing.T) {
 	store.put("thumb-key", makePNG())
 
 	s := testService(map[string]bool{"https://example.com/files/primary-key": true})
-	s.driveStorage = store
+	s.SetDriveStorage(store)
 	s.SetDriveLookup(stubLookup{primary: "primary-key", thumbKey: "thumb-key"})
 
 	_, err := s.Fetch(context.Background(), "https://example.com/files/primary-key", ModeDefault, FormatWebP)
 	require.NoError(t, err)
 	assert.Contains(t, store.reads, "primary-key")
 	assert.NotContains(t, store.reads, "thumb-key")
+}
+
+// TestResolveLocal_VariantMissingFallsBackToPrimary : if the swapped variant
+// blob is gone (S3 lifecycle pruned the thumbnail but the primary survives),
+// the proxy must NOT 404; it should retry with the primary access key
+// (#637 review UR-001).
+func TestResolveLocal_VariantMissingFallsBackToPrimary(t *testing.T) {
+	store := newStubDriveStorage()
+	store.put("primary-key", makePNG())
+	// thumb-key intentionally NOT put — simulates pruned variant blob.
+
+	s := testService(map[string]bool{"https://example.com/files/primary-key": true})
+	s.SetDriveStorage(store)
+	s.SetDriveLookup(stubLookup{primary: "primary-key", thumbKey: "thumb-key"})
+
+	res, err := s.Fetch(context.Background(), "https://example.com/files/primary-key", ModePreview, FormatWebP)
+	require.NoError(t, err, "must not 404 when only the variant is missing")
+	defer res.Body.Close()
+	// thumb-key tried first, then primary-key as fallback.
+	assert.Equal(t, []string{"thumb-key", "primary-key"}, store.reads)
 }
 
 // stubDriveStorage records read access to support the swap-detection assertion.
@@ -175,7 +199,10 @@ func (s *stubDriveStorage) Get(key string) (io.ReadCloser, error) {
 	s.reads = append(s.reads, key)
 	body, ok := s.objects[key]
 	if !ok {
-		return nil, errors.New("object not found")
+		// Match the production sentinel so resolveLocal's variant→primary
+		// retry path (#637 review UR-001) and the ErrNotFound mapping
+		// (existing) trigger correctly.
+		return nil, coredrive.ErrObjectNotFound
 	}
 	return io.NopCloser(strings.NewReader(string(body))), nil
 }

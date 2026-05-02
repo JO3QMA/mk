@@ -16,16 +16,6 @@ BUILD_DIR=./built
 # Go parameters
 GOFLAGS=-trimpath
 
-# Build feature tags. Comma-separated list passed as -tags. Currently:
-#   ffmpeg — enables video thumbnail extraction in the media proxy via the
-#            ffmpeg binary on PATH (#637 M2). Without this tag the proxy
-#            short-circuits video sources to a placeholder PNG.
-# Example: make build FEATURES=ffmpeg
-FEATURES ?=
-ifneq ($(strip $(FEATURES)),)
-GOFLAGS += -tags $(FEATURES)
-endif
-
 # バージョン情報: submodule の package.json があれば Misskey バージョンを自動取得
 MKGO_VERSION ?= 0.0.1
 MISSKEY_PKG_JSON = third_party/misskey/package.json
@@ -50,7 +40,7 @@ tidy:
 	go mod tidy
 
 test:
-	go test $(if $(strip $(FEATURES)),-tags $(FEATURES)) ./... -v
+	go test ./... -v
 
 fmt:
 	gofmt -s -w .

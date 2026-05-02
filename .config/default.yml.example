@@ -284,8 +284,12 @@ proxyBypassHosts:
 #mediaProxy: https://example.com/proxy
 #mediaProxySecret: change-me
 
-# Movie thumbnail generation URL.
-#videoThumbnailGenerator: https://example.com
+# Movie thumbnail generation URL. mk-go calls this service for video/* MIME
+# in /proxy. Misskey TS-compatible API: `<base>/thumbnail.webp?thumbnail=1&url=<URL>`.
+# Recommended deployment is the bundled `video-thumb` Compose service
+# (docker-compose.yml). For UDS-only stacks use `unix:///path/to/socket`.
+#videoThumbnailGenerator: http://video-thumb:8080
+#videoThumbnailGenerator: unix:///run/video-thumb/sock
 
 # For security reasons, uploading attachments from the intranet is
 # prohibited; exceptions can be allowed here. Default is empty.
