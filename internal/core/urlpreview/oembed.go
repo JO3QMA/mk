@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -40,6 +41,14 @@ var playerAllowlist = map[string]struct{}{
 // information into a PlayerResult. Errors are returned to the caller which
 // MAY drop them — preview fetching must not fail just because oEmbed is
 // unreachable.
+//
+// Redirect handling: this method shares the Fetcher's primary client, so
+// redirects follow the same `cfg.AllowRedirect` policy as the HTML body
+// fetch. Provider redirects (e.g. youtube.com/oembed → youtu.be variants)
+// are intentional in real-world traffic; if AllowRedirect is false the
+// 2nd hop is rejected and we silently fall back to "no player" preview.
+// SSRF guard (#638-B1) is applied on every dial including redirect hops,
+// so attacker-controlled oEmbed URLs cannot pivot to private IPs.
 func (f *Fetcher) fetchOEmbed(ctx context.Context, oembedURL string) (PlayerResult, error) {
 	zero := PlayerResult{Allow: []string{}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oembedURL, nil)
@@ -73,6 +82,13 @@ func (f *Fetcher) fetchOEmbed(ctx context.Context, oembedURL string) (PlayerResu
 	}
 	var doc oembedResponse
 	if err := json.Unmarshal(data, &doc); err != nil {
+		// Provider が Accept: application/json を無視して HTML/XML を返す
+		// ケースが現実にある (text/xml+oembed 経路は #639 review #1 で
+		// drop)。observability のため Content-Type を debug ログに残す。
+		slog.Debug("urlpreview: oembed json parse failed",
+			"url", oembedURL,
+			"contentType", resp.Header.Get("Content-Type"),
+			"err", err)
 		return zero, fmt.Errorf("%w: parse: %v", ErrFetchFailed, err)
 	}
 	return parseOEmbedPlayer(doc), nil

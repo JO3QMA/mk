@@ -60,19 +60,25 @@ func ParseHTML(r io.Reader, pageURL string) *Result {
 	// oEmbed discovery URL は meta から取り出して Result の補助 field に
 	// 渡し、Fetcher が 2nd request でフェッチする。preview.go 側で公開し
 	// ない (内部用)。
-	result.oEmbedURL = resolveURL(base, firstNonEmpty(meta["oembed:json"], meta["oembed:xml"]))
+	result.oEmbedURL = resolveURL(base, meta["oembed:json"])
 	return result
 }
 
-// resolveURL turns rel into an absolute URL relative to base. Empty rel /
-// nil base / parse failure → empty string.
+// resolveURL turns rel into an absolute URL relative to base.
+//   - Empty rel → "" (caller handles no-icon / no-thumbnail branch)
+//   - nil base → return rel as-is (caller is responsible for already-absolute)
+//   - parse failure → "" so frontend doesn't try to render a malformed URL
+//     (review #3)
 func resolveURL(base *url.URL, rel string) string {
-	if rel == "" || base == nil {
+	if rel == "" {
+		return ""
+	}
+	if base == nil {
 		return rel
 	}
 	r, err := url.Parse(rel)
 	if err != nil {
-		return rel
+		return ""
 	}
 	return base.ResolveReference(r).String()
 }
@@ -103,14 +109,11 @@ func extractMeta(n *html.Node) metaMap {
 				if rel == "alternate" && strings.Contains(attrVal(n, "type"), "activity+json") && href != "" {
 					m["ap:id"] = href
 				}
-				// oEmbed discovery (#639)。JSON 優先、XML は fallback。
-				if rel == "alternate" && href != "" {
-					switch attrVal(n, "type") {
-					case "application/json+oembed":
-						m["oembed:json"] = href
-					case "text/xml+oembed":
-						m["oembed:xml"] = href
-					}
+				// oEmbed discovery (#639)。JSON のみサポート: XML は
+				// 仕様上有効だが現状 unmarshaler が無く fallback parser
+				// 整備するまで無視 (review #1)。
+				if rel == "alternate" && href != "" && attrVal(n, "type") == "application/json+oembed" {
+					m["oembed:json"] = href
 				}
 			}
 		}

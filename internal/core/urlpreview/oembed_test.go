@@ -170,3 +170,56 @@ func TestNumAttr(t *testing.T) {
 	assert.Equal(t, 0, numAttr("not a number"))
 	assert.Equal(t, 0, numAttr(nil))
 }
+
+// TestParseOEmbedPlayer_NoDimensions: width/height 省略時は Width/Height
+// pointer を nil のまま残し、frontend 側で iframe size を default 値に
+// fallback できるようにする (#639 review #5)。
+func TestParseOEmbedPlayer_NoDimensions(t *testing.T) {
+	doc := oembedResponse{
+		Type: "video",
+		HTML: `<iframe src="https://player.example.com/v"></iframe>`,
+	}
+	pr := parseOEmbedPlayer(doc)
+	require.NotNil(t, pr.URL)
+	assert.Nil(t, pr.Width)
+	assert.Nil(t, pr.Height)
+	assert.Empty(t, pr.Allow)
+}
+
+// TestParseHTML_OEmbedDiscoveryRelative: discovery 用の <link rel="alternate"
+// type="application/json+oembed"> が相対 path で書かれていても base URL
+// で絶対化される (#639 review #7)。
+func TestParseHTML_OEmbedDiscoveryRelative(t *testing.T) {
+	htmlBody := `<html><head>
+		<meta property="og:title" content="Video Page">
+		<link rel="alternate" type="application/json+oembed" href="/oembed?id=abc">
+	</head></html>`
+	r := ParseHTML(strings.NewReader(htmlBody), "https://example.com/posts/1")
+	require.NotNil(t, r)
+	// oEmbedURL は unexported field — 同 package テストで直接確認できる。
+	assert.Equal(t, "https://example.com/oembed?id=abc", r.oEmbedURL)
+}
+
+// TestParseHTML_OEmbedDiscoveryXMLIgnored: text/xml+oembed link は dead
+// code として削除済 (#639 review #1)。XML link しか提供しない provider
+// に対して oEmbedURL は空のまま (= 2nd fetch 発火しない)。
+func TestParseHTML_OEmbedDiscoveryXMLIgnored(t *testing.T) {
+	htmlBody := `<html><head>
+		<link rel="alternate" type="text/xml+oembed" href="/oembed.xml">
+	</head></html>`
+	r := ParseHTML(strings.NewReader(htmlBody), "https://example.com/")
+	require.NotNil(t, r)
+	assert.Equal(t, "", r.oEmbedURL, "XML oembed alternate must NOT trigger 2nd fetch")
+}
+
+// TestResolveURL_ParseFailureReturnsEmpty: parse 不能な rel は frontend
+// に malformed URL を流さず空文字を返す (#639 review #3)。
+func TestResolveURL_ParseFailureReturnsEmpty(t *testing.T) {
+	htmlBody := `<html><head>
+		<link rel="icon" href="://broken">
+	</head></html>`
+	r := ParseHTML(strings.NewReader(htmlBody), "https://example.com/")
+	require.NotNil(t, r)
+	// Parse failure では Icon を埋めない (空文字 → frontend で nil 判定)。
+	assert.Nil(t, r.Icon)
+}
