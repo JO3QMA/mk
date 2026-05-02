@@ -149,12 +149,12 @@ type stubMentionResolver struct {
 	entries map[string]struct{ name, uri string }
 }
 
-func (s *stubMentionResolver) ResolveMention(userID string) (name, uri string, ok bool) {
+func (s *stubMentionResolver) ResolveMention(userID string) (name, uri string, err error) {
 	e, exists := s.entries[userID]
 	if !exists {
-		return "", "", false
+		return "", "", ErrMentionUserNotFound
 	}
-	return e.name, e.uri, true
+	return e.name, e.uri, nil
 }
 
 func TestRenderer_RenderNote_WithMentions(t *testing.T) {

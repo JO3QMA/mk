@@ -33,9 +33,14 @@ func (p *ChartProcessor) HandleTick(ctx context.Context, _ driver.Task) error {
 }
 
 // HandleResync runs a major tick on every registered chart. Charts whose
-// TickFunc returns nil for major are no-ops; per-group charts that
-// require enumeration are skipped (TODO: per-user/per-host resync, same
-// as upstream).
+// TickFunc returns nil for major are no-ops; per-group charts (per-user /
+// per-host) require enumeration and are skipped — this is intentional and
+// matches Misskey TS upstream's TickChartsProcessorService.process which
+// also excludes per-group charts due to the same enumeration cost. Past
+// audits (#572 item 3) flagged this as TODO but the design decision is
+// to preserve TS-equivalent behaviour rather than diverge; implementing
+// resync would require an opt-in admin flag + admin UI which is out of
+// scope while frontend remains drop-in.
 func (p *ChartProcessor) HandleResync(ctx context.Context, _ driver.Task) error {
 	return p.runTick(ctx, true)
 }
