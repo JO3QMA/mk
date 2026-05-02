@@ -73,7 +73,10 @@ port: 3000
 #disableHsts: true
 
 # Enable internal IP-based rate limiting (default: true).
-# Set to false if you handle rate limiting in the reverse proxy.
+# Required for unauthenticated endpoints (signup / signin / reset-password)
+# to be rate-limited at all — otherwise spam / brute-force protection only
+# kicks in for authenticated users. Set to false only when you handle rate
+# limiting in the reverse proxy / WAF layer.
 #enableIpRateLimit: true
 
 #   ┌──────────────────────────┐

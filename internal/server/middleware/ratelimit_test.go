@@ -86,6 +86,7 @@ func TestMiddleware_WithinLimit(t *testing.T) {
 	store := &mockLimitStore{
 		results: []mockResult{
 			{Info: LimitInfo{Remaining: 5, ResetMs: time.Now().Add(time.Hour).UnixMilli()}},
+			{Info: LimitInfo{Remaining: 8, ResetMs: time.Now().Add(time.Hour).UnixMilli()}},
 		},
 	}
 	limits := map[string]*EndpointLimit{
@@ -97,9 +98,12 @@ func TestMiddleware_WithinLimit(t *testing.T) {
 	rec := doRequest(e, rl.Middleware(), h, "/api/notes/create", &model.User{ID: "user1"})
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+	// 認証済 → userID + IP bucket の 2 actor (#606 item 2)。X-RateLimit-Remaining
+	// は最も逼迫した bucket (ここでは userID 側 5)。
 	assert.Equal(t, "5", rec.Header().Get("X-RateLimit-Remaining"))
-	require.Len(t, store.calls, 1)
+	require.Len(t, store.calls, 2)
 	assert.Equal(t, "user1:notes/create", store.calls[0].Key)
+	assert.Contains(t, store.calls[1].Key, "ip-")
 	assert.Equal(t, time.Hour, store.calls[0].Duration)
 	assert.Equal(t, 300, store.calls[0].Max)
 }
@@ -132,7 +136,8 @@ func TestMiddleware_ExceedsLimit(t *testing.T) {
 func TestMiddleware_AuthenticatedActor(t *testing.T) {
 	store := &mockLimitStore{
 		results: []mockResult{
-			{Info: LimitInfo{Remaining: 10}},
+			{Info: LimitInfo{Remaining: 10}}, // userID bucket
+			{Info: LimitInfo{Remaining: 20}}, // IP bucket
 		},
 	}
 	limits := map[string]*EndpointLimit{
@@ -143,8 +148,142 @@ func TestMiddleware_AuthenticatedActor(t *testing.T) {
 
 	doRequest(e, rl.Middleware(), h, "/api/notes/create", &model.User{ID: "myuserid"})
 
-	require.Len(t, store.calls, 1)
+	// userID + IP bucket の 2 つに対して check が走る (#606 item 2)
+	require.Len(t, store.calls, 2)
 	assert.Equal(t, "myuserid:notes/create", store.calls[0].Key)
+	assert.Contains(t, store.calls[1].Key, "ip-")
+}
+
+// 認証済 user の userID bucket が満杯でも IP bucket が余裕でも 429
+// (どちらかのしきい値超過で reject、OR-bucket セマンティクス)。
+func TestMiddleware_AuthenticatedActor_UserBucketExceeds(t *testing.T) {
+	resetMs := time.Now().Add(30 * time.Second).UnixMilli()
+	store := &mockLimitStore{
+		results: []mockResult{
+			{Info: LimitInfo{Remaining: 0, ResetMs: resetMs}}, // userID bucket exceeded
+		},
+	}
+	limits := map[string]*EndpointLimit{
+		"notes/create": {Duration: time.Hour, Max: 300},
+	}
+	rl := NewRateLimiter(store, true, limits)
+	e, h := setupEcho(rl)
+
+	rec := doRequest(e, rl.Middleware(), h, "/api/notes/create", &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Len(t, store.calls, 1, "userID bucket で reject なら IP bucket は check しない")
+}
+
+// 認証済 user の userID bucket は OK でも IP bucket が満杯なら 429
+// (cross-account brute-force 防御 #606 item 2)。
+func TestMiddleware_AuthenticatedActor_IPBucketExceeds(t *testing.T) {
+	resetMs := time.Now().Add(30 * time.Second).UnixMilli()
+	store := &mockLimitStore{
+		results: []mockResult{
+			{Info: LimitInfo{Remaining: 50}},                  // userID bucket OK
+			{Info: LimitInfo{Remaining: 0, ResetMs: resetMs}}, // IP bucket exceeded
+		},
+	}
+	limits := map[string]*EndpointLimit{
+		"notes/create": {Duration: time.Hour, Max: 300},
+	}
+	rl := NewRateLimiter(store, true, limits)
+	e, h := setupEcho(rl)
+
+	rec := doRequest(e, rl.Middleware(), h, "/api/notes/create", &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Len(t, store.calls, 2)
+}
+
+// EnableIPRateLimit=false なら認証済でも IP bucket は走らない
+// (operator 配線の意図を尊重)。
+func TestMiddleware_AuthenticatedActor_IPDisabled(t *testing.T) {
+	store := &mockLimitStore{
+		results: []mockResult{
+			{Info: LimitInfo{Remaining: 10}},
+		},
+	}
+	limits := map[string]*EndpointLimit{
+		"notes/create": {Duration: time.Hour, Max: 300},
+	}
+	rl := NewRateLimiter(store, false, limits)
+	e, h := setupEcho(rl)
+
+	doRequest(e, rl.Middleware(), h, "/api/notes/create", &model.User{ID: "u1"})
+	require.Len(t, store.calls, 1, "IP bucket は EnableIPRateLimit=false で skip")
+	assert.Equal(t, "u1:notes/create", store.calls[0].Key)
+}
+
+// PolicyProvider 経由で rateLimitFactor=2.0 が反映されると Max が
+// scale される (#606 item 4)。
+func TestMiddleware_PolicyProviderScalesMax(t *testing.T) {
+	store := &mockLimitStore{
+		results: []mockResult{
+			{Info: LimitInfo{Remaining: 100}},
+			{Info: LimitInfo{Remaining: 100}},
+		},
+	}
+	limits := map[string]*EndpointLimit{
+		"notes/create": {Duration: time.Hour, Max: 300},
+	}
+	rl := NewRateLimiter(store, true, limits)
+	rl.SetPolicyProvider(stubPolicy{factor: 2.0})
+	e, h := setupEcho(rl)
+
+	doRequest(e, rl.Middleware(), h, "/api/notes/create", &model.User{ID: "vip"})
+
+	require.Len(t, store.calls, 2)
+	// userID bucket は factor=2.0 で 600 に scale、IP bucket は factor=1.0
+	assert.Equal(t, 600, store.calls[0].Max, "userID bucket: 300 * 2.0")
+	assert.Equal(t, 300, store.calls[1].Max, "IP bucket は factor 適用外")
+}
+
+// factor が 0 / 負 / 不正型なら 1.0 (= base) に fallback
+func TestMiddleware_PolicyProviderInvalidFactor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy stubPolicy
+	}{
+		{"zero", stubPolicy{factor: 0}},
+		{"negative", stubPolicy{factor: -1}},
+		{"missing", stubPolicy{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &mockLimitStore{
+				results: []mockResult{{Info: LimitInfo{Remaining: 10}}, {Info: LimitInfo{Remaining: 10}}},
+			}
+			limits := map[string]*EndpointLimit{
+				"notes/create": {Duration: time.Hour, Max: 300},
+			}
+			rl := NewRateLimiter(store, true, limits)
+			rl.SetPolicyProvider(tc.policy)
+			e, h := setupEcho(rl)
+			doRequest(e, rl.Middleware(), h, "/api/notes/create", &model.User{ID: "u"})
+			require.GreaterOrEqual(t, len(store.calls), 1)
+			assert.Equal(t, 300, store.calls[0].Max, "不正 factor は 1.0 fallback")
+		})
+	}
+}
+
+// stubPolicy は PolicyProvider のテスト double。factor=0 なら policies map
+// に rateLimitFactor を含めない (= 「未設定」を再現)。
+type stubPolicy struct{ factor float64 }
+
+func (s stubPolicy) GetUserPolicies(_ string) map[string]any {
+	if s.factor == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{"rateLimitFactor": s.factor}
+}
+
+// scaledMax の境界値テスト (factor=0.001 等で 1 を下回らずクランプ)
+func TestScaledMax(t *testing.T) {
+	assert.Equal(t, 300, scaledMax(300, 1.0))
+	assert.Equal(t, 600, scaledMax(300, 2.0))
+	assert.Equal(t, 150, scaledMax(300, 0.5))
+	assert.Equal(t, 1, scaledMax(10, 0.001), "極小 factor でも 1 にクランプ")
+	assert.Equal(t, 300, scaledMax(300, 0), "factor=0 は 1.0 扱い (= base)")
+	assert.Equal(t, 300, scaledMax(300, -1), "負数も 1.0 扱い (防御)")
 }
 
 func TestMiddleware_UnauthenticatedIPActor(t *testing.T) {
@@ -185,8 +324,10 @@ func TestMiddleware_UnauthenticatedIPDisabled(t *testing.T) {
 func TestMiddleware_MinIntervalCheckFirst(t *testing.T) {
 	store := &mockLimitStore{
 		results: []mockResult{
-			{Info: LimitInfo{Remaining: 1}},  // minInterval: OK
-			{Info: LimitInfo{Remaining: 50}}, // duration/max: OK
+			{Info: LimitInfo{Remaining: 1}},  // userID: minInterval OK
+			{Info: LimitInfo{Remaining: 50}}, // userID: duration/max OK
+			{Info: LimitInfo{Remaining: 1}},  // IP: minInterval OK
+			{Info: LimitInfo{Remaining: 50}}, // IP: duration/max OK
 		},
 	}
 	limits := map[string]*EndpointLimit{
@@ -198,15 +339,20 @@ func TestMiddleware_MinIntervalCheckFirst(t *testing.T) {
 	rec := doRequest(e, rl.Middleware(), h, "/api/notes/delete", &model.User{ID: "u1"})
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	require.Len(t, store.calls, 2)
-	// 1回目: minIntervalチェック
+	// 認証済 → userID + IP の 2 actor、各 actor で minInterval + duration の
+	// 2 チェック → 計 4 calls
+	require.Len(t, store.calls, 4)
+	// userID actor: minInterval が先、その後 duration/max
 	assert.Equal(t, "u1:notes/delete:min", store.calls[0].Key)
 	assert.Equal(t, time.Second, store.calls[0].Duration)
 	assert.Equal(t, 1, store.calls[0].Max)
-	// 2回目: duration/maxチェック
 	assert.Equal(t, "u1:notes/delete", store.calls[1].Key)
 	assert.Equal(t, time.Hour, store.calls[1].Duration)
 	assert.Equal(t, 300, store.calls[1].Max)
+	// IP actor: 同じ順序
+	assert.Contains(t, store.calls[2].Key, "ip-")
+	assert.Contains(t, store.calls[2].Key, ":notes/delete:min")
+	assert.Contains(t, store.calls[3].Key, ":notes/delete")
 }
 
 func TestMiddleware_MinIntervalBlock(t *testing.T) {
