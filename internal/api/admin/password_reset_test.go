@@ -1,15 +1,52 @@
 package admin_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// modLogSpy is a race-safe ModerationLogRepository stub local to this
+// test file. The shared testutil mock is not goroutine-safe and the
+// service writes via a fire-and-forget goroutine.
+type modLogSpy struct {
+	mu   sync.Mutex
+	logs []*model.ModerationLog
+}
+
+func (s *modLogSpy) Create(l *model.ModerationLog) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logs = append(s.logs, l)
+	return nil
+}
+
+func (s *modLogSpy) List(int, int) ([]*model.ModerationLog, error) { return nil, nil }
+
+func (s *modLogSpy) snapshot() []*model.ModerationLog {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*model.ModerationLog, len(s.logs))
+	copy(out, s.logs)
+	return out
+}
+
+func attachModLog(t *testing.T, set func(*moderationlog.Service)) *modLogSpy {
+	t.Helper()
+	spy := &modLogSpy{}
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	set(moderationlog.New(spy, gen))
+	return spy
+}
 
 type stubPasswordResetRepo struct {
 	created *model.PasswordResetRequest
@@ -142,6 +179,69 @@ func TestResetPasswordAdmin_NoRepoFallsBack(t *testing.T) {
 	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "password")
+}
+
+func TestResetPasswordAdmin_WritesModerationLog_FallbackPath(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"} // email 未設定 → fallback
+
+	spy := attachModLog(t, h.SetModLogService)
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "password")
+
+	require.Eventually(t, func() bool {
+		return len(spy.snapshot()) == 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "moderation log should be written")
+
+	logs := spy.snapshot()
+	assert.Equal(t, "admin1", logs[0].UserID)
+	assert.Equal(t, "resetPassword", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "u1", info["userId"])
+	assert.Equal(t, "alice", info["userUsername"])
+}
+
+func TestResetPasswordAdmin_WritesModerationLog_EmailPath(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "bob"}
+	email := "bob@example.com"
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Email: &email, EmailVerified: true}
+
+	h.SetPasswordResetRepo(&stubPasswordResetRepo{})
+	h.SetEmailSender(func(string, string, string) {})
+	spy := attachModLog(t, h.SetModLogService)
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"sent":true`)
+
+	require.Eventually(t, func() bool {
+		return len(spy.snapshot()) == 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "moderation log should be written on email path")
+
+	logs := spy.snapshot()
+	assert.Equal(t, "admin1", logs[0].UserID)
+	assert.Equal(t, "resetPassword", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "u1", info["userId"])
+	assert.Equal(t, "bob", info["userUsername"])
+}
+
+func TestResetPasswordAdmin_NoLogWhenServiceUnwired(t *testing.T) {
+	// service が未配線 (production で誤って setter を忘れた等) でも
+	// API 自体は機能し続けることを保証する。fire-and-forget の趣旨は
+	// 「audit 失敗で本処理を止めない」なので、未配線も同じ扱い。
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"}
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestResetPasswordAdmin_ResetRepoErrorFallsBack(t *testing.T) {

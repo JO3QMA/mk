@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/core/webpush"
@@ -80,6 +81,7 @@ type Handler struct {
 	userRepo                repository.UserRepository
 	abuseRepo               repository.AbuseReportRepository
 	modLogRepo              repository.ModerationLogRepository
+	modLogService           *moderationlog.Service
 	emojiRepo               repository.EmojiRepository
 	driveFileRepo           repository.DriveFileRepository
 	adminDB                 *gorm.DB
@@ -347,6 +349,14 @@ func (h *Handler) SetAbuseRepo(r repository.AbuseReportRepository) { h.abuseRepo
 // SetModLogRepo attaches the moderation log repository.
 func (h *Handler) SetModLogRepo(r repository.ModerationLogRepository) {
 	h.modLogRepo = r
+}
+
+// SetModLogService attaches the fire-and-forget moderation log writer.
+// Wired alongside SetModLogRepo: the read endpoint
+// (admin/show-moderation-logs) keeps using modLogRepo directly, while
+// admin write handlers call modLogService.Log to record audit entries.
+func (h *Handler) SetModLogService(s *moderationlog.Service) {
+	h.modLogService = s
 }
 
 // AccountsCreate handles POST /api/admin/accounts/create.

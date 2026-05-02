@@ -8,8 +8,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/server/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -30,9 +32,35 @@ func (h *Handler) ResetPassword(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if sent := h.sendPasswordResetEmail(req.UserID); sent {
+		h.recordResetPasswordLog(c, req.UserID)
 		return c.JSON(http.StatusOK, map[string]any{"sent": true})
 	}
 	return h.issueTemporaryPassword(c, req.UserID)
+}
+
+// recordResetPasswordLog writes a moderation_log row for a successful
+// reset-password action. Service is fire-and-forget, so callers don't
+// need to handle errors. We resolve the target user lazily here (rather
+// than threading it through the email/fallback paths) because TS spec
+// requires {userId, userUsername, userHost} regardless of which branch
+// actually performed the reset.
+func (h *Handler) recordResetPasswordLog(c echo.Context, targetUserID string) {
+	if h.modLogService == nil || h.userRepo == nil {
+		return
+	}
+	actor := middleware.GetUser(c)
+	if actor == nil {
+		return
+	}
+	target, err := h.userRepo.FindByID(targetUserID)
+	if err != nil || target == nil {
+		return
+	}
+	h.modLogService.Log(actor.ID, moderationlog.LogResetPassword, map[string]any{
+		"userId":       target.ID,
+		"userUsername": target.Username,
+		"userHost":     target.Host,
+	})
 }
 
 // sendPasswordResetEmail attempts the token+email flow. Returns true only
@@ -73,7 +101,9 @@ func (h *Handler) issueTemporaryPassword(c echo.Context, userID string) error {
 	newPass := hex.EncodeToString(b)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
 	if h.userRepo != nil {
-		_ = h.userRepo.UpdateProfile(userID, map[string]any{"password": string(hash)})
+		if err := h.userRepo.UpdateProfile(userID, map[string]any{"password": string(hash)}); err == nil {
+			h.recordResetPasswordLog(c, userID)
+		}
 	}
 	return c.JSON(http.StatusOK, map[string]any{"password": newPass})
 }
