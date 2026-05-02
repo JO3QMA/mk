@@ -94,5 +94,13 @@ COPY .config/docker.yml.example /app/.config/default.yml
 
 EXPOSE 3000
 
+# Misskey TS の Dockerfile が `useradd -u 991 -g 991 misskey` で UID/GID 991
+# を採用しているので、drop-in 互換 (host volume `./files` の所有権が両者で
+# 一致する) のため mk-go も同じ UID 991 で起動する (#621)。distroless static
+# には UID 991 の /etc/passwd エントリは無いが、mk-go は os/user.Current()
+# を呼ばないので numeric UID で問題なく動く。`:nonroot` tag (UID 65532) は
+# drop-in 互換を壊すので使わない。
+USER 991:991
+
 ENTRYPOINT ["/app/misskey"]
 CMD ["-config", ".config/default.yml"]

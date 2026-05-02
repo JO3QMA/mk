@@ -17,6 +17,10 @@ services:
       # MISSKEY_REPO_ASSETS_DIR: /app/repo-assets
       TZ: Asia/Tokyo
     volumes:
+      # コンテナは UID/GID 991 (Misskey TS 互換) で起動するので、
+      # ./files は UID 991 が書き込める所有権でなければならない (#621)。
+      # 旧 root 構成から upgrade する場合は一度
+      # `sudo chown -R 991:991 ./files` を実行すること。
       - ./files:/app/drive-files
       # 設定ファイルを上書きする場合 (cp .config/docker.yml.example
       # .config/docker.yml して編集後にコメントを外す):
