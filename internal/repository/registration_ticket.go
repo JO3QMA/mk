@@ -5,6 +5,7 @@ import (
 
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Registration ticket filter values accepted by
@@ -27,6 +28,21 @@ const (
 // `registration_ticket` table that backs admin invite code management.
 type RegistrationTicketRepository interface {
 	Create(t *model.RegistrationTicket) error
+	// FindByCode returns the ticket matching the human-readable invite code.
+	FindByCode(code string) (*model.RegistrationTicket, error)
+	// FindByIDForUpdateTx returns the ticket by ID with a row-level write
+	// lock (`SELECT ... FOR UPDATE`). 必ず caller が渡した tx 内で実行される
+	// 想定で、PromotePending のような "ticket 消費を atomic に行う" 経路で
+	// concurrent burst を直列化するために使う (#604 race fix)。
+	FindByIDForUpdateTx(tx *gorm.DB, id string) (*model.RegistrationTicket, error)
+	// MarkUsed records ticket consumption via the bare repo connection.
+	// Signup 直接 path (handler が PromotePending 経由ではなく Signup を呼ぶ
+	// 経路) で使う best-effort path。
+	MarkUsed(ticketID, userID string) error
+	// MarkUsedTx records ticket consumption inside the given transaction.
+	// PromotePending tx 経路で SELECT FOR UPDATE ロック中に使うので、
+	// commit までロックを保持して race を完全に閉じる。
+	MarkUsedTx(tx *gorm.DB, ticketID, userID string) error
 	// List returns tickets matching the filter, paginated with limit/offset.
 	// Unknown filter values are treated as "all".
 	// `now` is passed by callers so tests can supply a deterministic clock
@@ -46,6 +62,39 @@ func NewRegistrationTicketRepository(db *gorm.DB) RegistrationTicketRepository {
 
 func (r *registrationTicketRepository) Create(t *model.RegistrationTicket) error {
 	return r.db.Create(t).Error
+}
+
+func (r *registrationTicketRepository) FindByCode(code string) (*model.RegistrationTicket, error) {
+	var ticket model.RegistrationTicket
+	if err := r.db.Where(`"code" = ?`, code).First(&ticket).Error; err != nil {
+		return nil, err
+	}
+	return &ticket, nil
+}
+
+func (r *registrationTicketRepository) FindByIDForUpdateTx(tx *gorm.DB, id string) (*model.RegistrationTicket, error) {
+	var ticket model.RegistrationTicket
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(`"id" = ?`, id).First(&ticket).Error; err != nil {
+		return nil, err
+	}
+	return &ticket, nil
+}
+
+func (r *registrationTicketRepository) MarkUsed(ticketID, userID string) error {
+	return r.markUsedOn(r.db, ticketID, userID)
+}
+
+func (r *registrationTicketRepository) MarkUsedTx(tx *gorm.DB, ticketID, userID string) error {
+	return r.markUsedOn(tx, ticketID, userID)
+}
+
+func (r *registrationTicketRepository) markUsedOn(db *gorm.DB, ticketID, userID string) error {
+	now := time.Now()
+	return db.Model(&model.RegistrationTicket{}).Where(`"id" = ?`, ticketID).Updates(map[string]any{
+		"usedById": userID,
+		"usedAt":   now,
+	}).Error
 }
 
 func (r *registrationTicketRepository) List(filter string, limit, offset int, now time.Time) ([]*model.RegistrationTicket, error) {

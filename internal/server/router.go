@@ -855,6 +855,11 @@ func (s *Server) setupRoutes() {
 	// Signup (public)
 	userPendingRepo := repository.NewUserPendingRepository(s.db)
 	signupService.SetUserPendingRepo(userPendingRepo)
+	// PromotePending を transaction 化して partial failure rollback と
+	// invitation ticket の SELECT FOR UPDATE ロックを有効化する (#600 item 2 + #604)。
+	signupService.SetDB(s.db)
+	signupTicketRepo := repository.NewRegistrationTicketRepository(s.db)
+	signupService.SetTicketRepo(signupTicketRepo)
 	signupHandler := apisignup.NewHandler(signupService, metaRepo, idGen)
 	if captchaSvc != nil {
 		signupHandler.SetCaptcha(captchaSvc)
