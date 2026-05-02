@@ -7,6 +7,7 @@ package captcha
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/shiroha-a/mk/internal/model"
 )
@@ -44,26 +45,38 @@ type Service struct {
 	testcap   Verifier
 }
 
-// NewService builds a Service from the given meta. Only enabled providers
-// are instantiated; callers pass nil HTTPClient to use http.DefaultClient.
+// NewService builds a Service from the given meta. Equivalent to
+// NewServiceWithClient(meta, nil): uses http.DefaultClient for the siteverify
+// calls. Production paths should prefer NewServiceWithClient with an
+// SSRF-safe transport (#638).
 func NewService(meta *model.Meta) *Service {
+	return NewServiceWithClient(meta, nil)
+}
+
+// NewServiceWithClient builds a Service that uses client for every provider's
+// siteverify call. Pass nil to fall back to http.DefaultClient.
+//
+// production の router.go では SSRF-safe transport + forward proxy 経由の
+// client を渡し、operator が outbound 経路を集約 / origin IP を隠せるように
+// する (#638)。
+func NewServiceWithClient(meta *model.Meta, client *http.Client) *Service {
 	s := &Service{}
 
 	if meta.EnableHcaptcha && meta.HcaptchaSecretKey != nil {
-		s.hcaptcha = NewHcaptcha(*meta.HcaptchaSecretKey)
+		s.hcaptcha = NewHcaptchaWithClient(*meta.HcaptchaSecretKey, client)
 	}
 	if meta.EnableRecaptcha && meta.RecaptchaSecretKey != nil {
-		s.recaptcha = NewRecaptcha(*meta.RecaptchaSecretKey)
+		s.recaptcha = NewRecaptchaWithClient(*meta.RecaptchaSecretKey, client)
 	}
 	if meta.EnableTurnstile && meta.TurnstileSecretKey != nil {
-		s.turnstile = NewTurnstile(*meta.TurnstileSecretKey)
+		s.turnstile = NewTurnstileWithClient(*meta.TurnstileSecretKey, client)
 	}
 	if meta.EnableMcaptcha && meta.McaptchaSecretKey != nil && meta.McaptchaInstanceURL != nil {
 		siteKey := ""
 		if meta.McaptchaSiteKey != nil {
 			siteKey = *meta.McaptchaSiteKey
 		}
-		s.mcaptcha = NewMcaptcha(*meta.McaptchaInstanceURL, siteKey, *meta.McaptchaSecretKey)
+		s.mcaptcha = NewMcaptchaWithClient(*meta.McaptchaInstanceURL, siteKey, *meta.McaptchaSecretKey, client)
 	}
 	if meta.EnableTestcaptcha {
 		s.testcap = NewTestcaptcha()

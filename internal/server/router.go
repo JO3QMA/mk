@@ -108,7 +108,6 @@ import (
 	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/shiroha-a/mk/internal/queue/processors"
 	"github.com/shiroha-a/mk/internal/repository"
-	"github.com/shiroha-a/mk/internal/safehttp"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/shiroha-a/mk/internal/stream/channels"
@@ -284,8 +283,12 @@ func (s *Server) setupRoutes() {
 		corewebpush.NewNoteRepoPacker(noteRepo, idGen),
 	)
 	webPushCache := corewebpush.NewSubscriptionCache(swSubRepo, s.redis.Default)
+	// Web Push delivery: webpush-go の HTTPClient field に SSRF-safe client
+	// を注入して FCM / Mozilla / Apple endpoint への配送も outbound 政策
+	// (forward proxy / outgoingAddress 等) に従わせる (#638)。
+	webPushSender := processors.LibraryWebPushSender{HTTPClient: s.outboundClient(30 * time.Second)}
 	webPushProcessor := processors.NewWebPushProcessor(
-		webPushCache, swSubRepo, metaRepo, nil, s.config.URL,
+		webPushCache, swSubRepo, metaRepo, webPushSender, s.config.URL,
 	)
 	s.queueServer.Handle(queue.TaskTypeWebPush, webPushProcessor.Handle)
 
@@ -295,7 +298,9 @@ func (s *Server) setupRoutes() {
 	reactionService.SetWebhookHook(corewebhook.NewReactionCreateHook(webhookService, idGen))
 	followingService.SetWebhookHook(corewebhook.NewFollowingHook(webhookService))
 	signupService.SetWebhookHook(corewebhook.NewSignupHook(webhookService))
-	webhookProcessor := processors.NewWebhookProcessor(webhookRepo, systemWebhookRepo, nil, s.config.Host)
+	// Webhook delivery: SSRF-safe transport + forward proxy 経由で user-supplied
+	// URL に POST する (#638)。
+	webhookProcessor := processors.NewWebhookProcessor(webhookRepo, systemWebhookRepo, s.outboundClient(10*time.Second), s.config.Host)
 	s.queueServer.Handle(queue.TaskTypeUserWebhook, webhookProcessor.HandleUser)
 	s.queueServer.Handle(queue.TaskTypeSystemWebhook, webhookProcessor.HandleSystem)
 
@@ -417,10 +422,7 @@ func (s *Server) setupRoutes() {
 	// AP outbound client: SSRF-safe transport を適用 (#323)。
 	// config.AllowedPrivateNetworks で開発時の self-loop を許可できる。
 	// config.Proxy / ProxyBypassHosts も #485 で wire 済み。
-	apHTTPClient := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
-	}
+	apHTTPClient := s.outboundClient(30 * time.Second)
 	apClient := activitypub.NewClient(apHTTPClient, s.config.UserAgent)
 	// meta.allowExternalApRedirect が false なら AP fetch でのリダイレクトを拒否する。
 	if m, err := metaRepo.Fetch(); err == nil && !m.AllowExternalApRedirect {
@@ -437,10 +439,7 @@ func (s *Server) setupRoutes() {
 	// SSRF-safe transport で内部 IP / cloud metadata エンドポイントへの
 	// アクセスを拒否する。timeout は単発 image fetch なので apHTTPClient
 	// (30s) より短めの 10s にする。
-	imageProbeClient := &http.Client{
-		Timeout:   10 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
-	}
+	imageProbeClient := s.outboundClient(10 * time.Second)
 	federationResolver.SetImageProbeClient(imageProbeClient)
 	federationProcessor := corefederation.NewProcessor(federationResolver, followingService, reactionService, noteDeleteService, userRepo, noteRepo)
 	federationProcessor.SetLocalBaseURL(s.config.URL)
@@ -451,10 +450,7 @@ func (s *Server) setupRoutes() {
 	// redirect 追跡必須のため apClient とは *http.Client を分離し、
 	// apClient.DisableRedirect() の影響を受けないようにする。Timeout は
 	// user-facing API 経由で呼ばれるので応答性優先で 10s に設定する。
-	webfingerClient := activitypub.NewWebFingerClient(&http.Client{
-		Timeout:   10 * time.Second,
-		Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
-	}, s.config.UserAgent)
+	webfingerClient := activitypub.NewWebFingerClient(s.outboundClient(10*time.Second), s.config.UserAgent)
 	userService.SetRemoteUserResolver(corefederation.NewRemoteUserResolver(
 		webfingerClient, federationResolver, userRepo, localHost,
 	))
@@ -750,7 +746,7 @@ func (s *Server) setupRoutes() {
 		if previewMeta.URLPreviewSummaryProxyURL != nil {
 			previewCfg.SummaryProxyURL = *previewMeta.URLPreviewSummaryProxyURL
 		}
-		urlPreviewFetcher := coreurlpreview.NewFetcher(previewCfg, s.redis.Default, s.config.Redis.KeyPrefix())
+		urlPreviewFetcher := coreurlpreview.NewFetcher(previewCfg, s.redis.Default, s.config.Redis.KeyPrefix(), s.config.AllowedPrivateNetworks, s.outboundOpts()...)
 		urlHandler := apiurl.NewHandler(urlPreviewFetcher)
 		s.echo.GET("/url", urlHandler.Preview)
 	}
@@ -856,9 +852,10 @@ func (s *Server) setupRoutes() {
 
 	// CAPTCHA service — meta から有効な provider を選択して構築する。
 	// meta 取得失敗時は captcha 無効として動作する (ログイン不能を避けるため)。
+	// siteverify は SSRF-safe transport + forward proxy 経由にする (#638)。
 	var captchaSvc *corecaptcha.Service
 	if serverMeta, err := metaRepo.Fetch(); err == nil {
-		captchaSvc = corecaptcha.NewService(serverMeta)
+		captchaSvc = corecaptcha.NewServiceWithClient(serverMeta, s.outboundClient(10*time.Second))
 	}
 
 	// Signup (public)
@@ -873,6 +870,9 @@ func (s *Server) setupRoutes() {
 	if captchaSvc != nil {
 		signupHandler.SetCaptcha(captchaSvc)
 	}
+	// verifymail / truemail SaaS API への outbound を SSRF-safe transport +
+	// forward proxy 経由にする (#638)。
+	signupHandler.SetEmailValidationClient(s.outboundClient(10 * time.Second))
 	// signupTicketRepo は repository.RegistrationTicketRepository で、
 	// apisignup.TicketStore (FindByCode + MarkUsed) を superset として満たす。
 	// 旧 gormTicketStore wrapper を直接 repo に置き換え (#610 item 1)。
@@ -980,7 +980,7 @@ func (s *Server) setupRoutes() {
 	if m, err := metaRepo.Fetch(); err == nil {
 		notesHandler.SetUGCVisibility(m.UgcVisibilityForVisitor)
 		if m.DeeplAuthKey != nil && *m.DeeplAuthKey != "" {
-			notesHandler.SetTranslator(coretranslate.NewDeepL(*m.DeeplAuthKey, m.DeeplIsPro))
+			notesHandler.SetTranslator(coretranslate.NewDeepL(*m.DeeplAuthKey, m.DeeplIsPro, s.outboundClient(10*time.Second)))
 		}
 	}
 	api.POST("/notes/create", notesHandler.Create, middleware.RequireAuth())
@@ -1079,6 +1079,9 @@ func (s *Server) setupRoutes() {
 	iHandler.SetRegistryRepo(registryRepo)
 	iHandler.SetMetaRepo(metaRepo)
 	iHandler.SetServerURL(s.config.URL)
+	// i/update-email の verifymail / truemail SaaS 呼び出しも SSRF-safe
+	// transport + forward proxy 経由にする (#638)。
+	iHandler.SetEmailValidationClient(s.outboundClient(10 * time.Second))
 	// SMTP メール送信を i/update-email 用に注入する。meta の SMTP 設定に従う。
 	if smtpMeta, err := metaRepo.Fetch(); err == nil && smtpMeta.EnableEmail && smtpMeta.Email != nil && smtpMeta.SmtpHost != nil {
 		fromAddr := *smtpMeta.Email
@@ -1322,9 +1325,7 @@ func (s *Server) setupRoutes() {
 		s.config.URL, s.config.UserAgent, driveStorage,
 		proxyAllowlist, s.config.MediaProxySecret,
 		s.config.AllowedPrivateNetworks,
-		safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts),
-		safehttp.WithOutgoingAddress(s.config.OutgoingAddress),
-		safehttp.WithAddressFamily(s.config.OutgoingAddressFamily),
+		s.outboundOpts()...,
 	)
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)
@@ -1665,6 +1666,9 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetEmojiImportEnqueuer(s.queueClient)
 	adminHandler.SetRelayService(relaySvc)
 	adminHandler.SetSystemWebhookRepo(systemWebhookRepo)
+	// admin/system-webhook/test の fire-and-forget POST も SSRF-safe transport
+	// + forward proxy 経由にする (#638)。
+	adminHandler.SetWebhookTestClient(s.outboundClient(10 * time.Second))
 	adminHandler.SetRecipientRepo(recipientRepo)
 	adminHandler.SetAdRepo(repository.NewAdRepository(s.db))
 	adminHandler.SetAvatarDecorationRepo(repository.NewAvatarDecorationRepository(s.db))
@@ -1830,10 +1834,7 @@ func (s *Server) setupRoutes() {
 	// (既存の webfingerClient と同じ設定を流用)。
 	reversiHandler.SetFederationChecker(corereversi.NewFederationChecker(
 		s.redis.Default,
-		&http.Client{
-			Timeout:   10 * time.Second,
-			Transport: safehttp.NewSSRFSafeTransport(s.config.AllowedPrivateNetworks, safehttp.WithProxy(s.config.Proxy, s.config.ProxyBypassHosts), safehttp.WithOutgoingAddress(s.config.OutgoingAddress), safehttp.WithAddressFamily(s.config.OutgoingAddressFamily)),
-		},
+		s.outboundClient(10*time.Second),
 	))
 	// #417 P3: /match の acct 引数で未キャッシュのリモートユーザーを
 	// WebFinger 経由で取り込めるようにする。ここで webfingerClient /

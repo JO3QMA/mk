@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,13 +15,18 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/shiroha-a/mk/internal/safehttp"
 )
 
 var (
 	ErrDisabled    = errors.New("urlpreview: feature disabled")
-	ErrPrivateIP   = errors.New("urlpreview: private IP not allowed")
 	ErrTooLarge    = errors.New("urlpreview: content too large")
 	ErrFetchFailed = errors.New("urlpreview: fetch failed")
+	// ErrPrivateIP is returned when the target host resolves to a private /
+	// reserved IP. 互換性のため公開していた sentinel は維持しつつ、実体は
+	// safehttp.ErrSSRFBlocked と同じ値にして AP / mediaproxy と統一する
+	// (#638)。
+	ErrPrivateIP = safehttp.ErrSSRFBlocked
 )
 
 const cachePrefix = "url-preview:"
@@ -59,25 +63,21 @@ func (f *Fetcher) SetHTTPClient(c *http.Client) {
 // keyPrefix (通常は `cfg.Redis.KeyPrefix()` = `<host>:`) は TS 本家と同じ
 // キー名前空間の下にキャッシュキーを置くために前置される。空文字列なら
 // prefix 無し。
-func NewFetcher(cfg Config, rdb *redis.Client, keyPrefix string) *Fetcher {
+//
+// allowedPrivateNetworks は SSRF guard で例外的に許可する CIDR (config の
+// allowedPrivateNetworks をそのまま渡す)。transportOpts は forward proxy /
+// outgoing address / address family などの outbound 設定で、AP fetch や
+// media proxy と挙動を揃えるため `safehttp.WithProxy(...)` などを渡す
+// (#638)。
+func NewFetcher(cfg Config, rdb *redis.Client, keyPrefix string, allowedPrivateNetworks []string, transportOpts ...safehttp.Option) *Fetcher {
 	timeout := time.Duration(cfg.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
 
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, _ := net.SplitHostPort(addr)
-			if isPrivateHost(host) {
-				return nil, ErrPrivateIP
-			}
-			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
-		},
-	}
-
 	client := &http.Client{
 		Timeout:   timeout,
-		Transport: transport,
+		Transport: safehttp.NewSSRFSafeTransport(allowedPrivateNetworks, transportOpts...),
 	}
 	if !cfg.AllowRedirect {
 		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
@@ -90,9 +90,11 @@ func NewFetcher(cfg Config, rdb *redis.Client, keyPrefix string) *Fetcher {
 		redis:     rdb,
 		keyPrefix: keyPrefix,
 		client:    client,
-		// proxyClientはSSRF保護なしの専用クライアント。管理者が設定した
-		// 信頼済みプロキシURLはlocalhostやプライベートネットワーク上に
-		// 配置されることが多いため、プライベートIPブロックを適用しない。
+		// proxyClient は管理者が設定した summalyProxy への呼び出し用。
+		// operator-trusted endpoint (社内 summaly や localhost に立てた
+		// proxy) を指定するケースがあるため SSRF guard は適用しない。
+		// ここに forward proxy を掛けると 127.0.0.1 への内向き呼び出しまで
+		// proxy 経由になって壊れるので、明示的に裸の Client を使う。
 		proxyClient: &http.Client{Timeout: timeout},
 	}
 }
@@ -208,14 +210,4 @@ func (f *Fetcher) fetchViaProxy(ctx context.Context, rawURL string) (*Result, er
 func hashURL(u string) string {
 	h := sha256.Sum256([]byte(u))
 	return hex.EncodeToString(h[:])
-}
-
-// isPrivateHost checks if a hostname resolves to a private/loopback IP.
-func isPrivateHost(host string) bool {
-	ip := net.ParseIP(host)
-	if ip == nil {
-		// DNS名は解決してからチェック(Dialer段階でIPが確定している)
-		return false
-	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }

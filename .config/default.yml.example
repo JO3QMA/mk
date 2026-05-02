@@ -252,8 +252,17 @@ id: 'aidx'
 #outgoingAddressFamily: ipv4
 
 # Proxy for HTTP/HTTPS
+# When set, **every outbound HTTP/HTTPS request** mk-go makes is routed
+# through this proxy: ActivityPub delivery, WebFinger, media proxy, summary
+# (URL preview) proxy, webhook delivery, Web Push, and SaaS APIs (hCaptcha /
+# reCAPTCHA / Turnstile / mCaptcha / DeepL / Truemail / Verifymail, etc.).
+# Use this to centralize egress or to keep the origin IP hidden. Hosts that
+# must bypass the proxy (exact hostname match) go in proxyBypassHosts below.
 #proxy: http://127.0.0.1:3128
 
+# Hosts that bypass `proxy` (exact hostname match). Pre-populated with the
+# common SaaS endpoints whose API keys the operator already trusts, so they
+# keep working even when the forward proxy denies CONNECT.
 proxyBypassHosts:
   - api.deepl.com
   - api-free.deepl.com

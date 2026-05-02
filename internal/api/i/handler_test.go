@@ -1231,6 +1231,11 @@ func TestSetEmailSender(t *testing.T) {
 	h.SetEmailSender(func(_ string, _ miscsmtp.Message) {})
 }
 
+func TestSetEmailValidationClient(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmailValidationClient(&http.Client{})
+}
+
 // --- Phase 7-2 (#244): 未読系フィールド実装 ---
 
 // stubUnreadNotification is a local UnreadNotificationSource for tests.

@@ -98,10 +98,19 @@ type HTTPDetector struct {
 }
 
 // NewHTTPDetector creates a detector that calls the given URL.
-func NewHTTPDetector(url string) *HTTPDetector {
+//
+// client は detector が POST に使う outbound HTTP client。nil なら 30s
+// timeout の素の Client にフォールバックするが、production では SSRF-safe
+// transport + forward proxy 経由の client を渡すこと (#638)。NSFW SaaS は
+// operator が信頼する endpoint だが、operator 設定で outbound 経路を集約
+// したい場合のため forward proxy には乗せる。
+func NewHTTPDetector(url string, client *http.Client) *HTTPDetector {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
 	return &HTTPDetector{
 		url:    url,
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: client,
 	}
 }
 

@@ -17,11 +17,14 @@ type truemailClient struct {
 	client      *http.Client
 }
 
-func newTruemailClient(instanceURL, authKey string) *truemailClient {
+func newTruemailClient(instanceURL, authKey string, client *http.Client) *truemailClient {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	return &truemailClient{
 		instanceURL: strings.TrimRight(instanceURL, "/"),
 		authKey:     authKey,
-		client:      http.DefaultClient,
+		client:      client,
 	}
 }
 

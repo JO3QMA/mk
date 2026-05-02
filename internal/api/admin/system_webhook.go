@@ -16,7 +16,10 @@ import (
 //
 // Misskey 本家の admin/system-webhook/test 互換。シークレットがあれば
 // X-Misskey-Hook-Secret ヘッダに平文を載せる (本家も同仕様)。
-func sendWebhookTest(url, secret, eventType string) {
+//
+// client は SSRF-safe transport + forward proxy 経由を期待した HTTP client。
+// nil なら 10s timeout の素の Client にフォールバックする (#638)。
+func sendWebhookTest(client *http.Client, url, secret, eventType string) {
 	body := fmt.Sprintf(`{"type":"%s","body":{"test":true},"createdAt":"%s"}`,
 		eventType, time.Now().UTC().Format(time.RFC3339))
 
@@ -30,7 +33,9 @@ func sendWebhookTest(url, secret, eventType string) {
 		req.Header.Set("X-Misskey-Hook-Secret", secret)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Warn("webhook test: request failed", "error", err)
@@ -134,7 +139,7 @@ func (h *Handler) SystemWebhookTest(c echo.Context) error {
 	}
 	// テスト送信(非同期)。配送結果は latestStatus 系カラムに反映されないが、
 	// Misskey 本家の /system-webhook/test も fire-and-forget 挙動なので整合。
-	go sendWebhookTest(sw.URL, sw.Secret, req.Type)
+	go sendWebhookTest(h.webhookTestClient, sw.URL, sw.Secret, req.Type)
 	return c.NoContent(http.StatusNoContent)
 }
 
