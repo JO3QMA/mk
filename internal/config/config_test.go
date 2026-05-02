@@ -852,7 +852,9 @@ func TestResolveJobQueueDriver(t *testing.T) {
 			raw  string
 			want string
 		}{
-			{"", "asynq"},
+			// 空 string の default は mkq (#571 audit で asynq → mkq に変更)。
+			// asynq は legacy / future-deprecation candidate。
+			{"", "mkq"},
 			{"asynq", "asynq"},
 			{"mkq", "mkq"},
 			{"  mkq  ", "mkq"},
@@ -888,7 +890,8 @@ func TestLoad_JobQueueDriver_Default(t *testing.T) {
 	path := writeTestConfig(t, testYAML)
 	cfg, err := Load(path)
 	require.NoError(t, err)
-	assert.Equal(t, "asynq", cfg.JobQueueDriver)
+	// #571 audit で default を asynq → mkq に変更。
+	assert.Equal(t, "mkq", cfg.JobQueueDriver)
 }
 
 func TestLoad_JobQueueDriver_Mkq(t *testing.T) {
