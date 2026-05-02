@@ -230,6 +230,39 @@ func TestResetPasswordAdmin_NoLogWhenServiceUnwired(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestResetPasswordAdmin_NoLogWhenTargetMissing(t *testing.T) {
+	// targetUserId が DB に存在しないケース。issueTemporaryPassword の
+	// UpdateProfile が成功しても logUserAction の FindByID が失敗して
+	// log は書かれない。レアケースだが logUserAction の lookup-failure
+	// branch を guard する。
+	h, _, _, _ := newTestHandler(t)
+	// u1 を userRepo に登録しない → FindByID は error 返す
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Empty(t, repo.Snapshot(), "target missing → log must be skipped")
+}
+
+func TestResetPasswordAdmin_NoLogWhenActorMissing(t *testing.T) {
+	// RequireModerator middleware が actor を context に載せ忘れる
+	// (= 配線ミス) ケース。logUserAction の actor==nil branch を経由して
+	// log は書かれず、本処理 (パスワード reset) は通常通り完了する。
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"}
+
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, nil) // actor 未配線
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Empty(t, repo.Snapshot(), "actor missing → log must be skipped")
+}
+
 func TestResetPasswordAdmin_ResetRepoErrorFallsBack(t *testing.T) {
 	h, userRepo, _, _ := newTestHandler(t)
 	userRepo.Users["u1"] = &model.User{ID: "u1"}

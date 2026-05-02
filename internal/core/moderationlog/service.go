@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -113,7 +114,13 @@ func safeGo(ctx context.Context, fn func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.WarnContext(ctx, "moderation log: goroutine panic", "panic", r)
+				// 後続 phase で 30+ handler から呼ばれるようになると
+				// "どこで panic したか" が原因切り分けに必須になる。
+				// debug.Stack の出力サイズはせいぜい数 KB で warn 頻度
+				// は production では極めて低いはずなので常時出す。
+				slog.WarnContext(ctx, "moderation log: goroutine panic",
+					"panic", r,
+					"stack", string(debug.Stack()))
 			}
 		}()
 		fn()
