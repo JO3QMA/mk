@@ -75,7 +75,7 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 			if m, err := h.metaRepo.Fetch(); err == nil {
 				svc := coreemail.NewService(m)
 				if verr := svc.Validate(c.Request().Context(), addr); verr != nil {
-					return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+					return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a2defefb-f220-8849-0af6-17f816099323"))
 				}
 			}
 		}

@@ -130,7 +130,7 @@ func (h *Handler) Signup(c echo.Context) error {
 		pending, perr := h.signupService.CreatePending(req.Username, req.EmailAddress, req.Password)
 		if perr != nil {
 			if perr == coresignup.ErrUsernameAlreadyExists {
-				return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+				return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "0a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 			}
 			if perr == coresignup.ErrInvalidUsername {
 				return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -161,7 +161,7 @@ func (h *Handler) Signup(c echo.Context) error {
 	result, err := h.signupService.Signup(req.Username, req.Password, false)
 	if err != nil {
 		if err == coresignup.ErrUsernameAlreadyExists {
-			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "0a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 		}
 		if err == coresignup.ErrInvalidUsername {
 			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -197,7 +197,7 @@ func (h *Handler) SignupPending(c echo.Context) error {
 		case coresignup.ErrPendingExpired:
 			return c.JSON(http.StatusGone, apierr.Error("EXPIRED", "Pending registration has expired.", "9c2bc685-fa0a-4e6f-bf6f-5f4f8c0c3a3a"))
 		case coresignup.ErrUsernameAlreadyExists:
-			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "0a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 		default:
 			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}

@@ -281,11 +281,10 @@ func TestPromotePending_UsernameClash(t *testing.T) {
 	assert.ErrorIs(t, err, signup.ErrUsernameAlreadyExists)
 }
 
-func TestPromotePending_ExpiredViaTTLBypass(t *testing.T) {
+func TestPromotePending_Expired(t *testing.T) {
 	// PendingSignupTTL = 24h と十分長く、ParseTime も成功するため通常 path で
-	// expired を再現するのは難しい。idGen が ParseTime に失敗する ID を強制
-	// 注入してフォールスルーする経路を踏ませる代わりに、Create 後に row.ID を
-	// 24h+ 前の ULID に書き換える。
+	// expired を再現するのは難しい。Create 後に row.ID を 24h+ 前の ULID に
+	// 書き換えて expired path を踏ませる。
 	svc, _, _ := newTestService(t)
 	pendingRepo := testutil.NewMockUserPendingRepository()
 	svc.SetUserPendingRepo(pendingRepo)
