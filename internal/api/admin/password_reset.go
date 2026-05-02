@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/model"
 	"golang.org/x/crypto/bcrypt"
@@ -30,6 +31,7 @@ func (h *Handler) ResetPassword(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if sent := h.sendPasswordResetEmail(req.UserID); sent {
+		h.logUserAction(c, moderationlog.LogResetPassword, req.UserID)
 		return c.JSON(http.StatusOK, map[string]any{"sent": true})
 	}
 	return h.issueTemporaryPassword(c, req.UserID)
@@ -73,7 +75,9 @@ func (h *Handler) issueTemporaryPassword(c echo.Context, userID string) error {
 	newPass := hex.EncodeToString(b)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
 	if h.userRepo != nil {
-		_ = h.userRepo.UpdateProfile(userID, map[string]any{"password": string(hash)})
+		if err := h.userRepo.UpdateProfile(userID, map[string]any{"password": string(hash)}); err == nil {
+			h.logUserAction(c, moderationlog.LogResetPassword, userID)
+		}
 	}
 	return c.JSON(http.StatusOK, map[string]any{"password": newPass})
 }
