@@ -384,7 +384,7 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 	result, err := h.signupService.Signup(req.Username, req.Password, isInitialSetup)
 	if err != nil {
 		if err == signup.ErrUsernameAlreadyExists {
-			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "0a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 		}
 		if err == signup.ErrInvalidUsername {
 			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid username.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -516,7 +516,7 @@ func (h *Handler) ShowUser(c echo.Context) error {
 
 	user, err := h.userRepo.FindByID(req.UserID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "2b730f78-1179-461b-88ad-d24c9af1a5ce"))
 	}
 
 	profile, _ := h.userRepo.FindProfileByUserID(user.ID)
@@ -661,7 +661,7 @@ func (h *Handler) SuspendUser(c echo.Context) error {
 	}
 
 	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "2b730f78-1179-461b-88ad-d24c9af1a5ce"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true}); err != nil {
@@ -680,7 +680,7 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 	}
 
 	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "a]504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "2b730f78-1179-461b-88ad-d24c9af1a5ce"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": false}); err != nil {

@@ -34,11 +34,11 @@ func (h *Handler) AccountsFindByEmail(c echo.Context) error {
 	}
 	profile, err := h.userRepo.FindProfileByEmail(req.Email)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "cb865949-8af5-4062-a88c-ef55e8786d1d"))
 	}
 	user, err := h.userRepo.FindByID(profile.UserID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "a504947-b888-4a99-9f62-8c4a0f3a3dab"))
+		return c.JSON(http.StatusNotFound, apierr.Error("USER_NOT_FOUND", "User not found.", "cb865949-8af5-4062-a88c-ef55e8786d1d"))
 	}
 	// 他の admin エンドポイント (ShowUser 等) と同じ packAdminUser を通して
 	// Misskey 本家互換のレスポンス整形をする。生 model.User を返すと
