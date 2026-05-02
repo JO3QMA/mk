@@ -7,7 +7,8 @@ import "time"
 //
 // Source: third_party/misskey/packages/backend/src/server/api/endpoints/
 //
-// TODO: Support rateLimitFactor from user role policies.
+// rateLimitFactor (role policies) は RateLimiter.SetPolicyProvider 経由で
+// runtime に反映される (PR #617 / #606 item 4)。
 var DefaultEndpointLimits = map[string]*EndpointLimit{
 	// ── AP ─────────────────────────────────────────────
 	"ap/get":  {Duration: time.Hour, Max: 30},
