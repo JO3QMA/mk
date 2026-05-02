@@ -1334,8 +1334,13 @@ func (s *Server) setupRoutes() {
 	// 動画 still frame の生成は外部 service に委譲する (#637 M2 redesign)。
 	// config.videoThumbnailGenerator が空のときは disabled (proxy は dummy
 	// PNG を返す)。`unix:///path/socket` 形式で UDS deployment にも対応。
+	// videoThumbnailGeneratorMode で wire を選択 ("post" 既定 / "get" は
+	// Misskey TS 互換)。
 	if s.config.VideoThumbnailGenerator != "" {
-		proxyService.SetVideoThumbnailGenerator(s.config.VideoThumbnailGenerator)
+		proxyService.SetVideoThumbnailGeneratorWithMode(
+			s.config.VideoThumbnailGenerator,
+			s.config.VideoThumbnailGeneratorMode,
+		)
 	}
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)

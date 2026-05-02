@@ -284,12 +284,21 @@ proxyBypassHosts:
 #mediaProxy: https://example.com/proxy
 #mediaProxySecret: change-me
 
-# Movie thumbnail generation URL. mk-go calls this service for video/* MIME
-# in /proxy. Misskey TS-compatible API: `<base>/thumbnail.webp?thumbnail=1&url=<URL>`.
-# Recommended deployment is the bundled `video-thumb` Compose service
-# (docker-compose.yml). For UDS-only stacks use `unix:///path/to/socket`.
-#videoThumbnailGenerator: http://video-thumb:8080
+# Movie thumbnail generator. mk-go calls this service for video/* MIME in
+# /proxy/. Two wire modes are supported via `videoThumbnailGeneratorMode`:
+#   - "post" (default) — POST <base>/thumbnail with multipart/form-data
+#                        (`file` field). Compatible with the bundled
+#                        `nekonoverse/video-thumb` Compose service. mk-go
+#                        forwards the already-downloaded video bytes, so the
+#                        generator does not need network access to the
+#                        source URL.
+#   - "get"            — GET <base>/thumbnail.webp?thumbnail=1&url=<URL>.
+#                        Misskey TS' videoThumbnailGenerator API. The
+#                        generator must be able to reach the source URL.
+# For UDS-only stacks use `unix:///path/to/socket` for the URL.
+#videoThumbnailGenerator: http://video-thumb:8005
 #videoThumbnailGenerator: unix:///run/video-thumb/sock
+#videoThumbnailGeneratorMode: post
 
 # For security reasons, uploading attachments from the intranet is
 # prohibited; exceptions can be allowed here. Default is empty.
