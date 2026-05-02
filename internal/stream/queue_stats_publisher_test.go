@@ -133,7 +133,7 @@ func TestQueueStatsPublisher_LogCapAtMax(t *testing.T) {
 	pub := &capturePubSub{}
 	p := NewQueueStatsPublisher(insp, pub, 0)
 	for i := 0; i < 250; i++ {
-		p.appendLog(json.RawMessage(`{}`))
+		p.logBuf.Append(json.RawMessage(`{}`))
 	}
 	assert.Equal(t, QueueStatsLogMax, len(p.Log(0)))
 }

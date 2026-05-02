@@ -41,11 +41,9 @@ type QueueStatsPublisher struct {
 	started   bool
 	mu        sync.Mutex
 
-	// log / logMax: server_stats と同等の ring buffer (新しい順、最大
-	// QueueStatsLogMax 件)。requestLog 応答用。
-	logMu  sync.Mutex
-	log    []json.RawMessage
-	logMax int
+	// logBuf: server_stats と同等の O(1) circular buffer (新しい順、
+	// 最大 QueueStatsLogMax 件)。requestLog 応答用。
+	logBuf *statsRingBuffer
 }
 
 // QueueStatsLogMax は requestLog 応答で返す最大件数。TS 本家と同じ 200。
@@ -62,7 +60,7 @@ func NewQueueStatsPublisher(inspector QueueInspector, pub PubSubPublisher, inter
 		pub:       pub,
 		interval:  interval,
 		stopCh:    make(chan struct{}),
-		logMax:    QueueStatsLogMax,
+		logBuf:    newStatsRingBuffer(QueueStatsLogMax),
 	}
 }
 
@@ -135,38 +133,16 @@ func (p *QueueStatsPublisher) tick() {
 		return
 	}
 	rawMsg := json.RawMessage(raw)
-	p.appendLog(rawMsg)
+	p.logBuf.Append(rawMsg)
 	if err := p.pub.Publish(context.Background(), "queueStats", rawMsg); err != nil {
 		slog.Warn("queue stats: publish failed", "err", err)
-	}
-}
-
-// appendLog は server_stats と同じく ring buffer に最新を unshift する。
-func (p *QueueStatsPublisher) appendLog(raw json.RawMessage) {
-	p.logMu.Lock()
-	defer p.logMu.Unlock()
-	copied := append(json.RawMessage(nil), raw...)
-	p.log = append([]json.RawMessage{copied}, p.log...)
-	if len(p.log) > p.logMax {
-		p.log = p.log[:p.logMax]
 	}
 }
 
 // Log returns the most recent up to maxLen snapshots, newest first. server_stats
 // の Log と同じ semantics。
 func (p *QueueStatsPublisher) Log(maxLen int) []json.RawMessage {
-	if maxLen <= 0 || maxLen > QueueStatsLogMax {
-		maxLen = QueueStatsLogMax
-	}
-	p.logMu.Lock()
-	defer p.logMu.Unlock()
-	n := len(p.log)
-	if n > maxLen {
-		n = maxLen
-	}
-	out := make([]json.RawMessage, n)
-	copy(out, p.log[:n])
-	return out
+	return p.logBuf.Log(maxLen)
 }
 
 // deliverQueueName は本番のasynq queue名。テストで差し替えられるように

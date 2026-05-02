@@ -40,12 +40,10 @@ type ServerStatsPublisher struct {
 	prevDiskRead  uint64
 	prevDiskWrite uint64
 
-	// log は直近 logMax 件分の snapshot を新しい順に保持する ring buffer
-	// (TS の Array.unshift + length>200 で pop と同じ動作を slice で再現)。
-	// 排他は logMu で取り、append/Log の両方を直列化する。
-	logMu  sync.Mutex
-	log    []json.RawMessage
-	logMax int
+	// logBuf は直近 ServerStatsLogMax 件分の snapshot を新しい順に保持する
+	// O(1) append の circular buffer。TS の Array.unshift + length>200 で pop
+	// と同じ semantics を head pointer 方式で実装。
+	logBuf *statsRingBuffer
 }
 
 // ServerStatsLogMax は requestLog 応答で返す最大件数。TS 本家と同じ 200。
@@ -61,7 +59,7 @@ func NewServerStatsPublisher(pub PubSubPublisher, interval time.Duration) *Serve
 		pub:      pub,
 		interval: interval,
 		stopCh:   make(chan struct{}),
-		logMax:   ServerStatsLogMax,
+		logBuf:   newStatsRingBuffer(ServerStatsLogMax),
 	}
 }
 
@@ -133,23 +131,9 @@ func (p *ServerStatsPublisher) tick() {
 		return
 	}
 	raw := json.RawMessage(body)
-	p.appendLog(raw)
+	p.logBuf.Append(raw)
 	if err := p.pub.Publish(context.Background(), "serverStats", raw); err != nil {
 		slog.Warn("server stats: publish failed", "err", err)
-	}
-}
-
-// appendLog は ring buffer の先頭に新規 snapshot を unshift し、logMax を
-// 超えた末尾を捨てる。TS の log.unshift + log.pop と同じ semantics。
-func (p *ServerStatsPublisher) appendLog(raw json.RawMessage) {
-	p.logMu.Lock()
-	defer p.logMu.Unlock()
-	// json.RawMessage は publish 後に caller が触ることはないが、ring buffer
-	// に長期保持するので念のため copy して publish 後の mutation 影響を断つ。
-	copied := append(json.RawMessage(nil), raw...)
-	p.log = append([]json.RawMessage{copied}, p.log...)
-	if len(p.log) > p.logMax {
-		p.log = p.log[:p.logMax]
 	}
 }
 
@@ -157,18 +141,7 @@ func (p *ServerStatsPublisher) appendLog(raw json.RawMessage) {
 // または ServerStatsLogMax を超える値は ServerStatsLogMax に丸める。frontend
 // 起動直後の requestLog で historical な timeline を埋めるために使う。
 func (p *ServerStatsPublisher) Log(maxLen int) []json.RawMessage {
-	if maxLen <= 0 || maxLen > ServerStatsLogMax {
-		maxLen = ServerStatsLogMax
-	}
-	p.logMu.Lock()
-	defer p.logMu.Unlock()
-	n := len(p.log)
-	if n > maxLen {
-		n = maxLen
-	}
-	out := make([]json.RawMessage, n)
-	copy(out, p.log[:n])
-	return out
+	return p.logBuf.Log(maxLen)
 }
 
 func (p *ServerStatsPublisher) collect() serverStatsSnapshot {

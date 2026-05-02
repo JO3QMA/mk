@@ -142,13 +142,14 @@ func TestServerStatsPublisher_LogRespectsMaxLen(t *testing.T) {
 	assert.LessOrEqual(t, len(logs), 2, "Log(2) should return at most 2 entries")
 }
 
-// ring buffer は最大 ServerStatsLogMax 件で頭打ち
+// ring buffer は最大 ServerStatsLogMax 件で頭打ち。
+// publisher の Append は private なので statsRingBuffer を直接 verify する。
 func TestServerStatsPublisher_LogCapAtMax(t *testing.T) {
 	pub := &capturePubSub{}
 	p := NewServerStatsPublisher(pub, 0) // default 2s — manually feed
-	// 直接 appendLog を叩いて 250 件詰める (max=200 なので 200 で頭打ち)
+	// publisher の logBuf を直接叩いて 250 件詰める (max=200 で頭打ち)。
 	for i := 0; i < 250; i++ {
-		p.appendLog(json.RawMessage(`{}`))
+		p.logBuf.Append(json.RawMessage(`{}`))
 	}
 	logs := p.Log(0)
 	assert.Equal(t, ServerStatsLogMax, len(logs), "ring buffer caps at ServerStatsLogMax")
@@ -159,7 +160,7 @@ func TestServerStatsPublisher_LogDefensiveCopy(t *testing.T) {
 	pub := &capturePubSub{}
 	p := NewServerStatsPublisher(pub, 0)
 	original := json.RawMessage(`{"k":1}`)
-	p.appendLog(original)
+	p.logBuf.Append(original)
 
 	logs := p.Log(0)
 	require.Len(t, logs, 1)
