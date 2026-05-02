@@ -181,6 +181,36 @@ func TestCreateService_MentionExtraction(t *testing.T) {
 	assert.Equal(t, []string{"alice", "bob"}, []string(created.Mentions))
 }
 
+// 連合配信時に renderer.addEmojiTags が note.Emojis を walk するので、
+// note 作成時点で text + cw 中の :code: トークンを抽出して埋めておく必要が
+// ある (#629)。空の場合は note.Emojis は空配列のまま。
+func TestCreateService_EmojiExtraction(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	user := &model.User{ID: "user1"}
+
+	t.Run("text only", func(t *testing.T) {
+		text := "hello :foo: and :bar: with :foo: again"
+		created, err := svc.Create(note.CreateInput{User: user, Text: &text})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"foo", "bar"}, []string(created.Emojis))
+	})
+
+	t.Run("text + cw merged and dedup'd", func(t *testing.T) {
+		text := "body :foo: :baz:"
+		cw := "warning :bar: :foo:"
+		created, err := svc.Create(note.CreateInput{User: user, Text: &text, CW: &cw})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"foo", "baz", "bar"}, []string(created.Emojis))
+	})
+
+	t.Run("plain text yields empty Emojis", func(t *testing.T) {
+		text := "no custom emoji here, only 😀"
+		created, err := svc.Create(note.CreateInput{User: user, Text: &text})
+		require.NoError(t, err)
+		assert.Empty(t, []string(created.Emojis))
+	})
+}
+
 func TestCreateService_MentionResolution_WithUserRepo(t *testing.T) {
 	svc, _, _ := newCreateService(t)
 	userRepo := testutil.NewMockUserRepository()

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shiroha-a/mk/internal/activitypub/mfm"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -488,6 +489,23 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 			}
 		} else {
 			note.Mentions = ExtractMentions(*in.Text)
+		}
+	}
+
+	// Custom emoji 名抽出: text + cw を MFM parse して :code: トークンを集める
+	// (#629)。連合配信時に renderer.addEmojiTags が note.Emojis を walk して
+	// AP Note.tag に Emoji エントリを足すので、ここで埋めないと連合先で
+	// custom emoji が画像化されず文字列のまま表示される。
+	{
+		var text, cw string
+		if in.Text != nil {
+			text = *in.Text
+		}
+		if in.CW != nil {
+			cw = *in.CW
+		}
+		if names := mfm.CollectEmojiCodes(text, cw); len(names) > 0 {
+			note.Emojis = names
 		}
 	}
 
