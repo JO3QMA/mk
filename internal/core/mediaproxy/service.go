@@ -193,6 +193,12 @@ func (s *Service) SetDriveStorage(st coredrive.Storage) {
 // deployments pass `unix:///path/to/socket` and the proxy will dial the
 // socket directly, ignoring the URL host. Empty disables the feature
 // (default — proxy returns dummy PNG for video MIME, #637 M2)。
+//
+// このコール先は operator-trusted endpoint (内部 sidecar / 自前 SaaS 想定)
+// のため、`config.proxy` (#638 outbound forward proxy) は意図的に経由しな
+// い。urlpreview の summalyProxy 経由 client (`internal/core/urlpreview/
+// fetcher.go`) と同じ pattern。`config.proxy` を強制したい運用は別途
+// nginx / sidecar 側で出力経路を制御する。
 func (s *Service) SetVideoThumbnailGenerator(genURL string) {
 	s.videoThumbGen = genURL
 	s.videoThumbClient = newVideoThumbnailClient(genURL)
@@ -269,26 +275,21 @@ func (s *Service) resolveLocal(ctx context.Context, rawURL, filesPrefix string, 
 	}
 
 	body, err := s.driveStorage.Get(accessKey)
+	// Variant blob が S3 lifecycle 等で消えた場合、primary を再フェッチして
+	// resize 経路に戻す (#637 review UR-001)。primary 本体が存在しない /
+	// その他 storage error はそのまま伝える。
+	if errors.Is(err, coredrive.ErrObjectNotFound) && accessKey != primaryKey {
+		body, err = s.driveStorage.Get(primaryKey)
+		if err == nil {
+			accessKey = primaryKey
+			storedMIME = "" // primary の MIME は後段で判定し直す
+		}
+	}
 	if err != nil {
 		if errors.Is(err, coredrive.ErrObjectNotFound) {
-			// Variant blob が S3 lifecycle 等で消えた場合、primary を
-			// 再フェッチして resize 経路に戻す (#637 review UR-001)。
-			if accessKey != primaryKey {
-				body, err = s.driveStorage.Get(primaryKey)
-				if err == nil {
-					accessKey = primaryKey
-					storedMIME = "" // primary の MIME は後段で判定し直す
-				}
-			}
-			if err != nil {
-				if errors.Is(err, coredrive.ErrObjectNotFound) {
-					return nil, ErrNotFound
-				}
-				return nil, fmt.Errorf("mediaproxy: local file access: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("mediaproxy: local file access: %w", err)
+			return nil, ErrNotFound
 		}
+		return nil, fmt.Errorf("mediaproxy: local file access: %w", err)
 	}
 
 	// ローカルファイルの場合はMIME判定して画像処理
@@ -428,19 +429,18 @@ func (s *Service) processAndReturn(ctx context.Context, data []byte, contentType
 	if isVideoMIME(contentType) && isResizeMode(mode) {
 		// Generator は外部 URL を fetch する前提なので、local /files/ への
 		// 戻り迂回は避ける (M1 variant swap で既に解決済のはず)。
-		if s.videoThumbClient != nil && !strings.HasPrefix(sourceURL, s.instanceURL+"/files/") {
-			frame, frameMIME, err := s.fetchVideoThumbnail(ctx, sourceURL)
-			if err == nil {
-				data = frame
-				contentType = frameMIME
-			} else {
-				slog.Warn("mediaproxy: video thumbnail generator failed",
-					"url", sourceURL, "err", err)
-				return makeDummyPNG(), nil
-			}
-		} else {
+		// generator 未設定 / local source なら早期に dummy PNG fallback。
+		if s.videoThumbClient == nil || strings.HasPrefix(sourceURL, s.instanceURL+"/files/") {
 			return makeDummyPNG(), nil
 		}
+		frame, frameMIME, err := s.fetchVideoThumbnail(ctx, sourceURL)
+		if err != nil {
+			slog.Warn("mediaproxy: video thumbnail generator failed",
+				"url", sourceURL, "err", err)
+			return makeDummyPNG(), nil
+		}
+		data = frame
+		contentType = frameMIME
 	}
 	switch mode {
 	case ModeEmoji:
@@ -498,15 +498,15 @@ func (s *Service) processResize(data []byte, contentType string, width, height i
 	}
 
 	if out == FormatAVIF {
-		if encoded, err := encodeAVIF(resized); err == nil {
+		encoded, err := encodeAVIF(resized)
+		if err == nil {
 			return makeResult(encoded, "image/avif"), nil
-		} else {
-			// AVIF 失敗時は WebP に fallback。原因は libavif (wazero) 側の
-			// memory limit / 入力色空間など多岐に渡るので observability の
-			// ため warn level で残す (UR review nit #6)。
-			slog.Warn("mediaproxy: avif encode failed, falling back to webp",
-				"err", err)
 		}
+		// AVIF 失敗時は WebP に fallback。原因は libavif (wazero) 側の
+		// memory limit / 入力色空間など多岐に渡るので observability の
+		// ため warn level で残す (UR review nit #6)。
+		slog.Warn("mediaproxy: avif encode failed, falling back to webp",
+			"err", err)
 	}
 	encoded, err := encodeWebP(resized)
 	if err != nil {

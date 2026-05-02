@@ -63,9 +63,13 @@ services:
   # `videoThumbnailGenerator: unix:///run/video-thumb/sock` を設定すれば
   # 自動で UDS dialer 経由で GET する。
   #
-  # 注意: nekonoverse/video-thumb image は UDS listen をサポートしている
-  # 前提。HTTP TCP listen しかできない場合は `networks: mkgo-uds` に置いて
-  # `http://video-thumb:PORT` を指定する形にフォールバックする。
+  # 注意: `nekonoverse/video-thumb` は placeholder image。Misskey TS の
+  # videoThumbnailGenerator API (`GET /thumbnail.webp?thumbnail=1&url=<URL>`)
+  # に互換であれば任意の image / 自前ビルドに差し替えて構わない。さらに
+  # この UDS overlay では image が `/run/video-thumb/sock` に listen する
+  # 前提。HTTP TCP listen しかできない場合は `networks: mkgo-uds` だけ
+  # 残し socket mount を消して `http://video-thumb:PORT` 指定にフォール
+  # バックする。
   video-thumb:
     image: nekonoverse/video-thumb:latest
     volumes:

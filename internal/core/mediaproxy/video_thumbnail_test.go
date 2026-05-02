@@ -114,10 +114,21 @@ func TestVideoThumbnailRequestURL(t *testing.T) {
 	t.Run("unix", func(t *testing.T) {
 		got, err := videoThumbnailRequestURL("unix:///run/video-thumb.sock", "https://video.example.com/clip.mp4")
 		require.NoError(t, err)
-		assert.True(t, strings.HasPrefix(got, "http://video-thumb-uds/thumbnail.webp"))
+		assert.True(t, strings.HasPrefix(got, "http://localhost/thumbnail.webp"))
 		u, err := url.Parse(got)
 		require.NoError(t, err)
 		assert.Equal(t, "https://video.example.com/clip.mp4", u.Query().Get("url"))
+	})
+	t.Run("unix with stray query is ignored", func(t *testing.T) {
+		got, err := videoThumbnailRequestURL("unix:///run/video-thumb.sock?token=xyz", "https://video.example.com/clip.mp4")
+		require.NoError(t, err)
+		// Stray query on the unix:// URL must NOT leak into the request URL
+		// (regression for the TrimRight(s, "") dead-code from the previous
+		// commit).
+		assert.True(t, strings.HasPrefix(got, "http://localhost/thumbnail.webp"))
+		u, err := url.Parse(got)
+		require.NoError(t, err)
+		assert.Equal(t, "", u.Query().Get("token"))
 	})
 }
 

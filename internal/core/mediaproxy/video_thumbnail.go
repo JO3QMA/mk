@@ -62,18 +62,18 @@ func newVideoThumbnailClient(genURL string) *http.Client {
 // videoThumbnailRequestURL builds the GET URL the generator expects.
 // Misskey TS' videoThumbnailGenerator API: `<base>/thumbnail.webp?thumbnail=1&url=<encoded>`.
 //
-// For UDS the host part is irrelevant — net/http requires a non-empty host
-// for parsing, so we substitute a placeholder.
+// For UDS the original URL's authority and path are the socket path itself
+// (not part of the HTTP request line), so we drop them entirely and use
+// `http://localhost` as the placeholder host. `localhost` is what the
+// upstream service is most likely to accept in its Host header.
 func videoThumbnailRequestURL(genURL, sourceURL string) (string, error) {
 	if strings.HasPrefix(genURL, "unix:") {
-		u, err := url.Parse(genURL)
-		if err != nil {
+		// `url.Parse` is only used to validate the input; the resulting
+		// fields are intentionally ignored — see comment above.
+		if _, err := url.Parse(genURL); err != nil {
 			return "", err
 		}
-		base := "http://video-thumb-uds" + strings.TrimRight(u.RawQuery, "")
-		// Note: any URL path component in the unix:// URL is the socket path
-		// itself, NOT an HTTP path prefix. We don't honour it here.
-		return base + "/thumbnail.webp?thumbnail=1&url=" + url.QueryEscape(sourceURL), nil
+		return "http://localhost/thumbnail.webp?thumbnail=1&url=" + url.QueryEscape(sourceURL), nil
 	}
 	return strings.TrimRight(genURL, "/") + "/thumbnail.webp?thumbnail=1&url=" + url.QueryEscape(sourceURL), nil
 }
@@ -108,7 +108,10 @@ func (s *Service) fetchVideoThumbnail(ctx context.Context, sourceURL string) ([]
 		return nil, "", fmt.Errorf("%w: read body: %v", ErrVideoThumbnailUnavailable, err)
 	}
 	if int64(len(data)) > maxDownload {
-		return nil, "", ErrTooLarge
+		// Wrap so callers can match a single sentinel for any
+		// generator-side failure; the underlying ErrTooLarge stays in the
+		// chain via errors.Is for callers that care.
+		return nil, "", fmt.Errorf("%w: %w", ErrVideoThumbnailUnavailable, ErrTooLarge)
 	}
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
