@@ -528,6 +528,38 @@ func TestPackNotes_MergesBufferedReactions_OnEmbeddedRenote(t *testing.T) {
 	assert.Equal(t, 5, out[0].Renote.ReactionCount)
 }
 
+// embed された Reply の reactions も merge 対象 (Renote 経路と対称)。
+func TestPackNotes_MergesBufferedReactions_OnEmbeddedReply(t *testing.T) {
+	idGen := newTestIDGen(t)
+	replyID := idGen.Generate(time.Now())
+	noteID := idGen.Generate(time.Now())
+
+	reply := &model.Note{
+		ID:         replyID,
+		UserID:     "user2",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{":existing@.:": 1}`)),
+		User:       &model.User{ID: "user2", Username: "bob", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+	}
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		ReplyID:    &replyID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User:       &model.User{ID: "user1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+		Reply:      reply,
+	}
+	reader := &stubBufferedReader{data: map[string]map[string]int64{
+		replyID: {":heart@.:": 3},
+	}}
+
+	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Reply)
+	assert.Equal(t, 4, out[0].Reply.ReactionCount, "embed reply の DB(1) + buffered(3) が merge される")
+}
+
 func TestFlattenNotesPlusRelations_NilSafe(t *testing.T) {
 	out := flattenNotesPlusRelations([]*model.Note{nil, {ID: "a"}})
 	require.Len(t, out, 1)
