@@ -7,9 +7,10 @@
 # Stage 1: Build Go binary
 FROM golang:1.25-alpine AS builder
 
-# build-base は chai2010/webp などの cgo 依存をリンクするのに必要。
-# git は go mod download 時の private module fetch に使う。
-RUN apk add --no-cache git build-base
+# Step 2 (#618) で chai2010/webp → gen2brain/webp (libwebp on wazero/WASM) に
+# 切替えたので cgo 依存はゼロ。build-base (gcc + musl libc) は不要になった。
+# git は go mod download 時の private module fetch に使うので残す。
+RUN apk add --no-cache git
 
 WORKDIR /app
 
@@ -37,10 +38,16 @@ RUN test -f third_party/misskey/packages/backend/node_modules/@discordapp/twemoj
 # Go の build cache (`$GOCACHE` = /root/.cache/go-build) と module cache を
 # BuildKit cache mount として永続化する。再ビルド時に変更の無いパッケージは
 # 再コンパイルされずに layer 完成までが秒単位になる (#432)。
+#
+# CGO_ENABLED=0 + `-tags nodynamic` で static binary を生成する (#619)。
+# - CGO_ENABLED=0: gen2brain/webp に切替えた今、cgo に依存するコードは無い。
+# - -tags nodynamic: gen2brain/webp は default で purego (dlopen) 経由の
+#   shared lib fallback を試みるため、これを切って WASM (wazero) 一本に
+#   固定する。これがないと dlopen を呼ぶ層が残り完全 static にならない。
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
-    go build -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
+    CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
+    CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
 # Stage 2: Runtime
 FROM alpine:3.21
