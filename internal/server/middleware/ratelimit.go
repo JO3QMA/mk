@@ -209,7 +209,7 @@ func (rl *RateLimiter) Middleware() echo.MiddlewareFunc {
 // 認証済 user では userID 由来 actor (factor=user policy) と IP 由来 actor
 // (factor=1.0) が並ぶ。未認証では IP 由来 actor のみ。
 type rateLimitActor struct {
-	key    string  // bucket 識別子 ("u:<userID>" / "ip-<hash>" 等)
+	key    string  // bucket 識別子 (userID そのまま / "ip-<hash>" 等)
 	factor float64 // Max scaling 係数 (>0、1.0 で base、>1 で緩和、<1 で厳格)
 }
 
