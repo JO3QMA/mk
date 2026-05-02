@@ -306,6 +306,76 @@ func TestReactionHook_Added_LocalOnlySkipped(t *testing.T) {
 	assert.Empty(t, enq.calls)
 }
 
+// direct と follower fanout で同じ inbox が重複した場合は別 batch なので
+// 2 通 enqueue される (Like ID 同一なので receiver 側で idempotent)。
+// PR #640 docstring の挙動を回帰検出する目的の test (#644 #3)。
+func TestReactionHook_Added_DuplicateInbox_EmitsTwice(t *testing.T) {
+	// bob = remote 作者 / inbox A、follower inbox にも同じ A を仕込む。
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
+		"https://remote.example/users/bob/inbox", // 作者と完全一致
+	})
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	_, target := remoteAuthor(userRepo)
+	target.Visibility = model.NoteVisibilityPublic
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	require.Len(t, enq.calls, 2, "direct と follower で別 batch なので 2 通 enqueue される")
+	for _, c := range enq.calls {
+		assert.Equal(t, "https://remote.example/users/bob/inbox", c.Inbox)
+	}
+}
+
+// VisibleUserIDs に存在しない user ID が混ざっていても残りの remote user
+// にだけ DirectRecipe が配信される。FindManyByIDs は missing rows を silent
+// skip するので、遭遇するのは稀だが drop-in 復帰時 / 遅延 federation で
+// 起こり得る (#644 #4)。
+func TestReactionHook_Added_SpecifiedNote_UnknownVisibleUserSkipped(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", nil)
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	bob, _ := remoteAuthor(userRepo)
+	host2 := "remote2.example"
+	uri2 := "https://remote2.example/users/dave"
+	inbox2 := "https://remote2.example/users/dave/inbox"
+	dave := &model.User{ID: "dave", Username: "dave", Host: &host2, URI: &uri2, Inbox: &inbox2}
+	userRepo.Users["dave"] = dave
+
+	target := &model.Note{
+		ID:             "n1",
+		UserID:         bob.ID,
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: []string{"dave", "ghost", "missing"}, // ghost / missing は user table に無い
+	}
+	noteURI := "https://remote.example/notes/n1"
+	target.URI = &noteURI
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	inboxes := collectInboxes(enq)
+	assert.Contains(t, inboxes, "https://remote.example/users/bob/inbox")
+	assert.Contains(t, inboxes, "https://remote2.example/users/dave/inbox")
+	assert.Len(t, inboxes, 2, "missing user は silent skip して残りに配信を続ける")
+}
+
+// VisibleUserIDs に target.UserID 自身が含まれていても重複 lookup せず、
+// 結果として作者 inbox を 1 度しか積まない (#644 #7 dedup)。
+func TestReactionHook_Added_SpecifiedNote_AuthorInVisibleListDeduped(t *testing.T) {
+	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", nil)
+	reactor := setupReactor(t, userRepo, keypairRepo)
+	bob, _ := remoteAuthor(userRepo)
+
+	target := &model.Note{
+		ID:             "n1",
+		UserID:         bob.ID,
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: []string{bob.ID, bob.ID, ""}, // 重複 + 空文字は skip
+	}
+	noteURI := "https://remote.example/notes/n1"
+	target.URI = &noteURI
+
+	hook.OnReactionAdded(reactor, target, "🎉")
+	inboxes := collectInboxes(enq)
+	assert.Equal(t, []string{"https://remote.example/users/bob/inbox"}, inboxes)
+}
+
 // Undo Like も同じ recipient 集合に届く (#636)。
 func TestReactionHook_Removed_PublicNote_FanoutToFollowers(t *testing.T) {
 	hook, enq, userRepo, keypairRepo, _ := newReactionHookWithFollowers(t, "alice", []string{
