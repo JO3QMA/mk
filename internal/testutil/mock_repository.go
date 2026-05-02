@@ -4601,6 +4601,9 @@ type MockRoleAssignmentRepository struct {
 	// セットするので、admin/roles/users の handler テストで User を直接
 	// 参照するパスが組める。
 	UserRepo *MockUserRepository
+	// LastListByRoleLimit は最後に ListByRole に渡された limit を保持する。
+	// handler 側の limit clamping (>100 → 100) を直接 assert したいテスト用。
+	LastListByRoleLimit int
 }
 
 func NewMockRoleAssignmentRepository(roleRepo *MockRoleRepository) *MockRoleAssignmentRepository {
@@ -4642,6 +4645,7 @@ func (m *MockRoleAssignmentRepository) ListByUser(userID string) ([]*model.RoleA
 }
 
 func (m *MockRoleAssignmentRepository) ListByRole(roleID string, untilID, sinceID string, limit int) ([]*model.RoleAssignment, error) {
+	m.LastListByRoleLimit = limit
 	var result []*model.RoleAssignment
 	now := time.Now()
 	for _, a := range m.Assignments {
