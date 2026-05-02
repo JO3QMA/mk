@@ -123,7 +123,7 @@ func TestPackNotes_PopulatesRemoteUserInstance(t *testing.T) {
 		{ID: "n2", UserID: "u2", User: &model.User{ID: "u2", Username: "bob"}}, // local
 	}
 
-	out := PackNotes(notes, idGen, lookup, nil)
+	out := PackNotes(notes, idGen, lookup, nil, nil)
 	require.Len(t, out, 2)
 	require.NotNil(t, out[0].User.Instance)
 	assert.Equal(t, "Remote HQ", *out[0].User.Instance.Name)
@@ -139,7 +139,7 @@ func TestPackNotes_NilLookup_InstanceRemainsNil(t *testing.T) {
 	notes := []*model.Note{
 		{ID: "n1", UserID: "u1", User: &model.User{ID: "u1", Username: "alice", Host: &host}},
 	}
-	out := PackNotes(notes, idGen, nil, nil)
+	out := PackNotes(notes, idGen, nil, nil, nil)
 	require.Len(t, out, 1)
 	assert.Nil(t, out[0].User.Instance)
 }
@@ -154,7 +154,7 @@ func TestPackNoteWithInstance(t *testing.T) {
 	host := "solo.example"
 	n := &model.Note{ID: "n1", UserID: "u1", User: &model.User{ID: "u1", Username: "alice", Host: &host}}
 
-	packed := PackNoteWithInstance(n, idGen, lookup, nil)
+	packed := PackNoteWithInstance(n, idGen, lookup, nil, nil)
 	require.NotNil(t, packed.User.Instance)
 	assert.Equal(t, "Solo", *packed.User.Instance.Name)
 }

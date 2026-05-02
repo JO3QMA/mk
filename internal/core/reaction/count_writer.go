@@ -19,6 +19,11 @@ type ReactionCountWriter interface {
 	// GetBuffered returns buffered (unflushed) reaction deltas for a note.
 	// direct 実装では nil を返す。read merge 時に使用する。
 	GetBuffered(ctx context.Context, noteID string) (map[string]int64, error)
+	// GetBufferedMany returns buffered deltas keyed by noteID for the
+	// given set in a single round-trip (Redis pipeline)。PackNotes 等の
+	// batched read で N+1 を回避するために使う (#647)。direct 実装では
+	// nil を返す。
+	GetBufferedMany(ctx context.Context, noteIDs []string) (map[string]map[string]int64, error)
 }
 
 const bufferKeyPrefix = "reaction-buffer:"
@@ -41,6 +46,10 @@ func (w *directWriter) Increment(noteID, reaction string, delta int) error {
 func (w *directWriter) Flush(_ context.Context) error { return nil }
 
 func (w *directWriter) GetBuffered(_ context.Context, _ string) (map[string]int64, error) {
+	return nil, nil
+}
+
+func (w *directWriter) GetBufferedMany(_ context.Context, _ []string) (map[string]map[string]int64, error) {
 	return nil, nil
 }
 
@@ -145,6 +154,48 @@ func (w *bufferedWriter) GetBuffered(ctx context.Context, noteID string) (map[st
 		deltas[k] = n
 	}
 	return deltas, nil
+}
+
+// GetBufferedMany batch-fetches buffered deltas for noteIDs via a single
+// Redis pipeline of HGETALL calls. 空 / 不在の note は結果 map に含めない。
+// noteIDs が空または nil なら nil を返す。
+func (w *bufferedWriter) GetBufferedMany(ctx context.Context, noteIDs []string) (map[string]map[string]int64, error) {
+	if len(noteIDs) == 0 {
+		return nil, nil
+	}
+	pipe := w.rdb.Pipeline()
+	cmds := make(map[string]*redis.MapStringStringCmd, len(noteIDs))
+	for _, id := range noteIDs {
+		if id == "" {
+			continue
+		}
+		if _, dup := cmds[id]; dup {
+			continue
+		}
+		cmds[id] = pipe.HGetAll(ctx, bufferKeyPrefix+id)
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("reaction GetBufferedMany: pipeline exec: %w", err)
+	}
+	out := make(map[string]map[string]int64, len(cmds))
+	for id, cmd := range cmds {
+		result, err := cmd.Result()
+		if err != nil {
+			// 個別 key error は warn 相当、batch を投げ捨てるほどでない。
+			continue
+		}
+		if len(result) == 0 {
+			continue
+		}
+		deltas := make(map[string]int64, len(result))
+		for k, v := range result {
+			var n int64
+			fmt.Sscanf(v, "%d", &n)
+			deltas[k] = n
+		}
+		out[id] = deltas
+	}
+	return out, nil
 }
 
 // MergeReactions merges buffered deltas into a note's existing reactions

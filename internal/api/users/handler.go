@@ -40,6 +40,7 @@ type Handler struct {
 	followRequestRepo    repository.FollowRequestRepository
 	instanceRepo         repository.InstanceRepository
 	emojiRepo            repository.EmojiRepository
+	bufReader            entity.BufferedReactionsReader
 	userListFavoriteRepo UserListFavoriteRepository
 	userListRepo         repository.UserListRepository
 	clipRepo             repository.ClipRepository
@@ -113,6 +114,16 @@ func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 // SetEmojiRepo attaches an EmojiRepository for custom emoji resolution.
 func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
 	h.emojiRepo = r
+}
+
+// SetReactionReader wires a BufferedReactionsReader so PackNote / PackNotes
+// can merge in-flight buffered reaction deltas (#647)。
+func (h *Handler) SetReactionReader(r entity.BufferedReactionsReader) {
+	h.bufReader = r
+}
+
+func (h *Handler) reactionReader() entity.BufferedReactionsReader {
+	return h.bufReader
 }
 
 // instanceLookup adapts instanceRepo to entity.InstanceLookup. Returns nil
@@ -432,7 +443,7 @@ func (h *Handler) Notes(c echo.Context) error {
 	}
 
 	viewer := middleware.GetUser(c)
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(out, viewer)
 	return c.JSON(http.StatusOK, out)
 }
@@ -604,7 +615,7 @@ func (h *Handler) fillPinned(viewer *model.User, u *model.User, profile *model.U
 			detailed.PinnedNoteIDs = ids
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 					h.fieldRes.Apply(entities, viewer)
 					packed := make([]any, 0, len(entities))
 					for _, pn := range entities {

@@ -1,7 +1,9 @@
 package entity
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -334,7 +336,7 @@ func TestPackNotes_EmbeddedRenoteHasInstanceAndEmoji(t *testing.T) {
 		remoteHost: {{Name: "wave", PublicURL: "https://remote.example/emoji/wave.png"}},
 	}}
 
-	out := PackNotes([]*model.Note{note}, idGen, instLookup, emojiLookup)
+	out := PackNotes([]*model.Note{note}, idGen, instLookup, emojiLookup, nil)
 	require.Len(t, out, 1)
 	require.NotNil(t, out[0].Renote)
 	require.NotNil(t, out[0].Renote.User.Instance)
@@ -374,10 +376,156 @@ func TestPackNoteWithInstance_EmbeddedRenote(t *testing.T) {
 		remoteHost: {Host: remoteHost, Name: strPtr("Remote")},
 	}}
 
-	out := PackNoteWithInstance(note, idGen, instLookup, nil)
+	out := PackNoteWithInstance(note, idGen, instLookup, nil, nil)
 	require.NotNil(t, out.Renote)
 	require.NotNil(t, out.Renote.User.Instance)
 	assert.Equal(t, strPtr("Remote"), out.Renote.User.Instance.Name)
+}
+
+// stubBufferedReader is a test double for BufferedReactionsReader.
+type stubBufferedReader struct {
+	data map[string]map[string]int64
+	err  error
+}
+
+func (s *stubBufferedReader) GetBufferedMany(_ context.Context, ids []string) (map[string]map[string]int64, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := make(map[string]map[string]int64)
+	for _, id := range ids {
+		if d, ok := s.data[id]; ok {
+			out[id] = d
+		}
+	}
+	return out, nil
+}
+
+// reader が non-nil なら DB の reactions と buffered deltas を merge して
+// 返す (#647)。emoji も merged keys から resolve される。
+func TestPackNotes_MergesBufferedReactions(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+	remoteHost := "remote.example"
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{":existing@.:": 1}`)),
+		User:       &model.User{ID: "user1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+	}
+	emojiLookup := &stubEmojiLookup{data: map[string][]*model.Emoji{
+		remoteHost: {{Name: "yikes", PublicURL: "https://remote.example/emoji/yikes.png"}},
+	}}
+	reader := &stubBufferedReader{data: map[string]map[string]int64{
+		noteID: {":yikes@" + remoteHost + ":": 1},
+	}}
+
+	out := PackNotes([]*model.Note{note}, idGen, nil, emojiLookup, reader)
+	require.Len(t, out, 1)
+	// merged reactions JSON は両方のキーを含む
+	var got map[string]int
+	require.NoError(t, json.Unmarshal(out[0].Reactions, &got))
+	assert.Equal(t, 1, got[":existing@.:"])
+	assert.Equal(t, 1, got[":yikes@"+remoteHost+":"])
+	assert.Equal(t, 2, out[0].ReactionCount)
+	// reactionEmojis に buffered 由来の emoji 解決結果が入る
+	assert.Equal(t, "https://remote.example/emoji/yikes.png", out[0].ReactionEmojis["yikes@"+remoteHost])
+}
+
+// 0 以下になった merged value は出力から除外される。
+func TestPackNotes_BufferedNegativeDelta_RemovesKey(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{":foo@.:": 1}`)),
+		User:       &model.User{ID: "user1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+	}
+	reader := &stubBufferedReader{data: map[string]map[string]int64{
+		noteID: {":foo@.:": -1},
+	}}
+
+	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	require.Len(t, out, 1)
+	var got map[string]int
+	if len(out[0].Reactions) > 0 {
+		_ = json.Unmarshal(out[0].Reactions, &got)
+	}
+	assert.NotContains(t, got, ":foo@.:")
+	assert.Equal(t, 0, out[0].ReactionCount)
+}
+
+// reader == nil は旧挙動 (DB のみ)。
+func TestPackNotes_NilReader_NoMerge(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{":foo@.:": 3}`)),
+		User:       &model.User{ID: "user1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+	}
+	out := PackNotes([]*model.Note{note}, idGen, nil, nil, nil)
+	require.Len(t, out, 1)
+	assert.Equal(t, 3, out[0].ReactionCount)
+}
+
+// reader が error を返した場合は stale な DB 値で fall back して continue。
+func TestPackNotes_ReaderError_FallsBackToDB(t *testing.T) {
+	idGen := newTestIDGen(t)
+	noteID := idGen.Generate(time.Now())
+
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{":foo@.:": 2}`)),
+		User:       &model.User{ID: "user1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+	}
+	reader := &stubBufferedReader{err: errors.New("redis down")}
+
+	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	require.Len(t, out, 1)
+	assert.Equal(t, 2, out[0].ReactionCount, "reader error 時は DB 値で続行")
+}
+
+// embed された Renote の reactions も merge 対象。
+func TestPackNotes_MergesBufferedReactions_OnEmbeddedRenote(t *testing.T) {
+	idGen := newTestIDGen(t)
+	renoteID := idGen.Generate(time.Now())
+	noteID := idGen.Generate(time.Now())
+
+	renote := &model.Note{
+		ID:         renoteID,
+		UserID:     "user2",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User:       &model.User{ID: "user2", Username: "bob", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+	}
+	note := &model.Note{
+		ID:         noteID,
+		UserID:     "user1",
+		RenoteID:   &renoteID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+		User:       &model.User{ID: "user1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))},
+		Renote:     renote,
+	}
+	reader := &stubBufferedReader{data: map[string]map[string]int64{
+		renoteID: {":heart@.:": 5},
+	}}
+
+	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Renote)
+	assert.Equal(t, 5, out[0].Renote.ReactionCount)
 }
 
 func TestFlattenNotesPlusRelations_NilSafe(t *testing.T) {

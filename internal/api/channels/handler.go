@@ -24,6 +24,7 @@ type Handler struct {
 	followingRepo ChannelFollowingChecker
 	instanceRepo  repository.InstanceRepository
 	emojiRepo     repository.EmojiRepository
+	bufReader     entity.BufferedReactionsReader
 	fieldRes      *entity.NoteFieldResolver
 }
 
@@ -60,6 +61,16 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 // note text and user displayNames get resolved to URLs.
 func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
 	h.emojiRepo = r
+}
+
+// SetReactionReader wires a BufferedReactionsReader so PackNote / PackNotes
+// can merge in-flight buffered reaction deltas (#647)。
+func (h *Handler) SetReactionReader(r entity.BufferedReactionsReader) {
+	h.bufReader = r
+}
+
+func (h *Handler) reactionReader() entity.BufferedReactionsReader {
+	return h.bufReader
 }
 
 func (h *Handler) emojiLookup() entity.EmojiLookup {
@@ -338,7 +349,7 @@ func (h *Handler) Timeline(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 	viewer := middleware.GetUser(c)
-	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(entities, viewer)
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {
