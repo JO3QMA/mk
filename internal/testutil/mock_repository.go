@@ -4526,7 +4526,12 @@ func (m *MockAbuseReportRepository) UpdateFields(id string, fields map[string]an
 // MockModerationLogRepository
 // ---------------------------------------------------------------------------
 
+// MockModerationLogRepository is a thread-safe in-memory test double for
+// repository.ModerationLogRepository. Goroutine-safety is required because
+// core/moderationlog.Service.Log writes via a fire-and-forget goroutine,
+// so test assertions in the calling goroutine race with the writer.
 type MockModerationLogRepository struct {
+	mu   sync.Mutex
 	Logs []*model.ModerationLog
 }
 
@@ -4535,11 +4540,15 @@ func NewMockModerationLogRepository() *MockModerationLogRepository {
 }
 
 func (m *MockModerationLogRepository) Create(log *model.ModerationLog) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.Logs = append(m.Logs, log)
 	return nil
 }
 
 func (m *MockModerationLogRepository) List(limit, offset int) ([]*model.ModerationLog, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if limit <= 0 {
 		limit = 10
 	}
@@ -4547,7 +4556,20 @@ func (m *MockModerationLogRepository) List(limit, offset int) ([]*model.Moderati
 		return nil, nil
 	}
 	end := min(offset+limit, len(m.Logs))
-	return m.Logs[offset:end], nil
+	out := make([]*model.ModerationLog, end-offset)
+	copy(out, m.Logs[offset:end])
+	return out, nil
+}
+
+// Snapshot returns a thread-safe copy of the recorded logs for assertions.
+// Use this instead of reading the Logs field directly when log writes
+// happen on a background goroutine.
+func (m *MockModerationLogRepository) Snapshot() []*model.ModerationLog {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*model.ModerationLog, len(m.Logs))
+	copy(out, m.Logs)
+	return out
 }
 
 // ---------------------------------------------------------------------------

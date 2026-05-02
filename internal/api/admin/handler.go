@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/core/webpush"
@@ -79,7 +80,7 @@ type Handler struct {
 	metaRepo                repository.MetaRepository
 	userRepo                repository.UserRepository
 	abuseRepo               repository.AbuseReportRepository
-	modLogRepo              repository.ModerationLogRepository
+	modLogService           *moderationlog.Service
 	emojiRepo               repository.EmojiRepository
 	driveFileRepo           repository.DriveFileRepository
 	adminDB                 *gorm.DB
@@ -344,9 +345,12 @@ func NewHandler(
 // SetAbuseRepo attaches the abuse report repository.
 func (h *Handler) SetAbuseRepo(r repository.AbuseReportRepository) { h.abuseRepo = r }
 
-// SetModLogRepo attaches the moderation log repository.
-func (h *Handler) SetModLogRepo(r repository.ModerationLogRepository) {
-	h.modLogRepo = r
+// SetModLogService attaches the moderation log service. Both the read
+// endpoint (admin/show-moderation-logs → Service.List) and the write
+// path (admin handlers → Service.Log) go through this single object so
+// wiring cannot drift out of sync.
+func (h *Handler) SetModLogService(s *moderationlog.Service) {
+	h.modLogService = s
 }
 
 // AccountsCreate handles POST /api/admin/accounts/create.
@@ -1536,10 +1540,7 @@ func (h *Handler) ShowModerationLogs(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	if h.modLogRepo == nil {
-		return c.JSON(http.StatusOK, []any{})
-	}
-	logs, err := h.modLogRepo.List(req.Limit, req.Offset)
+	logs, err := h.modLogService.List(req.Limit, req.Offset)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}

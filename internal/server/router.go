@@ -77,6 +77,7 @@ import (
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	coreinstance "github.com/shiroha-a/mk/internal/core/instance"
 	coremediaproxy "github.com/shiroha-a/mk/internal/core/mediaproxy"
+	coremodlog "github.com/shiroha-a/mk/internal/core/moderationlog"
 	coremove "github.com/shiroha-a/mk/internal/core/move"
 	coremuting "github.com/shiroha-a/mk/internal/core/muting"
 	corenote "github.com/shiroha-a/mk/internal/core/note"
@@ -1682,7 +1683,7 @@ func (s *Server) setupRoutes() {
 			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
-	adminHandler.SetModLogRepo(modLogRepo)
+	adminHandler.SetModLogService(coremodlog.New(modLogRepo, idGen))
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
 	adminHandler.SetAdminDB(s.db)
