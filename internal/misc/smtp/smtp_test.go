@@ -705,3 +705,42 @@ func copyConn(dst net.Conn, src interface{ Read([]byte) (int, error) }) (int64, 
 		}
 	}
 }
+
+// buildMessage は internal helper だが、multipart/alternative の構造が
+// 正しく組まれているかを直接 unit test しておく (#600 item 4)。SendMessage 経由
+// は fake SMTP server で end-to-end カバーできるが boundary や header の
+// 詳細は文字列単位の assertion が早い。
+func TestBuildMessage_TextOnly(t *testing.T) {
+	got := buildMessage("from@example.test", "to@example.test", "Hi", "plain body", "")
+	if !strings.Contains(got, "Content-Type: text/plain; charset=UTF-8") {
+		t.Errorf("expected text/plain header, got: %s", got)
+	}
+	if strings.Contains(got, "multipart") {
+		t.Errorf("html 空のとき multipart を使ってはいけない")
+	}
+	if !strings.Contains(got, "plain body") {
+		t.Errorf("body should be embedded")
+	}
+}
+
+func TestBuildMessage_Multipart(t *testing.T) {
+	got := buildMessage("from@example.test", "to@example.test", "Hi", "plain body", "<p>html body</p>")
+	if !strings.Contains(got, "Content-Type: multipart/alternative") {
+		t.Errorf("expected multipart/alternative, got: %s", got)
+	}
+	if !strings.Contains(got, "boundary=\"----=_MK_GO_BOUNDARY\"") {
+		t.Errorf("expected boundary header")
+	}
+	// text part
+	if !strings.Contains(got, "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\nplain body") {
+		t.Errorf("text part missing or malformed")
+	}
+	// html part
+	if !strings.Contains(got, "Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n<p>html body</p>") {
+		t.Errorf("html part missing or malformed")
+	}
+	// closing boundary
+	if !strings.Contains(got, "--"+"----=_MK_GO_BOUNDARY"+"--\r\n") {
+		t.Errorf("closing boundary missing")
+	}
+}

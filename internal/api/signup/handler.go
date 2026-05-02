@@ -15,6 +15,7 @@ import (
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
@@ -36,7 +37,9 @@ type Handler struct {
 	// emailSender は EmailRequiredForSignup フローで確認メールを送る callback。
 	// router 配線時に SMTP infra を closure に閉じ込めて注入する。未設定の場合は
 	// 確認メールが送られないだけで pending row 自体は作る (テスト用)。
-	emailSender func(to, subject, body string)
+	// text と html 両方を受けて multipart/alternative で送出する想定 (html 空なら
+	// text/plain only)。
+	emailSender func(to string, msg miscsmtp.Message)
 	// serverURL は確認 link の base。emailSender とセットで設定。
 	serverURL string
 }
@@ -63,7 +66,8 @@ func (h *Handler) SetTicketStore(ts TicketStore) {
 
 // SetEmailSender wires a callback used to send signup confirmation emails.
 // reset-password handler と同じ pattern。serverURL は 確認 link 生成に使う。
-func (h *Handler) SetEmailSender(serverURL string, send func(to, subject, body string)) {
+// callback は text + html 両 body を受け、multipart/alternative で送る (#600 item 4)。
+func (h *Handler) SetEmailSender(serverURL string, send func(to string, msg miscsmtp.Message)) {
 	h.serverURL = serverURL
 	h.emailSender = send
 }
@@ -151,9 +155,20 @@ func (h *Handler) Signup(c echo.Context) error {
 			if meta.Name != nil && *meta.Name != "" {
 				siteName = *meta.Name
 			}
-			body := "Welcome to " + siteName + "! Click the link to complete your signup:\n" +
-				h.signupConfirmURL(pending.Code)
-			go h.emailSender(req.EmailAddress, "Confirm your account", body)
+			confirmURL := h.signupConfirmURL(pending.Code)
+			lead := "Welcome to " + siteName + "! Click the link to complete your signup:"
+			text, bodyHTML := coreemail.LinkText(lead, "Complete signup", confirmURL)
+			html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
+				SiteName: siteName,
+				SiteURL:  h.serverURL,
+				Subject:  "Confirm your account",
+				BodyHTML: bodyHTML,
+			})
+			go h.emailSender(req.EmailAddress, miscsmtp.Message{
+				Subject: "Confirm your account",
+				Text:    text,
+				HTML:    html,
+			})
 		}
 		// TS 互換: 本体は何も返さない (frontend は確認メールを待つ)。
 		return c.NoContent(http.StatusNoContent)

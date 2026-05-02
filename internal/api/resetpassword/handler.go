@@ -7,15 +7,19 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	coreemail "github.com/shiroha-a/mk/internal/core/email"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// EmailSender sends an email (to, subject, body).
-type EmailSender func(to, subject, body string)
+// EmailSender sends an email message (subject + text + optional HTML).
+// HTML が空なら text/plain only、設定されていれば multipart/alternative で
+// 両方送出される (#600 item 4)。
+type EmailSender func(to string, msg miscsmtp.Message)
 
 // Handler handles password reset endpoints.
 type Handler struct {
@@ -72,11 +76,21 @@ func (h *Handler) RequestReset(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 
-	// リセットメール送信
+	// リセットメール送信 (text + html multipart)
 	if h.email != nil {
 		link := fmt.Sprintf("%s/reset-password/%s", h.serverURL, token)
-		go h.email(*profile.Email, "Password reset",
-			fmt.Sprintf("Use the following link to reset your password:\n%s", link))
+		lead := "Use the following link to reset your password:"
+		text, bodyHTML := coreemail.LinkText(lead, "Reset password", link)
+		html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
+			SiteURL:  h.serverURL,
+			Subject:  "Password reset",
+			BodyHTML: bodyHTML,
+		})
+		go h.email(*profile.Email, miscsmtp.Message{
+			Subject: "Password reset",
+			Text:    text,
+			HTML:    html,
+		})
 	}
 
 	return c.NoContent(http.StatusNoContent)

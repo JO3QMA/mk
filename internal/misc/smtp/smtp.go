@@ -32,6 +32,15 @@ type Options struct {
 	ProxyURL string
 }
 
+// Message bundles the body parts of an email. Subject + Text are required;
+// HTML is optional. When HTML is set, SendMessage emits a multipart/alternative
+// MIME structure so MUA が好きな方を表示できる (TS の sendEmail と同等)。
+type Message struct {
+	Subject string
+	Text    string
+	HTML    string // optional
+}
+
 // sanitizeHeaderValue strips CR and LF characters to prevent SMTP header
 // injection.
 func sanitizeHeaderValue(s string) string {
@@ -49,21 +58,28 @@ func Send(host string, port int, user, pass *string, from, to, subject, body str
 
 // SendWithOptions is Send + functional options. Currently only ProxyURL is
 // supported; mismatched scheme falls back to direct dial with a warning.
+// 互換のため text/plain only で送る。HTML 同送が必要なら SendMessage を使う。
 func SendWithOptions(host string, port int, user, pass *string, from, to, subject, body string, opts Options) {
+	SendMessage(host, port, user, pass, from, to, Message{Subject: subject, Text: body}, opts)
+}
+
+// SendMessage sends an email with optional multipart/alternative HTML body.
+// HTML が空なら text/plain only、HTML が設定されていれば multipart/alternative
+// で text と HTML 両方を送出する。Misskey TS sendEmail との挙動互換 (#600 item 4)。
+func SendMessage(host string, port int, user, pass *string, from, to string, msg Message, opts Options) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	// ヘッダーフィールドのCRLFインジェクション対策
 	from = sanitizeHeaderValue(from)
 	to = sanitizeHeaderValue(to)
-	subject = sanitizeHeaderValue(subject)
+	subject := sanitizeHeaderValue(msg.Subject)
 
 	var auth gosmtp.Auth
 	if user != nil && pass != nil && *user != "" {
 		auth = gosmtp.PlainAuth("", *user, *pass, host)
 	}
 
-	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		from, to, subject, body)
+	body := buildMessage(from, to, subject, msg.Text, msg.HTML)
 
 	tlsConfig := &tls.Config{ServerName: host}
 	conn, err := dialSMTP(addr, opts.ProxyURL, 10*time.Second)
@@ -104,11 +120,35 @@ func SendWithOptions(host string, port int, user, pass *string, from, to, subjec
 		slog.Warn("email: DATA failed", "error", err)
 		return
 	}
-	_, _ = w.Write([]byte(msg))
+	_, _ = w.Write([]byte(body))
 	_ = w.Close()
 	_ = c.Quit()
 
 	slog.Info("email sent", "to", to, "subject", subject)
+}
+
+// buildMessage assembles the RFC 5322 message body. text-only または
+// multipart/alternative のどちらかを返す。HTML が空なら従来通り text/plain。
+func buildMessage(from, to, subject, text, html string) string {
+	if html == "" {
+		return fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
+			from, to, subject, text)
+	}
+	// multipart/alternative — boundary は固定文字列で OK (caller 側で 8bit
+	// データを混ぜない前提)。MUA は html を優先表示し、対応していなければ
+	// text にフォールバックする (Misskey TS の挙動と同じ)。
+	const boundary = "----=_MK_GO_BOUNDARY"
+	var b strings.Builder
+	fmt.Fprintf(&b, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\n", from, to, subject)
+	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", boundary)
+	// text part
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n%s\r\n",
+		boundary, text)
+	// html part
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n%s\r\n",
+		boundary, html)
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
+	return b.String()
 }
 
 // dialSMTP opens a TCP connection to addr (SMTP server). When proxyURL is
