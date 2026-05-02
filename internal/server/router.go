@@ -112,7 +112,6 @@ import (
 	"github.com/shiroha-a/mk/internal/server/middleware"
 	"github.com/shiroha-a/mk/internal/stream"
 	"github.com/shiroha-a/mk/internal/stream/channels"
-	"gorm.io/gorm"
 	"log/slog"
 )
 
@@ -868,7 +867,10 @@ func (s *Server) setupRoutes() {
 	if captchaSvc != nil {
 		signupHandler.SetCaptcha(captchaSvc)
 	}
-	signupHandler.SetTicketStore(&gormTicketStore{db: s.db})
+	// signupTicketRepo は repository.RegistrationTicketRepository で、
+	// apisignup.TicketStore (FindByCode + MarkUsed) を superset として満たす。
+	// 旧 gormTicketStore wrapper を直接 repo に置き換え (#610 item 1)。
+	signupHandler.SetTicketStore(signupTicketRepo)
 	signupHandler.SetTestMode(s.config.TestMode)
 	// emailRequiredForSignup フローの確認メール送信。SMTP infra が enabled の
 	// ときのみ closure を渡す (reset-password と同じパターン)。
@@ -2280,27 +2282,6 @@ func generateInviteCode() string {
 		b[i] = chars[b[i]%byte(len(chars))]
 	}
 	return string(b)
-}
-
-// gormTicketStore implements apisignup.TicketStore using GORM.
-type gormTicketStore struct {
-	db *gorm.DB
-}
-
-func (s *gormTicketStore) FindByCode(code string) (*model.RegistrationTicket, error) {
-	var ticket model.RegistrationTicket
-	if err := s.db.Where(`"code" = ?`, code).First(&ticket).Error; err != nil {
-		return nil, err
-	}
-	return &ticket, nil
-}
-
-func (s *gormTicketStore) MarkUsed(ticketID, userID string) error {
-	now := time.Now()
-	return s.db.Model(&model.RegistrationTicket{}).Where(`"id" = ?`, ticketID).Updates(map[string]any{
-		"usedById": userID,
-		"usedAt":   now,
-	}).Error
 }
 
 // notifReaderAdapter bridges stream.NotificationReader to

@@ -1,6 +1,7 @@
 package signup_test
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -261,8 +262,8 @@ type integrationHook struct{ calls int }
 func (h *integrationHook) OnUserCreated(_ *model.User) { h.calls++ }
 
 // pending row 作成後に ticket を delete すると、PromotePending tx 内の
-// FindByIDForUpdateTx が NotFound になり ErrInvitationAlreadyUsed として
-// 返る (defensive な race / admin-side ticket revoke 対応)。
+// FindByIDForUpdateTx が NotFound になり ErrInvitationRevoked として返る
+// (#610 item 2: AlreadyUsed と区別)。
 func TestPromotePending_TxTicketRevoked(t *testing.T) {
 	db := integrationDB(t)
 	const prefix = "itrev_"
@@ -283,5 +284,51 @@ func TestPromotePending_TxTicketRevoked(t *testing.T) {
 	require.NoError(t, db.Where("id = ?", ticket.ID).Delete(&model.RegistrationTicket{}).Error)
 
 	_, err = svc.PromotePending(row.Code)
-	assert.ErrorIs(t, err, signup.ErrInvitationAlreadyUsed)
+	assert.ErrorIs(t, err, signup.ErrInvitationRevoked)
+	// AlreadyUsed と混同しないこと (#610 item 2)
+	assert.NotErrorIs(t, err, signup.ErrInvitationAlreadyUsed)
+}
+
+// FindByIDForUpdateTx が NotFound 以外の DB error を返した場合は、Service が
+// ErrInvitationRevoked にすり替えず生 error を返して handler が 500 を出せる
+// ようにする (#610 item 2)。
+func TestPromotePending_TxTicketRepoGenericError(t *testing.T) {
+	db := integrationDB(t)
+	const prefix = "iterr_"
+	defer cleanupSignupRows(t, db, prefix)
+
+	// real DB + 故意に error を返す ticket repo を組み合わせる
+	idGen, _ := id.NewGenerator("aidx")
+	userRepo := repository.NewUserRepository(db)
+	pendingRepo := repository.NewUserPendingRepository(db)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+
+	svc := signup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	svc.SetTicketRepo(&errorTicketRepo{
+		err: errors.New("simulated DB error"),
+	})
+	svc.SetDB(db)
+
+	tid := prefix + "tid"
+	row, err := svc.CreatePending(prefix+"err", "err@it.example", "pw", &tid)
+	require.NoError(t, err)
+
+	_, err = svc.PromotePending(row.Code)
+	require.Error(t, err)
+	// NotFound 以外の error は ErrInvitationRevoked にすり替えない
+	assert.NotErrorIs(t, err, signup.ErrInvitationRevoked)
+	assert.NotErrorIs(t, err, signup.ErrInvitationAlreadyUsed)
+}
+
+// errorTicketRepo は FindByIDForUpdateTx で常に指定 error を返す test double。
+// Create / List / Delete 等は本テストで使わないので最小実装。
+type errorTicketRepo struct {
+	repository.RegistrationTicketRepository
+	err error
+}
+
+func (r *errorTicketRepo) FindByIDForUpdateTx(_ *gorm.DB, _ string) (*model.RegistrationTicket, error) {
+	return nil, r.err
 }

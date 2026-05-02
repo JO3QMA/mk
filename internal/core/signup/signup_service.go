@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -34,6 +35,11 @@ var (
 	// 経路で SELECT FOR UPDATE 後に usedById を確認することで concurrent burst
 	// の race を完全に閉じる (#604)。
 	ErrInvitationAlreadyUsed = errors.New("invitation already used")
+	// ErrInvitationRevoked is returned when the invitation ticket linked to a
+	// pending signup has been deleted (typically by an admin) before the user
+	// completed the email verification. AlreadyUsed と区別することで frontend
+	// が「使用済」「失効」をローカライズで分けられる (#610 item 2)。
+	ErrInvitationRevoked = errors.New("invitation revoked")
 )
 
 // PendingSignupTTL is the default lifetime of a pending signup row. Misskey TS
@@ -293,6 +299,13 @@ func (s *Service) PromotePending(code string) (*SignupResult, error) {
 
 // promotePendingTx は db.Transaction 内で user 作成 / ticket 消費 / pending
 // 削除を atomic に行う本番経路。
+//
+// IMPORTANT: promotePendingTx と promotePendingNoTx は **mirror で維持** する。
+// username collision check / user-profile create / keypair gen / webhook hook /
+// SignupResult build の順序や意味が両者でずれると挙動が divergence する。
+// 片方を変更したら必ずもう片方も同じ shape に揃えること (#610 item 3)。
+// tx 経路は raw GORM (tx.Create, tx.Where 等) を直接呼び、noTx 経路は repo
+// 経由 (mock 互換のため)。
 func (s *Service) promotePendingTx(pending *model.UserPending) (*SignupResult, error) {
 	lower := strings.ToLower(pending.Username)
 	token := generateToken()
@@ -308,8 +321,16 @@ func (s *Service) promotePendingTx(pending *model.UserPending) (*SignupResult, e
 		if pending.InvitationTicketID != nil {
 			ticket, err := s.ticketRepo.FindByIDForUpdateTx(tx, *pending.InvitationTicketID)
 			if err != nil {
-				// ticket が消えている等 — pending 経由の登録は成立させない
-				return ErrInvitationAlreadyUsed
+				// gorm.ErrRecordNotFound は admin が ticket を revoke したケース
+				// なので "Revoked" として明示。それ以外 (DB error) は internal
+				// として上に伝える (handler が 500 を返す)。
+				// 観測用 slog.Warn で運用側に signal を出す (#610 item 2)。
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					slog.Warn("promote pending: invitation ticket missing",
+						"pendingId", pending.ID, "ticketId", *pending.InvitationTicketID)
+					return ErrInvitationRevoked
+				}
+				return err
 			}
 			if ticket.UsedByID != nil {
 				return ErrInvitationAlreadyUsed
@@ -407,6 +428,12 @@ func (s *Service) promotePendingTx(pending *model.UserPending) (*SignupResult, e
 
 // promotePendingNoTx は db 未配線の mock テスト経路 (transaction 無し)。
 // production では使わない (router 配線時に SetDB 必須)。
+//
+// IMPORTANT: promotePendingTx と mirror で維持すること。詳細は
+// promotePendingTx の doc コメント参照 (#610 item 3)。
+// invitation ticket の lock / consume は tx 経路でしか行えないため、本経路
+// では InvitationTicketID を SignupResult に伝搬するだけで MarkUsed しない
+// (handler が non-tx 経路と判定して fallback consume する)。
 func (s *Service) promotePendingNoTx(pending *model.UserPending) (*SignupResult, error) {
 	lower := strings.ToLower(pending.Username)
 	if _, err := s.userRepo.FindByUsernameLower(lower, nil); err == nil {

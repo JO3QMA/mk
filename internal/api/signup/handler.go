@@ -216,6 +216,9 @@ func (h *Handler) SignupPending(c echo.Context) error {
 			return c.JSON(http.StatusConflict, apierr.Error("USERNAME_ALREADY_EXISTS", "Username already exists.", "0a504947-b888-4a99-9f62-8c4a0f3a3dab"))
 		case coresignup.ErrInvitationAlreadyUsed:
 			return c.JSON(http.StatusConflict, apierr.Error("INVITATION_ALREADY_USED", "Invitation already used.", "5b81b5e2-2c0b-4d8a-9b71-1a3e1d4d3f6a"))
+		case coresignup.ErrInvitationRevoked:
+			// admin が ticket を削除した状態 (#610 item 2)。AlreadyUsed と区別。
+			return c.JSON(http.StatusGone, apierr.Error("INVITATION_REVOKED", "Invitation has been revoked.", "9b1aa3e7-f8e7-4c92-8d7c-2c0e5b9d8a4b"))
 		default:
 			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 		}
