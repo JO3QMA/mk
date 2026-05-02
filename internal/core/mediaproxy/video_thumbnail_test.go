@@ -5,11 +5,14 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -208,20 +211,105 @@ func TestSetVideoThumbnailGeneratorWithMode_FallsBackToPOST(t *testing.T) {
 // (filename hint only — generator uses ffmpeg autodetect).
 func TestExtensionForMIME(t *testing.T) {
 	cases := map[string]string{
-		"video/mp4":       ".mp4",
-		"VIDEO/MP4":       ".mp4",
-		"video/webm":      ".webm",
-		"video/quicktime": ".mov",
-		"video/3gpp":      ".3gp",
-		"video/3gpp2":     ".3g2",
-		"video/mpeg":      ".mpg",
-		"video/ogg":       ".ogv",
-		"":                ".bin",
-		"image/png":       ".bin",
+		"video/mp4":        ".mp4",
+		"VIDEO/MP4":        ".mp4",
+		"video/webm":       ".webm",
+		"video/quicktime":  ".mov",
+		"video/3gpp":       ".3gp",
+		"video/3gpp2":      ".3g2",
+		"video/mpeg":       ".mpg",
+		"video/ogg":        ".ogv",
+		"video/x-matroska": ".mkv",
+		"video/mp2t":       ".ts",
+		"":                 ".bin",
+		"image/png":        ".bin",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, extensionForMIME(in), "%q", in)
 	}
+}
+
+// GET mode で local /files/ source は generator にループバックさせず dummy
+// PNG fallback (review PR #646 #1)。
+func TestProcessAndReturn_VideoLocalSource_GETSkipsGenerator(t *testing.T) {
+	gen := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("GET mode must NOT call generator for local /files/ sources")
+	}))
+	defer gen.Close()
+
+	s := testService(nil)
+	s.SetVideoThumbnailGeneratorWithMode(gen.URL, "get")
+	s.videoThumbClient = gen.Client()
+
+	res, err := s.processAndReturn(context.Background(), []byte("local"), "video/mp4", ModePreview, FormatWebP, "https://example.com/files/abc123")
+	require.NoError(t, err)
+	defer res.Body.Close()
+	assert.Equal(t, "image/png", res.ContentType, "must fall back to dummy PNG")
+}
+
+// POST mode + UDS の e2e roundtrip (review PR #646 #4)。tempfile unix
+// socket に net.Listen → http.Server をかぶせて、mk-go の UDS dialer
+// 経由で multipart POST が届くことを確認。
+func TestProcessAndReturn_VideoGeneratorRoundtrip_UDS_POST(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "video-thumb.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+	defer ln.Close()
+
+	hit := make(chan struct{}, 1)
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "/thumbnail", r.URL.Path)
+			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			require.NoError(t, err)
+			mr := multipart.NewReader(r.Body, params["boundary"])
+			part, err := mr.NextPart()
+			require.NoError(t, err)
+			body, _ := io.ReadAll(part)
+			assert.Equal(t, "uds video bytes", string(body))
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(makePNG())
+			hit <- struct{}{}
+		}),
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	s := testService(nil)
+	s.SetVideoThumbnailGenerator("unix://" + sockPath)
+	require.NotNil(t, s.videoThumbClient, "UDS client must be wired")
+
+	res, err := s.processAndReturn(context.Background(), []byte("uds video bytes"), "video/mp4", ModePreview, FormatWebP, "https://remote.example/clip.mp4")
+	require.NoError(t, err)
+	defer res.Body.Close()
+	assert.Equal(t, "image/webp", res.ContentType)
+	select {
+	case <-hit:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UDS POST did not reach the generator within 2s")
+	}
+}
+
+// Generator が image/* 以外の Content-Type を返した場合は dummy PNG に
+// 倒し、raw HTML / JSON が proxy 経由で frontend に届くのを防ぐ
+// (review PR #646 #3)。
+func TestProcessAndReturn_VideoGeneratorNonImageRejected(t *testing.T) {
+	gen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>not an image</html>"))
+	}))
+	defer gen.Close()
+
+	s := testService(nil)
+	s.SetVideoThumbnailGenerator(gen.URL)
+	s.videoThumbClient = gen.Client()
+
+	res, err := s.processAndReturn(context.Background(), []byte("video bytes"), "video/mp4", ModePreview, FormatWebP, "https://remote.example/clip.mp4")
+	require.NoError(t, err)
+	defer res.Body.Close()
+	assert.Equal(t, "image/png", res.ContentType, "non-image response must be rejected → dummy PNG")
 }
 
 // TestIsResizeMode covers the predicate used to gate video thumbnail logic.

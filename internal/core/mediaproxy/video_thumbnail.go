@@ -1,7 +1,6 @@
 package mediaproxy
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -110,32 +109,47 @@ func (s *Service) fetchVideoThumbnail(ctx context.Context, body []byte, sourceMI
 // nekonoverse/video-thumb-style endpoints. Bytes are forwarded from the
 // already-downloaded `body`, so the generator does not need to reach the
 // source URL itself (no extra SSRF surface on the generator).
+//
+// multipart body は io.Pipe で streaming する: 32 MiB 級の bytes をもう一
+// 度 buffer に full コピーしないことで peak memory を半分にする (review
+// PR #646 #2)。
 func (s *Service) fetchVideoThumbnailPOST(ctx context.Context, body []byte, sourceMIME string) ([]byte, string, error) {
 	target, err := videoThumbnailRequestURL(s.videoThumbGen, "post", "")
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %v", ErrVideoThumbnailUnavailable, err)
 	}
 
-	// multipart body 構築。field name "file" は nekonoverse/video-thumb の
-	// FastAPI endpoint が期待する固定値。filename はリモート URL から
-	// 取らない (個人情報を generator に伝えない方針) — 拡張子だけ MIME
-	// から推定して generic に。
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
+	pr, pw := io.Pipe()
+	w := multipart.NewWriter(pw)
+	// field name "file" は nekonoverse/video-thumb の FastAPI endpoint が
+	// 期待する固定値。filename はリモート URL から取らない (個人情報を
+	// generator に伝えない方針) — 拡張子だけ MIME から推定して generic
+	// に。
 	filename := "video" + extensionForMIME(sourceMIME)
-	part, err := w.CreateFormFile("file", filename)
-	if err != nil {
-		return nil, "", fmt.Errorf("%w: form: %v", ErrVideoThumbnailUnavailable, err)
-	}
-	if _, err := part.Write(body); err != nil {
-		return nil, "", fmt.Errorf("%w: write: %v", ErrVideoThumbnailUnavailable, err)
-	}
-	if err := w.Close(); err != nil {
-		return nil, "", fmt.Errorf("%w: close: %v", ErrVideoThumbnailUnavailable, err)
-	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, &buf)
+	// goroutine で part の書き込みを行い、req.Body の読み手と pipe で
+	// 接続する。エラーは pw.CloseWithError で reader 側に伝播させて、
+	// http.Client.Do() が正しく失敗を観測できるようにする。
+	go func() {
+		defer pw.Close()
+		part, err := w.CreateFormFile("file", filename)
+		if err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		if _, err := part.Write(body); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		if err := w.Close(); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, pr)
 	if err != nil {
+		_ = pr.Close()
 		return nil, "", fmt.Errorf("%w: %v", ErrVideoThumbnailUnavailable, err)
 	}
 	req.Header.Set("User-Agent", s.userAgent)
@@ -185,6 +199,13 @@ func (s *Service) doVideoThumbnailRequest(req *http.Request) ([]byte, string, er
 	if contentType == "" {
 		contentType = http.DetectContentType(data)
 	}
+	// Generator が malicious / 設定ミスで非画像 (HTML / JSON / text) を
+	// 返した場合、processResize は non-convertible として raw bytes を
+	// そのまま frontend に流してしまう。image/* で始まらない response は
+	// 拒否して dummy PNG fallback に倒れる (review PR #646 #3)。
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		return nil, "", fmt.Errorf("%w: unexpected content-type %q", ErrVideoThumbnailUnavailable, contentType)
+	}
 	return data, contentType, nil
 }
 
@@ -208,6 +229,10 @@ func extensionForMIME(mime string) string {
 		return ".mpg"
 	case "video/ogg":
 		return ".ogv"
+	case "video/x-matroska":
+		return ".mkv"
+	case "video/mp2t":
+		return ".ts"
 	}
 	return ".bin"
 }

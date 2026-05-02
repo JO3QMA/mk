@@ -445,6 +445,13 @@ func (s *Service) processAndReturn(ctx context.Context, data []byte, contentType
 		if s.videoThumbClient == nil {
 			return makeDummyPNG(), nil
 		}
+		// GET mode は generator が sourceURL を fetch する前提なので、
+		// local /files/<key> を投げても (UDS-only stack 等の) generator
+		// から到達できないことが多い。早期 fallback で無駄な RT を省く。
+		// POST mode では bytes 直送なので skip 不要。
+		if s.videoThumbMode == "get" && strings.HasPrefix(sourceURL, s.instanceURL+"/files/") {
+			return makeDummyPNG(), nil
+		}
 		frame, frameMIME, err := s.fetchVideoThumbnail(ctx, data, contentType, sourceURL)
 		if err != nil {
 			slog.Warn("mediaproxy: video thumbnail generator failed",
