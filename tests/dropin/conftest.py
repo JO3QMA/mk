@@ -81,3 +81,26 @@ def alice(instance_a: MisskeyLikeClient) -> dict:
 def bob(instance_b: MisskeyLikeClient) -> dict:
     """Root user on instance B."""
     return _ensure_user_id(instance_b, instance_b.create_admin("bob", "password1234"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def open_federation(alice: dict, bob: dict, instance_a: MisskeyLikeClient, instance_b: MisskeyLikeClient) -> None:
+    """Set meta.federation='all' on both instances so deliver tasks aren't dropped.
+
+    Misskey TS は migration 1754019326356 (2025-08-01) で meta.federation の
+    DEFAULT を 'all' から 'none' に下げた (admin が明示的に opt-in する設計に
+    変更)。mk-go は TS の schema をそのまま継承するので fresh install では
+    'none' で起動し、deliver_service.isBlockedInbox が IsAllowed=false で
+    silent drop してしまう (#624)。
+
+    本番 operator は /api/admin/update-meta で federation を開く想定だが、
+    dropin smoke test は clean DB から立ち上げて連合動作を期待するので、ここ
+    で同等の操作を fixture として実施する。
+
+    TS-A (misskey:2025.2.1 = 2025-08 migration 前) では DEFAULT 'all' のま
+    まなのでこの呼び出しは no-op。mk-A overlay (= clean DB から mk-go 起動)
+    では initial value 'none' を 'all' に上書きする。idempotent なので両方に
+    対して呼び出せば良い。
+    """
+    instance_a._api("admin/update-meta", {"federation": "all"})
+    instance_b._api("admin/update-meta", {"federation": "all"})
