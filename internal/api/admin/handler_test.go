@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -1153,8 +1154,10 @@ func TestResolveAbuseReport_NotFound(t *testing.T) {
 func TestShowModerationLogs_WithRepo(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	modLogRepo := testutil.NewMockModerationLogRepository()
-	modLogRepo.Logs = append(modLogRepo.Logs, &model.ModerationLog{ID: "l1", Type: "suspend"})
-	h.SetModLogRepo(modLogRepo)
+	require.NoError(t, modLogRepo.Create(&model.ModerationLog{ID: "l1", Type: "suspend"}))
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	h.SetModLogService(moderationlog.New(modLogRepo, gen))
 
 	rec := doPost(h.ShowModerationLogs, `{}`, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1212,7 +1215,12 @@ func (f *failingModLogListRepo) List(_ int, _ int) ([]*model.ModerationLog, erro
 
 func TestShowModerationLogs_ListError(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	h.SetModLogRepo(&failingModLogListRepo{testutil.NewMockModerationLogRepository()})
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	h.SetModLogService(moderationlog.New(
+		&failingModLogListRepo{testutil.NewMockModerationLogRepository()},
+		gen,
+	))
 	rec := doPost(h.ShowModerationLogs, `{}`, nil)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

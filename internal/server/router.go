@@ -1674,7 +1674,6 @@ func (s *Server) setupRoutes() {
 			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
-	adminHandler.SetModLogRepo(modLogRepo)
 	adminHandler.SetModLogService(coremodlog.New(modLogRepo, idGen))
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)

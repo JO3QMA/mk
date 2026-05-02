@@ -1,6 +1,7 @@
 package moderationlog
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -29,7 +30,20 @@ func (s *spyRepo) Create(log *model.ModerationLog) error {
 	return nil
 }
 
-func (s *spyRepo) List(int, int) ([]*model.ModerationLog, error) { return nil, nil }
+func (s *spyRepo) List(limit, offset int) ([]*model.ModerationLog, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if offset >= len(s.logs) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(s.logs) {
+		end = len(s.logs)
+	}
+	out := make([]*model.ModerationLog, end-offset)
+	copy(out, s.logs[offset:end])
+	return out, nil
+}
 
 func (s *spyRepo) snapshot() []*model.ModerationLog {
 	s.mu.Lock()
@@ -50,7 +64,7 @@ func TestService_Log_writesEntry(t *testing.T) {
 	repo := &spyRepo{}
 	svc := newSvc(t, repo)
 
-	svc.Log("actor1", LogResetPassword, map[string]any{
+	svc.Log(context.Background(), "actor1", LogResetPassword, map[string]any{
 		"userId":       "target1",
 		"userUsername": "alice",
 		"userHost":     nil,
@@ -75,7 +89,7 @@ func TestService_Log_nilInfoEncodesAsEmptyObject(t *testing.T) {
 	repo := &spyRepo{}
 	svc := newSvc(t, repo)
 
-	svc.Log("actor1", LogSuspend, nil)
+	svc.Log(context.Background(), "actor1", LogSuspend, nil)
 	require.Eventually(t, func() bool { return len(repo.snapshot()) == 1 }, 2*time.Second, 5*time.Millisecond)
 
 	assert.JSONEq(t, "{}", string(repo.snapshot()[0].Info))
@@ -84,12 +98,12 @@ func TestService_Log_nilInfoEncodesAsEmptyObject(t *testing.T) {
 func TestService_Log_nilReceiverIsNoop(t *testing.T) {
 	var svc *Service
 	// 落ちないだけで十分。fire-and-forget なので返り値はない。
-	svc.Log("actor", LogSuspend, nil)
+	svc.Log(context.Background(), "actor", LogSuspend, nil)
 }
 
 func TestService_Log_nilDepsAreNoop(t *testing.T) {
 	svc := New(nil, nil)
-	svc.Log("actor", LogSuspend, nil)
+	svc.Log(context.Background(), "actor", LogSuspend, nil)
 	// no panic, no assertion needed
 }
 
@@ -98,7 +112,7 @@ func TestService_Log_repoErrorDoesNotPanic(t *testing.T) {
 	svc := newSvc(t, repo)
 
 	// Log は fire-and-forget なので即返る。goroutine 内で slog.Warn される。
-	svc.Log("actor1", LogSuspend, map[string]any{"userId": "x"})
+	svc.Log(context.Background(), "actor1", LogSuspend, map[string]any{"userId": "x"})
 
 	// give the goroutine time to run; it must not panic
 	time.Sleep(50 * time.Millisecond)
@@ -107,15 +121,16 @@ func TestService_Log_repoErrorDoesNotPanic(t *testing.T) {
 func TestService_Log_unmarshalableInfoIsDropped(t *testing.T) {
 	// channel は encoding/json では marshal できないので、Marshal が
 	// error を返す path に入って row は書かれずに早期 return する。
+	// marshal は goroutine 内で実行されるので、少し待ってから assertion。
 	repo := &spyRepo{}
 	svc := newSvc(t, repo)
 
-	svc.Log("actor1", LogSuspend, map[string]any{
+	svc.Log(context.Background(), "actor1", LogSuspend, map[string]any{
 		"bad": make(chan int),
 	})
 
-	// allow any goroutine to settle
-	time.Sleep(20 * time.Millisecond)
+	// allow the writer goroutine to run
+	time.Sleep(50 * time.Millisecond)
 	assert.Empty(t, repo.snapshot(), "unmarshalable info should be dropped, not persisted")
 }
 
@@ -134,8 +149,86 @@ func TestService_Log_recoverFromGoroutinePanic(t *testing.T) {
 	svc := New(panicRepo{}, gen)
 
 	// 何が起きても (panic 含む) Log 呼び出し自体は即返る。
-	svc.Log("actor1", LogSuspend, map[string]any{"userId": "x"})
+	svc.Log(context.Background(), "actor1", LogSuspend, map[string]any{"userId": "x"})
 
 	// goroutine が panic しても test process は落ちない (recover 経由)。
 	time.Sleep(50 * time.Millisecond)
+}
+
+func TestService_List_returnsEmptySliceWhenUnwired(t *testing.T) {
+	// Service.List は nil receiver / nil repo でも non-nil slice を返す。
+	// JSON encoder が `null` ではなく `[]` を出力するための契約。
+	var svc *Service
+	logs, err := svc.List(10, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, logs)
+	assert.Empty(t, logs)
+
+	svc = New(nil, nil)
+	logs, err = svc.List(10, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, logs)
+	assert.Empty(t, logs)
+}
+
+func TestService_List_returnsEmptySliceWhenRepoReturnsNil(t *testing.T) {
+	repo := &spyRepo{} // empty
+	svc := newSvc(t, repo)
+
+	logs, err := svc.List(10, 100) // offset 過大 → repo は nil 返却
+	require.NoError(t, err)
+	assert.NotNil(t, logs, "must return non-nil slice so JSON encodes as []")
+	assert.Empty(t, logs)
+}
+
+func TestService_List_passesThroughRepoError(t *testing.T) {
+	repo := &errorListRepo{err: errors.New("db down")}
+	gen, _ := id.NewGenerator("aidx")
+	svc := New(repo, gen)
+
+	logs, err := svc.List(10, 0)
+	require.Error(t, err)
+	assert.Nil(t, logs)
+}
+
+func TestService_List_returnsRepoEntries(t *testing.T) {
+	repo := &spyRepo{}
+	svc := newSvc(t, repo)
+	require.NoError(t, repo.Create(&model.ModerationLog{ID: "l1", Type: "suspend"}))
+	require.NoError(t, repo.Create(&model.ModerationLog{ID: "l2", Type: "unsuspend"}))
+
+	logs, err := svc.List(10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 2)
+}
+
+type errorListRepo struct {
+	err error
+}
+
+func (r *errorListRepo) Create(*model.ModerationLog) error { return nil }
+func (r *errorListRepo) List(int, int) ([]*model.ModerationLog, error) {
+	return nil, r.err
+}
+
+func TestUserInfo(t *testing.T) {
+	u := &model.User{ID: "u1", Username: "alice", Host: nil}
+	got := UserInfo(u)
+	assert.Equal(t, "u1", got["userId"])
+	assert.Equal(t, "alice", got["userUsername"])
+	assert.Nil(t, got["userHost"])
+
+	host := "example.com"
+	remote := &model.User{ID: "u2", Username: "bob", Host: &host}
+	got = UserInfo(remote)
+	assert.Equal(t, "u2", got["userId"])
+	assert.Equal(t, "bob", got["userUsername"])
+	require.NotNil(t, got["userHost"])
+	assert.Equal(t, &host, got["userHost"])
+}
+
+func TestUserInfo_nilUserReturnsEmptyMap(t *testing.T) {
+	got := UserInfo(nil)
+	require.NotNil(t, got)
+	assert.Empty(t, got)
 }

@@ -3,6 +3,7 @@ package admin
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -48,19 +49,21 @@ func (h *Handler) recordResetPasswordLog(c echo.Context, targetUserID string) {
 	if h.modLogService == nil || h.userRepo == nil {
 		return
 	}
+	ctx := c.Request().Context()
 	actor := middleware.GetUser(c)
 	if actor == nil {
+		// RequireModerator middleware should guarantee an actor; if we
+		// hit this branch in production something is misconfigured and
+		// we want it visible rather than silently dropped.
+		slog.WarnContext(ctx, "moderation log: skipping — actor missing in moderator-only handler",
+			"handler", "admin/reset-password", "targetUserId", targetUserID)
 		return
 	}
 	target, err := h.userRepo.FindByID(targetUserID)
 	if err != nil || target == nil {
 		return
 	}
-	h.modLogService.Log(actor.ID, moderationlog.LogResetPassword, map[string]any{
-		"userId":       target.ID,
-		"userUsername": target.Username,
-		"userHost":     target.Host,
-	})
+	h.modLogService.Log(ctx, actor.ID, moderationlog.LogResetPassword, moderationlog.UserInfo(target))
 }
 
 // sendPasswordResetEmail attempts the token+email flow. Returns true only

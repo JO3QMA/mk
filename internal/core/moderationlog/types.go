@@ -17,6 +17,8 @@
 //     out of scope for the current modlog rollout
 package moderationlog
 
+import "github.com/shiroha-a/mk/internal/model"
+
 // LogType is the discriminant string persisted as moderation_log.type.
 // Values must match Misskey TS verbatim so the shared frontend and any
 // federation tooling can interoperate.
@@ -88,3 +90,20 @@ const (
 	// Misc
 	LogUpdateProxyAccountDescription LogType = "updateProxyAccountDescription"
 )
+
+// UserInfo builds the standard {userId, userUsername, userHost} info
+// payload used by user-targeted moderation log entries (suspend,
+// updateUserNote, resetPassword, deleteAccount, ...). The Misskey TS
+// frontend reads these keys verbatim — do not rename. nil-safe so
+// callers can hand it the result of a possibly-failing lookup without
+// pre-checking.
+func UserInfo(u *model.User) map[string]any {
+	if u == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"userId":       u.ID,
+		"userUsername": u.Username,
+		"userHost":     u.Host,
+	}
+}

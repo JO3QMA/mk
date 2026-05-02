@@ -10,43 +10,10 @@ import (
 	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// modLogSpy is a race-safe ModerationLogRepository stub local to this
-// test file. The shared testutil mock is not goroutine-safe and the
-// service writes via a fire-and-forget goroutine.
-type modLogSpy struct {
-	mu   sync.Mutex
-	logs []*model.ModerationLog
-}
-
-func (s *modLogSpy) Create(l *model.ModerationLog) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logs = append(s.logs, l)
-	return nil
-}
-
-func (s *modLogSpy) List(int, int) ([]*model.ModerationLog, error) { return nil, nil }
-
-func (s *modLogSpy) snapshot() []*model.ModerationLog {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*model.ModerationLog, len(s.logs))
-	copy(out, s.logs)
-	return out
-}
-
-func attachModLog(t *testing.T, set func(*moderationlog.Service)) *modLogSpy {
-	t.Helper()
-	spy := &modLogSpy{}
-	gen, err := id.NewGenerator("aidx")
-	require.NoError(t, err)
-	set(moderationlog.New(spy, gen))
-	return spy
-}
 
 type stubPasswordResetRepo struct {
 	created *model.PasswordResetRequest
@@ -88,6 +55,25 @@ func (c *capturedEmail) snapshot() capturedEmail {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return capturedEmail{to: c.to, subject: c.subject, body: c.body, called: c.called}
+}
+
+// attachModLog wires a fresh moderation log service backed by the
+// shared race-safe testutil mock and returns the mock so the test can
+// assert on Snapshot() without touching internals.
+func attachModLog(t *testing.T, h modLogServiceSetter) *testutil.MockModerationLogRepository {
+	t.Helper()
+	repo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	h.SetModLogService(moderationlog.New(repo, gen))
+	return repo
+}
+
+// modLogServiceSetter narrows *apiadmin.Handler to just the setter we
+// need so the helper stays compatible with any future handler that
+// adopts the same wiring pattern.
+type modLogServiceSetter interface {
+	SetModLogService(*moderationlog.Service)
 }
 
 func TestResetPasswordAdmin_Empty(t *testing.T) {
@@ -186,17 +172,17 @@ func TestResetPasswordAdmin_WritesModerationLog_FallbackPath(t *testing.T) {
 	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
 	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1"} // email 未設定 → fallback
 
-	spy := attachModLog(t, h.SetModLogService)
+	repo := attachModLog(t, h)
 
 	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "password")
 
 	require.Eventually(t, func() bool {
-		return len(spy.snapshot()) == 1
+		return len(repo.Snapshot()) == 1
 	}, 500*time.Millisecond, 5*time.Millisecond, "moderation log should be written")
 
-	logs := spy.snapshot()
+	logs := repo.Snapshot()
 	assert.Equal(t, "admin1", logs[0].UserID)
 	assert.Equal(t, "resetPassword", logs[0].Type)
 	var info map[string]any
@@ -213,17 +199,17 @@ func TestResetPasswordAdmin_WritesModerationLog_EmailPath(t *testing.T) {
 
 	h.SetPasswordResetRepo(&stubPasswordResetRepo{})
 	h.SetEmailSender(func(string, string, string) {})
-	spy := attachModLog(t, h.SetModLogService)
+	repo := attachModLog(t, h)
 
 	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"sent":true`)
 
 	require.Eventually(t, func() bool {
-		return len(spy.snapshot()) == 1
+		return len(repo.Snapshot()) == 1
 	}, 500*time.Millisecond, 5*time.Millisecond, "moderation log should be written on email path")
 
-	logs := spy.snapshot()
+	logs := repo.Snapshot()
 	assert.Equal(t, "admin1", logs[0].UserID)
 	assert.Equal(t, "resetPassword", logs[0].Type)
 	var info map[string]any
