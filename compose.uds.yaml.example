@@ -61,17 +61,16 @@ services:
   # Video thumbnail generator (#637 M2). UDS-only stack 全体に揃えて TCP は
   # 開かず named volume 経由の socket だけで mk-go と通信する。mk-go 側は
   # `videoThumbnailGenerator: unix:///run/video-thumb/sock` を設定すれば
-  # 自動で UDS dialer 経由で GET する。
+  # 自動で UDS dialer 経由で接続する。
   #
-  # 注意: `nekonoverse/video-thumb` は placeholder image。Misskey TS の
-  # videoThumbnailGenerator API (`GET /thumbnail.webp?thumbnail=1&url=<URL>`)
-  # に互換であれば任意の image / 自前ビルドに差し替えて構わない。さらに
-  # この UDS overlay では image が `/run/video-thumb/sock` に listen する
-  # 前提。HTTP TCP listen しかできない場合は `networks: mkgo-uds` だけ
-  # 残し socket mount を消して `http://video-thumb:PORT` 指定にフォール
-  # バックする。
+  # nekonoverse/video-thumb は `UDS_PATH` env で UDS listen に切替えられる
+  # 仕様。default の wire mode "post" (multipart POST) と互換。Misskey TS
+  # 互換の GET 経路に切替えたい場合は mk-go 側で
+  # `videoThumbnailGeneratorMode: get` を設定し、対応 image に差し替える。
   video-thumb:
-    image: nekonoverse/video-thumb:latest
+    image: ghcr.io/nekonoverse/video-thumb:unstable
+    environment:
+      UDS_PATH: /run/video-thumb/sock
     volumes:
       - video_thumb_sock:/run/video-thumb
     networks:

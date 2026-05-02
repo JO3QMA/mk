@@ -240,7 +240,14 @@ proxyBypassHosts:
 #mediaProxy: https://example.com/proxy
 #mediaProxySecret: change-me
 
-#videoThumbnailGenerator: https://example.com
+# Video thumbnail generator. The bundled UDS stack runs nekonoverse/video-thumb
+# listening on /run/video-thumb/sock; the POST multipart wire is the default
+# (see videoThumbnailGeneratorMode below).
+videoThumbnailGenerator: unix:///run/video-thumb/sock
+# "post" (default, mk-go style — forwards multipart bytes) or "get"
+# (Misskey TS-compat — sends the source URL via query string for the
+# generator to fetch).
+#videoThumbnailGeneratorMode: post
 
 #allowedPrivateNetworks:
 #  - '127.0.0.1/32'

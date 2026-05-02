@@ -163,10 +163,19 @@ type Source struct {
 	// shiroha-a/mkq library. Empty / unset = "asynq".
 	JobQueueDriver string `mapstructure:"jobQueueDriver"`
 
-	MediaProxy              string          `mapstructure:"mediaProxy"`
-	MediaProxySecret        string          `mapstructure:"mediaProxySecret"`
-	VideoThumbnailGenerator string          `mapstructure:"videoThumbnailGenerator"`
-	Logging                 *LoggingOptions `mapstructure:"logging"`
+	MediaProxy              string `mapstructure:"mediaProxy"`
+	MediaProxySecret        string `mapstructure:"mediaProxySecret"`
+	VideoThumbnailGenerator string `mapstructure:"videoThumbnailGenerator"`
+	// VideoThumbnailGeneratorMode picks the wire used to ask the generator:
+	//   "post" (default, mk-go) — POST <gen>/thumbnail with multipart/form-data
+	//                             (`file` field). nekonoverse/video-thumb と同
+	//                             仕様。SSRF surface を generator 側に持ち
+	//                             込まない。
+	//   "get"                   — GET <gen>/thumbnail.webp?thumbnail=1&url=<URL>
+	//                             Misskey TS の videoThumbnailGenerator 仕様
+	//                             に互換 (#637 review)。
+	VideoThumbnailGeneratorMode string          `mapstructure:"videoThumbnailGeneratorMode"`
+	Logging                     *LoggingOptions `mapstructure:"logging"`
 
 	PerChannelMaxNoteCacheCount  *int   `mapstructure:"perChannelMaxNoteCacheCount"`
 	PerUserNotificationsMaxCount *int   `mapstructure:"perUserNotificationsMaxCount"`
@@ -269,6 +278,7 @@ type Config struct {
 	ExternalMediaProxyEnabled    bool
 	MediaProxySecret             []byte
 	VideoThumbnailGenerator      string
+	VideoThumbnailGeneratorMode  string
 	UserAgent                    string
 	PerChannelMaxNoteCacheCount  int
 	PerUserNotificationsMaxCount int
@@ -488,6 +498,7 @@ func resolve(src *Source) (*Config, error) {
 		ExternalMediaProxyEnabled:    externalMediaProxyEnabled,
 		MediaProxySecret:             mediaProxySecret,
 		VideoThumbnailGenerator:      strings.TrimRight(src.VideoThumbnailGenerator, "/"),
+		VideoThumbnailGeneratorMode:  normalizeVideoThumbMode(src.VideoThumbnailGeneratorMode),
 		UserAgent:                    fmt.Sprintf("Misskey-Go/%s (%s)", MkGoVersion, src.URL),
 		PerChannelMaxNoteCacheCount:  perChannelMaxNoteCacheCount,
 		PerUserNotificationsMaxCount: perUserNotificationsMaxCount,
@@ -649,6 +660,20 @@ func resolveJobQueueDriver(raw string) (string, error) {
 		return v, nil
 	default:
 		return "", fmt.Errorf("config: unknown jobQueueDriver %q (expected \"asynq\" or \"mkq\")", raw)
+	}
+}
+
+// normalizeVideoThumbMode validates and lowercases the wire-mode hint for
+// the video thumbnail generator. Unknown / empty defaults to "post"
+// (nekonoverse/video-thumb compat). "get" picks the Misskey TS-style URL
+// pattern.
+func normalizeVideoThumbMode(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "get":
+		return "get"
+	default:
+		return "post"
 	}
 }
 

@@ -54,21 +54,21 @@ services:
     restart: unless-stopped
 
   # Video thumbnail generator (#637 M2). mk-go の media proxy が video/* を
-  # 受けたとき、設定 `videoThumbnailGenerator` で指定した URL に GET を投げて
-  # 静止画 thumbnail を取得する。app コンテナとは Docker network 内で通信し、
-  # 公開ポートは持たない (origin 側は mk-go の /proxy 経由でしか到達しない)。
+  # 受けたとき、設定 `videoThumbnailGenerator` で指定した URL に対して
+  # multipart POST (default mode) で video bytes を送り、静止画 thumbnail
+  # を返してもらう。app コンテナとは Docker network 内で通信し、公開
+  # ポートは持たない (origin 側は mk-go の /proxy 経由でしか到達しない)。
   #
-  # mk-go 側で `videoThumbnailGenerator: http://video-thumb:8080` を設定する
-  # ことで wire される。UDS deployment では compose.uds.yaml.example の
-  # video-thumb service が socket mount で接続する。
+  # mk-go 側で `videoThumbnailGenerator: http://video-thumb:8005` を設定
+  # することで wire される。UDS deployment では compose.uds.yaml.example
+  # の video-thumb service が socket mount で接続する。
   #
-  # 注意: `nekonoverse/video-thumb` は placeholder image で、Misskey TS の
-  # videoThumbnailGenerator API (`GET /thumbnail.webp?thumbnail=1&url=<URL>`)
-  # に互換であれば任意の image / 自前ビルドに差し替えて構わない。Docker
-  # Hub に公開イメージが存在しない場合は ffmpeg ベースの一行 wrapper を
-  # 自分で組むか、別の Misskey 互換 thumbnailer を指定する。
+  # 互換 image: ghcr.io/nekonoverse/video-thumb (POST /thumbnail multipart)。
+  # Misskey TS 互換の GET 経路を使いたい場合は
+  # `videoThumbnailGeneratorMode: get` を設定し、対応 image
+  # (`GET /thumbnail.webp?thumbnail=1&url=<URL>`) に差し替える。
   video-thumb:
-    image: nekonoverse/video-thumb:latest
+    image: ghcr.io/nekonoverse/video-thumb:unstable
     restart: unless-stopped
 
 volumes:
