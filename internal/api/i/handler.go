@@ -77,6 +77,16 @@ type Handler struct {
 	avatarDecorationRepo repository.AvatarDecorationRepository
 	mainStreamPublisher  MainStreamPublisher
 	fieldRes             *entity.NoteFieldResolver
+	// emailValidationClient は verifymail / truemail SaaS への outbound に
+	// 使う SSRF-safe HTTP client (#638)。nil ならデフォルトクライアント。
+	emailValidationClient *http.Client
+}
+
+// SetEmailValidationClient wires the outbound HTTP client used by
+// verifymail / truemail siteverify calls (#638). production では SSRF-safe
+// + forward proxy 経由の client を渡すこと。
+func (h *Handler) SetEmailValidationClient(c *http.Client) {
+	h.emailValidationClient = c
 }
 
 // SetNoteFieldResolver wires the shared resolver that fills Files /

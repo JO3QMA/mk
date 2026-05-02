@@ -70,11 +70,12 @@ func (h *Handler) Handle(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 
-	// 処理モード決定
+	// 処理モード + 出力フォーマット決定 (#637 M3)
 	mode := parseMode(c)
+	out := parseOutputFormat(c)
 
 	// Fetch + 画像処理
-	result, err := h.service.Fetch(c.Request().Context(), rawURL, mode)
+	result, err := h.service.Fetch(c.Request().Context(), rawURL, mode, out)
 	if err != nil {
 		if errors.Is(err, mediaproxy.ErrNotFound) {
 			if c.QueryParam("fallback") != "" {
@@ -96,6 +97,11 @@ func (h *Handler) Handle(c echo.Context) error {
 
 	c.Response().Header().Set("Cache-Control", "max-age=31536000, immutable")
 	c.Response().Header().Set("Content-Type", result.ContentType)
+	// Output format depends on the client's Accept header (image/avif → AVIF,
+	// otherwise WebP), so shared caches MUST key on Accept to avoid serving
+	// AVIF to a Safari 15 / WebP-only client cached behind a CDN, and
+	// vice-versa (#637 review UR-012).
+	c.Response().Header().Set("Vary", "Accept")
 	c.Response().WriteHeader(http.StatusOK)
 	_, _ = io.Copy(c.Response(), result.Body)
 	return nil
@@ -153,6 +159,55 @@ func parseMode(c echo.Context) mediaproxy.ProxyMode {
 		return mediaproxy.ModeBadge
 	}
 	return mediaproxy.ModeDefault
+}
+
+// parseOutputFormat picks the encoder format from `?avif=1` (explicit opt-in,
+// matches the existing `?static=1` style flags) or the Accept header (treats
+// `image/avif` as a non-zero quality preference). Falls back to WebP.
+//
+// AVIF は CPU 重めなので「ブラウザが本当に使う」ケースだけに絞る。Misskey
+// TS の sharp().avif() 経路と同じ semantics。
+func parseOutputFormat(c echo.Context) mediaproxy.OutputFormat {
+	if c.QueryParam("avif") != "" {
+		return mediaproxy.FormatAVIF
+	}
+	if acceptsAVIF(c.Request().Header.Get("Accept")) {
+		return mediaproxy.FormatAVIF
+	}
+	return mediaproxy.FormatWebP
+}
+
+// acceptsAVIF returns true when the client signalled non-zero preference for
+// `image/avif` in its Accept header.
+func acceptsAVIF(accept string) bool {
+	for _, part := range strings.Split(accept, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+		mt, params := splitAcceptEntry(entry)
+		if !strings.EqualFold(mt, "image/avif") {
+			continue
+		}
+		if params["q"] == "0" || params["q"] == "0.0" || params["q"] == "0.00" {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func splitAcceptEntry(entry string) (string, map[string]string) {
+	parts := strings.Split(entry, ";")
+	mt := strings.TrimSpace(parts[0])
+	params := map[string]string{}
+	for _, p := range parts[1:] {
+		kv := strings.SplitN(strings.TrimSpace(p), "=", 2)
+		if len(kv) == 2 {
+			params[strings.ToLower(strings.TrimSpace(kv[0]))] = strings.TrimSpace(kv[1])
+		}
+	}
+	return mt, params
 }
 
 // isProxyFilename returns true if the path segment looks like a proxy output

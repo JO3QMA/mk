@@ -3,6 +3,7 @@ package admin_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -154,6 +155,35 @@ func TestSystemWebhookTest_WithRepo(t *testing.T) {
 	// 正常系も 204 (fire-and-forget)
 	assert.Equal(t, http.StatusNoContent,
 		doPost(h.SystemWebhookTest, `{"webhookId":"w1","type":"abuseReport"}`, adminUser).Code)
+}
+
+// SetWebhookTestClient で渡した *http.Client が SystemWebhookTest 経由で
+// 実際に使われ、fire-and-forget の goroutine が POST を打つことを確認 (#638)。
+func TestSystemWebhookTest_UsesInjectedClient(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+
+	hit := make(chan *http.Request, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		hit <- r
+	}))
+	defer srv.Close()
+
+	repo := testutil.NewMockSystemWebhookRepository()
+	require.NoError(t, repo.Create(&model.SystemWebhook{ID: "w-inject", URL: srv.URL, Secret: "topsecret"}))
+	h.SetSystemWebhookRepo(repo)
+	h.SetWebhookTestClient(srv.Client())
+
+	rec := doPost(h.SystemWebhookTest, `{"webhookId":"w-inject","type":"abuseReport"}`, adminUser)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	select {
+	case req := <-hit:
+		assert.Equal(t, http.MethodPost, req.Method)
+		assert.Equal(t, "topsecret", req.Header.Get("X-Misskey-Hook-Secret"))
+		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+	case <-time.After(2 * time.Second):
+		t.Fatal("injected client was not used: webhook POST never reached the test server")
+	}
 }
 
 // --- thin nil-repo smoke tests ---

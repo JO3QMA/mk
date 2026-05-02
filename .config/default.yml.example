@@ -252,8 +252,22 @@ id: 'aidx'
 #outgoingAddressFamily: ipv4
 
 # Proxy for HTTP/HTTPS
+# When set, **every third-party outbound HTTP/HTTPS request** mk-go makes is
+# routed through this proxy: ActivityPub delivery, WebFinger, media proxy,
+# summary (URL preview) target fetch, webhook delivery, Web Push, and SaaS
+# APIs (hCaptcha / reCAPTCHA / Turnstile / mCaptcha / DeepL / Truemail /
+# Verifymail, etc.). Use this to centralize egress or to keep the origin IP
+# hidden. Hosts that must bypass the proxy (exact hostname match) go in
+# proxyBypassHosts below.
+# Note: operator-trusted endpoints configured via `urlPreviewSummaryProxyUrl`
+# (the summaly proxy itself) are called directly so that internal/localhost
+# summaly deployments keep working — the proxy still applies to whatever the
+# summaly proxy itself fetches downstream.
 #proxy: http://127.0.0.1:3128
 
+# Hosts that bypass `proxy` (exact hostname match). Pre-populated with the
+# common SaaS endpoints whose API keys the operator already trusts, so they
+# keep working even when the forward proxy denies CONNECT.
 proxyBypassHosts:
   - api.deepl.com
   - api-free.deepl.com
@@ -270,8 +284,12 @@ proxyBypassHosts:
 #mediaProxy: https://example.com/proxy
 #mediaProxySecret: change-me
 
-# Movie thumbnail generation URL.
-#videoThumbnailGenerator: https://example.com
+# Movie thumbnail generation URL. mk-go calls this service for video/* MIME
+# in /proxy. Misskey TS-compatible API: `<base>/thumbnail.webp?thumbnail=1&url=<URL>`.
+# Recommended deployment is the bundled `video-thumb` Compose service
+# (docker-compose.yml). For UDS-only stacks use `unix:///path/to/socket`.
+#videoThumbnailGenerator: http://video-thumb:8080
+#videoThumbnailGenerator: unix:///run/video-thumb/sock
 
 # For security reasons, uploading attachments from the intranet is
 # prohibited; exceptions can be allowed here. Default is empty.

@@ -25,10 +25,25 @@ type Sender interface {
 }
 
 // LibraryWebPushSender is the production Sender backed by webpush-go.
-type LibraryWebPushSender struct{}
+//
+// HTTPClient は webpushlib.Options.HTTPClient に注入する outbound HTTP
+// client。SSRF-safe transport + forward proxy 経由の client を渡すと FCM /
+// Mozilla / Apple push endpoint への配送も operator の outbound 政策に従う
+// (#638)。nil なら webpush-go 既定の http.DefaultClient が使われる。
+type LibraryWebPushSender struct {
+	HTTPClient webpushlib.HTTPClient
+}
 
 // Send delegates to webpush.SendNotificationWithContext.
-func (LibraryWebPushSender) Send(ctx context.Context, sub *webpushlib.Subscription, message []byte, opts *webpushlib.Options) (*http.Response, error) {
+//
+// 受け取った opts は immutable に扱う: caller の Options を mutate しないよう
+// shallow copy してから HTTPClient を埋めて library に渡す。
+func (s LibraryWebPushSender) Send(ctx context.Context, sub *webpushlib.Subscription, message []byte, opts *webpushlib.Options) (*http.Response, error) {
+	if s.HTTPClient != nil && opts != nil && opts.HTTPClient == nil {
+		copied := *opts
+		copied.HTTPClient = s.HTTPClient
+		opts = &copied
+	}
 	return webpushlib.SendNotificationWithContext(ctx, message, sub, opts)
 }
 

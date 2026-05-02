@@ -12,13 +12,13 @@ import (
 )
 
 func TestFetcher_Disabled(t *testing.T) {
-	f := NewFetcher(Config{Enabled: false}, nil, "")
+	f := NewFetcher(Config{Enabled: false}, nil, "", nil)
 	_, err := f.Fetch(context.Background(), "https://example.com")
 	assert.ErrorIs(t, err, ErrDisabled)
 }
 
 func newTestFetcher(cfg Config) *Fetcher {
-	f := NewFetcher(cfg, nil, "")
+	f := NewFetcher(cfg, nil, "", nil)
 	f.SetHTTPClient(&http.Client{Timeout: f.client.Timeout})
 	return f
 }
@@ -85,7 +85,7 @@ func TestFetcher_RequireContentLength(t *testing.T) {
 
 func TestFetcher_PrivateIP(t *testing.T) {
 	// SSRF チェック付きの Fetcher を使う (newTestFetcher ではなく NewFetcher)
-	f := NewFetcher(Config{Enabled: true, AllowRedirect: true, TimeoutMs: 5000, MaxContentLength: 1 << 20}, nil, "")
+	f := NewFetcher(Config{Enabled: true, AllowRedirect: true, TimeoutMs: 5000, MaxContentLength: 1 << 20}, nil, "", nil)
 	_, err := f.Fetch(context.Background(), "http://127.0.0.1:9999/test")
 	assert.ErrorIs(t, err, ErrPrivateIP)
 }
@@ -111,7 +111,7 @@ func TestFetcher_ViaProxy(t *testing.T) {
 	}))
 	defer proxy.Close()
 
-	f := NewFetcher(Config{Enabled: true, SummaryProxyURL: proxy.URL, TimeoutMs: 5000, MaxContentLength: 1 << 20}, nil, "")
+	f := NewFetcher(Config{Enabled: true, SummaryProxyURL: proxy.URL, TimeoutMs: 5000, MaxContentLength: 1 << 20}, nil, "", nil)
 	result, err := f.Fetch(context.Background(), "https://example.com")
 	require.NoError(t, err)
 	assert.Equal(t, "https://example.com", result.URL)
@@ -125,7 +125,7 @@ func TestFetcher_NoRedirect(t *testing.T) {
 
 	// AllowRedirect=false のとき 302 で止まる。SSRF チェックを外すために
 	// newTestFetcher は使えないので直接 client を差し替える。
-	f := NewFetcher(Config{Enabled: true, AllowRedirect: false, TimeoutMs: 5000, MaxContentLength: 1 << 20}, nil, "")
+	f := NewFetcher(Config{Enabled: true, AllowRedirect: false, TimeoutMs: 5000, MaxContentLength: 1 << 20}, nil, "", nil)
 	f.SetHTTPClient(&http.Client{
 		Timeout:       f.client.Timeout,
 		CheckRedirect: f.client.CheckRedirect,
@@ -134,14 +134,9 @@ func TestFetcher_NoRedirect(t *testing.T) {
 	assert.ErrorIs(t, err, ErrFetchFailed)
 }
 
-func TestIsPrivateHost(t *testing.T) {
-	assert.True(t, isPrivateHost("127.0.0.1"))
-	assert.True(t, isPrivateHost("10.0.0.1"))
-	assert.True(t, isPrivateHost("192.168.1.1"))
-	assert.True(t, isPrivateHost("::1"))
-	assert.False(t, isPrivateHost("8.8.8.8"))
-	assert.False(t, isPrivateHost("example.com"))
-}
+// SSRF 判定は safehttp 側で完結するため、ここではテストしない (#638)。
+// urlpreview レイヤは「private IP アクセス時に ErrPrivateIP が伝播するか」
+// だけを TestFetcher_PrivateIP で確認する。
 
 func TestHashURL(t *testing.T) {
 	h1 := hashURL("https://example.com")

@@ -15,8 +15,11 @@ type verifymailClient struct {
 	client  *http.Client
 }
 
-func newVerifymailClient(authKey string) *verifymailClient {
-	return &verifymailClient{authKey: authKey, client: http.DefaultClient}
+func newVerifymailClient(authKey string, client *http.Client) *verifymailClient {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &verifymailClient{authKey: authKey, client: client}
 }
 
 type verifymailResponse struct {

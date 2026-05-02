@@ -71,10 +71,11 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 		fields["email"] = nil
 	} else {
 		addr := *req.Email
-		// email validation (banned + format + active/API)
+		// email validation (banned + format + active/API)。verifymail / truemail
+		// API への outbound は SSRF-safe + forward proxy 経由 (#638)。
 		if h.metaRepo != nil {
 			if m, err := h.metaRepo.Fetch(); err == nil {
-				svc := coreemail.NewService(m)
+				svc := coreemail.NewServiceWithClient(m, h.emailValidationClient)
 				if verr := svc.Validate(c.Request().Context(), addr); verr != nil {
 					return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a2defefb-f220-8849-0af6-17f816099323"))
 				}

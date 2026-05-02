@@ -44,6 +44,10 @@ RUN test -f third_party/misskey/packages/backend/node_modules/@discordapp/twemoj
 # - -tags nodynamic: gen2brain/webp は default で purego (dlopen) 経由の
 #   shared lib fallback を試みるため、これを切って WASM (wazero) 一本に
 #   固定する。これがないと dlopen を呼ぶ層が残り完全 static にならない。
+#
+# Video thumbnail 抽出は build tag ではなく外部 service (Misskey TS 互換の
+# videoThumbnailGenerator API) への HTTP/UDS 呼び出しで実現するので、ここに
+# ffmpeg バイナリを同梱する必要は無い (#637 M2)。
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \

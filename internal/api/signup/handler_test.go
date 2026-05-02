@@ -527,6 +527,15 @@ func TestSetTestMode(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestSetEmailValidationClient(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	// 設定しても normal signup path は壊れない (verifymail / truemail が
+	// 無効な meta では呼ばれないので transport が触られない)。
+	h.SetEmailValidationClient(&http.Client{})
+	rec := doPost(h.Signup, `{"username":"clientset","password":"pass1234"}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 // 招待制 + email 確認制の併用: signup で ticket.ID が pending row に保存され、
 // SignupPending 経由で本登録時に MarkUsed が呼ばれて消費されることを検証
 // (#600 item 5)。

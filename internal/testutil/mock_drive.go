@@ -65,6 +65,24 @@ func (m *MockDriveFileRepository) FindByURI(uri string) (*model.DriveFile, error
 	return nil, ErrNotFound
 }
 
+func (m *MockDriveFileRepository) FindByAccessKey(accessKey string) (*model.DriveFile, error) {
+	if accessKey == "" {
+		return nil, ErrNotFound
+	}
+	for _, f := range m.Files {
+		if f.AccessKey != nil && *f.AccessKey == accessKey {
+			return f, nil
+		}
+		if f.ThumbnailAccessKey != nil && *f.ThumbnailAccessKey == accessKey {
+			return f, nil
+		}
+		if f.WebpublicAccessKey != nil && *f.WebpublicAccessKey == accessKey {
+			return f, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (m *MockDriveFileRepository) Update(id string, fields map[string]any) error {
 	f, ok := m.Files[id]
 	if !ok {
