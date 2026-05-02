@@ -136,10 +136,9 @@ TS版の`.config/default.yml`をそのまま使用可能。以下の設定もGo�
 
 ## 既知の制限
 
-- **Export/Importワーカー** — 未実装。データエクスポート/インポートは利用不可
-- **Reversiリアルタイム** — WebSocket経由のリアルタイム対局は部分的
 - **Identiconの外見** — TS版と生成アルゴリズムが異なるため、アイコン未設定ユーザーの表示が異なる
 - **chat/*のAPI設計** — TS版とパス名・パラメータが異なる
+- **Reversi 連合の自動 smoke test** — ローカルリアルタイム対局・cross-instance 対戦 (#417 で実装済) は手動検証で動作確認済だが、CI で round-trip を assert する自動 smoke test は #435 で別途追加予定 (実装は完了済)
 
 詳細は[TS版からの移行ガイド](migration-from-ts.md)の「既知の制限」セクションも参照。
 

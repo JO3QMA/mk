@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -103,18 +104,25 @@ func (b *URLBuilder) ChatMessageURI(messageID string) string {
 	return b.baseURL + "/chat-messages/" + messageID
 }
 
+// ErrMentionUserNotFound is returned by MentionResolver implementations
+// when the user does not exist (typically deleted or the ID is stale).
+// Caller (renderer) は本 sentinel を skip 扱いにし、その他 error は DB
+// 障害として log 出力する (#572 item 2)。
+var ErrMentionUserNotFound = errors.New("mention user not found")
+
 // MentionResolver resolves a note.Mentions entry (user ID) into the data
 // required to build an AS Mention tag. 実装は server/router.go 側で
-// UserRepository を wrap する形で提供される。解決に失敗したら ok=false を
-// 返す (例: ユーザー削除済み、ID 不整合など)。
+// UserRepository を wrap する形で提供される。
+//
+// 戻り値:
+//   - 成功: name, uri, nil
+//   - ユーザー未存在: "", "", ErrMentionUserNotFound (skip)
+//   - DB 障害等: "", "", <DB error> (skip + log; 将来 retry 可能)
 //
 // uri はローカルユーザーなら urls.UserURI(user.ID)、リモートユーザーなら
 // user.URI を返す。name は Misskey 互換で "@username" / "@username@host"。
-//
-// TODO: ok bool ではDB障害とユーザー未存在を区別できない。
-// 将来的に (name, uri string, err error) に変更してログ出力を改善する。
 type MentionResolver interface {
-	ResolveMention(userID string) (name, uri string, ok bool)
+	ResolveMention(userID string) (name, uri string, err error)
 }
 
 // FileResolver loads drive files by ID for rendering Note attachments.
@@ -371,8 +379,21 @@ func (r *Renderer) RenderNote(n *model.Note, idGen id.Generator) *Note {
 			seenTo[v] = struct{}{}
 		}
 		for _, uid := range n.Mentions {
-			name, uri, ok := r.mentionResolver.ResolveMention(uid)
-			if !ok || uri == "" {
+			name, uri, err := r.mentionResolver.ResolveMention(uid)
+			switch {
+			case err == nil:
+				// 成功
+			case errors.Is(err, ErrMentionUserNotFound):
+				// ユーザー削除済 / ID 不整合 — silent skip
+				continue
+			default:
+				// DB 障害等 — log を残して skip。retry 戦略は caller (deliver
+				// queue) 側に委ねる。
+				slog.Warn("renderer: mention resolution failed",
+					"userId", uid, "noteId", n.ID, "err", err)
+				continue
+			}
+			if uri == "" {
 				continue
 			}
 			out.Tag = append(out.Tag, NewMention(uri, name))
