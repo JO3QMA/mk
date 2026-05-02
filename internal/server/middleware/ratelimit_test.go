@@ -373,6 +373,13 @@ func TestDefaultEndpointLimits_KnownEndpoints(t *testing.T) {
 		{"drive/files/create", 120},
 		{"channels/create", 10},
 		{"ap/show", 30},
+		// Auth / password reset (#600 item 3): signup spam / brute-force 対策。
+		{"signup", 5},
+		{"signup-pending", 30},
+		{"signin", 60},
+		{"signin-flow", 60},
+		{"request-reset-password", 3},
+		{"reset-password", 30},
 	}
 	for _, tc := range cases {
 		t.Run(tc.endpoint, func(t *testing.T) {
