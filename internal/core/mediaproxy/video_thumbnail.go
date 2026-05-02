@@ -149,7 +149,10 @@ func (s *Service) fetchVideoThumbnailPOST(ctx context.Context, body []byte, sour
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, pr)
 	if err != nil {
-		_ = pr.Close()
+		// io.PipeReader.Close() は stdlib doc 上必ず nil を返すので戻り
+		// 値は捨ててよい (review PR #646 #1)。defer goroutine が
+		// pw.Write 時に io.ErrClosedPipe を観測して抜けるのを保証。
+		pr.Close()
 		return nil, "", fmt.Errorf("%w: %v", ErrVideoThumbnailUnavailable, err)
 	}
 	req.Header.Set("User-Agent", s.userAgent)
