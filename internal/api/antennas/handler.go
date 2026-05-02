@@ -263,7 +263,7 @@ func (h *Handler) Notes(c echo.Context) error {
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
-	entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
+	entities := entity.PackNotes(c.Request().Context(), notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(entities, user)
 	out := make([]any, 0, len(entities))
 	for _, pn := range entities {

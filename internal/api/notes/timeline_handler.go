@@ -158,5 +158,5 @@ func (h *Handler) serveTimeline(
 		// ErrUnauthenticatedはここには到達しない。残りはRedis等の障害のみ。
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, viewer))
 }

@@ -1,6 +1,7 @@
 package notes
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -261,7 +262,7 @@ func (h *Handler) Create(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	packed := entity.PackNoteWithInstance(created, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
+	packed := entity.PackNoteWithInstance(c.Request().Context(), created, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	s := []entity.NoteEntity{packed}
 	h.fieldResolver().Apply(s, user)
 	return c.JSON(http.StatusOK, map[string]any{
@@ -287,7 +288,7 @@ func (h *Handler) Show(c echo.Context) error {
 		return apierr.JSONNoSuchNote(c)
 	}
 
-	packed := entity.PackNoteWithInstance(n, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
+	packed := entity.PackNoteWithInstance(c.Request().Context(), n, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	s := []entity.NoteEntity{packed}
 	h.fieldResolver().Apply(s, viewer)
 	return c.JSON(http.StatusOK, s[0])
@@ -387,7 +388,7 @@ func (h *Handler) serveList(c echo.Context, fn func(*model.User, listRequest) ([
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, viewer))
 }
 
 // SearchRequest is the request body for notes/search.
@@ -455,7 +456,7 @@ func (h *Handler) Search(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, viewer))
 }
 
 // State handles POST /api/notes/state.
@@ -498,7 +499,7 @@ func (h *Handler) Conversation(c echo.Context) error {
 		// 現状QueryService.ConversationはErrNoteNotFound以外を返さない
 		return apierr.JSONNoSuchNote(c)
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, viewer))
 }
 
 // BulkShow handles POST /api/notes — bulk note lookup by noteIds.
@@ -529,7 +530,7 @@ func (h *Handler) BulkShow(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	notes = h.queryService.FilterVisible(viewer, notes)
-	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, viewer))
 }
 
 // packMany serializes a list of notes into NoteEntity objects.
@@ -539,8 +540,8 @@ func (h *Handler) BulkShow(c echo.Context) error {
 // Files / MyReaction / Channel の解決は entity.NoteFieldResolver に切り出して
 // あり、他の PackNotes 利用 handler (antennas / users / pinned 等) と共通化
 // している (#426)。
-func (h *Handler) packMany(notes []*model.Note, viewer *model.User) []entity.NoteEntity {
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
+func (h *Handler) packMany(ctx context.Context, notes []*model.Note, viewer *model.User) []entity.NoteEntity {
+	out := entity.PackNotes(ctx, notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldResolver().Apply(out, viewer)
 	return out
 }

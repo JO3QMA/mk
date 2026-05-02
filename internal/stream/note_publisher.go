@@ -112,7 +112,11 @@ func (p *NotePublisher) packNote(n *model.Note, author *model.User) []byte {
 	noteForPack := *n
 	noteForPack.User = author
 
-	pn := entity.PackNoteWithInstance(&noteForPack, p.idGen, p.instanceLookup, p.emojiLookup, p.reactionReader)
+	// streaming publish は fanout/background 経路で request-scoped context を
+	// 持たない。reactionReader への Redis call は短命なので
+	// context.Background() で進める (#657)。将来 PublishNote signature に
+	// ctx を追加するなら一緒に伝播させる。
+	pn := entity.PackNoteWithInstance(context.Background(), &noteForPack, p.idGen, p.instanceLookup, p.emojiLookup, p.reactionReader)
 	// REST 経路と同じ後段 resolver を通して Files / Channel を埋める。
 	// viewer 引数は streaming fanout の性質上「自分宛て」が複数 subscriber
 	// に展開されるため特定不能。viewer=nil で Apply を呼ぶと

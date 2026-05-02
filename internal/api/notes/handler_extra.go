@@ -90,7 +90,7 @@ func (h *Handler) Featured(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, middleware.GetUser(c)))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, middleware.GetUser(c)))
 }
 
 // Unrenote handles POST /api/notes/unrenote.
@@ -146,7 +146,7 @@ func (h *Handler) Mentions(c echo.Context) error {
 			}
 		}
 	}
-	return c.JSON(http.StatusOK, h.packMany(filtered, user))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), filtered, user))
 }
 
 // UserListTimeline handles POST /api/notes/user-list-timeline.
@@ -181,7 +181,7 @@ func (h *Handler) UserListTimeline(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, me))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, me))
 }
 
 // SearchByTag handles POST /api/notes/search-by-tag.
@@ -218,7 +218,7 @@ func (h *Handler) SearchByTag(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusOK, []entity.NoteEntity{})
 	}
-	return c.JSON(http.StatusOK, h.packMany(notes, middleware.GetUser(c)))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, middleware.GetUser(c)))
 }
 
 // Clips handles POST /api/notes/clips.
@@ -287,5 +287,5 @@ func (h *Handler) ShowPartialBulk(c echo.Context) error {
 		return c.JSON(http.StatusOK, []entity.NoteEntity{})
 	}
 	notes = h.queryService.FilterVisible(viewer, notes)
-	return c.JSON(http.StatusOK, h.packMany(notes, viewer))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, viewer))
 }

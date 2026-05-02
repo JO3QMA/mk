@@ -583,7 +583,7 @@ func (h *Handler) Me(c echo.Context) error {
 	// 未wireのものは false/0/[] にフォールバックする (テスト互換)。
 	// antenna / channel / specifiedNotes は別issueで追跡中のためここでは false 固定。
 	h.fillUnreadFields(c.Request().Context(), u, resp)
-	h.fillPinnedFields(u, profile, resp)
+	h.fillPinnedFields(c.Request().Context(), u, profile, resp)
 	resp["policies"] = userPolicies
 	resp["roles"] = userRoles
 	// securityKeysList: WebAuthnキーの一覧
@@ -1066,7 +1066,7 @@ func (h *Handler) fillUnreadFields(ctx context.Context, u *model.User, resp map[
 // fillPinnedFields populates pinnedNoteIds / pinnedNotes / pinnedPageId /
 // pinnedPage onto resp using the wired repos. Missing repos fall back to
 // default empty / nil (tests that skip wiring keep passing).
-func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, resp map[string]any) {
+func (h *Handler) fillPinnedFields(ctx context.Context, u *model.User, profile *model.UserProfile, resp map[string]any) {
 	// Defaults
 	resp["pinnedNoteIds"] = []string{}
 	resp["pinnedNotes"] = []any{}
@@ -1086,7 +1086,7 @@ func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, re
 
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
+					entities := entity.PackNotes(ctx, notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 					// /api/i は認証された自身を返す path なので u 自身を viewer
 					// として渡し、pinned note の myReaction も含めて埋める (#426)。
 					h.fieldRes.Apply(entities, u)

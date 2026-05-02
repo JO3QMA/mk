@@ -179,15 +179,16 @@ func packNoteAtDepth(n *model.Note, idGen id.Generator, depth int) NoteEntity {
 // flat 内の各 note.Reactions に in-place merge してから resolver を構築する
 // (#647)。これにより enableReactionsBuffering=true でも timeline / show
 // レスポンスで最新 reaction count / emoji が返る。reader が nil なら
-// 旧挙動 (DB のみ) で動く。
+// 旧挙動 (DB のみ) で動く。ctx は reader.GetBufferedMany に渡され、
+// handler 側の deadline / cancellation / tracing が下流に伝播する (#657)。
 //
 // flattenNotesPlusRelations で top-level + Renote/Reply の target note を
 // 1 まとめにしてから resolver を作る。CollectNoteAuthors も flatten 済みの
 // スライスから author を拾うので、埋め込み note の remote user にも Instance /
 // emoji が正しく載る。
-func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup, reactionReader BufferedReactionsReader) []NoteEntity {
+func PackNotes(ctx context.Context, notes []*model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup, reactionReader BufferedReactionsReader) []NoteEntity {
 	flat := flattenNotesPlusRelations(notes)
-	mergeBufferedReactions(flat, reactionReader)
+	mergeBufferedReactions(ctx, flat, reactionReader)
 	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(flat)...)
 	emojiResolver := NewEmojiResolver(emojiLookup, flat)
 	out := make([]NoteEntity, 0, len(notes))
@@ -205,10 +206,10 @@ func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLooku
 // query via lookup.FindManyByHosts). For a slice of notes, call `PackNotes`
 // instead — calling this in a loop produces N+1 queries.
 //
-// reactionReader 引数の意味は PackNotes と同じ (#647)。
-func PackNoteWithInstance(n *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup, reactionReader BufferedReactionsReader) NoteEntity {
+// reactionReader / ctx 引数の意味は PackNotes と同じ (#647 / #657)。
+func PackNoteWithInstance(ctx context.Context, n *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup, reactionReader BufferedReactionsReader) NoteEntity {
 	flat := flattenNotesPlusRelations([]*model.Note{n})
-	mergeBufferedReactions(flat, reactionReader)
+	mergeBufferedReactions(ctx, flat, reactionReader)
 	packed := PackNote(n, idGen)
 	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(flat)...)
 	emojiResolver := NewEmojiResolver(emojiLookup, flat)
@@ -221,10 +222,14 @@ func PackNoteWithInstance(n *model.Note, idGen id.Generator, instLookup Instance
 // data transform; receiver-side mutation is intentional (#647) so that
 // downstream EmojiResolver / PackNote pick up the merged map automatically.
 //
-// reader が nil または notes が空ならば no-op。
-func mergeBufferedReactions(notes []*model.Note, reader BufferedReactionsReader) {
+// reader が nil または notes が空ならば no-op。ctx は reader への伝播用
+// (#657)。
+func mergeBufferedReactions(ctx context.Context, notes []*model.Note, reader BufferedReactionsReader) {
 	if reader == nil || len(notes) == 0 {
 		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	ids := make([]string, 0, len(notes))
 	seen := make(map[string]struct{}, len(notes))
@@ -241,7 +246,7 @@ func mergeBufferedReactions(notes []*model.Note, reader BufferedReactionsReader)
 	if len(ids) == 0 {
 		return
 	}
-	deltas, err := reader.GetBufferedMany(context.Background(), ids)
+	deltas, err := reader.GetBufferedMany(ctx, ids)
 	if err != nil || len(deltas) == 0 {
 		// reader 失敗時は stale な DB 値を返す (旧挙動と同等)。
 		return

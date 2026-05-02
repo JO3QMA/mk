@@ -1,6 +1,7 @@
 package users
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sync"
@@ -292,7 +293,7 @@ func (h *Handler) Show(c echo.Context) error {
 
 	// Phase 7-3 (#245): ピン止めnote / ピン止めpage を埋める。viewer は
 	// pinned note の myReaction を埋めるのに使う (#426)。
-	h.fillPinned(viewer, bundle.User, bundle.Profile, &detailed)
+	h.fillPinned(c.Request().Context(), viewer, bundle.User, bundle.Profile, &detailed)
 
 	// viewerがログインしている場合、viewer依存フィールドを並列取得する。
 	// 各リポジトリへのクエリは完全に独立しているためgoroutineで並列実行し、
@@ -443,7 +444,7 @@ func (h *Handler) Notes(c echo.Context) error {
 	}
 
 	viewer := middleware.GetUser(c)
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
+	out := entity.PackNotes(c.Request().Context(), notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(out, viewer)
 	return c.JSON(http.StatusOK, out)
 }
@@ -605,7 +606,7 @@ func (h *Handler) packRelationItems(
 //
 // viewer は users/show を叩いている認証ユーザー (匿名なら nil)。pinned note
 // の myReaction を埋めるために fieldRes.Apply に流す (#426)。
-func (h *Handler) fillPinned(viewer *model.User, u *model.User, profile *model.UserProfile, detailed *entity.UserDetailed) {
+func (h *Handler) fillPinned(ctx context.Context, viewer *model.User, u *model.User, profile *model.UserProfile, detailed *entity.UserDetailed) {
 	if h.piningRepo != nil {
 		if pinings, err := h.piningRepo.ListByUser(u.ID); err == nil && len(pinings) > 0 {
 			ids := make([]string, 0, len(pinings))
@@ -615,7 +616,7 @@ func (h *Handler) fillPinned(viewer *model.User, u *model.User, profile *model.U
 			detailed.PinnedNoteIDs = ids
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
+					entities := entity.PackNotes(ctx, notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 					h.fieldRes.Apply(entities, viewer)
 					packed := make([]any, 0, len(entities))
 					for _, pn := range entities {
