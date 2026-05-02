@@ -27,6 +27,7 @@ type Service struct {
 	userRepo      repository.UserRepository
 	blockingRepo  repository.BlockingRepository
 	followingRepo repository.FollowingRepository
+	instanceRepo  repository.InstanceRepository // optional, for #596 incremental counters
 	idGen         id.Generator
 }
 
@@ -45,6 +46,13 @@ func NewService(
 		followingRepo: followingRepo,
 		idGen:         idGen,
 	}
+}
+
+// SetInstanceRepo wires an InstanceRepository so the auto-unfollow side effect
+// of Block also adjusts remote instance followers/following counts (#596)。
+// 未配線でも本機能には影響しない (起動時 RecomputeFollowCounts が安全網)。
+func (s *Service) SetInstanceRepo(r repository.InstanceRepository) {
+	s.instanceRepo = r
 }
 
 // Block creates a blocking relationship from blocker to blockee.
@@ -119,4 +127,14 @@ func (s *Service) removeFollowing(followerID, followeeID string) {
 	}
 	_ = s.userRepo.IncrementFollowingCount(followerID, -1)
 	_ = s.userRepo.IncrementFollowersCount(followeeID, -1)
+	// remote instance の集計列も -1 する (#596)。block→自動 unfollow 経路で
+	// follow row が消えるので following.Service.Unfollow と同じ調整が必要。
+	if s.instanceRepo != nil {
+		if f.FollowerHost != nil {
+			_ = s.instanceRepo.IncrementFollowersCount(*f.FollowerHost, -1)
+		}
+		if f.FolloweeHost != nil {
+			_ = s.instanceRepo.IncrementFollowingCount(*f.FolloweeHost, -1)
+		}
+	}
 }

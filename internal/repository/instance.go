@@ -26,12 +26,18 @@ type InstanceRepository interface {
 	// is refreshed first.
 	ListForRefresh(staleBefore time.Time, limit int) ([]*model.Instance, error)
 	// RecomputeFollowCounts refreshes followersCount / followingCount on
-	// every instance row from the live `following` table. Currently nobody
-	// keeps these counters in sync incrementally, so admin/overview's
-	// federation pie chart gets all-zero slices. Running this on startup
-	// gives the dashboard the right pie until incremental hooks land
-	// (#421)。
+	// every instance row from the live `following` table. 起動時の再計算
+	// 用。incremental hook (Increment{Followers,Following}Count) が
+	// 入った後も累積誤差 (rare race / direct DB tampering 等) を reset する
+	// 安全網として残す (#421 / #596)。
 	RecomputeFollowCounts() error
+	// IncrementFollowersCount adjusts instance(host).followersCount by delta
+	// (typically ±1). Following 行作成 / 削除時に core/following が呼ぶ。
+	// 該当 instance 行が無い (= 未知のホスト) 場合は no-op (#596)。
+	IncrementFollowersCount(host string, delta int) error
+	// IncrementFollowingCount adjusts instance(host).followingCount by delta。
+	// 詳細は IncrementFollowersCount と対称 (#596)。
+	IncrementFollowingCount(host string, delta int) error
 }
 
 type instanceRepository struct {
@@ -225,6 +231,32 @@ func (r *instanceRepository) List(filter model.InstanceListFilter) ([]*model.Ins
 // 3 つの UPDATE は単一トランザクションでまとめる: reset だけ先に走って
 // 後段で fail すると全 instance が永続的に 0 になってしまうため (#421
 // Devin review)。
+// IncrementFollowersCount は atomic UPDATE で instance(host).followersCount
+// を delta (典型的には ±1) 増減する。Following 行作成 / 削除時に呼ばれる
+// (#596)。host が空文字 (ローカル user) の場合は no-op。該当 host の instance
+// 行が無い場合 (= 未登録の remote host) も UPDATE が 0 行で終わるだけで
+// error にしない (best-effort、後段 cron / RecomputeFollowCounts で整合)。
+func (r *instanceRepository) IncrementFollowersCount(host string, delta int) error {
+	if host == "" || delta == 0 {
+		return nil
+	}
+	return r.db.Exec(
+		`UPDATE "instance" SET "followersCount" = "followersCount" + ? WHERE host = ?`,
+		delta, host,
+	).Error
+}
+
+// IncrementFollowingCount は IncrementFollowersCount の followingCount 版。
+func (r *instanceRepository) IncrementFollowingCount(host string, delta int) error {
+	if host == "" || delta == 0 {
+		return nil
+	}
+	return r.db.Exec(
+		`UPDATE "instance" SET "followingCount" = "followingCount" + ? WHERE host = ?`,
+		delta, host,
+	).Error
+}
+
 func (r *instanceRepository) RecomputeFollowCounts() error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(

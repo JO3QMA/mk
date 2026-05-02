@@ -206,6 +206,10 @@ func (s *Server) setupRoutes() {
 	// 所有権検証 + URL コピーが必要なため、driveFileRepo を配線する。
 	userService.SetDriveFileRepository(driveFileRepo)
 	followingService := corefollowing.NewService(userRepo, followingRepo, followRequestRepo, idGen)
+	// remote instance の followersCount / followingCount を Follow/Unfollow 時に
+	// incremental 更新する (#596)。未配線でも本機能には影響しないが、admin
+	// dashboard の federation pie chart が起動直後以外で 0 に偏る。
+	followingService.SetInstanceRepo(instanceRepo)
 
 	// Timeline services (Redis-backed fanout)
 	// keyPrefix で TS 本家と同じ `<host>:list:*` 名前空間に揃える (#362)。
@@ -297,6 +301,8 @@ func (s *Server) setupRoutes() {
 
 	// Blocking & Muting
 	blockingService := coreblocking.NewService(userRepo, blockingRepo, followingRepo, idGen)
+	// Block→自動 unfollow 経路でも remote instance counter を更新 (#596)
+	blockingService.SetInstanceRepo(instanceRepo)
 	mutingService := coremuting.NewService(userRepo, mutingRepo, idGen)
 	renoteMutingService := coremuting.NewRenoteService(userRepo, renoteMutingRepo, idGen)
 	followingService.SetBlockingChecker(blockingService)

@@ -184,3 +184,32 @@ func TestBlock_RemoveFollowingDeleteError(t *testing.T) {
 	_, err := svc.Block("a", "b")
 	require.NoError(t, err)
 }
+
+// Block 経由で remote follower の follow が解除されると instance counter が -1
+// される (#596 — Block→自動 unfollow 経路でも incremental 維持)。
+func TestBlock_DecrementsInstanceCounters(t *testing.T) {
+	svc, ur, _, fr := newSvc(t)
+	instanceRepo := testutil.NewMockInstanceRepository()
+	host := "remote.example"
+	instanceRepo.Instances[host] = &model.Instance{Host: host, FollowersCount: 5, FollowingCount: 7}
+	svc.SetInstanceRepo(instanceRepo)
+
+	addUser(ur, "alice_local")
+	remote := &model.User{ID: "remote_user", Username: "remote_user", Host: &host}
+	ur.Users["remote_user"] = remote
+
+	// remote が alice を follow している状態を seed
+	fr.Followings["f"] = &model.Following{
+		ID:           "f",
+		FollowerID:   "remote_user",
+		FolloweeID:   "alice_local",
+		FollowerHost: &host,
+	}
+
+	// alice が remote を block すると、remote→alice の follow も自動解除される
+	_, err := svc.Block("alice_local", "remote_user")
+	require.NoError(t, err)
+	assert.Empty(t, fr.Followings)
+	// remote 側 follower カウントが -1
+	assert.Equal(t, 4, instanceRepo.Instances[host].FollowersCount)
+}

@@ -2234,6 +2234,29 @@ func (m *MockInstanceRepository) RecomputeFollowCounts() error {
 	return nil
 }
 
+// IncrementFollowersCount adjusts followersCount on an existing instance row。
+// host 不在 / delta=0 は no-op (real repo と同じ semantics)。
+func (m *MockInstanceRepository) IncrementFollowersCount(host string, delta int) error {
+	if host == "" || delta == 0 {
+		return nil
+	}
+	if inst, ok := m.Instances[host]; ok {
+		inst.FollowersCount += delta
+	}
+	return nil
+}
+
+// IncrementFollowingCount adjusts followingCount on an existing instance row。
+func (m *MockInstanceRepository) IncrementFollowingCount(host string, delta int) error {
+	if host == "" || delta == 0 {
+		return nil
+	}
+	if inst, ok := m.Instances[host]; ok {
+		inst.FollowingCount += delta
+	}
+	return nil
+}
+
 // List returns all stored instances filtered by the most common predicates.
 // 並び順は host 昇順 (テストの安定性のため)。
 func (m *MockInstanceRepository) List(filter model.InstanceListFilter) ([]*model.Instance, error) {

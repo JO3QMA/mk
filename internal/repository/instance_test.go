@@ -235,3 +235,52 @@ func TestInstanceRepository_List_QueryError(t *testing.T) {
 	_, err := repo.List(model.InstanceListFilter{})
 	assert.Error(t, err)
 }
+
+// IncrementFollowersCount / IncrementFollowingCount の incremental 動作検証
+// (#596)。delta=0 / host="" は no-op、未登録 host も error にならない。
+func TestInstanceRepository_IncrementCounters(t *testing.T) {
+	repo := NewInstanceRepository(testDB)
+	inst := newTestInstance("i_ic_1", "counter.example")
+	inst.FollowersCount = 10
+	inst.FollowingCount = 5
+	require.NoError(t, repo.Create(inst))
+	defer cleanupInstance(t, inst.ID)
+
+	// +1
+	require.NoError(t, repo.IncrementFollowersCount("counter.example", 1))
+	got, _ := repo.FindByHost("counter.example")
+	assert.Equal(t, 11, got.FollowersCount)
+
+	// -2
+	require.NoError(t, repo.IncrementFollowersCount("counter.example", -2))
+	got, _ = repo.FindByHost("counter.example")
+	assert.Equal(t, 9, got.FollowersCount)
+
+	// followingCount も独立に動く
+	require.NoError(t, repo.IncrementFollowingCount("counter.example", 3))
+	got, _ = repo.FindByHost("counter.example")
+	assert.Equal(t, 8, got.FollowingCount)
+
+	// host="" は no-op
+	require.NoError(t, repo.IncrementFollowersCount("", 100))
+	got, _ = repo.FindByHost("counter.example")
+	assert.Equal(t, 9, got.FollowersCount, "host が空文字なら touch しない")
+
+	// delta=0 も no-op (UPDATE 自体走らない)
+	require.NoError(t, repo.IncrementFollowersCount("counter.example", 0))
+	got, _ = repo.FindByHost("counter.example")
+	assert.Equal(t, 9, got.FollowersCount)
+
+	// 未登録 host も error にしない (best-effort)
+	require.NoError(t, repo.IncrementFollowersCount("unknown.example", 1))
+	require.NoError(t, repo.IncrementFollowingCount("unknown.example", -1))
+}
+
+func TestInstanceRepository_IncrementCounters_DBError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	db := testDB.WithContext(ctx)
+	repo := NewInstanceRepository(db)
+	assert.Error(t, repo.IncrementFollowersCount("any.example", 1))
+	assert.Error(t, repo.IncrementFollowingCount("any.example", 1))
+}
