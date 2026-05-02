@@ -34,11 +34,15 @@ type LibraryWebPushSender struct {
 	HTTPClient webpushlib.HTTPClient
 }
 
-// Send delegates to webpush.SendNotificationWithContext, copying the configured
-// HTTPClient onto opts so the library uses the operator-supplied transport.
+// Send delegates to webpush.SendNotificationWithContext.
+//
+// 受け取った opts は immutable に扱う: caller の Options を mutate しないよう
+// shallow copy してから HTTPClient を埋めて library に渡す。
 func (s LibraryWebPushSender) Send(ctx context.Context, sub *webpushlib.Subscription, message []byte, opts *webpushlib.Options) (*http.Response, error) {
-	if s.HTTPClient != nil && opts.HTTPClient == nil {
-		opts.HTTPClient = s.HTTPClient
+	if s.HTTPClient != nil && opts != nil && opts.HTTPClient == nil {
+		copied := *opts
+		copied.HTTPClient = s.HTTPClient
+		opts = &copied
 	}
 	return webpushlib.SendNotificationWithContext(ctx, message, sub, opts)
 }

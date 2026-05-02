@@ -299,8 +299,9 @@ func (s *Server) setupRoutes() {
 	followingService.SetWebhookHook(corewebhook.NewFollowingHook(webhookService))
 	signupService.SetWebhookHook(corewebhook.NewSignupHook(webhookService))
 	// Webhook delivery: SSRF-safe transport + forward proxy 経由で user-supplied
-	// URL に POST する (#638)。
-	webhookProcessor := processors.NewWebhookProcessor(webhookRepo, systemWebhookRepo, s.outboundClient(10*time.Second), s.config.Host)
+	// URL に POST する (#638)。Timeout は processors 側の DefaultWebhookTimeout
+	// に揃える。
+	webhookProcessor := processors.NewWebhookProcessor(webhookRepo, systemWebhookRepo, s.outboundClient(processors.DefaultWebhookTimeout), s.config.Host)
 	s.queueServer.Handle(queue.TaskTypeUserWebhook, webhookProcessor.HandleUser)
 	s.queueServer.Handle(queue.TaskTypeSystemWebhook, webhookProcessor.HandleSystem)
 

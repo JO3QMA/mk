@@ -327,3 +327,50 @@ func TestLibraryWebPushSender_Send(t *testing.T) {
 	// 鍵が不正なので必ずエラーになる
 	assert.Error(t, err)
 }
+
+// captureClient is a no-op webpushlib.HTTPClient used by mutation tests.
+// It implements the interface but is never actually called: the mutation
+// behavior under test trips before any HTTP I/O is attempted.
+type captureClient struct{}
+
+func (c *captureClient) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(bytes.NewReader(nil))}, nil
+}
+
+// LibraryWebPushSender に sender-level HTTPClient をセットしておくと、
+// Send 呼び出しでも caller の Options が mutate されない (sender 側で copy
+// してから library に渡す、#638 review)。
+//
+// 実際の HTTP 呼び出しまで到達させるには有効な subscription 鍵が必要だが、
+// このテストでは「opts が破壊されないこと」だけ確認すれば十分なので、
+// 鍵不正で encryption 段階で error になる subscription を使う。
+func TestLibraryWebPushSender_DoesNotMutateOpts(t *testing.T) {
+	s := processors.LibraryWebPushSender{HTTPClient: &captureClient{}}
+	opts := &webpushlib.Options{TTL: 30}
+
+	_, _ = s.Send(context.Background(), &webpushlib.Subscription{
+		Endpoint: "https://push.example/x",
+		Keys:     webpushlib.Keys{Auth: "a", P256dh: "p"},
+	}, []byte(`{}`), opts)
+
+	// caller の opts は mutate されないこと (Options.HTTPClient は nil のまま)
+	assert.Nil(t, opts.HTTPClient)
+}
+
+// 既に opts.HTTPClient がセットされている場合は sender 側で何もしない
+// (caller の指定を尊重)。
+func TestLibraryWebPushSender_RespectsExistingHTTPClient(t *testing.T) {
+	preset := &captureClient{}
+	overridden := &captureClient{}
+	s := processors.LibraryWebPushSender{HTTPClient: overridden}
+	opts := &webpushlib.Options{TTL: 30, HTTPClient: preset}
+
+	_, _ = s.Send(context.Background(), &webpushlib.Subscription{
+		Endpoint: "https://push.example/y",
+		Keys:     webpushlib.Keys{Auth: "a", P256dh: "p"},
+	}, []byte(`{}`), opts)
+
+	// 鍵不正で実 HTTP までは行かないが、caller の HTTPClient ポインタは
+	// 引き続き preset を指したまま (sender 側で書き換えない)。
+	assert.Same(t, preset, opts.HTTPClient)
+}

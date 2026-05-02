@@ -252,12 +252,17 @@ id: 'aidx'
 #outgoingAddressFamily: ipv4
 
 # Proxy for HTTP/HTTPS
-# When set, **every outbound HTTP/HTTPS request** mk-go makes is routed
-# through this proxy: ActivityPub delivery, WebFinger, media proxy, summary
-# (URL preview) proxy, webhook delivery, Web Push, and SaaS APIs (hCaptcha /
-# reCAPTCHA / Turnstile / mCaptcha / DeepL / Truemail / Verifymail, etc.).
-# Use this to centralize egress or to keep the origin IP hidden. Hosts that
-# must bypass the proxy (exact hostname match) go in proxyBypassHosts below.
+# When set, **every third-party outbound HTTP/HTTPS request** mk-go makes is
+# routed through this proxy: ActivityPub delivery, WebFinger, media proxy,
+# summary (URL preview) target fetch, webhook delivery, Web Push, and SaaS
+# APIs (hCaptcha / reCAPTCHA / Turnstile / mCaptcha / DeepL / Truemail /
+# Verifymail, etc.). Use this to centralize egress or to keep the origin IP
+# hidden. Hosts that must bypass the proxy (exact hostname match) go in
+# proxyBypassHosts below.
+# Note: operator-trusted endpoints configured via `urlPreviewSummaryProxyUrl`
+# (the summaly proxy itself) are called directly so that internal/localhost
+# summaly deployments keep working — the proxy still applies to whatever the
+# summaly proxy itself fetches downstream.
 #proxy: http://127.0.0.1:3128
 
 # Hosts that bypass `proxy` (exact hostname match). Pre-populated with the
