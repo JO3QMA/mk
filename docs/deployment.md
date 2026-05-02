@@ -195,3 +195,15 @@ upstream以外の設定はTCP構成と同じ。
 既存のMisskey (TypeScript版)からの移行手順は[TS版からの移行ガイド](migration-from-ts.md)を参照。
 
 mk-goはTS版と同じPostgreSQL/Redisを共有できるため、バイナリの差し替えだけで移行可能。マイグレーションはTS版テーブルに対して追加のみで破壊的変更を行わない。
+
+## 運用上の注意
+
+### admin/overview の federation pie chart が一時的にずれる場合
+
+`instance.followersCount` / `instance.followingCount` は Follow / Unfollow / Block→自動 unfollow に応じて incremental に維持される (#596) が、以下のような **bulk 操作** は incremental hook を経由しないので drift する:
+
+- `admin/delete-account` でアカウントを大量削除 (`followingRepo.DeleteAllByUser` 経路)
+- DB を直接操作した場合
+- 起動時に並走する race による微小なズレ
+
+drift は起動時の `RecomputeFollowCounts` で完全に再計算されるため、admin dashboard の federation pie chart に違和感が出たら **mk-go プロセスを再起動** すれば即時整合する。再起動以外で recompute を強制する API はまだ無い (将来 admin endpoint 化を検討)。

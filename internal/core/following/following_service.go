@@ -169,6 +169,11 @@ func (s *Service) SetInstanceRepo(r repository.InstanceRepository) {
 // delta は +1 (create) / -1 (delete)。両 host が non-nil なら両方更新。
 // best-effort: 失敗しても呼び出し元には伝えない (起動時 RecomputeFollowCounts
 // で eventually 復旧)。
+//
+// IMPORTANT: blocking.Service.removeFollowing も同等の調整を inline で
+// 行っている。循環依存回避のため共通 helper にしていないので、本関数の
+// counter 調整ロジックを変えるときは blocking 側も **mirror で維持** する
+// (PR #626 review)。
 func (s *Service) adjustInstanceCountsForFollowing(f *model.Following, delta int) {
 	if s.instanceRepo == nil || delta == 0 {
 		return

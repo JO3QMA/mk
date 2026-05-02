@@ -3,6 +3,7 @@ package blocking
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -117,6 +118,11 @@ func (s *Service) List(blockerID, sinceID, untilID string, limit, offset int) ([
 
 // removeFollowing deletes a follow edge if it exists and adjusts counters.
 // エラーは握り潰し (ベストエフォート)。
+//
+// IMPORTANT: instance counter 調整ロジックは following.Service の
+// adjustInstanceCountsForFollowing と **mirror で維持** すること。循環依存
+// 回避のため共通 helper にせず inline しているので、片方変更時には他方も
+// 揃える (#596 / PR #626 review)。
 func (s *Service) removeFollowing(followerID, followeeID string) {
 	f, err := s.followingRepo.FindByPair(followerID, followeeID)
 	if err != nil {
@@ -129,12 +135,19 @@ func (s *Service) removeFollowing(followerID, followeeID string) {
 	_ = s.userRepo.IncrementFollowersCount(followeeID, -1)
 	// remote instance の集計列も -1 する (#596)。block→自動 unfollow 経路で
 	// follow row が消えるので following.Service.Unfollow と同じ調整が必要。
+	// 失敗は warn-log で観測 signal を残す (following.Service と同様)。
 	if s.instanceRepo != nil {
 		if f.FollowerHost != nil {
-			_ = s.instanceRepo.IncrementFollowersCount(*f.FollowerHost, -1)
+			if err := s.instanceRepo.IncrementFollowersCount(*f.FollowerHost, -1); err != nil {
+				slog.Warn("instance counter: followersCount adjust failed (block path)",
+					"host", *f.FollowerHost, "delta", -1, "err", err)
+			}
 		}
 		if f.FolloweeHost != nil {
-			_ = s.instanceRepo.IncrementFollowingCount(*f.FolloweeHost, -1)
+			if err := s.instanceRepo.IncrementFollowingCount(*f.FolloweeHost, -1); err != nil {
+				slog.Warn("instance counter: followingCount adjust failed (block path)",
+					"host", *f.FolloweeHost, "delta", -1, "err", err)
+			}
 		}
 	}
 }
