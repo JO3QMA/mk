@@ -3,6 +3,7 @@ package admin_test
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -902,17 +903,55 @@ func TestRolesUsers_LimitClamping(t *testing.T) {
 		aid := fmt.Sprintf("9c2bw9q5fa%016d", i)
 		require.NoError(t, assignRepo.Create(&model.RoleAssignment{ID: aid, UserID: uid, RoleID: "r1"}))
 	}
-	// limit=2 で 2 件のみ
+	// limit=2 で 2 件のみ。Mock 経由で repo に渡された limit も検証 (#598 review item 2)。
 	rec := doPost(h.RolesUsers, `{"roleId":"r1","limit":2}`, nil)
 	var resp []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Len(t, resp, 2)
+	assert.Equal(t, 2, assignRepo.LastListByRoleLimit, "limit=2 がそのまま repo に伝わる")
 
-	// limit=999 → 100 にクランプ。ここでは seed 3 件なので 3 件返るだけだが、
-	// クランプ自体は handler の if limit > 100 分岐をカバーする。
+	// limit=999 → 100 にクランプ。Mock の LastListByRoleLimit を見て
+	// repo 側が 100 で受け取ったことを直接 assert (件数だけだと seed=3 で見えない)。
 	rec = doPost(h.RolesUsers, `{"roleId":"r1","limit":999}`, nil)
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Len(t, resp, 3)
+	assert.Equal(t, 100, assignRepo.LastListByRoleLimit, "limit>100 は 100 にクランプされる")
+
+	// limit=0 (未指定) → default 10
+	rec = doPost(h.RolesUsers, `{"roleId":"r1"}`, nil)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, 10, assignRepo.LastListByRoleLimit, "limit 未指定は default 10")
+}
+
+// dangling assignment (a.User == nil) は結果から落とされる + 警告ログが出る。
+// ログ出力の有無は slog テスト用 handler を差し替えて捕捉する (#598 review item 1)。
+func TestRolesUsers_DanglingAssignmentSkipped(t *testing.T) {
+	h, userRepo, roleRepo, assignRepo := rolesUsersFixture(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1"}
+	// alive user + dangling assignment (UserID は存在しない user を指す)
+	require.NoError(t, userRepo.Create(&model.User{ID: "alive", Username: "alive"}))
+	require.NoError(t, assignRepo.Create(&model.RoleAssignment{ID: "9c2bw9q5fa0000000000000001", UserID: "alive", RoleID: "r1"}))
+	require.NoError(t, assignRepo.Create(&model.RoleAssignment{ID: "9c2bw9q5fa0000000000000002", UserID: "ghost", RoleID: "r1"}))
+
+	// Test 用に slog handler を差し替えて Warn が出るかを観測。
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	rec := doPost(h.RolesUsers, `{"roleId":"r1"}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1, "dangling assignment は結果から除外される")
+	user, _ := resp[0]["user"].(map[string]any)
+	assert.Equal(t, "alive", user["id"])
+
+	// dangling 検知の警告ログが出ている
+	logged := buf.String()
+	assert.Contains(t, logged, "dangling role assignment")
+	assert.Contains(t, logged, "userId=ghost")
 }
 
 func TestRolesUsers_NotFound(t *testing.T) {

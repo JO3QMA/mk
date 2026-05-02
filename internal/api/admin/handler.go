@@ -1210,6 +1210,8 @@ func (h *Handler) RolesUsers(c echo.Context) error {
 			ids = append(ids, a.User.ID)
 		}
 	}
+	// Profile fetch 失敗は handler 全体の致命扱いではないので、空 map で
+	// fallback する (各 user は profile=nil で pack される)。ShowUsers と同方針。
 	profiles, _ := h.userRepo.FindProfilesByUserIDs(ids)
 	profileByUser := make(map[string]*model.UserProfile, len(profiles))
 	for _, p := range profiles {
@@ -1223,6 +1225,11 @@ func (h *Handler) RolesUsers(c echo.Context) error {
 	result := make([]map[string]any, 0, len(assignments))
 	for _, a := range assignments {
 		if a.User == nil {
+			// role_assignment は残っているのに user 行が消えているデータ不整合。
+			// 結果件数だけ silent に減らすと debug が困難なので警告ログを出して
+			// admin tooling 側で清掃の signal にする (#598 review item 1)。
+			slog.Warn("admin/roles/users: dangling role assignment",
+				"assignmentId", a.ID, "userId", a.UserID, "roleId", a.RoleID)
 			continue
 		}
 		createdAt := ""
