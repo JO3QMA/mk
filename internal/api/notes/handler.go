@@ -42,6 +42,7 @@ type Handler struct {
 	driveFolderRepo   repository.DriveFolderRepository
 	userRepo          repository.UserRepository
 	userListRepo      repository.UserListRepository
+	bufReader         entity.BufferedReactionsReader
 	// ugcVisibility controls what unauthenticated visitors can see.
 	// "all" (default), "local", "none"
 	ugcVisibility string
@@ -89,6 +90,17 @@ func (h *Handler) SetInstanceRepo(r repository.InstanceRepository) {
 // note text and user displayNames get resolved to URLs (#330).
 func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
 	h.emojiRepo = r
+}
+
+// SetReactionReader wires a BufferedReactionsReader so PackNote / PackNotes
+// can merge in-flight buffered reaction deltas (#647)。enableReactionsBuffering
+// が無効なら nil でも構わない。
+func (h *Handler) SetReactionReader(r entity.BufferedReactionsReader) {
+	h.bufReader = r
+}
+
+func (h *Handler) reactionReader() entity.BufferedReactionsReader {
+	return h.bufReader
 }
 
 // SetDriveFolderRepo attaches a DriveFolderRepository so attached DriveFiles
@@ -249,7 +261,7 @@ func (h *Handler) Create(c echo.Context) error {
 		return apierr.JSONInternalError(c)
 	}
 
-	packed := entity.PackNoteWithInstance(created, h.idGen, h.instanceLookup(), h.emojiLookup())
+	packed := entity.PackNoteWithInstance(created, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	s := []entity.NoteEntity{packed}
 	h.fieldResolver().Apply(s, user)
 	return c.JSON(http.StatusOK, map[string]any{
@@ -275,7 +287,7 @@ func (h *Handler) Show(c echo.Context) error {
 		return apierr.JSONNoSuchNote(c)
 	}
 
-	packed := entity.PackNoteWithInstance(n, h.idGen, h.instanceLookup(), h.emojiLookup())
+	packed := entity.PackNoteWithInstance(n, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	s := []entity.NoteEntity{packed}
 	h.fieldResolver().Apply(s, viewer)
 	return c.JSON(http.StatusOK, s[0])
@@ -528,7 +540,7 @@ func (h *Handler) BulkShow(c echo.Context) error {
 // あり、他の PackNotes 利用 handler (antennas / users / pinned 等) と共通化
 // している (#426)。
 func (h *Handler) packMany(notes []*model.Note, viewer *model.User) []entity.NoteEntity {
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldResolver().Apply(out, viewer)
 	return out
 }

@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"context"
 	"encoding/json"
 	"regexp"
 
@@ -8,6 +9,18 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/datatypes"
 )
+
+// BufferedReactionsReader reads buffered reaction deltas (Redis-side)
+// for a batch of notes. enableReactionsBuffering=true な instance では
+// reaction count が Redis 側にバッファされ、定期 flush で DB の
+// note.Reactions JSONB に反映されるが、flush までの間は DB が stale で
+// timeline で reaction が見えない。PackNotes/PackNoteWithInstance に
+// この interface を渡すと merge してから serialize する (#647)。
+//
+// nil 実装も受け付ける (= buffering 無し / direct writer 使用時)。
+type BufferedReactionsReader interface {
+	GetBufferedMany(ctx context.Context, noteIDs []string) (map[string]map[string]int64, error)
+}
 
 // localEmojiPattern matches `:name:` without `@host` suffix.
 var localEmojiPattern = regexp.MustCompile(`^:([\w+\-]+):$`)
@@ -162,12 +175,19 @@ func packNoteAtDepth(n *model.Note, idGen id.Generator, depth int) NoteEntity {
 // nil (convenient for handlers not yet wired or for contexts where instance
 // embed is unnecessary).
 //
+// reactionReader が non-nil なら buffered reactions を batch fetch して
+// flat 内の各 note.Reactions に in-place merge してから resolver を構築する
+// (#647)。これにより enableReactionsBuffering=true でも timeline / show
+// レスポンスで最新 reaction count / emoji が返る。reader が nil なら
+// 旧挙動 (DB のみ) で動く。
+//
 // flattenNotesPlusRelations で top-level + Renote/Reply の target note を
 // 1 まとめにしてから resolver を作る。CollectNoteAuthors も flatten 済みの
 // スライスから author を拾うので、埋め込み note の remote user にも Instance /
 // emoji が正しく載る。
-func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) []NoteEntity {
+func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup, reactionReader BufferedReactionsReader) []NoteEntity {
 	flat := flattenNotesPlusRelations(notes)
+	mergeBufferedReactions(flat, reactionReader)
 	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(flat)...)
 	emojiResolver := NewEmojiResolver(emojiLookup, flat)
 	out := make([]NoteEntity, 0, len(notes))
@@ -184,13 +204,90 @@ func PackNotes(notes []*model.Note, idGen id.Generator, instLookup InstanceLooku
 // **Single-note only.** Each call spins up a fresh InstanceResolver (1 DB
 // query via lookup.FindManyByHosts). For a slice of notes, call `PackNotes`
 // instead — calling this in a loop produces N+1 queries.
-func PackNoteWithInstance(n *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup) NoteEntity {
-	packed := PackNote(n, idGen)
+//
+// reactionReader 引数の意味は PackNotes と同じ (#647)。
+func PackNoteWithInstance(n *model.Note, idGen id.Generator, instLookup InstanceLookup, emojiLookup EmojiLookup, reactionReader BufferedReactionsReader) NoteEntity {
 	flat := flattenNotesPlusRelations([]*model.Note{n})
+	mergeBufferedReactions(flat, reactionReader)
+	packed := PackNote(n, idGen)
 	instResolver := NewInstanceResolver(instLookup, CollectNoteAuthors(flat)...)
 	emojiResolver := NewEmojiResolver(emojiLookup, flat)
 	applyNoteResolvers(n, &packed, instResolver, emojiResolver)
 	return packed
+}
+
+// mergeBufferedReactions fetches buffered deltas for the given notes via
+// reader and overwrites each note.Reactions with the merged JSON. Pure
+// data transform; receiver-side mutation is intentional (#647) so that
+// downstream EmojiResolver / PackNote pick up the merged map automatically.
+//
+// reader が nil または notes が空ならば no-op。
+func mergeBufferedReactions(notes []*model.Note, reader BufferedReactionsReader) {
+	if reader == nil || len(notes) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(notes))
+	seen := make(map[string]struct{}, len(notes))
+	for _, n := range notes {
+		if n == nil || n.ID == "" {
+			continue
+		}
+		if _, dup := seen[n.ID]; dup {
+			continue
+		}
+		seen[n.ID] = struct{}{}
+		ids = append(ids, n.ID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	deltas, err := reader.GetBufferedMany(context.Background(), ids)
+	if err != nil || len(deltas) == 0 {
+		// reader 失敗時は stale な DB 値を返す (旧挙動と同等)。
+		return
+	}
+	for _, n := range notes {
+		if n == nil {
+			continue
+		}
+		if d, ok := deltas[n.ID]; ok && len(d) > 0 {
+			n.Reactions = mergeReactionsJSON(n.Reactions, d)
+		}
+	}
+}
+
+// mergeReactionsJSON merges buffered deltas into the existing reactions
+// JSONB and returns a new datatypes.JSON. 0 以下になったキーは結果から
+// 取り除く (TS の mergeReactions と同等)。core/reaction.MergeReactions
+// と同じロジックだが、layer 上 entity → core 依存を作らないために
+// inline 実装している。
+func mergeReactionsJSON(reactionsJSON datatypes.JSON, buffered map[string]int64) datatypes.JSON {
+	if len(buffered) == 0 {
+		return reactionsJSON
+	}
+	reactions := make(map[string]int64)
+	if len(reactionsJSON) > 0 {
+		var f map[string]float64
+		if err := json.Unmarshal(reactionsJSON, &f); err == nil {
+			for k, v := range f {
+				reactions[k] = int64(v)
+			}
+		}
+	}
+	for k, delta := range buffered {
+		reactions[k] += delta
+		if reactions[k] <= 0 {
+			delete(reactions, k)
+		}
+	}
+	if len(reactions) == 0 {
+		return datatypes.JSON([]byte("{}"))
+	}
+	data, err := json.Marshal(reactions)
+	if err != nil {
+		return reactionsJSON
+	}
+	return datatypes.JSON(data)
 }
 
 // applyNoteResolvers fills Instance + emojis on the packed entity and its
