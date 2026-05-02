@@ -44,10 +44,16 @@ RUN test -f third_party/misskey/packages/backend/node_modules/@discordapp/twemoj
 # - -tags nodynamic: gen2brain/webp は default で purego (dlopen) 経由の
 #   shared lib fallback を試みるため、これを切って WASM (wazero) 一本に
 #   固定する。これがないと dlopen を呼ぶ層が残り完全 static にならない。
+#
+# FEATURES build arg ("ffmpeg" など) は build tag に追加で混ぜ込む (#637 M2)。
+# 例: `docker build --build-arg FEATURES=ffmpeg .` で video thumbnail extraction
+# 対応バイナリが作れる。空のときは lite build (default)。
+ARG FEATURES=
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
-    CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
+    TAGS="nodynamic$([ -n \"${FEATURES}\" ] && echo \",${FEATURES}\")" && \
+    CGO_ENABLED=0 go build -tags "${TAGS}" -trimpath -ldflags="-s -w" -o /app/built/misskey ./cmd/misskey && \
+    CGO_ENABLED=0 go build -tags "${TAGS}" -trimpath -ldflags="-s -w" -o /app/built/migrate ./cmd/migrate
 
 # Stage 2: Runtime
 #

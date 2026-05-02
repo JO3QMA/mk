@@ -16,6 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gen2brain/avif"
+	_ "github.com/gen2brain/heic" // HEIC/HEIF input decode (iPhone uploads)
+	_ "github.com/gen2brain/jpegxl"
 	"github.com/gen2brain/webp"
 	"github.com/kovidgoyal/imaging"
 	_ "golang.org/x/image/bmp"
@@ -48,6 +51,8 @@ const (
 	previewHeight = 200
 	badgeSize     = 96
 	webpQuality   = 77
+	avifQuality   = 60       // AVIF default; matches gen2brain/avif.DefaultQuality
+	avifSpeed     = 8        // 0..10 — 8 keeps quality close to default while staying responsive
 	maxDownload   = 32 << 20 // 32 MB
 )
 
@@ -68,6 +73,13 @@ var browsersafeMIMEs = map[string]bool{
 	"image/apng": true,
 	"image/bmp":  true,
 	"image/tiff": true,
+	// HEIC/HEIF: Safari 16+ で表示可能。Firefox/Chrome は表示できないが
+	// pass-through で返した先で frontend が WebP/AVIF 変換 URL に置換する
+	// 想定 (#637 M4)。
+	"image/heic": true,
+	"image/heif": true,
+	// JPEG XL: Safari 17+ 対応、Chrome は flag つきで実験中 (#637 M5)。
+	"image/jxl": true,
 	// `image/x-icon` は古い慣例、`image/vnd.microsoft.icon` は IANA media
 	// type registry に登録されている公式名 (RFC 紐付け無し)。リモート
 	// Misskey/Mastodon の favicon.ico は後者で返ってくるホストが多いため
@@ -101,6 +113,22 @@ type ProxyResult struct {
 	ContentType string
 }
 
+// DriveFileLookup is the minimal subset of repository.DriveFileRepository
+// the proxy needs to resolve a `/files/<accessKey>` request to its cached
+// thumbnail / webpublic variant when one exists (#637 M1)。
+type DriveFileLookup interface {
+	FindByAccessKey(accessKey string) (DriveFileVariants, error)
+}
+
+// DriveFileVariants exposes only the access-key fields the proxy needs.
+// repository 側でこの shape を直接返さない (model.DriveFile が大きすぎる)
+// ので、wire 層で adapter を書いて変換する。
+type DriveFileVariants struct {
+	AccessKey          *string
+	ThumbnailAccessKey *string
+	WebpublicAccessKey *string
+}
+
 // Service handles media proxy authorization and fetching.
 type Service struct {
 	instanceURL  string
@@ -109,6 +137,7 @@ type Service struct {
 	hmacSecret   []byte
 	httpClient   *http.Client
 	userAgent    string
+	driveLookup  DriveFileLookup // optional, #637 M1
 }
 
 // NewService creates a new media proxy Service.
@@ -126,6 +155,13 @@ func NewService(instanceURL, userAgent string, driveStorage coredrive.Storage, a
 		},
 		userAgent: userAgent,
 	}
+}
+
+// SetDriveLookup attaches a DriveFileLookup so the proxy can substitute the
+// cached thumbnail / webpublic variant for `?preview` and `?static` requests
+// against local files (#637 M1)。
+func (s *Service) SetDriveLookup(l DriveFileLookup) {
+	s.driveLookup = l
 }
 
 // SignURL generates an HMAC-SHA256 signature for the given URL.
@@ -152,19 +188,20 @@ func (s *Service) Authorize(ctx context.Context, rawURL, sig string) error {
 }
 
 // Fetch downloads the remote URL (or resolves a local file), applies image
-// processing per the requested mode, and returns the result.
-func (s *Service) Fetch(ctx context.Context, rawURL string, mode ProxyMode) (*ProxyResult, error) {
+// processing per the requested mode, and returns the result. out selects the
+// encoder format (FormatWebP / FormatAVIF) for resize-class modes.
+func (s *Service) Fetch(ctx context.Context, rawURL string, mode ProxyMode, out OutputFormat) (*ProxyResult, error) {
 	// ローカルファイルの場合はdriveStorageから直接取得
 	filesPrefix := s.instanceURL + "/files/"
 	if strings.HasPrefix(rawURL, filesPrefix) {
-		return s.resolveLocal(rawURL, filesPrefix, mode)
+		return s.resolveLocal(rawURL, filesPrefix, mode, out)
 	}
 
-	return s.fetchRemote(ctx, rawURL, mode)
+	return s.fetchRemote(ctx, rawURL, mode, out)
 }
 
 // resolveLocal fetches a file from local drive storage by access key.
-func (s *Service) resolveLocal(rawURL, filesPrefix string, mode ProxyMode) (*ProxyResult, error) {
+func (s *Service) resolveLocal(rawURL, filesPrefix string, mode ProxyMode, out OutputFormat) (*ProxyResult, error) {
 	accessKey := strings.TrimPrefix(rawURL, filesPrefix)
 	// パスに/が含まれる場合は先頭のセグメントだけを使う
 	if idx := strings.Index(accessKey, "/"); idx >= 0 {
@@ -172,6 +209,16 @@ func (s *Service) resolveLocal(rawURL, filesPrefix string, mode ProxyMode) (*Pro
 	}
 	if accessKey == "" {
 		return nil, ErrBadRequest
+	}
+
+	// 既に存在する thumbnail / webpublic variant を提供できる mode なら、
+	// 元データを再 decode + resize せずに variant を直接返して CPU を節約
+	// する (#637 M1)。SetDriveLookup されていない / 該当 variant が無い
+	// 場合は従来通り元データを取得して proxy 側で resize する。
+	if s.driveLookup != nil {
+		if swapped, ok := s.swapToVariant(accessKey, mode); ok {
+			accessKey = swapped
+		}
 	}
 
 	body, err := s.driveStorage.Get(accessKey)
@@ -193,11 +240,45 @@ func (s *Service) resolveLocal(rawURL, filesPrefix string, mode ProxyMode) (*Pro
 	}
 
 	contentType := http.DetectContentType(data)
-	return s.processAndReturn(data, contentType, mode)
+	return s.processAndReturn(data, contentType, mode, out)
+}
+
+// swapToVariant looks up the DriveFile by access key and returns the
+// thumbnail / webpublic access key when one matches the requested mode.
+// Returns (newKey, true) on swap, ("", false) otherwise.
+func (s *Service) swapToVariant(accessKey string, mode ProxyMode) (string, bool) {
+	v, err := s.driveLookup.FindByAccessKey(accessKey)
+	if err != nil {
+		return "", false
+	}
+	// 既に primary 以外 (= 既に variant の access key) を要求されているなら
+	// 二重に swap しない。
+	if v.AccessKey == nil || *v.AccessKey != accessKey {
+		return "", false
+	}
+	switch mode {
+	case ModeEmoji, ModeAvatar, ModePreview, ModeBadge:
+		// 小サイズ系: thumbnail があれば優先、無ければ webpublic を試す。
+		if v.ThumbnailAccessKey != nil && *v.ThumbnailAccessKey != "" {
+			return *v.ThumbnailAccessKey, true
+		}
+		if v.WebpublicAccessKey != nil && *v.WebpublicAccessKey != "" {
+			return *v.WebpublicAccessKey, true
+		}
+	case ModeStatic:
+		// 中サイズ: webpublic 優先、無ければ thumbnail を流用 (静止 + 縮小)。
+		if v.WebpublicAccessKey != nil && *v.WebpublicAccessKey != "" {
+			return *v.WebpublicAccessKey, true
+		}
+		if v.ThumbnailAccessKey != nil && *v.ThumbnailAccessKey != "" {
+			return *v.ThumbnailAccessKey, true
+		}
+	}
+	return "", false
 }
 
 // fetchRemote downloads a file from a remote URL.
-func (s *Service) fetchRemote(ctx context.Context, rawURL string, mode ProxyMode) (*ProxyResult, error) {
+func (s *Service) fetchRemote(ctx context.Context, rawURL string, mode ProxyMode, out OutputFormat) (*ProxyResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mediaproxy: create request: %w", err)
@@ -246,20 +327,48 @@ func (s *Service) fetchRemote(ctx context.Context, rawURL string, mode ProxyMode
 		contentType = http.DetectContentType(data)
 	}
 
-	return s.processAndReturn(data, contentType, mode)
+	return s.processAndReturn(data, contentType, mode, out)
 }
 
-// processAndReturn applies image processing per mode and returns the result.
-func (s *Service) processAndReturn(data []byte, contentType string, mode ProxyMode) (*ProxyResult, error) {
+// OutputFormat selects the encoder used by resize-class processing modes.
+type OutputFormat int
+
+const (
+	// FormatWebP is the default browser-safe encoder.
+	FormatWebP OutputFormat = iota
+	// FormatAVIF requests AVIF output. caller-side preconditions: client
+	// either set ?avif=1 or sent `Accept: image/avif,...`. AVIF は CPU
+	// 重めなので明示要求時のみ使う (Misskey TS と同 semantics)。
+	FormatAVIF
+)
+
+// processAndReturn applies image processing per mode and returns the result
+// in the requested output format (WebP / AVIF). Badge と passThrough は
+// format negotiation の対象外で常に PNG / 元 MIME を返す。
+//
+// video/* MIME はそのまま resize 経路に乗せず、まず still frame を ffmpeg で
+// 抽出してから image pipeline に渡す。ffmpeg build tag 無しでは
+// extractVideoThumbnailFrame が ErrVideoThumbnailUnavailable を返すので
+// dummy PNG にフォールバックする (#637 M2)。
+func (s *Service) processAndReturn(data []byte, contentType string, mode ProxyMode, out OutputFormat) (*ProxyResult, error) {
+	if IsVideoMIME(contentType) && isResizeMode(mode) {
+		frame, err := extractVideoThumbnailFrame(data, contentType)
+		if err != nil {
+			return makeDummyPNG(), nil
+		}
+		// still frame は image/jpeg として image pipeline に渡す。
+		data = frame
+		contentType = "image/jpeg"
+	}
 	switch mode {
 	case ModeEmoji:
-		return s.processResize(data, contentType, 0, emojiHeight)
+		return s.processResize(data, contentType, 0, emojiHeight, out)
 	case ModeAvatar:
-		return s.processResize(data, contentType, 0, avatarHeight)
+		return s.processResize(data, contentType, 0, avatarHeight, out)
 	case ModeStatic:
-		return s.processResize(data, contentType, staticWidth, staticHeight)
+		return s.processResize(data, contentType, staticWidth, staticHeight, out)
 	case ModePreview:
-		return s.processResize(data, contentType, previewWidth, previewHeight)
+		return s.processResize(data, contentType, previewWidth, previewHeight, out)
 	case ModeBadge:
 		return s.processBadge(data, contentType)
 	default:
@@ -267,9 +376,20 @@ func (s *Service) processAndReturn(data []byte, contentType string, mode ProxyMo
 	}
 }
 
-// processResize decodes the image, resizes it, and encodes to WebP.
-// width=0の場合はheightのみでアスペクト比を維持する。
-func (s *Service) processResize(data []byte, contentType string, width, height int) (*ProxyResult, error) {
+// isResizeMode reports whether the mode triggers image-pipeline processing
+// (so a video source needs a still frame extracted first).
+func isResizeMode(mode ProxyMode) bool {
+	switch mode {
+	case ModeEmoji, ModeAvatar, ModeStatic, ModePreview, ModeBadge:
+		return true
+	}
+	return false
+}
+
+// processResize decodes the image, resizes it, and encodes to WebP or AVIF.
+// width=0の場合はheightのみでアスペクト比を維持する。out=FormatAVIF の
+// ときは AVIF で書き出し、エンコード失敗時は WebP に fallback する。
+func (s *Service) processResize(data []byte, contentType string, width, height int, out OutputFormat) (*ProxyResult, error) {
 	if !isConvertibleImage(contentType) {
 		// 変換できない画像フォーマットはそのまま返す
 		return makeResult(data, contentType), nil
@@ -289,6 +409,13 @@ func (s *Service) processResize(data []byte, contentType string, width, height i
 		resized = resizeFit(img, width, height)
 	}
 
+	if out == FormatAVIF {
+		if encoded, err := encodeAVIF(resized); err == nil {
+			return makeResult(encoded, "image/avif"), nil
+		}
+		// AVIF 失敗時は WebP に fallback (元データに戻すと sensitive な
+		// resize 結果が伝わらないため)
+	}
 	encoded, err := encodeWebP(resized)
 	if err != nil {
 		return makeResult(data, contentType), nil
@@ -366,7 +493,11 @@ func isConvertibleImage(mime string) bool {
 		// IANA 公式名 (image/vnd.microsoft.icon) と古い慣例 (image/x-icon)
 		// を両方許可する (#418)。
 		"image/x-icon", "image/vnd.microsoft.icon",
-		"image/vnd.mozilla.apng":
+		"image/vnd.mozilla.apng",
+		// gen2brain wazero ベースの decoder で対応 (#637 M3/M4/M5):
+		// image/avif (in/out), image/heic, image/heif, image/jxl は input 専用
+		// として decode → WebP/AVIF 出力経路に乗せる。
+		"image/avif", "image/heic", "image/heif", "image/jxl":
 		return true
 	default:
 		return false
@@ -410,6 +541,20 @@ func encodeWebP(img image.Image) ([]byte, error) {
 
 	var buf bytes.Buffer
 	if err := webp.Encode(&buf, nrgba, webp.Options{Quality: webpQuality}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// encodeAVIF encodes img as AVIF using gen2brain/avif (wazero based, no cgo).
+// quality / speed は WebP より重いので avifSpeed=8 を default にしておく。
+func encodeAVIF(img image.Image) ([]byte, error) {
+	bounds := img.Bounds()
+	nrgba := image.NewNRGBA(bounds)
+	draw.Draw(nrgba, bounds, img, bounds.Min, draw.Src)
+
+	var buf bytes.Buffer
+	if err := avif.Encode(&buf, nrgba, avif.Options{Quality: avifQuality, Speed: avifSpeed}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

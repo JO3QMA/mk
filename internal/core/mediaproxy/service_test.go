@@ -148,7 +148,7 @@ func TestFetch_RemoteImage(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/img.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeDefault)
+	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeDefault, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -168,7 +168,7 @@ func TestFetch_RemoteImage_Emoji(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/emoji.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/emoji.png", ModeEmoji)
+	result, err := s.Fetch(context.Background(), ts.URL+"/emoji.png", ModeEmoji, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -185,7 +185,7 @@ func TestFetch_RemoteImage_Avatar(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/avatar.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/avatar.png", ModeAvatar)
+	result, err := s.Fetch(context.Background(), ts.URL+"/avatar.png", ModeAvatar, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -202,7 +202,7 @@ func TestFetch_RemoteImage_Static(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/img.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeStatic)
+	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeStatic, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -219,7 +219,7 @@ func TestFetch_RemoteImage_Preview(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/img.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModePreview)
+	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModePreview, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -236,7 +236,7 @@ func TestFetch_RemoteImage_Badge(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/img.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeBadge)
+	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeBadge, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -251,7 +251,7 @@ func TestFetch_Remote404(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/missing.png": true})
 
-	_, err := s.Fetch(context.Background(), ts.URL+"/missing.png", ModeDefault)
+	_, err := s.Fetch(context.Background(), ts.URL+"/missing.png", ModeDefault, FormatWebP)
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -267,7 +267,7 @@ func TestFetch_LocalFile(t *testing.T) {
 		nil,
 	)
 
-	result, err := s.Fetch(context.Background(), "https://example.com/files/abc123", ModeDefault)
+	result, err := s.Fetch(context.Background(), "https://example.com/files/abc123", ModeDefault, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -288,7 +288,7 @@ func TestFetch_FaviconWithIANAMIMETypeAccepted(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/favicon.ico": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/favicon.ico", ModeDefault)
+	result, err := s.Fetch(context.Background(), ts.URL+"/favicon.ico", ModeDefault, FormatWebP)
 	require.NoError(t, err, "image/vnd.microsoft.icon must pass through")
 	defer result.Body.Close()
 	assert.Equal(t, "image/vnd.microsoft.icon", result.ContentType)
@@ -306,7 +306,7 @@ func TestFetch_ContentTypeWithParameters(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/img.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeDefault)
+	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeDefault, FormatWebP)
 	require.NoError(t, err, "media type should match after stripping parameters")
 	defer result.Body.Close()
 	assert.Equal(t, "image/png", result.ContentType)
@@ -323,7 +323,7 @@ func TestFetch_FaviconWithLegacyMIMETypeAccepted(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/favicon.ico": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/favicon.ico", ModeDefault)
+	result, err := s.Fetch(context.Background(), ts.URL+"/favicon.ico", ModeDefault, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 	assert.Equal(t, "image/x-icon", result.ContentType)
@@ -338,7 +338,7 @@ func TestFetch_UnsafeMIME_Rejected(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/evil.js": true})
 
-	_, err := s.Fetch(context.Background(), ts.URL+"/evil.js", ModeDefault)
+	_, err := s.Fetch(context.Background(), ts.URL+"/evil.js", ModeDefault, FormatWebP)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "rejected MIME type")
 }
@@ -396,7 +396,7 @@ func TestFetch_SVG_ReturnsDummyPNG(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/icon.svg": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/icon.svg", ModeDefault)
+	result, err := s.Fetch(context.Background(), ts.URL+"/icon.svg", ModeDefault, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 
@@ -414,7 +414,7 @@ func TestFetch_LocalFile_NotFound(t *testing.T) {
 		nil,
 	)
 
-	_, err := s.Fetch(context.Background(), "https://example.com/files/nonexistent", ModeDefault)
+	_, err := s.Fetch(context.Background(), "https://example.com/files/nonexistent", ModeDefault, FormatWebP)
 	assert.Error(t, err)
 }
 
@@ -428,7 +428,7 @@ func TestFetch_LocalFile_EmptyAccessKey(t *testing.T) {
 		nil,
 	)
 
-	_, err := s.Fetch(context.Background(), "https://example.com/files/", ModeDefault)
+	_, err := s.Fetch(context.Background(), "https://example.com/files/", ModeDefault, FormatWebP)
 	assert.ErrorIs(t, err, ErrBadRequest)
 }
 
@@ -444,7 +444,7 @@ func TestFetch_LocalFile_WithPathSegments(t *testing.T) {
 	)
 
 	// /files/abc123/extra のようなパスでもabc123だけ使う
-	result, err := s.Fetch(context.Background(), "https://example.com/files/abc123/extra", ModeDefault)
+	result, err := s.Fetch(context.Background(), "https://example.com/files/abc123/extra", ModeDefault, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 	assert.Equal(t, "image/png", result.ContentType)
@@ -461,7 +461,7 @@ func TestFetch_LocalFile_Emoji(t *testing.T) {
 		nil,
 	)
 
-	result, err := s.Fetch(context.Background(), "https://example.com/files/emoji1", ModeEmoji)
+	result, err := s.Fetch(context.Background(), "https://example.com/files/emoji1", ModeEmoji, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 	assert.Equal(t, "image/webp", result.ContentType)
@@ -475,7 +475,7 @@ func TestFetch_RemoteServerError(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/error.png": true})
 
-	_, err := s.Fetch(context.Background(), ts.URL+"/error.png", ModeDefault)
+	_, err := s.Fetch(context.Background(), ts.URL+"/error.png", ModeDefault, FormatWebP)
 	assert.Error(t, err)
 }
 
@@ -487,7 +487,7 @@ func TestFetch_RemoteGone(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/deleted.png": true})
 
-	_, err := s.Fetch(context.Background(), ts.URL+"/deleted.png", ModeDefault)
+	_, err := s.Fetch(context.Background(), ts.URL+"/deleted.png", ModeDefault, FormatWebP)
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -501,7 +501,7 @@ func TestFetch_RemoteNoContentType(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/img.png": true})
 
-	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeDefault)
+	result, err := s.Fetch(context.Background(), ts.URL+"/img.png", ModeDefault, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 	// auto-detected from content
@@ -511,7 +511,7 @@ func TestFetch_RemoteNoContentType(t *testing.T) {
 func TestProcessResize_NonConvertibleImage(t *testing.T) {
 	s := testService(nil)
 	data := []byte("not an image")
-	result, err := s.processResize(data, "application/octet-stream", 100, 100)
+	result, err := s.processResize(data, "application/octet-stream", 100, 100, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 	// 変換できない場合はそのまま返す
@@ -577,7 +577,7 @@ func TestResizeFit_LargeImage(t *testing.T) {
 func TestFetch_Remote_InvalidURL(t *testing.T) {
 	s := testService(map[string]bool{"not://valid": true})
 
-	_, err := s.Fetch(context.Background(), "not://valid", ModeDefault)
+	_, err := s.Fetch(context.Background(), "not://valid", ModeDefault, FormatWebP)
 	assert.Error(t, err)
 }
 
@@ -585,7 +585,7 @@ func TestProcessResize_LargeImage_WidthAndHeight(t *testing.T) {
 	s := testService(nil)
 	imgData := makePNG() // 100x100
 
-	result, err := s.processResize(imgData, "image/png", 50, 50)
+	result, err := s.processResize(imgData, "image/png", 50, 50, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 	assert.Equal(t, "image/webp", result.ContentType)
@@ -595,7 +595,7 @@ func TestProcessResize_HeightOnly(t *testing.T) {
 	s := testService(nil)
 	imgData := makePNG() // 100x100
 
-	result, err := s.processResize(imgData, "image/png", 0, 50)
+	result, err := s.processResize(imgData, "image/png", 0, 50, FormatWebP)
 	require.NoError(t, err)
 	defer result.Body.Close()
 	assert.Equal(t, "image/webp", result.ContentType)
@@ -644,7 +644,7 @@ func TestFetch_LocalFile_TooLarge(t *testing.T) {
 		nil,
 	)
 
-	_, err := s.Fetch(context.Background(), "https://example.com/files/big", ModeDefault)
+	_, err := s.Fetch(context.Background(), "https://example.com/files/big", ModeDefault, FormatWebP)
 	assert.ErrorIs(t, err, ErrTooLarge)
 }
 
@@ -659,7 +659,7 @@ func TestFetch_Remote_ContentLengthExceedsMax(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/huge.png": true})
 
-	_, err := s.Fetch(context.Background(), ts.URL+"/huge.png", ModeDefault)
+	_, err := s.Fetch(context.Background(), ts.URL+"/huge.png", ModeDefault, FormatWebP)
 	assert.ErrorIs(t, err, ErrTooLarge)
 }
 
@@ -676,6 +676,6 @@ func TestFetch_Remote_BodyExceedsMaxNoContentLength(t *testing.T) {
 
 	s := testService(map[string]bool{ts.URL + "/huge.png": true})
 
-	_, err := s.Fetch(context.Background(), ts.URL+"/huge.png", ModeDefault)
+	_, err := s.Fetch(context.Background(), ts.URL+"/huge.png", ModeDefault, FormatWebP)
 	assert.ErrorIs(t, err, ErrTooLarge)
 }

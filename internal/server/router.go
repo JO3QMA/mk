@@ -1328,6 +1328,9 @@ func (s *Server) setupRoutes() {
 		s.config.AllowedPrivateNetworks,
 		s.outboundOpts()...,
 	)
+	// Local drive file の thumbnail / webpublic 変種を proxy 側で再 encode
+	// せず直接返せるようにする (#637 M1)。
+	proxyService.SetDriveLookup(driveFileLookupAdapter{repo: driveFileRepo})
 	proxyHandler := apiproxy.NewHandler(proxyService, s.config)
 	s.echo.GET("/proxy/*", proxyHandler.Handle)
 
