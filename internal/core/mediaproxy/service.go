@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chai2010/webp"
+	"github.com/gen2brain/webp"
 	"github.com/kovidgoyal/imaging"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
@@ -402,13 +402,14 @@ func resizeFit(img image.Image, maxW, maxH int) image.Image {
 }
 
 func encodeWebP(img image.Image) ([]byte, error) {
-	// webp.Encode はNRGBA型を期待する
+	// gen2brain/webp は内部で image.Image を任意の型から libwebp に渡せるが、
+	// 互換性のため明示的に NRGBA に正規化しておく (chai2010 時代と同等の前段)。
 	bounds := img.Bounds()
 	nrgba := image.NewNRGBA(bounds)
 	draw.Draw(nrgba, bounds, img, bounds.Min, draw.Src)
 
 	var buf bytes.Buffer
-	if err := webp.Encode(&buf, nrgba, &webp.Options{Quality: float32(webpQuality)}); err != nil {
+	if err := webp.Encode(&buf, nrgba, webp.Options{Quality: webpQuality}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

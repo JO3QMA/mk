@@ -125,6 +125,13 @@ docker compose up -d
 
 Misskey-GoがPostgreSQLおよびRedisと共に起動する。詳細は `docker-compose.yml` を参照。
 
+### Docker container の UID
+
+Misskey-Go のコンテナは Misskey-TS と同じ **UID/GID 991** で起動する。`./files` (drive ファイルストレージ) を host volume mount している場合、ホスト側ディレクトリは UID 991 が書き込めるパーミッションでなければならない。
+
+- **TS から swap する場合**: 既に `./files` の中身が UID 991 で書かれているのでそのまま動く (drop-in 互換)
+- **mk-go-only から旧 root 構成 (#621 以前) で運用していた場合**: 一度だけ `sudo chown -R 991:991 ./files` で所有権を揃える必要がある
+
 ## Misskey-TSへのロールバック
 
 Misskey-TSに戻す場合の手順:
