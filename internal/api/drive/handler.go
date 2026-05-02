@@ -26,6 +26,7 @@ type Handler struct {
 	userRepo     repository.UserRepository
 	instanceRepo repository.InstanceRepository
 	emojiRepo    repository.EmojiRepository
+	bufReader    entity.BufferedReactionsReader
 	fieldRes     *entity.NoteFieldResolver
 }
 
@@ -71,6 +72,16 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 // note text and user displayNames get resolved to URLs.
 func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
 	h.emojiRepo = r
+}
+
+// SetReactionReader wires a BufferedReactionsReader so PackNote / PackNotes
+// can merge in-flight buffered reaction deltas (#647)。
+func (h *Handler) SetReactionReader(r entity.BufferedReactionsReader) {
+	h.bufReader = r
+}
+
+func (h *Handler) reactionReader() entity.BufferedReactionsReader {
+	return h.bufReader
 }
 
 func (h *Handler) emojiLookup() entity.EmojiLookup {
@@ -476,7 +487,7 @@ func (h *Handler) FilesAttachedNotes(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	viewer := middleware.GetUser(c)
-	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+	out := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(out, viewer)
 	return c.JSON(http.StatusOK, out)
 }

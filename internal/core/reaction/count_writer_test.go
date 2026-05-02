@@ -127,3 +127,63 @@ func TestBufferedWriter_GetBuffered_NoKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, buf)
 }
+
+// 複数 note の buffered deltas を 1 round-trip でまとめて取れる (#647)。
+// 入力に存在しない / 空の noteID が混ざっても結果に含めない。
+func TestBufferedWriter_GetBufferedMany(t *testing.T) {
+	ctx := context.Background()
+	tr, err := testutil.SetupRedis(ctx)
+	if err != nil {
+		t.Skip("Redis unavailable:", err)
+	}
+	defer tr.Teardown(ctx)
+
+	noteRepo := testutil.NewMockNoteRepository()
+	w := NewBufferedWriter(tr.Client, noteRepo)
+
+	require.NoError(t, w.Increment("n1", ":foo@host.example:", 1))
+	require.NoError(t, w.Increment("n1", "👍", 2))
+	require.NoError(t, w.Increment("n2", ":bar@.:", 1))
+
+	got, err := w.GetBufferedMany(ctx, []string{"n1", "n2", "n_missing", "", "n1"})
+	require.NoError(t, err)
+
+	require.Contains(t, got, "n1")
+	assert.Equal(t, int64(1), got["n1"][":foo@host.example:"])
+	assert.Equal(t, int64(2), got["n1"]["👍"])
+
+	require.Contains(t, got, "n2")
+	assert.Equal(t, int64(1), got["n2"][":bar@.:"])
+
+	assert.NotContains(t, got, "n_missing", "存在しない note は結果に含めない")
+	assert.NotContains(t, got, "", "空 noteID は無視")
+}
+
+func TestBufferedWriter_GetBufferedMany_EmptyInput(t *testing.T) {
+	ctx := context.Background()
+	tr, err := testutil.SetupRedis(ctx)
+	if err != nil {
+		t.Skip("Redis unavailable:", err)
+	}
+	defer tr.Teardown(ctx)
+
+	noteRepo := testutil.NewMockNoteRepository()
+	w := NewBufferedWriter(tr.Client, noteRepo)
+
+	got, err := w.GetBufferedMany(ctx, nil)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	got, err = w.GetBufferedMany(ctx, []string{})
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// directWriter は buffering 機能を持たないので GetBufferedMany は常に nil。
+func TestDirectWriter_GetBufferedMany(t *testing.T) {
+	noteRepo := testutil.NewMockNoteRepository()
+	w := NewDirectWriter(noteRepo)
+	got, err := w.GetBufferedMany(context.Background(), []string{"n1", "n2"})
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}

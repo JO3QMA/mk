@@ -16,6 +16,7 @@ import (
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 // stubPublisher captures Publish calls.
@@ -69,6 +70,54 @@ func (s *stubInstanceLookup) FindManyByHosts(hosts []string) ([]*model.Instance,
 		}
 	}
 	return out, nil
+}
+
+// stubBufferedReactionsReader is a test double for entity.BufferedReactionsReader.
+type stubBufferedReactionsReader struct {
+	deltas map[string]map[string]int64
+}
+
+func (s *stubBufferedReactionsReader) GetBufferedMany(_ context.Context, ids []string) (map[string]map[string]int64, error) {
+	out := make(map[string]map[string]int64)
+	for _, id := range ids {
+		if d, ok := s.deltas[id]; ok {
+			out[id] = d
+		}
+	}
+	return out, nil
+}
+
+// reactionReader が配線されていれば streaming payload も buffered deltas
+// を merge してから publish する (#647)。配線が無いと publish 直後の
+// reaction count が flush まで反映されない。
+func TestNotePublisher_MergesBufferedReactions(t *testing.T) {
+	pub := &stubPublisher{}
+	idGen, _ := id.NewGenerator("aidx")
+	np := NewNotePublisher(pub, idGen)
+	noteID := idGen.Generate(time.Now())
+	np.SetReactionReader(&stubBufferedReactionsReader{deltas: map[string]map[string]int64{
+		noteID: {":heart@.:": 7},
+	}})
+
+	n := &model.Note{
+		ID:         noteID,
+		UserID:     "u1",
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte(`{":existing@.:": 1}`)),
+	}
+	author := &model.User{ID: "u1", Username: "alice"}
+	np.PublishNote("homeTimeline:u1", n, author)
+
+	require.Len(t, pub.payloads, 1)
+	raw := pub.payloads[0].(json.RawMessage)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+	reactionCount, ok := body["reactionCount"].(float64)
+	require.True(t, ok)
+	assert.Equal(t, float64(8), reactionCount, "DB(1) + buffered(7) = 8 が streaming payload に乗る")
+	reactions := body["reactions"].(map[string]any)
+	assert.Equal(t, float64(1), reactions[":existing@.:"])
+	assert.Equal(t, float64(7), reactions[":heart@.:"])
 }
 
 // InstanceLookup が配線されていれば author の Instance が streaming payload

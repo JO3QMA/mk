@@ -30,6 +30,7 @@ type NotePublisher struct {
 	idGen          id.Generator
 	emojiLookup    entity.EmojiLookup
 	instanceLookup entity.InstanceLookup
+	reactionReader entity.BufferedReactionsReader
 	// fieldResolver は Files / Channel など PackNoteWithInstance では
 	// 解決されない後段 field を埋める。未設定時は従来通り Files が
 	// 空配列のまま publish される (旧挙動)。SetFieldResolver で配線。
@@ -58,6 +59,13 @@ func (p *NotePublisher) SetEmojiLookup(lookup entity.EmojiLookup) {
 // visual flicker on page reload.
 func (p *NotePublisher) SetInstanceLookup(lookup entity.InstanceLookup) {
 	p.instanceLookup = lookup
+}
+
+// SetReactionReader attaches a BufferedReactionsReader so that streaming
+// payloads merge in-flight reaction count buffers before publishing (#647)。
+// nil 配線時は DB の note.Reactions のみ反映 (旧挙動)。
+func (p *NotePublisher) SetReactionReader(r entity.BufferedReactionsReader) {
+	p.reactionReader = r
 }
 
 // SetFieldResolver attaches a NoteFieldResolver so that streaming payloads
@@ -104,7 +112,7 @@ func (p *NotePublisher) packNote(n *model.Note, author *model.User) []byte {
 	noteForPack := *n
 	noteForPack.User = author
 
-	pn := entity.PackNoteWithInstance(&noteForPack, p.idGen, p.instanceLookup, p.emojiLookup)
+	pn := entity.PackNoteWithInstance(&noteForPack, p.idGen, p.instanceLookup, p.emojiLookup, p.reactionReader)
 	// REST 経路と同じ後段 resolver を通して Files / Channel を埋める。
 	// viewer 引数は streaming fanout の性質上「自分宛て」が複数 subscriber
 	// に展開されるため特定不能。viewer=nil で Apply を呼ぶと

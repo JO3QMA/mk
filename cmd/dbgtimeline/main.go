@@ -90,7 +90,7 @@ func main() {
 	notes = hydrated
 	fmt.Printf("Loaded %d notes\n", len(notes))
 
-	packed := entity.PackNotes(notes, idGen, instanceRepo, emojiRepo)
+	packed := entity.PackNotes(notes, idGen, instanceRepo, emojiRepo, nil)
 	// PackNotes は notes 1 件ごとに必ず 1 件の packed entity を append する
 	// 契約 (内部実装は internal/entity/note.go の PackNotes を参照)。後続
 	// ループで notes[i] と packed[i] を 1:1 対応で参照するため、契約破綻時

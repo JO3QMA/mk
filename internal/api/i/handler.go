@@ -74,6 +74,7 @@ type Handler struct {
 	pageRepo             repository.PageRepository
 	instanceRepo         repository.InstanceRepository
 	emojiRepo            repository.EmojiRepository
+	bufReader            entity.BufferedReactionsReader
 	avatarDecorationRepo repository.AvatarDecorationRepository
 	mainStreamPublisher  MainStreamPublisher
 	fieldRes             *entity.NoteFieldResolver
@@ -127,6 +128,16 @@ func (h *Handler) instanceLookup() entity.InstanceLookup {
 // note text and user displayNames get resolved to URLs.
 func (h *Handler) SetEmojiRepo(r repository.EmojiRepository) {
 	h.emojiRepo = r
+}
+
+// SetReactionReader wires a BufferedReactionsReader so PackNote / PackNotes
+// can merge in-flight buffered reaction deltas (#647)。
+func (h *Handler) SetReactionReader(r entity.BufferedReactionsReader) {
+	h.bufReader = r
+}
+
+func (h *Handler) reactionReader() entity.BufferedReactionsReader {
+	return h.bufReader
 }
 
 func (h *Handler) emojiLookup() entity.EmojiLookup {
@@ -1075,7 +1086,7 @@ func (h *Handler) fillPinnedFields(u *model.User, profile *model.UserProfile, re
 
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
-					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup())
+					entities := entity.PackNotes(notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 					// /api/i は認証された自身を返す path なので u 自身を viewer
 					// として渡し、pinned note の myReaction も含めて埋める (#426)。
 					h.fieldRes.Apply(entities, u)
