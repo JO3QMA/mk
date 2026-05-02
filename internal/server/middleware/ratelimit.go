@@ -104,11 +104,19 @@ func parseIntFromString(s string) int64 {
 	return v
 }
 
+// PolicyProvider abstracts user policy lookup so the middleware can
+// scale Max by `rateLimitFactor` from the user's role policies (#606 item 4)。
+// 循環依存を避けるため interface で受け取る (実装は core/role.Service)。
+type PolicyProvider interface {
+	GetUserPolicies(userID string) map[string]any
+}
+
 // RateLimiter provides per-endpoint rate limiting as Echo middleware.
 type RateLimiter struct {
 	store             RateLimitStore
 	enableIPRateLimit bool
 	limits            map[string]*EndpointLimit
+	policyProvider    PolicyProvider // optional, nil なら factor=1 固定
 }
 
 // NewRateLimiter creates a RateLimiter with the given store and config.
@@ -125,9 +133,21 @@ func NewRedisRateLimiter(rdb *redis.Client, enableIPRateLimit bool, limits map[s
 	return NewRateLimiter(NewRedisRateLimitStore(rdb), enableIPRateLimit, limits)
 }
 
+// SetPolicyProvider wires a PolicyProvider so authenticated user の
+// rateLimitFactor が反映される。trusted user に factor=2.0 を割り当てて
+// 実効 Max を 2 倍にする等の運用が可能 (#606 item 4)。
+func (rl *RateLimiter) SetPolicyProvider(p PolicyProvider) {
+	rl.policyProvider = p
+}
+
 // Middleware returns an Echo middleware that enforces rate limiting.
 // リミット定義のないエンドポイントはそのまま通過する。
 // Redisエラー時はfail-open（ログだけ出してリクエストを通す）。
+//
+// 認証済みリクエストでは userID と IP の両 bucket を OR で評価する
+// (#606 item 2): 攻撃者が認証して別アカウントを brute-force するケースで
+// userID bucket に逃がされず、IP bucket でも捕捉する。X-RateLimit-Remaining
+// は最も逼迫した bucket (最小値) を返す。
 func (rl *RateLimiter) Middleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -137,36 +157,47 @@ func (rl *RateLimiter) Middleware() echo.MiddlewareFunc {
 				return next(c)
 			}
 
-			actor := rl.resolveActor(c)
-			if actor == "" {
+			actors := rl.resolveActors(c)
+			if len(actors) == 0 {
 				return next(c)
 			}
 
 			ctx := c.Request().Context()
+			minRemaining := -1
 
-			// minIntervalチェック（設定されていれば）
-			if limit.MinInterval > 0 {
-				info, err := rl.store.Check(ctx, actor+":"+endpoint+":min", limit.MinInterval, 1)
-				if err != nil {
-					slog.Warn("rate limit store error (minInterval)", "endpoint", endpoint, "err", err)
-					return next(c)
+			for _, a := range actors {
+				effectiveMax := scaledMax(limit.Max, a.factor)
+
+				// minInterval チェック (factor は適用しない — minInterval は連投
+				// 抑止が目的なので user role で緩和する semantics ではない)
+				if limit.MinInterval > 0 {
+					info, err := rl.store.Check(ctx, a.key+":"+endpoint+":min", limit.MinInterval, 1)
+					if err != nil {
+						slog.Warn("rate limit store error (minInterval)", "endpoint", endpoint, "err", err)
+						continue
+					}
+					if info.Remaining == 0 {
+						return rl.rejectRequest(c, info)
+					}
 				}
-				if info.Remaining == 0 {
-					return rl.rejectRequest(c, info)
+
+				// duration/max チェック (factor 適用済みの effectiveMax で評価)
+				if limit.Duration > 0 && effectiveMax > 0 {
+					info, err := rl.store.Check(ctx, a.key+":"+endpoint, limit.Duration, effectiveMax)
+					if err != nil {
+						slog.Warn("rate limit store error", "endpoint", endpoint, "err", err)
+						continue
+					}
+					if info.Remaining == 0 {
+						return rl.rejectRequest(c, info)
+					}
+					if minRemaining < 0 || info.Remaining < minRemaining {
+						minRemaining = info.Remaining
+					}
 				}
 			}
-
-			// duration/maxチェック
-			if limit.Duration > 0 && limit.Max > 0 {
-				info, err := rl.store.Check(ctx, actor+":"+endpoint, limit.Duration, limit.Max)
-				if err != nil {
-					slog.Warn("rate limit store error", "endpoint", endpoint, "err", err)
-					return next(c)
-				}
-				if info.Remaining == 0 {
-					return rl.rejectRequest(c, info)
-				}
-				c.Response().Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", info.Remaining))
+			if minRemaining >= 0 {
+				c.Response().Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", minRemaining))
 			}
 
 			return next(c)
@@ -174,17 +205,80 @@ func (rl *RateLimiter) Middleware() echo.MiddlewareFunc {
 	}
 }
 
-// resolveActor determines the rate limit actor.
-// 認証済みユーザーのIDを使い、未認証ならIPハッシュを使う。
-// enableIPRateLimit=falseかつ未認証の場合は空文字を返す（制限スキップ）。
-func (rl *RateLimiter) resolveActor(c echo.Context) string {
+// rateLimitActor は単一 bucket を識別する key + factor のペア。
+// 認証済 user では userID 由来 actor (factor=user policy) と IP 由来 actor
+// (factor=1.0) が並ぶ。未認証では IP 由来 actor のみ。
+type rateLimitActor struct {
+	key    string  // bucket 識別子 ("u:<userID>" / "ip-<hash>" 等)
+	factor float64 // Max scaling 係数 (>0、1.0 で base、>1 で緩和、<1 で厳格)
+}
+
+// resolveActors returns all bucket actors that should be checked for this
+// request. 認証済 user は userID + IP の両方、未認証は IP のみを返す。
+// EnableIPRateLimit=false かつ未認証なら空 (= 制限スキップ、既存挙動維持)。
+func (rl *RateLimiter) resolveActors(c echo.Context) []rateLimitActor {
+	var actors []rateLimitActor
 	if user := GetUser(c); user != nil {
-		return user.ID
+		// user.ID は ULID で `ip-` prefix と衝突しないので prefix なしで
+		// そのまま bucket key にする (既存 Redis state との互換性維持)。
+		actors = append(actors, rateLimitActor{
+			key:    user.ID,
+			factor: rl.userFactor(user.ID),
+		})
+		// 認証済でも IP bucket を併用 (#606 item 2)。NAT 配下の正当ユーザーは
+		// 同一 IP で複数 user として扱われるが、auth 系 endpoint は 1h/60 程度
+		// と緩いので実害は小さい (個別 user の rate-limit は userID bucket で
+		// 守られる)。
+		if rl.enableIPRateLimit {
+			actors = append(actors, rateLimitActor{
+				key:    ipHash(c.RealIP()),
+				factor: 1.0, // IP 由来 bucket は user 単位の factor を適用しない
+			})
+		}
+		return actors
 	}
 	if !rl.enableIPRateLimit {
-		return ""
+		return nil
 	}
-	return ipHash(c.RealIP())
+	return []rateLimitActor{{key: ipHash(c.RealIP()), factor: 1.0}}
+}
+
+// userFactor returns the rateLimitFactor from the user's role policies.
+// 未配線 / 値不正 / 0 以下なら 1.0 (= 影響なし) で返す。
+func (rl *RateLimiter) userFactor(userID string) float64 {
+	if rl.policyProvider == nil {
+		return 1.0
+	}
+	policies := rl.policyProvider.GetUserPolicies(userID)
+	raw, ok := policies["rateLimitFactor"]
+	if !ok {
+		return 1.0
+	}
+	switch v := raw.(type) {
+	case float64:
+		if v > 0 {
+			return v
+		}
+	case int:
+		if v > 0 {
+			return float64(v)
+		}
+	}
+	return 1.0
+}
+
+// scaledMax applies factor to the base Max. factor=1.0 では base そのまま、
+// factor が小さすぎても 1 を下回らないようにクランプ (factor=0 等の事故で
+// 全 user が瞬時に 429 を食らうのを防ぐ)。
+func scaledMax(base int, factor float64) int {
+	if factor <= 0 || factor == 1.0 {
+		return base
+	}
+	scaled := int(float64(base) * factor)
+	if scaled < 1 {
+		return 1
+	}
+	return scaled
 }
 
 // rejectRequest returns a 429 response with appropriate headers.

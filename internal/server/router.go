@@ -711,6 +711,10 @@ func (s *Server) setupRoutes() {
 		s.config.EnableIPRateLimit,
 		rateLimitDefs,
 	)
+	// role policies の rateLimitFactor を反映できるよう roleService を inject
+	// (#606 item 4)。trusted user に factor=2.0 等を割り当てて実効 Max を緩和
+	// する運用に対応。
+	rateLimiter.SetPolicyProvider(roleService)
 	api.Use(rateLimiter.Middleware())
 
 	// Meta endpoint (public)
