@@ -181,7 +181,17 @@ func (f *Fetcher) fetchAndParse(ctx context.Context, rawURL string) (*Result, er
 	}
 
 	body := io.LimitReader(resp.Body, f.cfg.MaxContentLength)
-	return ParseHTML(body, rawURL), nil
+	result := ParseHTML(body, rawURL)
+
+	// oEmbed discovery: HTML 中に <link rel="alternate" type=
+	// "application/json+oembed"> があれば追加で fetch して PlayerResult を
+	// 埋める (#639)。失敗は preview 全体を壊さない (best-effort)。
+	if result.oEmbedURL != "" {
+		if player, err := f.fetchOEmbed(ctx, result.oEmbedURL); err == nil {
+			result.Player = player
+		}
+	}
+	return result, nil
 }
 
 // fetchViaProxy delegates to an external summarizer service.

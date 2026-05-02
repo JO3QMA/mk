@@ -23,7 +23,8 @@ func TestParseHTML_OGP(t *testing.T) {
 	assert.Equal(t, "Test Page", *r.Title)
 	assert.Equal(t, "A description", *r.Description)
 	assert.Equal(t, "https://example.com/img.png", *r.Thumbnail)
-	assert.Equal(t, "/favicon.ico", *r.Icon)
+	// favicon は base URL (#639) で絶対 URL に解決される
+	assert.Equal(t, "https://example.com/favicon.ico", *r.Icon)
 	assert.Equal(t, "Example", *r.Sitename)
 	assert.Equal(t, "https://example.com/page", r.URL)
 }

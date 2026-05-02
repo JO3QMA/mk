@@ -13,6 +13,11 @@ type Result struct {
 	Player      PlayerResult `json:"player"`
 	Sensitive   bool         `json:"sensitive"`
 	ActivityPub *string      `json:"activityPub"`
+
+	// oEmbedURL is the alternate link discovered during HTML parse, used by
+	// Fetcher to do a 2nd GET for oEmbed JSON. Internal — not serialised
+	// (lower-case = unexported, JSON encoder skips it).
+	oEmbedURL string
 }
 
 // PlayerResult holds embedded player (oEmbed) info.
