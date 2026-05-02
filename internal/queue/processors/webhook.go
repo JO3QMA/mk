@@ -28,9 +28,10 @@ type WebhookHTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// webhookTimeout is the per-request HTTP timeout for webhook delivery.
-// Matches upstream Misskey's 10 second timeout.
-const webhookTimeout = 10 * time.Second
+// DefaultWebhookTimeout is the per-request HTTP timeout for webhook delivery.
+// Matches upstream Misskey's 10 second timeout. Exported so the wire layer
+// can use the same value when constructing the SSRF-safe outbound client.
+const DefaultWebhookTimeout = 10 * time.Second
 
 // WebhookProcessor handles a single webhook delivery task. It is instantiated
 // twice (once for user webhooks, once for system webhooks) with different
@@ -52,7 +53,7 @@ func NewWebhookProcessor(
 	host string,
 ) *WebhookProcessor {
 	if client == nil {
-		client = &http.Client{Timeout: webhookTimeout}
+		client = &http.Client{Timeout: DefaultWebhookTimeout}
 	}
 	return &WebhookProcessor{
 		userRepo:   userRepo,

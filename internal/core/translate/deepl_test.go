@@ -78,12 +78,12 @@ func TestDeepL_Translate_NetworkError(t *testing.T) {
 }
 
 func TestNewDeepL_ProEndpoint(t *testing.T) {
-	c := NewDeepL("key", true)
+	c := NewDeepL("key", true, nil)
 	assert.Equal(t, deeplProURL, c.apiURL)
 }
 
 func TestNewDeepL_FreeEndpoint(t *testing.T) {
-	c := NewDeepL("key", false)
+	c := NewDeepL("key", false, nil)
 	assert.Equal(t, deeplFreeURL, c.apiURL)
 }
 

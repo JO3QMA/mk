@@ -60,14 +60,14 @@ func TestHTTPDetector_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := NewHTTPDetector(srv.URL)
+	d := NewHTTPDetector(srv.URL, nil)
 	score, err := d.Detect(context.Background(), []byte("fake-image"), "image/png")
 	require.NoError(t, err)
 	assert.InDelta(t, 0.85, score, 0.001)
 }
 
 func TestHTTPDetector_NetworkError(t *testing.T) {
-	d := NewHTTPDetector("http://127.0.0.1:1")
+	d := NewHTTPDetector("http://127.0.0.1:1", nil)
 	_, err := d.Detect(context.Background(), []byte("data"), "image/png")
 	assert.Error(t, err)
 }
@@ -78,7 +78,7 @@ func TestHTTPDetector_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := NewHTTPDetector(srv.URL)
+	d := NewHTTPDetector(srv.URL, nil)
 	_, err := d.Detect(context.Background(), []byte("data"), "image/png")
 	assert.Error(t, err)
 }

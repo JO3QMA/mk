@@ -6,6 +6,7 @@ package email
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/shiroha-a/mk/internal/model"
@@ -31,16 +32,25 @@ type Service struct {
 	truemail      *truemailClient
 }
 
-// NewService builds a Service from the given meta config.
+// NewService builds a Service from the given meta config. Equivalent to
+// NewServiceWithClient(meta, nil): falls back to http.DefaultClient for the
+// external SaaS calls. Production paths should prefer NewServiceWithClient
+// with an SSRF-safe + forward-proxy-aware client (#638).
 func NewService(meta *model.Meta) *Service {
+	return NewServiceWithClient(meta, nil)
+}
+
+// NewServiceWithClient builds a Service that uses client for verifymail /
+// truemail outbound calls. Pass nil to fall back to http.DefaultClient.
+func NewServiceWithClient(meta *model.Meta, client *http.Client) *Service {
 	s := &Service{
 		bannedDomains: meta.BannedEmailDomains,
 	}
 
 	if meta.EnableVerifymailAPI && meta.VerifymailAuthKey != nil && *meta.VerifymailAuthKey != "" {
-		s.verifymail = newVerifymailClient(*meta.VerifymailAuthKey)
+		s.verifymail = newVerifymailClient(*meta.VerifymailAuthKey, client)
 	} else if meta.EnableTruemailAPI && meta.TruemailInstance != nil && meta.TruemailAuthKey != nil {
-		s.truemail = newTruemailClient(*meta.TruemailInstance, *meta.TruemailAuthKey)
+		s.truemail = newTruemailClient(*meta.TruemailInstance, *meta.TruemailAuthKey, client)
 	} else if meta.EnableActiveEmailValidation {
 		s.activeCheck = true
 	}

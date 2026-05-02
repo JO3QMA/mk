@@ -106,6 +106,11 @@ type Handler struct {
 	systemAccountFetcher    SystemAccountFetcher
 	followingRepo           repository.FollowingRepository
 	unfollowEnqueuer        UnfollowEnqueuer
+	// webhookTestClient は admin/system-webhook/test の fire-and-forget POST
+	// に使う SSRF-safe HTTP client。router.go で safehttp.WithProxy など共通
+	// outbound 設定を適用したものを差し込む (#638)。nil のときは default の
+	// 10s timeout client にフォールバックする (テスト容易性のため)。
+	webhookTestClient *http.Client
 }
 
 // EmailSender sends a plain-text email (to, subject, body). Same signature
@@ -129,6 +134,14 @@ func (h *Handler) SetConfigSetupPassword(pw string) {
 // SetSystemWebhookRepo attaches a SystemWebhookRepository for admin/system-webhook/*.
 func (h *Handler) SetSystemWebhookRepo(r repository.SystemWebhookRepository) {
 	h.systemWebhookRepo = r
+}
+
+// SetWebhookTestClient attaches an SSRF-safe HTTP client used by
+// admin/system-webhook/test to POST a fire-and-forget probe request.
+// Typically wired with the server-wide outbound transport (forward proxy,
+// outgoing address, allowedPrivateNetworks 等を反映、#638)。
+func (h *Handler) SetWebhookTestClient(c *http.Client) {
+	h.webhookTestClient = c
 }
 
 // SetInstanceMetadataFetcher attaches the fetcher used by

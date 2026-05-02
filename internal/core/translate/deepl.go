@@ -34,12 +34,20 @@ type DeepLClient struct {
 }
 
 // NewDeepL creates a DeepL translator. isPro selects the Pro endpoint.
-func NewDeepL(authKey string, isPro bool) *DeepLClient {
+//
+// client は production では SSRF-safe transport + forward proxy 経由の
+// outbound client を渡す (#638)。nil のときは http.DefaultClient に
+// フォールバックするが、本番経路では使わないこと (origin IP が DeepL に
+// 直接漏れる)。
+func NewDeepL(authKey string, isPro bool, client *http.Client) *DeepLClient {
 	apiURL := deeplFreeURL
 	if isPro {
 		apiURL = deeplProURL
 	}
-	return &DeepLClient{authKey: authKey, apiURL: apiURL, client: http.DefaultClient}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &DeepLClient{authKey: authKey, apiURL: apiURL, client: client}
 }
 
 // NewDeepLWithClient allows injecting a custom http.Client (for tests).

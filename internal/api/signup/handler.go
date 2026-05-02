@@ -42,6 +42,9 @@ type Handler struct {
 	emailSender func(to string, msg miscsmtp.Message)
 	// serverURL は確認 link の base。emailSender とセットで設定。
 	serverURL string
+	// emailValidationClient は verifymail / truemail SaaS API への outbound
+	// に使う SSRF-safe HTTP client (#638)。nil ならデフォルト client が使われる。
+	emailValidationClient *http.Client
 }
 
 // SetTestMode enables test-mode bypass (本家 `process.env.NODE_ENV !== 'test'` 相当).
@@ -70,6 +73,13 @@ func (h *Handler) SetTicketStore(ts TicketStore) {
 func (h *Handler) SetEmailSender(serverURL string, send func(to string, msg miscsmtp.Message)) {
 	h.serverURL = serverURL
 	h.emailSender = send
+}
+
+// SetEmailValidationClient wires the outbound HTTP client used by verifymail
+// / truemail siteverify calls (#638). production では SSRF-safe + forward
+// proxy 経由の client を渡すこと。
+func (h *Handler) SetEmailValidationClient(c *http.Client) {
+	h.emailValidationClient = c
 }
 
 type signupRequest struct {
@@ -128,7 +138,7 @@ func (h *Handler) Signup(c echo.Context) error {
 		if req.EmailAddress == "" {
 			return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "emailAddress is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 		}
-		if verr := validateEmailWithMeta(c.Request().Context(), meta, req.EmailAddress); verr != nil {
+		if verr := validateEmailWithMeta(c.Request().Context(), meta, req.EmailAddress, h.emailValidationClient); verr != nil {
 			return c.JSON(http.StatusBadRequest, apierr.Error("UNAVAILABLE", "Email is not available.", "a25440a9-451e-41de-b291-00a8f29fbca6"))
 		}
 		// 招待制併用時は ticket.ID を pending row に保存しておき、
@@ -247,9 +257,10 @@ func (h *Handler) signupConfirmURL(code string) string {
 
 // validateEmailWithMeta runs the same validators i/UpdateEmail uses, so
 // signup と email 変更で挙動が乖離しないようにする (banned domains / format /
-// active check 等)。
-func validateEmailWithMeta(ctx context.Context, meta *model.Meta, addr string) error {
-	svc := coreemail.NewService(meta)
+// active check 等)。client は verifymail / truemail への outbound に使う
+// SSRF-safe HTTP client (#638)。nil なら http.DefaultClient フォールバック。
+func validateEmailWithMeta(ctx context.Context, meta *model.Meta, addr string, client *http.Client) error {
+	svc := coreemail.NewServiceWithClient(meta, client)
 	return svc.Validate(ctx, addr)
 }
 
