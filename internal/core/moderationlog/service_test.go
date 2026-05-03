@@ -30,6 +30,19 @@ func (s *spyRepo) Create(log *model.ModerationLog) error {
 	return nil
 }
 
+func (s *spyRepo) CreateMany(logs []*model.ModerationLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.logs = append(s.logs, logs...)
+	return nil
+}
+
 func (s *spyRepo) List(limit, offset int) ([]*model.ModerationLog, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,6 +147,113 @@ func TestService_Log_unmarshalableInfoIsDropped(t *testing.T) {
 	assert.Empty(t, repo.snapshot(), "unmarshalable info should be dropped, not persisted")
 }
 
+// --- LogMany (#671 batch path) ---
+
+func TestService_LogMany_writesAllEntriesInOneBatch(t *testing.T) {
+	repo := &spyRepo{}
+	svc := newSvc(t, repo)
+
+	entries := []Entry{
+		{Type: LogDeleteCustomEmoji, Info: map[string]any{"emojiId": "e1"}},
+		{Type: LogDeleteCustomEmoji, Info: map[string]any{"emojiId": "e2"}},
+		{Type: LogDeleteCustomEmoji, Info: map[string]any{"emojiId": "e3"}},
+	}
+	svc.LogMany(context.Background(), "actor1", entries)
+
+	require.Eventually(t, func() bool { return len(repo.snapshot()) == 3 },
+		2*time.Second, 5*time.Millisecond, "all 3 rows should appear")
+
+	logs := repo.snapshot()
+	for i, l := range logs {
+		assert.Equal(t, "actor1", l.UserID)
+		assert.Equal(t, "deleteCustomEmoji", l.Type)
+		var info map[string]any
+		require.NoError(t, json.Unmarshal(l.Info, &info))
+		assert.Equal(t, entries[i].Info["emojiId"], info["emojiId"])
+	}
+}
+
+func TestService_LogMany_emptyIsNoop(t *testing.T) {
+	repo := &spyRepo{}
+	svc := newSvc(t, repo)
+
+	svc.LogMany(context.Background(), "actor1", nil)
+	svc.LogMany(context.Background(), "actor1", []Entry{})
+
+	time.Sleep(20 * time.Millisecond)
+	assert.Empty(t, repo.snapshot())
+}
+
+func TestService_LogMany_nilReceiverIsNoop(t *testing.T) {
+	var svc *Service
+	svc.LogMany(context.Background(), "actor", []Entry{{Type: LogSuspend}})
+}
+
+func TestService_LogMany_nilDepsAreNoop(t *testing.T) {
+	svc := New(nil, nil)
+	svc.LogMany(context.Background(), "actor", []Entry{{Type: LogSuspend}})
+}
+
+func TestService_LogMany_skipsUnmarshalableEntries(t *testing.T) {
+	// 1 件 marshal 失敗しても残りは insert される (audit log は best-effort)
+	repo := &spyRepo{}
+	svc := newSvc(t, repo)
+
+	svc.LogMany(context.Background(), "actor1", []Entry{
+		{Type: LogSuspend, Info: map[string]any{"userId": "u1"}},
+		{Type: LogSuspend, Info: map[string]any{"bad": make(chan int)}},
+		{Type: LogSuspend, Info: map[string]any{"userId": "u2"}},
+	})
+
+	require.Eventually(t, func() bool { return len(repo.snapshot()) == 2 },
+		2*time.Second, 5*time.Millisecond, "marshal-failure entry should be skipped")
+
+	logs := repo.snapshot()
+	var ids []string
+	for _, l := range logs {
+		var info map[string]any
+		require.NoError(t, json.Unmarshal(l.Info, &info))
+		if v, ok := info["userId"].(string); ok {
+			ids = append(ids, v)
+		}
+	}
+	assert.ElementsMatch(t, []string{"u1", "u2"}, ids)
+}
+
+func TestService_LogMany_allUnmarshalableSkipsBatch(t *testing.T) {
+	// 全件 marshal 失敗の場合、空 rows で CreateMany が呼ばれないことを確認。
+	// spyRepo の Create カウントが 0 のままであることで間接的に検証する。
+	repo := &spyRepo{}
+	svc := newSvc(t, repo)
+
+	svc.LogMany(context.Background(), "actor1", []Entry{
+		{Type: LogSuspend, Info: map[string]any{"bad": make(chan int)}},
+	})
+	time.Sleep(50 * time.Millisecond)
+	assert.Empty(t, repo.snapshot())
+}
+
+func TestService_LogMany_repoErrorDoesNotPanic(t *testing.T) {
+	repo := &spyRepo{err: errors.New("db down")}
+	svc := newSvc(t, repo)
+
+	svc.LogMany(context.Background(), "actor1", []Entry{
+		{Type: LogSuspend, Info: map[string]any{"userId": "x"}},
+	})
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestService_LogMany_nilInfoEncodesAsEmptyObject(t *testing.T) {
+	repo := &spyRepo{}
+	svc := newSvc(t, repo)
+
+	svc.LogMany(context.Background(), "actor1", []Entry{
+		{Type: LogSuspend, Info: nil},
+	})
+	require.Eventually(t, func() bool { return len(repo.snapshot()) == 1 }, 2*time.Second, 5*time.Millisecond)
+	assert.JSONEq(t, "{}", string(repo.snapshot()[0].Info))
+}
+
 // panicRepo's Create panics so we can verify safeGo's recover keeps the
 // goroutine from taking down the test process.
 type panicRepo struct{}
@@ -141,6 +261,7 @@ type panicRepo struct{}
 func (panicRepo) Create(*model.ModerationLog) error {
 	panic("boom")
 }
+func (panicRepo) CreateMany([]*model.ModerationLog) error       { panic("boom") }
 func (panicRepo) List(int, int) ([]*model.ModerationLog, error) { return nil, nil }
 
 func TestService_Log_recoverFromGoroutinePanic(t *testing.T) {
@@ -206,7 +327,8 @@ type errorListRepo struct {
 	err error
 }
 
-func (r *errorListRepo) Create(*model.ModerationLog) error { return nil }
+func (r *errorListRepo) Create(*model.ModerationLog) error       { return nil }
+func (r *errorListRepo) CreateMany([]*model.ModerationLog) error { return nil }
 func (r *errorListRepo) List(int, int) ([]*model.ModerationLog, error) {
 	return nil, r.err
 }

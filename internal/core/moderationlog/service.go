@@ -84,6 +84,68 @@ func (s *Service) Log(ctx context.Context, moderatorID string, t LogType, info m
 	})
 }
 
+// Entry pairs a LogType with its info payload for batched writes via
+// Service.LogMany. Used by bulk admin operations (#671) so callers can hand
+// over N records and have them inserted in a single goroutine + single
+// multi-row INSERT, instead of fanning out N goroutines via Log.
+type Entry struct {
+	Type LogType
+	Info map[string]any
+}
+
+// LogMany batches Log writes for bulk admin operations. Produces a single
+// goroutine + a single multi-row INSERT (via repo.CreateMany), regardless of
+// how many entries were submitted. Same fail-fast / fail-loud semantics as
+// Log: never blocks, never returns errors, problems surface as warn-level
+// logs. Empty / nil entries slice is a silent no-op.
+//
+// 巨大 bulk (例: 数千件の emoji 一括削除) でも N goroutine + N INSERT に
+// fan-out しないことが本 API の存在意義 (#671)。callers は Log を per-item
+// で叩く代わりに Entry slice を組み立てて 1 回だけ呼ぶ。
+//
+// Caller contract: do NOT mutate any of the entries' Info maps after calling
+// LogMany; the maps are referenced (not deep-copied) by the goroutine that
+// performs the JSON marshal.
+func (s *Service) LogMany(ctx context.Context, moderatorID string, entries []Entry) {
+	if s == nil || s.repo == nil || s.idGen == nil {
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+	safeGo(ctx, func() {
+		now := time.Now()
+		rows := make([]*model.ModerationLog, 0, len(entries))
+		for _, e := range entries {
+			info := e.Info
+			if info == nil {
+				info = map[string]any{}
+			}
+			infoBytes, err := json.Marshal(info)
+			if err != nil {
+				slog.WarnContext(ctx, "moderation log: marshal info failed (LogMany)",
+					"type", e.Type, "moderatorId", moderatorID, "err", err)
+				// 1 件 marshal 失敗 → そのエントリだけ skip して残りは insert
+				// (audit log は best-effort; 一部失敗で全件丸捨ては避ける)。
+				continue
+			}
+			rows = append(rows, &model.ModerationLog{
+				ID:     s.idGen.Generate(now),
+				UserID: moderatorID,
+				Type:   string(e.Type),
+				Info:   datatypes.JSON(infoBytes),
+			})
+		}
+		if len(rows) == 0 {
+			return
+		}
+		if err := s.repo.CreateMany(rows); err != nil {
+			slog.WarnContext(ctx, "moderation log: batch write failed",
+				"count", len(rows), "moderatorId", moderatorID, "err", err)
+		}
+	})
+}
+
 // List returns the most recent moderation log entries (ordered DESC by
 // id), bounded by limit/offset. Always returns a non-nil slice on
 // success so callers can hand the result to JSON encoders without an

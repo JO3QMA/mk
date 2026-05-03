@@ -145,11 +145,21 @@ func (h *Handler) EmojiDeleteBulk(c echo.Context) error {
 	if err := h.emojiRepo.DeleteMany(req.IDs); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
-	for _, e := range snapshots {
-		h.logModeration(c, moderationlog.LogDeleteCustomEmoji, map[string]any{
-			"emojiId": e.ID,
-			"emoji":   e,
-		})
+	// per-emoji log を 1 batch にまとめる (#671)。Misskey TS 互換は per-emoji
+	// row 単位なので結果として永続化される行数は同じだが、N goroutine + N
+	// INSERT を 1 goroutine + 1 multi-row INSERT に圧縮する。
+	if len(snapshots) > 0 {
+		entries := make([]moderationlog.Entry, 0, len(snapshots))
+		for _, e := range snapshots {
+			entries = append(entries, moderationlog.Entry{
+				Type: moderationlog.LogDeleteCustomEmoji,
+				Info: map[string]any{
+					"emojiId": e.ID,
+					"emoji":   e,
+				},
+			})
+		}
+		h.logModerationMany(c, entries)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

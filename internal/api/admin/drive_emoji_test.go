@@ -3,6 +3,7 @@ package admin_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -964,4 +965,33 @@ func TestEmojiDeleteBulk_WritesPerEmojiLog(t *testing.T) {
 	for _, l := range repo.Snapshot() {
 		assert.Equal(t, "deleteCustomEmoji", l.Type)
 	}
+}
+
+// TestEmojiDeleteBulk_BatchedSingleInsert guards the #671 contract: a bulk
+// delete of N emoji results in exactly 1 CreateMany call (not N Create
+// calls), so 数千件の operation でも N goroutine + N round-trips に
+// fan-out しない。
+func TestEmojiDeleteBulk_BatchedSingleInsert(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	const n = 50
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("e%d", i)
+		ids = append(ids, id)
+		require.NoError(t, emojiRepo.Create(&model.Emoji{ID: id, Name: id}))
+	}
+	h.SetEmojiRepo(emojiRepo)
+	repo := attachModLog(t, h)
+
+	body, err := json.Marshal(map[string]any{"ids": ids})
+	require.NoError(t, err)
+	rec := doPost(h.EmojiDeleteBulk, string(body), adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == n }, 1*time.Second, 5*time.Millisecond)
+
+	create, createMany := repo.CallCounts()
+	assert.Equal(t, 0, create, "Create must not be called per-item (would defeat #671 batching)")
+	assert.Equal(t, 1, createMany, "CreateMany must be called exactly once for the whole batch")
 }

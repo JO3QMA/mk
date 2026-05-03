@@ -39,6 +39,28 @@ func (h *Handler) logModeration(c echo.Context, t moderationlog.LogType, info ma
 	h.modLogService.Log(ctx, actor.ID, t, info)
 }
 
+// logModerationMany batches N moderation_log writes into a single goroutine
+// + single multi-row INSERT. Used by bulk admin operations (#671) to avoid
+// fanning out N goroutines + N round-trips when the operator deletes / edits
+// hundreds of items at once.
+//
+// Same fire-and-forget semantics as logModeration. Empty entries / unwired
+// service / missing actor all degrade silently. Callers should invoke this
+// only AFTER the underlying bulk action has succeeded.
+func (h *Handler) logModerationMany(c echo.Context, entries []moderationlog.Entry) {
+	if h.modLogService == nil || len(entries) == 0 {
+		return
+	}
+	ctx := c.Request().Context()
+	actor := middleware.GetUser(c)
+	if actor == nil {
+		slog.WarnContext(ctx, "moderation log: skipping batch — actor missing in moderator-only handler",
+			"count", len(entries))
+		return
+	}
+	h.modLogService.LogMany(ctx, actor.ID, entries)
+}
+
 // logUserAction records a moderation_log entry for an action that
 // targets a single user, looking up the user by ID. The {userId,
 // userUsername, userHost} payload is built from a fresh user lookup,
