@@ -336,7 +336,7 @@ func TestPackNotes_EmbeddedRenoteHasInstanceAndEmoji(t *testing.T) {
 		remoteHost: {{Name: "wave", PublicURL: "https://remote.example/emoji/wave.png"}},
 	}}
 
-	out := PackNotes([]*model.Note{note}, idGen, instLookup, emojiLookup, nil)
+	out := PackNotes(context.Background(), []*model.Note{note}, idGen, instLookup, emojiLookup, nil)
 	require.Len(t, out, 1)
 	require.NotNil(t, out[0].Renote)
 	require.NotNil(t, out[0].Renote.User.Instance)
@@ -376,7 +376,7 @@ func TestPackNoteWithInstance_EmbeddedRenote(t *testing.T) {
 		remoteHost: {Host: remoteHost, Name: strPtr("Remote")},
 	}}
 
-	out := PackNoteWithInstance(note, idGen, instLookup, nil, nil)
+	out := PackNoteWithInstance(context.Background(), note, idGen, instLookup, nil, nil)
 	require.NotNil(t, out.Renote)
 	require.NotNil(t, out.Renote.User.Instance)
 	assert.Equal(t, strPtr("Remote"), out.Renote.User.Instance.Name)
@@ -422,7 +422,7 @@ func TestPackNotes_MergesBufferedReactions(t *testing.T) {
 		noteID: {":yikes@" + remoteHost + ":": 1},
 	}}
 
-	out := PackNotes([]*model.Note{note}, idGen, nil, emojiLookup, reader)
+	out := PackNotes(context.Background(), []*model.Note{note}, idGen, nil, emojiLookup, reader)
 	require.Len(t, out, 1)
 	// merged reactions JSON は両方のキーを含む
 	var got map[string]int
@@ -450,7 +450,7 @@ func TestPackNotes_BufferedNegativeDelta_RemovesKey(t *testing.T) {
 		noteID: {":foo@.:": -1},
 	}}
 
-	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	out := PackNotes(context.Background(), []*model.Note{note}, idGen, nil, nil, reader)
 	require.Len(t, out, 1)
 	var got map[string]int
 	if len(out[0].Reactions) > 0 {
@@ -472,7 +472,7 @@ func TestPackNotes_NilReader_NoMerge(t *testing.T) {
 		Reactions:  datatypes.JSON([]byte(`{":foo@.:": 3}`)),
 		User:       &model.User{ID: "user1", Username: "alice", AvatarDecorations: datatypes.JSON([]byte("[]"))},
 	}
-	out := PackNotes([]*model.Note{note}, idGen, nil, nil, nil)
+	out := PackNotes(context.Background(), []*model.Note{note}, idGen, nil, nil, nil)
 	require.Len(t, out, 1)
 	assert.Equal(t, 3, out[0].ReactionCount)
 }
@@ -491,7 +491,7 @@ func TestPackNotes_ReaderError_FallsBackToDB(t *testing.T) {
 	}
 	reader := &stubBufferedReader{err: errors.New("redis down")}
 
-	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	out := PackNotes(context.Background(), []*model.Note{note}, idGen, nil, nil, reader)
 	require.Len(t, out, 1)
 	assert.Equal(t, 2, out[0].ReactionCount, "reader error 時は DB 値で続行")
 }
@@ -522,7 +522,7 @@ func TestPackNotes_MergesBufferedReactions_OnEmbeddedRenote(t *testing.T) {
 		renoteID: {":heart@.:": 5},
 	}}
 
-	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	out := PackNotes(context.Background(), []*model.Note{note}, idGen, nil, nil, reader)
 	require.Len(t, out, 1)
 	require.NotNil(t, out[0].Renote)
 	assert.Equal(t, 5, out[0].Renote.ReactionCount)
@@ -554,7 +554,7 @@ func TestPackNotes_MergesBufferedReactions_OnEmbeddedReply(t *testing.T) {
 		replyID: {":heart@.:": 3},
 	}}
 
-	out := PackNotes([]*model.Note{note}, idGen, nil, nil, reader)
+	out := PackNotes(context.Background(), []*model.Note{note}, idGen, nil, nil, reader)
 	require.Len(t, out, 1)
 	require.NotNil(t, out[0].Reply)
 	assert.Equal(t, 4, out[0].Reply.ReactionCount, "embed reply の DB(1) + buffered(3) が merge される")
