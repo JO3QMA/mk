@@ -24,6 +24,7 @@ func (a *queueStatsInspectorAdapter) GetQueueInfo(qname string) (*stream.QueueSt
 		Pending:   info.Pending,
 		Scheduled: info.Scheduled,
 		Retry:     info.Retry,
+		Completed: info.Completed,
 	}, nil
 }
 

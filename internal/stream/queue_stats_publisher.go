@@ -18,20 +18,25 @@ type QueueInspector interface {
 // this package does not have to import internal/queue. 循環依存防止。
 // Delayed は Bull 用語で asynq の Scheduled + Retry 合計に対応するので
 // 両方の field を保持する。
+//
+// Completed は「累計の処理完了数」(asynq では 1 日 rolling、mkq では
+// 同等のカウンタ)。前 tick との差分で activeSincePrevTick (=tick 間に
+// 処理された数) を計算するために保持する (#654)。
 type QueueStatsInfo struct {
 	Active    int
 	Pending   int
 	Scheduled int
 	Retry     int
+	Completed int
 }
 
 // QueueStatsPublisher periodically queries asynq queue depths and publishes
 // them to the `queueStats` PubSub topic for the admin dashboard / widget.
 //
-// 本家Misskey QueueStatsServiceは `deliver` と `inbox` の2キーを出すが、
-// mk-goのinbox処理はHTTP同期で asynq queue を持たない。そのため inbox は
-// 互換性のためにゼロ固定で出力し、`deliver` には実数を入れる。他のasynq
-// queue (push / webhook等) は出さない (frontendが見ていないため)。
+// 本家Misskey QueueStatsServiceは `deliver` と `inbox` の2キーを出す。
+// mk-go では #534 で inbox を asynq queue 化、#565 で HTTP handler を
+// verify-in-worker 化したため、`deliver` と同じく実数を出力する。
+// 他のasynq queue (push / webhook等) は出さない (frontendが見ていない)。
 type QueueStatsPublisher struct {
 	inspector QueueInspector
 	pub       PubSubPublisher
@@ -44,6 +49,12 @@ type QueueStatsPublisher struct {
 	// logBuf: server_stats と同等の O(1) circular buffer (新しい順、
 	// 最大 QueueStatsLogMax 件)。requestLog 応答用。
 	logBuf *statsRingBuffer
+
+	// prevCompleted は前 tick 時点の Completed 累計を queue 名別に保持
+	// する。次 tick で current - prev を activeSincePrevTick として
+	// 送信し、Misskey TS の Bull `active` event count 互換にする (#654)。
+	// loop goroutine 単独で書き込むので mutex 不要。
+	prevCompleted map[string]int
 }
 
 // QueueStatsLogMax は requestLog 応答で返す最大件数。TS 本家と同じ 200。
@@ -56,21 +67,28 @@ func NewQueueStatsPublisher(inspector QueueInspector, pub PubSubPublisher, inter
 		interval = 3 * time.Second
 	}
 	return &QueueStatsPublisher{
-		inspector: inspector,
-		pub:       pub,
-		interval:  interval,
-		stopCh:    make(chan struct{}),
-		logBuf:    newStatsRingBuffer(QueueStatsLogMax),
+		inspector:     inspector,
+		pub:           pub,
+		interval:      interval,
+		stopCh:        make(chan struct{}),
+		logBuf:        newStatsRingBuffer(QueueStatsLogMax),
+		prevCompleted: make(map[string]int),
 	}
 }
 
 // Start begins the collection loop.
+//
+// Stop()→Start() による再起動時は前 publisher の prevCompleted を捨て、
+// 新規 loop の初回 tick で activeSincePrevTick=0 を出す。これは asynq の
+// Completed が 1 日 rolling な性質と整合 (再起動またぎで delta を取って
+// も意味のある値にならない)。
 func (p *QueueStatsPublisher) Start() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.started || p.pub == nil || p.inspector == nil {
 		return
 	}
+	p.prevCompleted = make(map[string]int)
 	p.started = true
 	p.wg.Add(1)
 	go p.loop()
@@ -123,9 +141,8 @@ type queueStatsEntry struct {
 
 func (p *QueueStatsPublisher) tick() {
 	body := queueStatsBody{
-		Deliver: p.deliverEntry(),
-		// inboxは mk-go では queue を持たないので全て0固定 (frontend互換)。
-		Inbox: queueStatsEntry{},
+		Deliver: p.entryForQueue(deliverQueueName),
+		Inbox:   p.entryForQueue(inboxQueueName),
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -145,17 +162,41 @@ func (p *QueueStatsPublisher) Log(maxLen int) []json.RawMessage {
 	return p.logBuf.Log(maxLen)
 }
 
-// deliverQueueName は本番のasynq queue名。テストで差し替えられるように
-// 変数化する。
-var deliverQueueName = "deliver"
+// deliverQueueName / inboxQueueName は本番のasynq queue名。テストで差し
+// 替えられるように変数化する。internal/queue の InboxQueueName / queue
+// 定義と一致させること。
+var (
+	deliverQueueName = "deliver"
+	inboxQueueName   = "inbox"
+)
 
-func (p *QueueStatsPublisher) deliverEntry() queueStatsEntry {
-	info, err := p.inspector.GetQueueInfo(deliverQueueName)
+// entryForQueue queries one asynq queue and translates its depth into the
+// Bull-shaped queueStatsEntry the frontend WidgetJobQueue consumes.
+//
+// activeSincePrevTick は前 tick 以降に処理完了したジョブ数の delta で、
+// Bull の active event count (= worker が pick up した瞬間に発火する
+// counter) と意味的には完全互換ではないが、widget の Process 列が
+// 「前 tick から処理された量」を表示する仕様には合致する。snapshot 時
+// の Active 数より低トラフィック環境で観測しやすい。
+//
+// 初回 tick (prevCompleted に該当 queue の値が無い) は 0 を出して、
+// 次 tick から実数の delta を出す。
+func (p *QueueStatsPublisher) entryForQueue(qname string) queueStatsEntry {
+	info, err := p.inspector.GetQueueInfo(qname)
 	if err != nil || info == nil {
 		return queueStatsEntry{}
 	}
+	var processed int
+	if prev, ok := p.prevCompleted[qname]; ok {
+		// asynq の Completed は 1 日 rolling なので深夜にリセットされ
+		// て負値になり得る。負値は 0 にクランプ。
+		if d := info.Completed - prev; d > 0 {
+			processed = d
+		}
+	}
+	p.prevCompleted[qname] = info.Completed
 	return queueStatsEntry{
-		ActiveSincePrevTick: info.Active,
+		ActiveSincePrevTick: processed,
 		Active:              info.Active,
 		Waiting:             info.Pending,
 		// Bull の delayed は asynq の Scheduled (未来実行予定) と Retry
