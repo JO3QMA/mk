@@ -69,7 +69,17 @@ func (r *emojiRepository) FindByID(id string) (*model.Emoji, error) {
 }
 
 func (r *emojiRepository) UpdateFields(id string, fields map[string]any) error {
-	return r.db.Model(&model.Emoji{}).Where("id = ?", id).Updates(fields).Error
+	res := r.db.Model(&model.Emoji{}).Where("id = ?", id).Updates(fields)
+	if res.Error != nil {
+		return res.Error
+	}
+	// GORM の Updates は対象 row が存在しなくても Error を返さない。
+	// admin/emoji/update が "No such emoji" を正しく返すために
+	// RowsAffected==0 を ErrRecordNotFound に昇格する (#650 問題 2)。
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *emojiRepository) FindManyByIDs(ids []string) ([]*model.Emoji, error) {
