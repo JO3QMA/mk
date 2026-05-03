@@ -75,11 +75,8 @@ func (h *Handler) packInviteTickets(rows []*model.RegistrationTicket) []map[stri
 	out := make([]map[string]any, 0, len(rows))
 	for _, t := range rows {
 		var createdAt *string
-		if h.idGen != nil {
-			if ts, err := h.idGen.ParseTime(t.ID); err == nil {
-				s := ts.UTC().Format("2006-01-02T15:04:05.000Z")
-				createdAt = &s
-			}
+		if s, err := aidxCreatedAtString(h.idGen, t.ID); err == nil {
+			createdAt = &s
 		}
 		var expiresAt *string
 		if t.ExpiresAt != nil {

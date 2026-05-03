@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -515,8 +516,8 @@ func (h *Handler) AccountsCreate(c echo.Context) error {
 	}
 
 	// createdAt は ID から復元
-	if t, err := h.idGen.ParseTime(u.ID); err == nil {
-		out["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+	if s, err := aidxCreatedAtString(h.idGen, u.ID); err == nil {
+		out["createdAt"] = s
 	}
 
 	return c.JSON(http.StatusOK, out)
@@ -1662,10 +1663,14 @@ func (h *Handler) ShowModerationLogs(c echo.Context) error {
 			"type":   l.Type,
 			"info":   l.Info,
 		}
-		if h.idGen != nil {
-			if ts, err := h.idGen.ParseTime(l.ID); err == nil {
-				m["createdAt"] = ts.UTC().Format("2006-01-02T15:04:05.000Z")
-			}
+		if s, err := aidxCreatedAtString(h.idGen, l.ID); err == nil {
+			m["createdAt"] = s
+		} else if !errors.Is(err, ErrIDGenMissing) {
+			// idGen は wired されているのに parse 失敗した場合のみログに残す。
+			// 非 aidx 形式の legacy ID 等で createdAt が出せない時に frontend
+			// 側で「Invalid Date」が出る原因を後追いできるようにする。
+			slog.DebugContext(c.Request().Context(), "modlog: createdAt derive failed",
+				"logId", l.ID, "err", err)
 		}
 		if l.User != nil {
 			m["user"] = l.User

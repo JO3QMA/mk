@@ -1439,6 +1439,63 @@ func TestShowModerationLogs_IncludesCreatedAt(t *testing.T) {
 	assert.WithinDuration(t, fixedTime, parsed, time.Millisecond)
 }
 
+// TestShowModerationLogs_NonAidxIDOmitsCreatedAt は aidx として parse でき
+// ない legacy ID が紛れ込んだ場合に handler が createdAt を埋めずに response
+// から省略する (= frontend 側で「Invalid Date」を表示しない) ことを guard
+// する。
+func TestShowModerationLogs_NonAidxIDOmitsCreatedAt(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	modLogRepo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	// aidx の base36 で扱えない文字 ("!") を混ぜて parse 失敗を強制する
+	require.NoError(t, modLogRepo.Create(&model.ModerationLog{ID: "!!!notaidx", UserID: "u1", Type: "suspend"}))
+	h.SetModLogService(moderationlog.New(modLogRepo, gen))
+
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	_, has := resp[0]["createdAt"]
+	assert.False(t, has, "createdAt must be omitted when ID cannot be parsed as aidx")
+}
+
+// TestShowModerationLogs_PreservesInfoJSON は datatypes.JSON で persist された
+// info が map[string]any 経由 marshal を通っても (key 順以外) 中身を保つこと
+// を guard する。frontend modlog detail dialog は info の structure を直接
+// 触るため、handler 側で誤って string 化したり再 escape するような変換を
+// 入れないようにする。
+func TestShowModerationLogs_PreservesInfoJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	modLogRepo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	infoJSON := []byte(`{"userId":"target1","userUsername":"alice","reason":"spam"}`)
+	require.NoError(t, modLogRepo.Create(&model.ModerationLog{
+		ID:     gen.Generate(time.Now()),
+		UserID: "admin1",
+		Type:   "suspend",
+		Info:   infoJSON,
+	}))
+	h.SetModLogService(moderationlog.New(modLogRepo, gen))
+
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	info, ok := resp[0]["info"].(map[string]any)
+	require.True(t, ok, "info must be a JSON object after round-trip")
+	assert.Equal(t, "target1", info["userId"])
+	assert.Equal(t, "alice", info["userUsername"])
+	assert.Equal(t, "spam", info["reason"])
+}
+
 // --- moderation log assertions for user moderation handlers ---
 
 func TestSuspendUser_WritesModerationLog(t *testing.T) {
