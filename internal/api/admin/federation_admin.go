@@ -111,6 +111,42 @@ func (h *Handler) FederationRemoveAllFollowing(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// federationUpdateInstanceRequest is the JSON shape for
+// /api/admin/federation/update-instance. ModerationNote は **pointer** にして
+// 「未送信 (nil)」と「明示的に空文字列で clear」を区別する (#675)。
+// json.Unmarshal は欠落 field を nil pointer のまま残すので、両者を JSON
+// decode 境界で正しく分離できる。string 型だと "" がデフォルト値と区別でき
+// ず空文字列で note を消す操作が無視される (元バグ)。
+type federationUpdateInstanceRequest struct {
+	Host           string  `json:"host"`
+	IsSuspended    *bool   `json:"isSuspended"`
+	IsBlocked      *bool   `json:"isBlocked"`
+	IsSilenced     *bool   `json:"isSilenced"`
+	ModerationNote *string `json:"moderationNote"`
+}
+
+// updates derives the GORM Updates(map) payload from the request. Only
+// fields explicitly sent in the request are included so the caller can
+// "clear" string fields by sending "" (and not "leave unchanged" via
+// omitting the field).
+func (req federationUpdateInstanceRequest) updates() map[string]any {
+	out := map[string]any{}
+	if req.IsSuspended != nil {
+		out["isSuspended"] = *req.IsSuspended
+	}
+	if req.IsBlocked != nil {
+		out["isBlocked"] = *req.IsBlocked
+	}
+	if req.IsSilenced != nil {
+		out["isSilenced"] = *req.IsSilenced
+	}
+	if req.ModerationNote != nil {
+		// pointer != nil なら明示的に送信されたので空文字列でも反映する。
+		out["moderationNote"] = *req.ModerationNote
+	}
+	return out
+}
+
 // FederationUpdateInstance handles POST /api/admin/federation/update-instance.
 //
 // Misskey TS 互換 (admin/federation/update-instance.ts) で `isSuspended` 変更時に
@@ -122,13 +158,7 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 	if h.adminDB == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	var req struct {
-		Host           string `json:"host"`
-		IsSuspended    *bool  `json:"isSuspended"`
-		IsBlocked      *bool  `json:"isBlocked"`
-		IsSilenced     *bool  `json:"isSilenced"`
-		ModerationNote string `json:"moderationNote"`
-	}
+	var req federationUpdateInstanceRequest
 	if err := c.Bind(&req); err != nil || req.Host == "" {
 		return c.NoContent(http.StatusNoContent)
 	}
@@ -140,20 +170,7 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 	if err := h.adminDB.Where(`"host" = ?`, req.Host).First(&before).Error; err != nil {
 		return c.NoContent(http.StatusNoContent)
 	}
-	updates := map[string]any{}
-	if req.IsSuspended != nil {
-		updates["isSuspended"] = *req.IsSuspended
-	}
-	if req.IsBlocked != nil {
-		updates["isBlocked"] = *req.IsBlocked
-	}
-	if req.IsSilenced != nil {
-		updates["isSilenced"] = *req.IsSilenced
-	}
-	if req.ModerationNote != "" {
-		updates["moderationNote"] = req.ModerationNote
-	}
-	if len(updates) > 0 {
+	if updates := req.updates(); len(updates) > 0 {
 		h.adminDB.Model(&model.Instance{}).Where(`"host" = ?`, req.Host).Updates(updates)
 	}
 	// suspend / unsuspend と moderationNote 変更で個別 log を出す。
@@ -169,12 +186,12 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 			"host": before.Host,
 		})
 	}
-	if req.ModerationNote != "" && req.ModerationNote != before.ModerationNote {
+	if req.ModerationNote != nil && *req.ModerationNote != before.ModerationNote {
 		h.logModeration(c, moderationlog.LogUpdateRemoteInstanceNote, map[string]any{
 			"id":     before.ID,
 			"host":   before.Host,
 			"before": before.ModerationNote,
-			"after":  req.ModerationNote,
+			"after":  *req.ModerationNote,
 		})
 	}
 	return c.NoContent(http.StatusNoContent)
