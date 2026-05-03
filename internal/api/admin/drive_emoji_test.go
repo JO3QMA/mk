@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
@@ -184,12 +185,14 @@ func TestEmojiListRemote_FilterByQuery(t *testing.T) {
 }
 
 func TestEmojiCopy_DuplicateNameReturns400(t *testing.T) {
+	// Misskey TS 互換 (#650 問題 1): copy は元 name のまま local 化するため、
+	// 同名の local emoji が既存だと DUPLICATE_NAME を返す。
 	h, _, _, _ := newTestHandler(t)
 	repo := testutil.NewMockEmojiRepository()
-	// MockEmojiRepository は name@host をキーとして保存するので、既存の
-	// smile と、衝突先となる smile_copy の 2 件を入れる。
-	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "smile", OriginalURL: "https://x"}))
-	require.NoError(t, repo.Create(&model.Emoji{ID: "e_dup", Name: "smile_copy", OriginalURL: "https://y"}))
+	remoteHost := "remote.example"
+	// remote の "smile" を copy しようとするが、local にも同名 "smile" 存在。
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "smile", Host: &remoteHost, OriginalURL: "https://x"}))
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e_local", Name: "smile", OriginalURL: "https://y"}))
 	h.SetEmojiRepo(repo)
 
 	rec := doPost(h.EmojiCopy, `{"emojiId":"e1"}`, adminUser)
@@ -211,9 +214,12 @@ func findEmojiByID(t *testing.T, repo *testutil.MockEmojiRepository, id string) 
 }
 
 func TestEmojiCopy_Success(t *testing.T) {
+	// remote → local copy: copy 先が host=nil で同名 local emoji が無い
+	// ので 200 を返す (Misskey TS 互換、#650 問題 1)。
 	h, _, _, _ := newTestHandler(t)
 	repo := testutil.NewMockEmojiRepository()
-	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "unique", OriginalURL: "https://x"}))
+	remoteHost := "remote.example"
+	require.NoError(t, repo.Create(&model.Emoji{ID: "e1", Name: "unique", Host: &remoteHost, OriginalURL: "https://x"}))
 	h.SetEmojiRepo(repo)
 
 	rec := doPost(h.EmojiCopy, `{"emojiId":"e1"}`, adminUser)
@@ -221,6 +227,10 @@ func TestEmojiCopy_Success(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.NotEmpty(t, body["id"])
+	// copied emoji は元 name "unique" で local 化されている
+	copied := findEmojiByID(t, repo, body["id"].(string))
+	assert.Equal(t, "unique", copied.Name)
+	assert.Nil(t, copied.Host)
 }
 
 func TestEmojiCopy_NotFound(t *testing.T) {
@@ -676,4 +686,123 @@ func TestEmojiImportZip_EnqueueFailure(t *testing.T) {
 	h.SetEmojiImportEnqueuer(&stubEmojiImportEnqueuer{err: assertError{}})
 	rec := doPost(h.EmojiImportZip, `{"fileId":"f1"}`, adminUser)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- moderation log assertions (#661 + #650) ---
+
+func TestEmojiAdd_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiRepo(testutil.NewMockEmojiRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.EmojiAdd, `{"name":"smile","url":"https://example/smile.png"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "addCustomEmoji", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.NotEmpty(t, info["emojiId"])
+	assert.NotNil(t, info["emoji"])
+}
+
+func TestEmojiUpdate_WritesModerationLog_WithExtendedFields(t *testing.T) {
+	// #650 問題 2 + #661: Misskey 互換の license/isSensitive/localOnly が
+	// 永続化されること、updateCustomEmoji log に before/after が入ること。
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	require.NoError(t, emojiRepo.Create(&model.Emoji{ID: "e1", Name: "smile"}))
+	h.SetEmojiRepo(emojiRepo)
+	repo := attachModLog(t, h)
+
+	body := `{"id":"e1","name":"smile2","license":"CC0","isSensitive":true,"localOnly":true}`
+	rec := doPost(h.EmojiUpdate, body, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	// DB 更新の検証
+	updated, err := emojiRepo.FindByID("e1")
+	require.NoError(t, err)
+	assert.Equal(t, "smile2", updated.Name)
+	require.NotNil(t, updated.License)
+	assert.Equal(t, "CC0", *updated.License)
+	assert.True(t, updated.IsSensitive)
+	assert.True(t, updated.LocalOnly)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "updateCustomEmoji", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "e1", info["emojiId"])
+	require.NotNil(t, info["before"])
+	require.NotNil(t, info["after"])
+}
+
+func TestEmojiUpdate_NoSuchEmojiOnMissingID(t *testing.T) {
+	// #650 問題 2: id が DB に無いケースは NO_SUCH_EMOJI を返す。以前は
+	// UpdateFields が RowsAffected を見ずに常に nil 返却で 204 になっていた。
+	h, _, _, _ := newTestHandler(t)
+	h.SetEmojiRepo(testutil.NewMockEmojiRepository())
+	rec := doPost(h.EmojiUpdate, `{"id":"ghost","name":"x"}`, adminUser)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	errField, ok := body["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "NO_SUCH_EMOJI", errField["code"])
+}
+
+func TestEmojiDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	require.NoError(t, emojiRepo.Create(&model.Emoji{ID: "e1", Name: "doomed"}))
+	h.SetEmojiRepo(emojiRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.EmojiDelete, `{"id":"e1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "deleteCustomEmoji", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "e1", info["emojiId"])
+	assert.NotNil(t, info["emoji"])
+}
+
+func TestEmojiCopy_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	remoteHost := "remote.example"
+	require.NoError(t, emojiRepo.Create(&model.Emoji{ID: "e1", Name: "wave", Host: &remoteHost}))
+	h.SetEmojiRepo(emojiRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.EmojiCopy, `{"emojiId":"e1"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "addCustomEmoji", repo.Snapshot()[0].Type)
+}
+
+func TestEmojiDeleteBulk_WritesPerEmojiLog(t *testing.T) {
+	// Misskey TS 互換: delete-bulk は対象絵文字数だけ deleteCustomEmoji
+	// log を出す (CustomEmojiService.deleteBulk の for ループ相当)。
+	h, _, _, _ := newTestHandler(t)
+	emojiRepo := testutil.NewMockEmojiRepository()
+	require.NoError(t, emojiRepo.Create(&model.Emoji{ID: "e1", Name: "a"}))
+	require.NoError(t, emojiRepo.Create(&model.Emoji{ID: "e2", Name: "b"}))
+	require.NoError(t, emojiRepo.Create(&model.Emoji{ID: "e3", Name: "c"}))
+	h.SetEmojiRepo(emojiRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.EmojiDeleteBulk, `{"ids":["e1","e2","e3"]}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 3 }, 500*time.Millisecond, 5*time.Millisecond)
+	for _, l := range repo.Snapshot() {
+		assert.Equal(t, "deleteCustomEmoji", l.Type)
+	}
 }

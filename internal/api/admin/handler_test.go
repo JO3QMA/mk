@@ -1511,6 +1511,21 @@ func TestRolesAssign_WritesModerationLog(t *testing.T) {
 	assert.Equal(t, "Mod", info["roleName"])
 }
 
+func TestRolesUpdate_NoFieldsReturnsNoContentWithoutLog(t *testing.T) {
+	// 全 optional pointer が nil のリクエストは log を書かずに 204 で帰る
+	// (#668 review minor #2)。
+	h, _, _, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Stay"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.RolesUpdate, `{"roleId":"r1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Never(t, func() bool {
+		return len(repo.Snapshot()) > 0
+	}, 100*time.Millisecond, 10*time.Millisecond, "empty fields → log must not be written")
+}
+
 func TestRolesUnassign_WritesModerationLog(t *testing.T) {
 	h, userRepo, _, roleRepo := newTestHandler(t)
 	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}

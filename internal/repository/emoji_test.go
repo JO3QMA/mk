@@ -7,6 +7,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func cleanupEmoji(t *testing.T, id string) {
@@ -211,6 +212,31 @@ func TestEmojiRepository_FindManyByIDs(t *testing.T) {
 	empty, err := repo.FindManyByIDs(nil)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
+}
+
+func TestEmojiRepository_UpdateFields_NotFound(t *testing.T) {
+	// #650 問題 2: 存在しない id への UpdateFields は GORM の Updates が
+	// 何も更新せずに Error=nil を返すため、以前は呼び出し側で「成功」と
+	// 誤認していた。RowsAffected==0 を gorm.ErrRecordNotFound に昇格する。
+	repo := NewEmojiRepository(testDB)
+
+	err := repo.UpdateFields("nonexistent_id_xyz", map[string]any{"category": "x"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestEmojiRepository_UpdateFields_Success(t *testing.T) {
+	repo := NewEmojiRepository(testDB)
+
+	e := &model.Emoji{ID: "em_uf1", Name: "upd_target", OriginalURL: "https://x"}
+	require.NoError(t, repo.Create(e))
+	defer cleanupEmoji(t, e.ID)
+
+	require.NoError(t, repo.UpdateFields(e.ID, map[string]any{"category": "happy"}))
+	after, err := repo.FindByID(e.ID)
+	require.NoError(t, err)
+	require.NotNil(t, after.Category)
+	assert.Equal(t, "happy", *after.Category)
 }
 
 func TestEmojiRepository_UpdateFieldsMany(t *testing.T) {

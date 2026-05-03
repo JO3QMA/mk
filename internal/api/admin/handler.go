@@ -1335,22 +1335,46 @@ func (h *Handler) EmojiAdd(c echo.Context) error {
 	if err := h.emojiRepo.Create(e); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	h.logModeration(c, moderationlog.LogAddCustomEmoji, map[string]any{
+		"emojiId": e.ID,
+		"emoji":   e,
+	})
 	return c.JSON(http.StatusOK, e)
 }
 
 // EmojiUpdate handles POST /api/admin/emoji/update.
+//
+// Misskey TS の admin/emoji/update は name/category/aliases に加え license/
+// isSensitive/localOnly も受け付ける。フロントの編集ダイアログがこれら全部
+// 送信するため Request struct を Misskey 互換に拡張する (#650 問題 2)。
+//
+// Aliases は []string なので nil (省略) と [] (空配列) が型で区別できない。
+// Misskey TS 側も optional `?` で undefined と空配列を区別しないため、
+// nil != 空配列でない場合に "aliases を全削除" として扱う。実装上は
+// `req.Aliases != nil` で「フロントが aliases フィールドを明示送信した」
+// と判定しており、空配列送信なら全削除、フィールド欠落なら現状維持。
 func (h *Handler) EmojiUpdate(c echo.Context) error {
 	var req struct {
-		ID       string   `json:"id"`
-		Name     *string  `json:"name"`
-		Category *string  `json:"category"`
-		Aliases  []string `json:"aliases"`
+		ID          string   `json:"id"`
+		Name        *string  `json:"name"`
+		Category    *string  `json:"category"`
+		Aliases     []string `json:"aliases"`
+		License     *string  `json:"license"`
+		IsSensitive *bool    `json:"isSensitive"`
+		LocalOnly   *bool    `json:"localOnly"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if h.emojiRepo == nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	// before snapshot for moderation log (also used to gate NO_SUCH_EMOJI when
+	// the row is missing — UpdateFields の RowsAffected==0 経路は repo 側で
+	// ErrRecordNotFound に昇格済み (#650 問題 2)).
+	before, err := h.emojiRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
 	}
 	fields := map[string]any{}
 	if req.Name != nil {
@@ -1362,9 +1386,33 @@ func (h *Handler) EmojiUpdate(c echo.Context) error {
 	if req.Aliases != nil {
 		fields["aliases"] = req.Aliases
 	}
+	if req.License != nil {
+		fields["license"] = *req.License
+	}
+	if req.IsSensitive != nil {
+		fields["isSensitive"] = *req.IsSensitive
+	}
+	if req.LocalOnly != nil {
+		fields["localOnly"] = *req.LocalOnly
+	}
+	if len(fields) == 0 {
+		// 何も変更しないリクエストは log を書かずに 204 で返す。
+		return c.NoContent(http.StatusNoContent)
+	}
 	if err := h.emojiRepo.UpdateFields(req.ID, fields); err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
 	}
+	after, err := h.emojiRepo.FindByID(req.ID)
+	if err != nil {
+		// ここに到達するのは UpdateFields 直後の row 消失 (race) のみ。
+		// 操作自体は成功しているので 204 を返す。
+		return c.NoContent(http.StatusNoContent)
+	}
+	h.logModeration(c, moderationlog.LogUpdateCustomEmoji, map[string]any{
+		"emojiId": req.ID,
+		"before":  before,
+		"after":   after,
+	})
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -1379,9 +1427,18 @@ func (h *Handler) EmojiDelete(c echo.Context) error {
 	if h.emojiRepo == nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	// log info に snapshot を含めるため削除前に取得。取得失敗は NO_SUCH_EMOJI。
+	snapshot, err := h.emojiRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
+	}
 	if err := h.emojiRepo.Delete(req.ID); err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_EMOJI", "No such emoji.", "684b7e7e-7e91-4e4c-a5cc-8050e4b8e0d8"))
 	}
+	h.logModeration(c, moderationlog.LogDeleteCustomEmoji, map[string]any{
+		"emojiId": req.ID,
+		"emoji":   snapshot,
+	})
 	return c.NoContent(http.StatusNoContent)
 }
 

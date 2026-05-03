@@ -1298,6 +1298,10 @@ func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) err
 					if b, ok := v.(bool); ok {
 						e.IsSensitive = b
 					}
+				case "localOnly":
+					if b, ok := v.(bool); ok {
+						e.LocalOnly = b
+					}
 				case "updatedAt":
 					if ts, ok := v.(time.Time); ok {
 						e.UpdatedAt = &ts
