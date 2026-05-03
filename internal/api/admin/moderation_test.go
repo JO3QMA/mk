@@ -1,8 +1,10 @@
 package admin_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -117,4 +119,50 @@ func TestDeleteAllFilesOfUser_DeletesOnlyTargetUserFiles(t *testing.T) {
 func TestUpdateAbuseUserReport(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.UpdateAbuseUserReport, `{}`, adminUser).Code)
+}
+
+// --- moderation log assertions ---
+
+func TestUnsetUserAvatar_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.UnsetUserAvatar, `{"userId":"u1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "unsetUserAvatar", repo.Snapshot()[0].Type)
+}
+
+func TestUnsetUserBanner_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.UnsetUserBanner, `{"userId":"u1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "unsetUserBanner", repo.Snapshot()[0].Type)
+}
+
+func TestUpdateUserNote_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	beforeNote := "old note"
+	userRepo.Profiles["u1"] = &model.UserProfile{UserID: "u1", ModerationNote: &beforeNote}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.UpdateUserNote, `{"userId":"u1","text":"new note"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "updateUserNote", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "u1", info["userId"])
+	assert.Equal(t, "old note", info["before"])
+	assert.Equal(t, "new note", info["after"])
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 )
 
 // UnsetUserAvatar handles POST /api/admin/unset-user-avatar.
@@ -15,7 +16,9 @@ func (h *Handler) UnsetUserAvatar(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.NoContent(http.StatusNoContent)
 	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"avatarId": nil, "avatarUrl": nil, "avatarBlurhash": nil})
+	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"avatarId": nil, "avatarUrl": nil, "avatarBlurhash": nil}); err == nil {
+		h.logUserAction(c, moderationlog.LogUnsetUserAvatar, req.UserID)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -27,7 +30,9 @@ func (h *Handler) UnsetUserBanner(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.NoContent(http.StatusNoContent)
 	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"bannerId": nil, "bannerUrl": nil, "bannerBlurhash": nil})
+	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"bannerId": nil, "bannerUrl": nil, "bannerBlurhash": nil}); err == nil {
+		h.logUserAction(c, moderationlog.LogUnsetUserBanner, req.UserID)
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -41,7 +46,23 @@ func (h *Handler) UpdateUserNote(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.NoContent(http.StatusNoContent)
 	}
-	_ = h.userRepo.UpdateProfile(req.UserID, map[string]any{"moderationNote": req.Text})
+	// before を log の info に含めるため UpdateProfile の前に取得する。
+	// 取得失敗時は before 不明扱い (空文字) で log を書く方が監査価値が高い。
+	var before string
+	if profile, err := h.userRepo.FindProfileByUserID(req.UserID); err == nil && profile != nil && profile.ModerationNote != nil {
+		before = *profile.ModerationNote
+	}
+	if err := h.userRepo.UpdateProfile(req.UserID, map[string]any{"moderationNote": req.Text}); err != nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	target, err := h.userRepo.FindByID(req.UserID)
+	if err != nil || target == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	info := moderationlog.UserInfo(target)
+	info["before"] = before
+	info["after"] = req.Text
+	h.logModeration(c, moderationlog.LogUpdateUserNote, info)
 	return c.NoContent(http.StatusNoContent)
 }
 

@@ -209,3 +209,31 @@ func TestAccountsFindByEmail_ResponseShape(t *testing.T) {
 	_, hasUsernameLower := resp["usernameLower"]
 	assert.False(t, hasUsernameLower, "usernameLower is an internal field and must not be exposed")
 }
+
+func TestAccountsDelete_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AccountsDelete, `{"userId":"u1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "deleteAccount", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "u1", info["userId"])
+}
+
+func TestDeleteAccount_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u9"] = &model.User{ID: "u9", Username: "bob"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.DeleteAccount, `{"userId":"u9"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteAccount", repo.Snapshot()[0].Type)
+}
