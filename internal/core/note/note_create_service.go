@@ -9,8 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/activitypub/mfm"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/hashtag"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -410,6 +412,18 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	now := time.Now()
 	noteID := s.idGen.Generate(now)
 
+	// hashtag 抽出: text/cw から #tag を拾い note.tags 列に格納する。
+	// hashtags/trend の動的集計や hashtag 検索が機能するためには
+	// note.tags が常に正しく埋められている必要がある (#655)。
+	var hashtagParts []string
+	if in.Text != nil {
+		hashtagParts = append(hashtagParts, *in.Text)
+	}
+	if in.CW != nil {
+		hashtagParts = append(hashtagParts, *in.CW)
+	}
+	tags := hashtag.Extract(hashtagParts...)
+
 	note := &model.Note{
 		ID:                 noteID,
 		UserID:             in.User.ID,
@@ -423,6 +437,7 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 		ChannelID:          in.ChannelID,
 		FileIDs:            in.FileIDs,
 		UserHost:           in.User.Host,
+		Tags:               pq.StringArray(tags),
 	}
 
 	// reply/renote先の非正規化フィールドを埋める

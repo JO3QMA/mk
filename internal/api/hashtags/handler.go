@@ -2,9 +2,13 @@ package hashtags
 
 import (
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"gorm.io/gorm"
 )
@@ -89,17 +93,151 @@ func (h *Handler) Show(c echo.Context) error {
 }
 
 // Trend handles POST /api/hashtags/trend.
+//
+// Misskey TS 互換: 直近 200 分 (10 分 × 20 bucket) の note 数を hashtag
+// 別に集計し、frontend の MkMiniChart が描画できる時系列を返す。
+//
+// TS 上流 (HashtagService.getCharts) は Redis HyperLogLog で users 単位
+// のユニーク数を count するが、mk-go では HLL を維持せず note テーブル
+// から動的に集計する。
+//
+// mk-go の note テーブルは createdAt 列を持たず、aidx ID 先頭 8 文字に
+// ms timestamp が埋め込まれている (`internal/misc/id`)。200 分前の
+// cutoff prefix を生成して `id > cutoffID` で範囲フィルタをかける。
+// tags 配列 (varchar(128)[]) には migration 000043 で GIN index を張った
+// ので `<>` フィルタも index で効く。
+//
+// visibility フィルタ: TS の HashtagService.updateHashtag は public /
+// home の note のみ集計対象にする。followers / specified を含めると
+// 公開トレンドに非公開タグが現れてプライバシー上の問題になるため、
+// SQL の WHERE で同じ条件を強制する。
+//
+// 取得した row は Go 側で aidx parse → bucket idx 計算 → tag/bucket 別
+// の unique users を集計する。直近 200 分の対象 note 数は中規模インス
+// タンスなら数千件オーダーで、Go 側の集計コストは無視できる。
+//
+// chart の bucket は新しいもの順 (index 0 = 直近 10 分、index 19 = 200 分前)。
+// usersCount は TS と同じく `max(chart)` で算出する。
 func (h *Handler) Trend(c echo.Context) error {
-	var tags []*model.Hashtag
-	if err := h.db.Order("\"mentionedUsersCount\" DESC").Limit(10).Find(&tags).Error; err != nil {
+	const (
+		bucketSeconds = 600 // 10 分
+		bucketCount   = 20  // 過去 200 分
+		topN          = 10
+	)
+
+	gen, err := id.NewGenerator("aidx")
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	result := make([]map[string]any, 0, len(tags))
-	for _, t := range tags {
+
+	cutoff := time.Now().Add(-time.Duration(bucketSeconds*bucketCount) * time.Second)
+	cutoffID := id.AidxCutoffPrefix(cutoff)
+
+	// pq.StringArray を含む struct を Scan(&rows) に渡すと GORM の
+	// schema reflection が `unsupported data type: &[]` を warn-log する
+	// (pq.StringArray の Scanner で runtime には正しく動くが、初期 type
+	// infer で躓く)。Rows().Scan() で個別に scan するとこの noise を回避
+	// できるので、本 handler では明示的なループ scan を採用する。
+	type row struct {
+		ID     string
+		UserID string
+		Tags   []string
+	}
+	var rows []row
+	sqlRows, err := h.db.Raw(`
+		SELECT "id", "userId", "tags"
+		FROM "note"
+		WHERE "id" > ?
+		  AND "tags" <> ARRAY[]::varchar[]
+		  AND "visibility" IN ('public', 'home')
+	`, cutoffID).Rows()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	defer sqlRows.Close()
+	for sqlRows.Next() {
+		var r row
+		var tags pq.StringArray
+		if err := sqlRows.Scan(&r.ID, &r.UserID, &tags); err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		}
+		r.Tags = []string(tags)
+		rows = append(rows, r)
+	}
+	if err := sqlRows.Err(); err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	// bucketUsers[tag][bucketIdx] = set of unique userId
+	bucketUsers := make(map[string][bucketCount]map[string]struct{})
+	totalUsers := make(map[string]map[string]struct{})
+
+	now := time.Now()
+	for _, r := range rows {
+		ts, perr := gen.ParseTime(r.ID)
+		if perr != nil {
+			continue
+		}
+		secsAgo := now.Sub(ts).Seconds()
+		if secsAgo < 0 || secsAgo >= float64(bucketSeconds*bucketCount) {
+			continue
+		}
+		bucketIdx := int(secsAgo) / bucketSeconds
+		for _, tag := range r.Tags {
+			if tag == "" {
+				continue
+			}
+			buckets, exists := bucketUsers[tag]
+			if !exists {
+				for i := range buckets {
+					buckets[i] = map[string]struct{}{}
+				}
+				bucketUsers[tag] = buckets
+			}
+			bucketUsers[tag][bucketIdx][r.UserID] = struct{}{}
+
+			if _, exists := totalUsers[tag]; !exists {
+				totalUsers[tag] = map[string]struct{}{}
+			}
+			totalUsers[tag][r.UserID] = struct{}{}
+		}
+	}
+
+	// ranking: total users 降順、同点は tag name 昇順 (deterministic)
+	type ranked struct {
+		tag   string
+		total int
+	}
+	rankings := make([]ranked, 0, len(totalUsers))
+	for tag, users := range totalUsers {
+		rankings = append(rankings, ranked{tag: tag, total: len(users)})
+	}
+	sort.Slice(rankings, func(i, j int) bool {
+		if rankings[i].total != rankings[j].total {
+			return rankings[i].total > rankings[j].total
+		}
+		return rankings[i].tag < rankings[j].tag
+	})
+	if len(rankings) > topN {
+		rankings = rankings[:topN]
+	}
+
+	result := make([]map[string]any, 0, len(rankings))
+	for _, rk := range rankings {
+		chart := make([]int, bucketCount)
+		buckets := bucketUsers[rk.tag]
+		maxUsers := 0
+		for i := 0; i < bucketCount; i++ {
+			n := len(buckets[i])
+			chart[i] = n
+			if n > maxUsers {
+				maxUsers = n
+			}
+		}
 		result = append(result, map[string]any{
-			"tag":        t.Name,
-			"chart":      []int{},
-			"usersCount": t.MentionedUsersCount,
+			"tag":        rk.tag,
+			"chart":      chart,
+			"usersCount": maxUsers,
 		})
 	}
 	return c.JSON(http.StatusOK, result)

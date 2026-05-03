@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS "IDX_note_tags";
