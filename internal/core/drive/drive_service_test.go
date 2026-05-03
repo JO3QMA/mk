@@ -46,10 +46,18 @@ func newSvc(t *testing.T) (*drive.Service, *testutil.MockDriveFileRepository, *t
 
 // --- Upload ---
 
-func TestUpload_NilUser(t *testing.T) {
-	svc, _, _ := newSvc(t)
-	_, err := svc.Upload(drive.UploadInput{Body: []byte("x")})
-	assert.Error(t, err)
+// TestUpload_NilUserSystemFile guards that Upload accepts User == nil and
+// produces a system-owned drive file (UserID/UserHost both nil), matching
+// Misskey TS uploadFromUrl({user: null}). Used by EmojiCopy (#670) to store
+// remote emoji images without binding them to the operator's account.
+func TestUpload_NilUserSystemFile(t *testing.T) {
+	svc, fileRepo, _ := newSvc(t)
+	f, err := svc.Upload(drive.UploadInput{Body: []byte("hello"), Name: "x.bin"})
+	require.NoError(t, err)
+	require.NotNil(t, f)
+	assert.Nil(t, f.UserID)
+	assert.Nil(t, f.UserHost)
+	assert.Len(t, fileRepo.Files, 1)
 }
 
 func TestUpload_HappyPath(t *testing.T) {

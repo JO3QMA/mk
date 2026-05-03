@@ -1,6 +1,7 @@
 package admin_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -238,6 +239,164 @@ func TestEmojiCopy_NotFound(t *testing.T) {
 	h.SetEmojiRepo(testutil.NewMockEmojiRepository())
 	assert.Equal(t, http.StatusNotFound,
 		doPost(h.EmojiCopy, `{"emojiId":"missing"}`, adminUser).Code)
+}
+
+// fakeEmojiImageFetcher captures FetchAndStore arguments and returns a
+// scripted response so tests can verify EmojiCopy plumbs the fetcher
+// correctly (#670).
+type fakeEmojiImageFetcher struct {
+	calls []struct {
+		URL  string
+		Name string
+		User *model.User
+	}
+	returnDF  *model.DriveFile
+	returnErr error
+}
+
+func (f *fakeEmojiImageFetcher) FetchAndStore(_ context.Context, url string, user *model.User, name string) (*model.DriveFile, error) {
+	f.calls = append(f.calls, struct {
+		URL  string
+		Name string
+		User *model.User
+	}{url, name, user})
+	if f.returnErr != nil {
+		return nil, f.returnErr
+	}
+	return f.returnDF, nil
+}
+
+// TestEmojiCopy_StoresInDrive verifies that a wired fetcher is invoked and
+// the returned drive URL replaces the source's OriginalURL/PublicURL on the
+// new local emoji (#670). Without this rewrite the local copy stays bound to
+// the remote server's URL and breaks when that server deletes the file.
+func TestEmojiCopy_StoresInDrive(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	remoteHost := "remote.example"
+	require.NoError(t, repo.Create(&model.Emoji{
+		ID: "src1", Name: "happy", Host: &remoteHost,
+		OriginalURL: "https://remote.example/emoji/happy.png",
+		PublicURL:   "https://remote.example/emoji/happy.png",
+	}))
+	h.SetEmojiRepo(repo)
+
+	webpub := "https://local.example/files/webpub.png"
+	webpubType := "image/webp"
+	fetcher := &fakeEmojiImageFetcher{
+		returnDF: &model.DriveFile{
+			ID:            "df1",
+			URL:           "https://local.example/files/orig.png",
+			WebpublicURL:  &webpub,
+			WebpublicType: &webpubType,
+			Type:          "image/png",
+		},
+	}
+	h.SetEmojiImageFetcher(fetcher)
+
+	rec := doPost(h.EmojiCopy, `{"emojiId":"src1"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	copied := findEmojiByID(t, repo, body["id"].(string))
+
+	// fetcher was called exactly once with the source's OriginalURL, the
+	// emoji name (used as drive file name), and a nil user (system-owned
+	// drive file, matching Misskey TS uploadFromUrl({user: null}) — see
+	// emoji.go EmojiCopy comment).
+	require.Len(t, fetcher.calls, 1)
+	assert.Equal(t, "https://remote.example/emoji/happy.png", fetcher.calls[0].URL)
+	assert.Equal(t, "happy", fetcher.calls[0].Name)
+	assert.Nil(t, fetcher.calls[0].User, "drive file must be system-owned (user nil)")
+
+	// New emoji's URLs point at the drive file, not the remote source.
+	assert.Equal(t, "https://local.example/files/orig.png", copied.OriginalURL)
+	assert.Equal(t, "https://local.example/files/webpub.png", copied.PublicURL)
+	require.NotNil(t, copied.Type)
+	// Webpublic type is preferred when present (matches Misskey TS behaviour).
+	assert.Equal(t, "image/webp", *copied.Type)
+}
+
+// TestEmojiCopy_StoresInDrive_NoWebpublic falls back to df.URL / df.Type
+// when the drive file has no webpublic variant (e.g. small images).
+func TestEmojiCopy_StoresInDrive_NoWebpublic(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	remoteHost := "remote.example"
+	require.NoError(t, repo.Create(&model.Emoji{
+		ID: "src1", Name: "tiny", Host: &remoteHost,
+		OriginalURL: "https://remote.example/emoji/tiny.png",
+	}))
+	h.SetEmojiRepo(repo)
+
+	fetcher := &fakeEmojiImageFetcher{
+		returnDF: &model.DriveFile{
+			ID:   "df1",
+			URL:  "https://local.example/files/tiny.png",
+			Type: "image/png",
+		},
+	}
+	h.SetEmojiImageFetcher(fetcher)
+
+	rec := doPost(h.EmojiCopy, `{"emojiId":"src1"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	copied := findEmojiByID(t, repo, body["id"].(string))
+
+	assert.Equal(t, "https://local.example/files/tiny.png", copied.OriginalURL)
+	assert.Equal(t, "https://local.example/files/tiny.png", copied.PublicURL)
+	require.NotNil(t, copied.Type)
+	assert.Equal(t, "image/png", *copied.Type)
+}
+
+// TestEmojiCopy_FetcherErrorReturns500 verifies that a fetch failure aborts
+// the copy (no row created) instead of silently falling back to the remote
+// URL — falling back would re-introduce the #670 symptom.
+func TestEmojiCopy_FetcherErrorReturns500(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	remoteHost := "remote.example"
+	require.NoError(t, repo.Create(&model.Emoji{
+		ID: "src1", Name: "happy", Host: &remoteHost,
+		OriginalURL: "https://remote.example/emoji/happy.png",
+	}))
+	h.SetEmojiRepo(repo)
+
+	fetcher := &fakeEmojiImageFetcher{returnErr: assert.AnError}
+	h.SetEmojiImageFetcher(fetcher)
+
+	rec := doPost(h.EmojiCopy, `{"emojiId":"src1"}`, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	// fetcher が失敗したら row は作られない (#670 fallback regression 防止)。
+	// 元 src が 1 件だけ残っており、host=nil の copy が増えていないことを
+	// repo の内部 map から直接確認する。
+	assert.Len(t, repo.Emojis, 1, "no new emoji row should have been created on fetch failure")
+}
+
+// TestEmojiCopy_FetcherUnsetUsesLegacyURL keeps the pre-#670 behaviour for
+// environments that have not wired a fetcher (test handlers, deployments
+// before the upgrade, etc). Without this fallback every test handler would
+// have to wire a drive stub.
+func TestEmojiCopy_FetcherUnsetUsesLegacyURL(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := testutil.NewMockEmojiRepository()
+	remoteHost := "remote.example"
+	require.NoError(t, repo.Create(&model.Emoji{
+		ID: "src1", Name: "happy", Host: &remoteHost,
+		OriginalURL: "https://remote.example/emoji/happy.png",
+		PublicURL:   "https://remote.example/emoji/happy.png",
+	}))
+	h.SetEmojiRepo(repo)
+
+	rec := doPost(h.EmojiCopy, `{"emojiId":"src1"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	copied := findEmojiByID(t, repo, body["id"].(string))
+	assert.Equal(t, "https://remote.example/emoji/happy.png", copied.OriginalURL)
 }
 
 func TestEmojiSetCategoryBulk_BatchUpdate(t *testing.T) {

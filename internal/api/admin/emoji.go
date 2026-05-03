@@ -48,6 +48,12 @@ func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
 // 返す。以前の mk-go 実装は `_copy` suffix を勝手に付与していたが、
 // これは TS 仕様違反 (#650 問題 1) なのでサフィックスを除去した。
 //
+// 画像については upstream の driveService.uploadFromUrl 相当に対応するため、
+// emojiImageFetcher が wire 済みなら src.OriginalURL を local drive に
+// 保存し、新 emoji の OriginalURL/PublicURL を drive 経由の URL に差し替える
+// (#670)。fetcher 未配線時は src の URL をそのまま継承する legacy 挙動を
+// 維持する (テスト容易性 + 未配線環境での graceful degradation 用)。
+//
 // ref: third_party/misskey/packages/backend/src/server/api/endpoints/admin/emoji/copy.ts
 func (h *Handler) EmojiCopy(c echo.Context) error {
 	var req struct {
@@ -69,6 +75,35 @@ func (h *Handler) EmojiCopy(c echo.Context) error {
 	copied := *src
 	copied.ID = h.idGen.Generate(time.Now())
 	copied.Host = nil
+
+	// fetcher が wire され src.OriginalURL があれば drive に保存して URL
+	// を切り替える。drive file は upstream Misskey TS の uploadFromUrl
+	// ({user: null}) と同じく **system 所有 (user nil)** で作成する。
+	// custom emoji はインスタンス管理アセットであり、操作者個人の drive に
+	// 紐付けるとロール変更や削除で巻き込まれて表示が壊れる。失敗時は
+	// INTERNAL_ERROR を返して emoji 作成自体を中止する (URL 引き継ぎだけで
+	// 作成すると #670 の症状に逆戻りするため)。
+	if h.emojiImageFetcher != nil && src.OriginalURL != "" {
+		df, err := h.emojiImageFetcher.FetchAndStore(c.Request().Context(), src.OriginalURL, nil, src.Name)
+		if err != nil {
+			slog.WarnContext(c.Request().Context(), "emoji copy: drive fetch failed",
+				"srcId", src.ID, "url", src.OriginalURL, "err", err)
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Failed to fetch emoji image.", "0a4e0b9e-2d7c-4d6f-8f6b-1f9c2e9b4d83"))
+		}
+		copied.OriginalURL = df.URL
+		if df.WebpublicURL != nil && *df.WebpublicURL != "" {
+			copied.PublicURL = *df.WebpublicURL
+		} else {
+			copied.PublicURL = df.URL
+		}
+		if df.WebpublicType != nil && *df.WebpublicType != "" {
+			copied.Type = df.WebpublicType
+		} else if df.Type != "" {
+			t := df.Type
+			copied.Type = &t
+		}
+	}
+
 	if err := h.emojiRepo.Create(&copied); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}

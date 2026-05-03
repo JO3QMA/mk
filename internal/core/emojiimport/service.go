@@ -223,8 +223,12 @@ func (i *Importer) replaceEmoji(user *model.User, record metaRecord, body []byte
 		_ = i.deps.EmojiRepo.Delete(existing.ID)
 	}
 
+	// emoji import zip で展開された画像は upstream Misskey TS と同じく
+	// system 所有 drive file (User: nil) として保存する (#670)。custom emoji
+	// はインスタンス管理アセットであり、import を実行した admin 個人の drive
+	// に紐付けると ロール変更 / アカウント削除 で巻き込まれて表示が壊れる。
+	_ = user // user は moderation-log 経路だけで使う (将来の log 配線想定)。Upload には渡さない。
 	uploaded, err := i.deps.Uploader.Upload(drive.UploadInput{
-		User:  user,
 		Body:  body,
 		Name:  record.FileName,
 		Force: true,

@@ -1,0 +1,103 @@
+package admin
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"path"
+
+	"github.com/shiroha-a/mk/internal/core/drive"
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/safehttp"
+)
+
+// MaxEmojiImageBytes caps the response read from a remote emoji image so a
+// hostile / misconfigured server cannot drown the drive backend in arbitrary
+// bytes. Real-world custom emoji rarely exceed a few hundred KB; 8 MiB leaves
+// generous headroom for animated PNG / APNG / WebP.
+const MaxEmojiImageBytes int64 = 8 << 20
+
+// DefaultEmojiCopyAccept matches the headers Misskey TS sends when fetching
+// emoji images via DriveService.uploadFromUrl. */* fallback is required since
+// some CDN-fronted emoji use generic image/* responses.
+const DefaultEmojiCopyAccept = "image/*, */*"
+
+// EmojiImageFetcherImpl is the default EmojiImageFetcher used by router.go.
+// httpClient must be wired with safehttp.NewSSRFSafeTransport(...) so private
+// IPs and non-http(s) schemes never leak through this fetch path.
+type EmojiImageFetcherImpl struct {
+	httpClient *http.Client
+	driveSvc   *drive.Service
+	userAgent  string
+}
+
+// NewEmojiImageFetcher builds a fetcher bound to an SSRF-safe HTTP client and
+// the local drive service. userAgent should normally be cfg.UserAgent so feed
+// servers see the same `Misskey-Go/<ver>` identification used everywhere else.
+func NewEmojiImageFetcher(httpClient *http.Client, driveSvc *drive.Service, userAgent string) *EmojiImageFetcherImpl {
+	return &EmojiImageFetcherImpl{
+		httpClient: httpClient,
+		driveSvc:   driveSvc,
+		userAgent:  userAgent,
+	}
+}
+
+// FetchAndStore downloads the image at imageURL and stores it as a drive file.
+// Errors are wrapped so the caller can log a redacted reason while returning
+// a generic INTERNAL_ERROR to the client. SSRF / dial / parse / oversized
+// failures all collapse into a single error here — the SSRF-safe transport
+// blocks redirects to private IPs as well, so this layer does not need its
+// own redirect handling.
+func (f *EmojiImageFetcherImpl) FetchAndStore(ctx context.Context, imageURL string, user *model.User, name string) (*model.DriveFile, error) {
+	if f.httpClient == nil || f.driveSvc == nil {
+		return nil, fmt.Errorf("emoji image fetcher not wired")
+	}
+	u, err := url.Parse(imageURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("invalid image url")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", DefaultEmojiCopyAccept)
+	if f.userAgent != "" {
+		req.Header.Set("User-Agent", f.userAgent)
+	}
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch image: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("upstream status %d", resp.StatusCode)
+	}
+
+	body, err := safehttp.ReadAllLimit(resp.Body, MaxEmojiImageBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+
+	// Misskey TS は uploadFromUrl で `name = path.basename(url) || randomString()`
+	// 相当を行う。ここでは emoji name (例: "smile") を渡しているのでそのまま
+	// drive file 名として使うが、空なら URL の最終 path セグメントを fallback
+	// に取って TS と挙動を揃える。
+	driveName := name
+	if driveName == "" {
+		driveName = path.Base(u.Path)
+	}
+
+	df, err := f.driveSvc.Upload(drive.UploadInput{
+		User:  user,
+		Body:  body,
+		Name:  driveName,
+		Force: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("upload to drive: %w", err)
+	}
+	return df, nil
+}
