@@ -16,6 +16,27 @@ import (
 // time2000 is the epoch used by AID/AIDX (2000-01-01T00:00:00Z in milliseconds).
 const time2000 int64 = 946684800000
 
+// AidxCutoffPrefix builds the smallest aidx-style ID at the given time
+// for use as a `WHERE id > ?` cutoff in note range scans (mk-go の note
+// は created_at 列を持たず aidx ID 先頭 8 文字に ms timestamp を埋め込
+// んでいる)。後続 8 文字 (nodeID + counter) は最小値 "00000000" で揃え、
+// その時刻における最小 ID を作る。
+//
+// 呼び出し側は \`db.Where("id > ?", id.AidxCutoffPrefix(t))\` のように
+// 使い、aidx 規約と齟齬が出ないよう time2000 / base36 padding は本
+// パッケージの実装と必ず一致させる。
+func AidxCutoffPrefix(t time.Time) string {
+	ms := t.UnixMilli() - time2000
+	if ms < 0 {
+		ms = 0
+	}
+	timePart := fmt.Sprintf("%08s", strconv.FormatInt(ms, 36))
+	if len(timePart) > 8 {
+		timePart = timePart[len(timePart)-8:]
+	}
+	return timePart + "00000000"
+}
+
 // Generator defines the interface for ID generation.
 type Generator interface {
 	// Generate creates a new ID for the given timestamp.

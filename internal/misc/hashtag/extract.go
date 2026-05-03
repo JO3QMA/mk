@@ -28,6 +28,22 @@ const MaxTagLength = 128
 // FindAllStringSubmatch でキャプチャ #1 が tag 本体になる。
 var hashtagRe = regexp.MustCompile(`(?:^|[\s>"'` + "`" + `(\[{])#([\p{L}\p{N}_-]+)`)
 
+// codeBlockRe / urlRe は MFM パーサ未導入の代替として、hashtag 抽出
+// 前に「ハッシュタグとして拾うべきでない領域」を空白に置換するための
+// 正規表現。
+//
+//   - codeBlockRe: \`\`\`fence\`\`\` / inline \`code\`。インライン版は同行
+//     内のみで閉じる (改行をまたぐ \`...\` は意図しない大量マッチを生む)。
+//   - urlRe: http(s) URL の末尾に付く #fragment が hashtag 扱いされて
+//     しまう問題への対処 (e.g. https://example.com/path#anchor)。
+//
+// 真の MFM パーサ統合 (#上流 mfm-js 相当) は別 issue 扱いで、本
+// 実装は最も多い誤検知 2 種を遮断するライトウェイト版。
+var (
+	codeBlockRe = regexp.MustCompile("```[\\s\\S]*?```|`[^`\n]*`")
+	urlRe       = regexp.MustCompile(`https?://[^\s]+`)
+)
+
 // Extract pulls hashtag names out of text fragments (typically the note's
 // body and CW). Order is preserved by first occurrence; case-insensitive
 // duplicates collapse to a single entry. The original case is preserved
@@ -42,7 +58,12 @@ func Extract(parts ...string) []string {
 		if text == "" {
 			continue
 		}
-		matches := hashtagRe.FindAllStringSubmatch(text, -1)
+		// code block / URL の中に現れる # は hashtag として扱わない。
+		// 元 text の長さを保つために空白置換する (位置情報は使わないが、
+		// 隣接トークンの境界が壊れないようにする保険)。
+		cleaned := codeBlockRe.ReplaceAllString(text, " ")
+		cleaned = urlRe.ReplaceAllString(cleaned, " ")
+		matches := hashtagRe.FindAllStringSubmatch(cleaned, -1)
 		for _, m := range matches {
 			tag := m[1]
 			if len(tag) > MaxTagLength {

@@ -145,12 +145,19 @@ func ensureUser(t *testing.T, userID string) {
 // model.Note 経由だと validation が重いので raw SQL で軽く済ます。
 func insertNote(t *testing.T, gen id.Generator, userID string, tags []string, createdAt time.Time) {
 	t.Helper()
+	insertNoteWithVisibility(t, gen, userID, tags, createdAt, "public")
+}
+
+// insertNoteWithVisibility: visibility (public/home/followers/specified)
+// を制御できる挿入ヘルパー。trend 集計の visibility フィルタ検証用。
+func insertNoteWithVisibility(t *testing.T, gen id.Generator, userID string, tags []string, createdAt time.Time, visibility string) {
+	t.Helper()
 	ensureUser(t, userID)
 	noteID := gen.Generate(createdAt)
 	require.NoError(t, testDB.Exec(
 		`INSERT INTO "note" ("id", "userId", "tags", "visibility", "text")
-		 VALUES (?, ?, ?, 'public', '')`,
-		noteID, userID, pq.StringArray(tags),
+		 VALUES (?, ?, ?, ?::note_visibility_enum, '')`,
+		noteID, userID, pq.StringArray(tags), visibility,
 	).Error)
 }
 
@@ -207,6 +214,36 @@ func TestTrend_AggregatesRecentNotes(t *testing.T) {
 
 func TestTrend_DBError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, doPost(brokenHandler().Trend, `{}`).Code)
+}
+
+// TestTrend_VisibilityFilterExcludesPrivate guards #678 review:
+// followers / specified の note は trend 集計対象外。
+func TestTrend_VisibilityFilterExcludesPrivate(t *testing.T) {
+	cleanupNotes()
+	defer cleanupNotes()
+
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	now := time.Now()
+	// public + home は集計対象、followers + specified は除外。
+	insertNoteWithVisibility(t, gen, "tu_p", []string{"public_tag"}, now.Add(-5*time.Minute), "public")
+	insertNoteWithVisibility(t, gen, "tu_h", []string{"home_tag"}, now.Add(-5*time.Minute), "home")
+	insertNoteWithVisibility(t, gen, "tu_f", []string{"followers_tag"}, now.Add(-5*time.Minute), "followers")
+	insertNoteWithVisibility(t, gen, "tu_s", []string{"specified_tag"}, now.Add(-5*time.Minute), "specified")
+
+	rec := doPost(newHandler().Trend, `{}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	body := rec.Body.String()
+	// public_tag / home_tag は出る。
+	assert.Contains(t, body, `"public_tag"`)
+	assert.Contains(t, body, `"home_tag"`)
+	// followers_tag / specified_tag は trend に出てはいけない (プライバシー保護)。
+	assert.NotContains(t, body, `"followers_tag"`,
+		"followers visibility は集計対象外であるべき")
+	assert.NotContains(t, body, `"specified_tag"`,
+		"specified visibility は集計対象外であるべき")
 }
 
 // --- Users ---

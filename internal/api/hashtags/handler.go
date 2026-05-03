@@ -1,10 +1,8 @@
 package hashtags
 
 import (
-	"fmt"
 	"net/http"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -104,10 +102,15 @@ func (h *Handler) Show(c echo.Context) error {
 // から動的に集計する。
 //
 // mk-go の note テーブルは createdAt 列を持たず、aidx ID 先頭 8 文字に
-// ms timestamp が埋め込まれている (`internal/misc/id/id.go` 参照)。
-// 200 分前の cutoff prefix を生成して `id > cutoffID` で範囲フィルタを
-// かける。tags 配列 (varchar(128)[]) には migration 000043 で GIN index
-// を張ったので `<>` フィルタも index で効く。
+// ms timestamp が埋め込まれている (`internal/misc/id`)。200 分前の
+// cutoff prefix を生成して `id > cutoffID` で範囲フィルタをかける。
+// tags 配列 (varchar(128)[]) には migration 000043 で GIN index を張った
+// ので `<>` フィルタも index で効く。
+//
+// visibility フィルタ: TS の HashtagService.updateHashtag は public /
+// home の note のみ集計対象にする。followers / specified を含めると
+// 公開トレンドに非公開タグが現れてプライバシー上の問題になるため、
+// SQL の WHERE で同じ条件を強制する。
 //
 // 取得した row は Go 側で aidx parse → bucket idx 計算 → tag/bucket 別
 // の unique users を集計する。直近 200 分の対象 note 数は中規模インス
@@ -122,32 +125,46 @@ func (h *Handler) Trend(c echo.Context) error {
 		topN          = 10
 	)
 
-	cutoff := time.Now().Add(-time.Duration(bucketSeconds*bucketCount) * time.Second)
-	cutoffID := aidxCutoffPrefix(cutoff)
-
-	type row struct {
-		ID     string         `gorm:"column:id"`
-		UserID string         `gorm:"column:userId"`
-		Tags   pq.StringArray `gorm:"column:tags;type:varchar(128)[]"`
-	}
-	var rows []row
-	if err := h.db.Raw(`
-		SELECT "id", "userId", "tags"
-		FROM "note"
-		WHERE "id" > ?
-		  AND "tags" <> ARRAY[]::varchar[]
-	`, cutoffID).Scan(&rows).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
-	}
-
 	gen, err := id.NewGenerator("aidx")
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	parser, ok := gen.(interface {
-		ParseTime(string) (time.Time, error)
-	})
-	if !ok {
+
+	cutoff := time.Now().Add(-time.Duration(bucketSeconds*bucketCount) * time.Second)
+	cutoffID := id.AidxCutoffPrefix(cutoff)
+
+	// pq.StringArray を含む struct を Scan(&rows) に渡すと GORM の
+	// schema reflection が `unsupported data type: &[]` を warn-log する
+	// (pq.StringArray の Scanner で runtime には正しく動くが、初期 type
+	// infer で躓く)。Rows().Scan() で個別に scan するとこの noise を回避
+	// できるので、本 handler では明示的なループ scan を採用する。
+	type row struct {
+		ID     string
+		UserID string
+		Tags   []string
+	}
+	var rows []row
+	sqlRows, err := h.db.Raw(`
+		SELECT "id", "userId", "tags"
+		FROM "note"
+		WHERE "id" > ?
+		  AND "tags" <> ARRAY[]::varchar[]
+		  AND "visibility" IN ('public', 'home')
+	`, cutoffID).Rows()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	defer sqlRows.Close()
+	for sqlRows.Next() {
+		var r row
+		var tags pq.StringArray
+		if err := sqlRows.Scan(&r.ID, &r.UserID, &tags); err != nil {
+			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		}
+		r.Tags = []string(tags)
+		rows = append(rows, r)
+	}
+	if err := sqlRows.Err(); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
@@ -157,7 +174,7 @@ func (h *Handler) Trend(c echo.Context) error {
 
 	now := time.Now()
 	for _, r := range rows {
-		ts, perr := parser.ParseTime(r.ID)
+		ts, perr := gen.ParseTime(r.ID)
 		if perr != nil {
 			continue
 		}
@@ -224,28 +241,6 @@ func (h *Handler) Trend(c echo.Context) error {
 		})
 	}
 	return c.JSON(http.StatusOK, result)
-}
-
-// aidxCutoffPrefix builds the smallest aidx-style ID at the given time
-// for use as a `WHERE id > ?` cutoff in note range scans. mk-go の note
-// は created_at 列を持たず aidx ID 先頭 8 文字に ms timestamp を埋め込
-// んでいるので、prefix だけ生成すれば lexicographic に正しく比較できる。
-//
-// time2000 と base36 padding の生成は internal/misc/id/id.go の aidxGen
-// と同じ規約。Generate() を再利用するとカウンタが 1 進んでしまうため
-// ここでは独自に prefix のみ作る。
-func aidxCutoffPrefix(t time.Time) string {
-	const time2000 int64 = 946684800000
-	ms := t.UnixMilli() - time2000
-	if ms < 0 {
-		ms = 0
-	}
-	timePart := fmt.Sprintf("%08s", strconv.FormatInt(ms, 36))
-	if len(timePart) > 8 {
-		timePart = timePart[len(timePart)-8:]
-	}
-	// 後続 8 文字 (nodeID + counter) は最小値で揃え、当該時刻の最小 ID を作る
-	return timePart + "00000000"
 }
 
 // Users handles POST /api/hashtags/users.

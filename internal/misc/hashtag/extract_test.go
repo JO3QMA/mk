@@ -88,6 +88,21 @@ func TestExtract(t *testing.T) {
 			in:   []string{"#" + strings.Repeat("a", MaxTagLength+50)},
 			want: []string{strings.Repeat("a", MaxTagLength)},
 		},
+		{
+			name: "fenced code block excluded",
+			in:   []string{"normal #yes\n```\n#secret\n```\nback #also"},
+			want: []string{"yes", "also"},
+		},
+		{
+			name: "inline code excluded",
+			in:   []string{"check `#var` here #real"},
+			want: []string{"real"},
+		},
+		{
+			name: "url fragment not picked up",
+			in:   []string{"see https://example.com/path#anchor for #real"},
+			want: []string{"real"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
