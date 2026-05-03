@@ -21,18 +21,18 @@ func (h *Handler) UpdateProxyAccount(c echo.Context) error {
 		Description *string `json:"description"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	if h.systemAccountFetcher == nil || h.userRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	proxy, err := h.systemAccountFetcher.Fetch("proxy")
 	if err != nil || proxy == nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if req.Description != nil {
 		if err := h.userRepo.UpdateProfile(proxy.ID, map[string]any{"description": req.Description}); err != nil {
-			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+			return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 		}
 		// Misskey TS update-proxy-account.ts は before を null で記録する
 		// (TODO コメントで before 取得が未実装の状態)。互換性のため同じ

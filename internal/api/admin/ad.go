@@ -28,7 +28,7 @@ func (h *Handler) AdCreate(c echo.Context) error {
 		IsSensitive bool   `json:"isSensitive"`
 	}
 	if err := c.Bind(&req); err != nil || req.URL == "" || req.ImageURL == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	if req.Place == "" {
 		req.Place = "square"
@@ -53,7 +53,7 @@ func (h *Handler) AdCreate(c echo.Context) error {
 		ExpiresAt:   millisOrDefault(req.ExpiresAt, time.Now().Add(30*24*time.Hour)),
 	}
 	if err := h.adRepo.Create(ad); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	h.logModeration(c, moderationlog.LogCreateAd, map[string]any{
 		"adId": ad.ID,
@@ -100,7 +100,7 @@ func (h *Handler) AdList(c echo.Context) error {
 	}
 	rows, err := h.adRepo.List(req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if rows == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -130,11 +130,11 @@ func (h *Handler) AdUpdate(c echo.Context) error {
 		IsSensitive *bool   `json:"isSensitive"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	before, err := h.adRepo.FindByID(req.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	fields := map[string]any{}
 	if req.URL != nil {
@@ -174,7 +174,7 @@ func (h *Handler) AdUpdate(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.adRepo.UpdateFields(req.ID, fields); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if after, err := h.adRepo.FindByID(req.ID); err == nil && after != nil {
 		h.logModeration(c, moderationlog.LogUpdateAd, map[string]any{

@@ -35,7 +35,7 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 
 	exists, err := h.promoNoteRepo.Exists(req.NoteID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if exists {
 		return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_PROMOTED", "The note has already promoted.", "ae427aa2-7a41-484f-a18c-2c1104051604"))
@@ -54,7 +54,7 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 		UserID:    targetUserID,
 	}
 	if err := h.promoNoteRepo.Create(promo); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.NoContent(http.StatusNoContent)
 }

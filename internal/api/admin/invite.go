@@ -126,7 +126,7 @@ func (h *Handler) InviteList(c echo.Context) error {
 	}
 	rows, err := h.inviteRepo.List(filter, req.Limit, req.Offset, time.Now())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.JSON(http.StatusOK, h.packInviteTickets(rows))
 }

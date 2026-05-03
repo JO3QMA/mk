@@ -59,7 +59,7 @@ func (h *Handler) DriveFiles(c echo.Context) error {
 	}
 	files, err := h.driveFileRepo.ListForAdmin(req.UserID, req.Origin, host, req.Type, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	out := make([]entity.DriveFileEntity, 0, len(files))
 	for _, f := range files {
