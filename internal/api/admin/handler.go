@@ -884,8 +884,18 @@ func (h *Handler) UpdateMeta(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
+	// before snapshot for moderation log。Misskey TS の updateServerSettings
+	// info は full meta の before/after で SMTP secret 等もそのまま記録する
+	// 仕様 (上流 update-meta.ts でも mask 無し)。互換性最優先で同じ挙動。
+	beforeMeta, _ := h.metaRepo.Fetch()
 	if err := h.metaRepo.Update(fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	if afterMeta, err := h.metaRepo.Fetch(); err == nil {
+		h.logModeration(c, moderationlog.LogUpdateServerSettings, map[string]any{
+			"before": beforeMeta,
+			"after":  afterMeta,
+		})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

@@ -74,13 +74,27 @@ func (h *Handler) UpdateUserNote(c echo.Context) error {
 // UpdateAbuseUserReport handles POST /api/admin/update-abuse-user-report.
 // 該当 abuse report の resolved フラグを true に立てる moderation 操作。
 // reportId 欠落 / abuseRepo 未配線時は no-op で 204 を返す。
+//
+// Misskey TS の resolve-abuse-user-report 相当。log type は resolveAbuseReport
+// (note 編集分岐は別 endpoint なので本 handler では非対象)。info schema は
+// `{reportId, report, resolvedAs}` で TS と互換。mk-go では resolvedAs を
+// 受け取らないので nil を入れる。
 func (h *Handler) UpdateAbuseUserReport(c echo.Context) error {
 	var req struct {
 		ReportID string `json:"reportId"`
 	}
 	_ = c.Bind(&req)
-	if req.ReportID != "" && h.abuseRepo != nil {
-		_ = h.abuseRepo.UpdateFields(req.ReportID, map[string]any{"resolved": true})
+	if req.ReportID == "" || h.abuseRepo == nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// before snapshot for moderation log info
+	snapshot, _ := h.abuseRepo.FindByID(req.ReportID)
+	if err := h.abuseRepo.UpdateFields(req.ReportID, map[string]any{"resolved": true}); err == nil && snapshot != nil {
+		h.logModeration(c, moderationlog.LogResolveAbuseReport, map[string]any{
+			"reportId":   req.ReportID,
+			"report":     snapshot,
+			"resolvedAs": nil,
+		})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

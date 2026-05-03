@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/model"
 )
 
@@ -54,6 +55,10 @@ func (h *Handler) AdCreate(c echo.Context) error {
 	if err := h.adRepo.Create(ad); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
+	h.logModeration(c, moderationlog.LogCreateAd, map[string]any{
+		"adId": ad.ID,
+		"ad":   ad,
+	})
 	return c.JSON(http.StatusOK, ad)
 }
 
@@ -66,7 +71,17 @@ func (h *Handler) AdDelete(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	_ = h.adRepo.Delete(req.ID)
+	if req.ID == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// log info に snapshot を含めるため削除前に取得 (失敗時は log を諦める)
+	snapshot, _ := h.adRepo.FindByID(req.ID)
+	if err := h.adRepo.Delete(req.ID); err == nil && snapshot != nil {
+		h.logModeration(c, moderationlog.LogDeleteAd, map[string]any{
+			"adId": req.ID,
+			"ad":   snapshot,
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -117,7 +132,8 @@ func (h *Handler) AdUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
 	}
-	if _, err := h.adRepo.FindByID(req.ID); err != nil {
+	before, err := h.adRepo.FindByID(req.ID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	fields := map[string]any{}
@@ -154,8 +170,18 @@ func (h *Handler) AdUpdate(c echo.Context) error {
 	if req.ExpiresAt != nil {
 		fields["expiresAt"] = time.UnixMilli(*req.ExpiresAt)
 	}
+	if len(fields) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
 	if err := h.adRepo.UpdateFields(req.ID, fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if after, err := h.adRepo.FindByID(req.ID); err == nil && after != nil {
+		h.logModeration(c, moderationlog.LogUpdateAd, map[string]any{
+			"adId":   req.ID,
+			"before": before,
+			"after":  after,
+		})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

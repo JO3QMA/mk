@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/entity"
 )
 
@@ -33,6 +34,13 @@ func (h *Handler) UpdateProxyAccount(c echo.Context) error {
 		if err := h.userRepo.UpdateProfile(proxy.ID, map[string]any{"description": req.Description}); err != nil {
 			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 		}
+		// Misskey TS update-proxy-account.ts は before を null で記録する
+		// (TODO コメントで before 取得が未実装の状態)。互換性のため同じ
+		// schema で出力する。
+		h.logModeration(c, moderationlog.LogUpdateProxyAccountDescription, map[string]any{
+			"before": nil,
+			"after":  req.Description,
+		})
 	}
 	// 更新後 profile を再取得して UserDetailed を返す。
 	profile, _ := h.userRepo.FindProfileByUserID(proxy.ID)
