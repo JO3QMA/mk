@@ -1407,6 +1407,38 @@ func TestShowModerationLogs_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestShowModerationLogs_IncludesCreatedAt は frontend modlog.ModLog.vue
+// が `log.createdAt` を直接読んで MkTime に渡すため、handler が aidx ID
+// から派生した createdAt 文字列を必ず response に含めることを guard する。
+func TestShowModerationLogs_IncludesCreatedAt(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	modLogRepo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	// 既知の固定時刻で aidx ID を生成 → response の createdAt と照合
+	fixedTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	aidxID := gen.Generate(fixedTime)
+	require.NoError(t, modLogRepo.Create(&model.ModerationLog{ID: aidxID, UserID: "u1", Type: "suspend"}))
+	h.SetModLogService(moderationlog.New(modLogRepo, gen))
+
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+
+	createdAt, ok := resp[0]["createdAt"].(string)
+	require.True(t, ok, "createdAt must be present and be a string")
+
+	// Misskey の標準 format で parse 可能であること
+	parsed, err := time.Parse("2006-01-02T15:04:05.000Z", createdAt)
+	require.NoError(t, err, "createdAt must be parseable as Misskey-format ISO string")
+	// aidx の解像度は ms なので fixedTime と完全一致するはず
+	assert.WithinDuration(t, fixedTime, parsed, time.Millisecond)
+}
+
 // --- moderation log assertions for user moderation handlers ---
 
 func TestSuspendUser_WritesModerationLog(t *testing.T) {

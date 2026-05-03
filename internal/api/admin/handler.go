@@ -1636,6 +1636,12 @@ func (h *Handler) ResolveAbuseReport(c echo.Context) error {
 }
 
 // ShowModerationLogs handles POST /api/admin/show-moderation-logs.
+//
+// model.ModerationLog は createdAt 列を持たず aidx ID 先頭 8 文字に
+// timestamp を埋め込んでいる。frontend (modlog.ModLog.vue) は
+// `<MkTime :time="log.createdAt"/>` を直接読むため、handler 側で aidx
+// から派生した createdAt 文字列を response に注入する。invite/users 系
+// と同じく "2006-01-02T15:04:05.000Z" 形式 (Misskey の標準)。
 func (h *Handler) ShowModerationLogs(c echo.Context) error {
 	var req struct {
 		Limit  int `json:"limit"`
@@ -1648,5 +1654,23 @@ func (h *Handler) ShowModerationLogs(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	return c.JSON(http.StatusOK, logs)
+	out := make([]map[string]any, 0, len(logs))
+	for _, l := range logs {
+		m := map[string]any{
+			"id":     l.ID,
+			"userId": l.UserID,
+			"type":   l.Type,
+			"info":   l.Info,
+		}
+		if h.idGen != nil {
+			if ts, err := h.idGen.ParseTime(l.ID); err == nil {
+				m["createdAt"] = ts.UTC().Format("2006-01-02T15:04:05.000Z")
+			}
+		}
+		if l.User != nil {
+			m["user"] = l.User
+		}
+		out = append(out, m)
+	}
+	return c.JSON(http.StatusOK, out)
 }
