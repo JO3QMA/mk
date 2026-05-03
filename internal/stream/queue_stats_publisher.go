@@ -77,12 +77,18 @@ func NewQueueStatsPublisher(inspector QueueInspector, pub PubSubPublisher, inter
 }
 
 // Start begins the collection loop.
+//
+// Stop()→Start() による再起動時は前 publisher の prevCompleted を捨て、
+// 新規 loop の初回 tick で activeSincePrevTick=0 を出す。これは asynq の
+// Completed が 1 日 rolling な性質と整合 (再起動またぎで delta を取って
+// も意味のある値にならない)。
 func (p *QueueStatsPublisher) Start() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.started || p.pub == nil || p.inspector == nil {
 		return
 	}
+	p.prevCompleted = make(map[string]int)
 	p.started = true
 	p.wg.Add(1)
 	go p.loop()
@@ -135,8 +141,8 @@ type queueStatsEntry struct {
 
 func (p *QueueStatsPublisher) tick() {
 	body := queueStatsBody{
-		Deliver: p.queueEntry(deliverQueueName),
-		Inbox:   p.queueEntry(inboxQueueName),
+		Deliver: p.entryForQueue(deliverQueueName),
+		Inbox:   p.entryForQueue(inboxQueueName),
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -164,7 +170,7 @@ var (
 	inboxQueueName   = "inbox"
 )
 
-// queueEntry queries one asynq queue and translates its depth into the
+// entryForQueue queries one asynq queue and translates its depth into the
 // Bull-shaped queueStatsEntry the frontend WidgetJobQueue consumes.
 //
 // activeSincePrevTick は前 tick 以降に処理完了したジョブ数の delta で、
@@ -175,7 +181,7 @@ var (
 //
 // 初回 tick (prevCompleted に該当 queue の値が無い) は 0 を出して、
 // 次 tick から実数の delta を出す。
-func (p *QueueStatsPublisher) queueEntry(qname string) queueStatsEntry {
+func (p *QueueStatsPublisher) entryForQueue(qname string) queueStatsEntry {
 	info, err := p.inspector.GetQueueInfo(qname)
 	if err != nil || info == nil {
 		return queueStatsEntry{}

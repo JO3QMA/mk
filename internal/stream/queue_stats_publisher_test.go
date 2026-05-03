@@ -51,9 +51,10 @@ func TestQueueStatsPublisher_PublishesDeliverAndInboxDepths(t *testing.T) {
 				ActiveSincePrevTick int `json:"activeSincePrevTick"`
 			} `json:"deliver"`
 			Inbox struct {
-				Active  int `json:"active"`
-				Waiting int `json:"waiting"`
-				Delayed int `json:"delayed"`
+				Active              int `json:"active"`
+				Waiting             int `json:"waiting"`
+				Delayed             int `json:"delayed"`
+				ActiveSincePrevTick int `json:"activeSincePrevTick"`
 			} `json:"inbox"`
 		}
 		require.NoError(t, json.Unmarshal(c.payload, &body))
@@ -66,7 +67,112 @@ func TestQueueStatsPublisher_PublishesDeliverAndInboxDepths(t *testing.T) {
 		assert.Equal(t, 5, body.Inbox.Active)
 		assert.Equal(t, 11, body.Inbox.Waiting)
 		assert.Equal(t, 4, body.Inbox.Delayed)
+		// stub は Completed を 0 で返し続けるので delta も 0 で安定。
+		assert.Equal(t, 0, body.Inbox.ActiveSincePrevTick)
 	}
+}
+
+// seqCompletedInspector は queue 名ごとに Completed 累計のシーケンスを
+// 返す stub。tick を進めるたびに次の値を返す。activeSincePrevTick が
+// 前 tick との差分で計算されることを決定的に検証するため (#654)。
+type seqCompletedInspector struct {
+	deliver, inbox []int
+	deliverIdx     int
+	inboxIdx       int
+}
+
+func (s *seqCompletedInspector) GetQueueInfo(qname string) (*QueueStatsInfo, error) {
+	var seq []int
+	var idx *int
+	switch qname {
+	case "deliver":
+		seq, idx = s.deliver, &s.deliverIdx
+	case "inbox":
+		seq, idx = s.inbox, &s.inboxIdx
+	default:
+		return &QueueStatsInfo{}, nil
+	}
+	if len(seq) == 0 {
+		return &QueueStatsInfo{}, nil
+	}
+	i := *idx
+	if i >= len(seq) {
+		i = len(seq) - 1 // 末尾以降は最終値で固定
+	} else {
+		*idx++
+	}
+	return &QueueStatsInfo{Completed: seq[i]}, nil
+}
+
+// TestQueueStatsPublisher_ActiveSincePrevTickIsCompletedDelta は
+// activeSincePrevTick が Completed の前 tick との差分で計算され、
+// asynq の rolling reset (Completed が 1 日 0 にリセットされる挙動) で
+// 負値になっても 0 にクランプされることを guard する (#654 review)。
+//
+// tick() を直接駆動する internal test。Start()/Stop() の goroutine 経由
+// だと tick タイミングが非決定的なので避ける。
+func TestQueueStatsPublisher_ActiveSincePrevTickIsCompletedDelta(t *testing.T) {
+	insp := &seqCompletedInspector{
+		// deliver: 10 → 15 (+5) → 3 (rolling reset、負値 clamp) → 8 (+5)
+		deliver: []int{10, 15, 3, 8},
+		// inbox は固定 0 で「他 queue の delta が deliver のみで動く」
+		// ことを示す。
+		inbox: []int{0, 0, 0, 0},
+	}
+	pub := &capturePubSub{}
+	p := NewQueueStatsPublisher(insp, pub, 0)
+
+	// 各 tick で activeSincePrevTick の期待値を assert。
+	expected := []int{
+		0, // 初回: prev なし
+		5, // 10 → 15
+		0, // 15 → 3 (負値 clamp)
+		5, // 3 → 8
+	}
+	for i, want := range expected {
+		p.tick()
+		calls := pub.snapshot()
+		require.Len(t, calls, i+1, "expected one publish per tick")
+		var body struct {
+			Deliver struct {
+				ActiveSincePrevTick int `json:"activeSincePrevTick"`
+			} `json:"deliver"`
+		}
+		require.NoError(t, json.Unmarshal(calls[i].payload, &body))
+		assert.Equalf(t, want, body.Deliver.ActiveSincePrevTick,
+			"tick %d: deliver activeSincePrevTick", i)
+	}
+}
+
+// Start() → Stop() → Start() の再起動で prevCompleted が reset され、
+// 新 publisher の初回 tick が 0 を出すことを確認 (#654 review)。
+func TestQueueStatsPublisher_RestartResetsPrevCompleted(t *testing.T) {
+	insp := &seqCompletedInspector{
+		deliver: []int{100, 105}, // restart 後 1 回目 = 100、2 回目 = 105
+		inbox:   []int{0, 0},
+	}
+	pub := &capturePubSub{}
+	p := NewQueueStatsPublisher(insp, pub, 0)
+
+	// 1 サイクル目: tick で prevCompleted=100 が記録される
+	p.tick()
+
+	// prevCompleted が外から見えないので Start/Stop 経由で reset を起こす
+	p.Start()
+	p.Stop()
+
+	// 2 サイクル目: restart 後の最初の tick は prev なし扱いで 0
+	p.tick()
+	calls := pub.snapshot()
+	require.NotEmpty(t, calls)
+	var body struct {
+		Deliver struct {
+			ActiveSincePrevTick int `json:"activeSincePrevTick"`
+		} `json:"deliver"`
+	}
+	require.NoError(t, json.Unmarshal(calls[len(calls)-1].payload, &body))
+	assert.Equal(t, 0, body.Deliver.ActiveSincePrevTick,
+		"restart 後の初回 tick は prev なし扱いで 0")
 }
 
 // perQueueInspector returns a different QueueStatsInfo per queue name so
