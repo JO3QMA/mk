@@ -1699,6 +1699,10 @@ func (s *Server) setupRoutes() {
 	adminHandler.SetAdminDB(s.db)
 	adminHandler.SetUserIPRepo(userIPRepo)
 	adminHandler.SetEmojiImportEnqueuer(s.queueClient)
+	// admin/emoji/copy で remote 画像を local drive に保存するための fetcher
+	// を wire する (#670)。outboundClient 経由なので SSRF / proxy / outgoing
+	// address が他の outbound 経路と同じ設定で適用される。
+	adminHandler.SetEmojiImageFetcher(apiadmin.NewEmojiImageFetcher(s.outboundClient(10*time.Second), driveService, s.config.UserAgent))
 	adminHandler.SetRelayService(relaySvc)
 	adminHandler.SetSystemWebhookRepo(systemWebhookRepo)
 	// admin/system-webhook/test の fire-and-forget POST も SSRF-safe transport

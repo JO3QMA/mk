@@ -159,23 +159,26 @@ type UploadInput struct {
 
 // Upload writes a file to storage and creates a drive_file row. もし同じmd5の
 // ファイルが既に存在し Force=false なら、既存レコードを返す (deduplication)。
+//
+// in.User == nil は「system 所有 drive file」を表現する (Misskey TS の
+// driveService.uploadFromUrl({user: null, ...}) と等価)。system file は
+// 特定 user に紐付かないため md5 dedup / folder 所有権チェック / sensitive
+// 検出 / stream publish はいずれも skip する。custom emoji のリモート→
+// local コピー (#670) など、誰のものでもないがインスタンスが管理する
+// アセット用。
 func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
-	if in.User == nil {
-		return nil, errors.New("user is required")
-	}
-
 	// in.Body は []byte なので bytes.Reader 経由のAnalyseFileは失敗しない。
 	// AnalyseFile自体は io.Reader を取るがエラー経路はここでは到達しない。
 	info, _ := AnalyseFile(bytes.NewReader(in.Body))
 
-	if !in.Force {
+	if in.User != nil && !in.Force {
 		if existing, err := s.fileRepo.FindByMD5(in.User.ID, info.MD5); err == nil {
 			return existing, nil
 		}
 	}
 
-	// folderの所有権チェック
-	if in.FolderID != nil {
+	// folderの所有権チェック (system file は folder を持たない前提なので skip)
+	if in.User != nil && in.FolderID != nil {
 		folder, err := s.folderRepo.FindByID(*in.FolderID)
 		if err != nil {
 			return nil, ErrFolderNotFound
@@ -236,11 +239,17 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 
 	now := time.Now()
 	fileID := s.idGen.Generate(now)
-	userID := in.User.ID
+	var userIDPtr *string
+	var userHostPtr *string
+	if in.User != nil {
+		uid := in.User.ID
+		userIDPtr = &uid
+		userHostPtr = in.User.Host
+	}
 	f := &model.DriveFile{
 		ID:                 fileID,
-		UserID:             &userID,
-		UserHost:           in.User.Host,
+		UserID:             userIDPtr,
+		UserHost:           userHostPtr,
 		MD5:                info.MD5,
 		Name:               in.Name,
 		Type:               info.MimeType,
@@ -260,8 +269,8 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		IsSensitive:        in.IsSensitive,
 	}
 
-	// Sensitive media detection フック
-	if !f.IsSensitive {
+	// Sensitive media detection フック (system file は user 紐付きが無いので skip)
+	if !f.IsSensitive && in.User != nil {
 		f.IsSensitive = s.detectSensitive(in.User, in.Body, info.MimeType)
 	}
 
@@ -276,13 +285,21 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 		}
 		return nil, err
 	}
-	s.publishEvent(in.User.ID, "fileCreated", f)
-	// Misskey本家DriveService.addFileはdrive topicに加えてmainにも
-	// driveFileCreatedをemitしてUploader自身のUI(ドロップアップロード等)
-	// を即時反映させる(TS: DriveService.ts:665)。
-	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(in.User.ID, "driveFileCreated", entity.PackDriveFile(f, s.idGen))
+	// system file (in.User == nil) は誰の UI にも反映する必要が無いので
+	// stream publish 系を skip する。publishEvent / mainStreamPublisher は
+	// それぞれ userID を必要とする。
+	if in.User != nil {
+		s.publishEvent(in.User.ID, "fileCreated", f)
+		// Misskey本家DriveService.addFileはdrive topicに加えてmainにも
+		// driveFileCreatedをemitしてUploader自身のUI(ドロップアップロード等)
+		// を即時反映させる(TS: DriveService.ts:665)。
+		if s.mainStreamPublisher != nil {
+			s.mainStreamPublisher.PublishMainEvent(in.User.ID, "driveFileCreated", entity.PackDriveFile(f, s.idGen))
+		}
 	}
+	// chartHook は user nil でも発火させる: bytes / count は instance-wide
+	// stats なので custom emoji 等の system file もインスタンスストレージの
+	// 一部として計上したい (uploader UI 反映の publishEvent とは異なる扱い)。
 	if s.chartHook != nil {
 		s.chartHook.OnFileUploaded(f)
 	}

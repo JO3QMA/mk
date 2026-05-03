@@ -88,6 +88,7 @@ type Handler struct {
 	userIPRepo              repository.UserIPRepository
 	queueInspector          QueueInspector
 	emojiEnqueuer           EmojiImportEnqueuer
+	emojiImageFetcher       EmojiImageFetcher
 	relayService            RelayService
 	abuseForwarder          AbuseForwarder
 	deleteAccountEnqueuer   DeleteAccountEnqueuer
@@ -251,6 +252,22 @@ type EmojiImportEnqueuer interface {
 // import-zip endpoint.
 func (h *Handler) SetEmojiImportEnqueuer(e EmojiImportEnqueuer) {
 	h.emojiEnqueuer = e
+}
+
+// EmojiImageFetcher downloads a remote image and stores it in the local
+// drive, returning the resulting drive file. Used by admin/emoji/copy to
+// detach a copied emoji from its source server (#670). 小さい interface に
+// 切り出すことで http client / drive.Service への直接依存を持たずに済み、
+// handler 単体テストで fake を差し込める。
+type EmojiImageFetcher interface {
+	FetchAndStore(ctx context.Context, url string, user *model.User, name string) (*model.DriveFile, error)
+}
+
+// SetEmojiImageFetcher attaches an EmojiImageFetcher used by admin/emoji/copy.
+// nil のままだと EmojiCopy は src の URL をそのまま継承する legacy 挙動を
+// 維持する (テスト容易性 + 未配線環境での graceful degradation 用)。
+func (h *Handler) SetEmojiImageFetcher(f EmojiImageFetcher) {
+	h.emojiImageFetcher = f
 }
 
 // QueueInspector abstracts asynq.Inspector for queue management endpoints.
