@@ -6,14 +6,17 @@
 package fetchrss
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -37,19 +40,29 @@ const FetchTimeout = 5 * time.Second
 
 // Handler serves /api/fetch-rss. The HTTP client must be wired with an
 // SSRF-safe transport (see internal/server/outbound_http.go); the handler
-// itself adds only request-shape validation and gofeed translation.
+// itself adds only request-shape validation and gofeed translation. Note
+// that safehttp.NewSSRFSafeTransport applies the private-IP guard on every
+// dial, so HTTP redirects to private IPs are also blocked — the handler
+// can rely on the transport for redirect-chain SSRF defense.
 type Handler struct {
 	httpClient *http.Client
-	parser     *gofeed.Parser
+	userAgent  string
+	parserPool *sync.Pool
 }
 
-// New builds a Handler bound to the given outbound HTTP client. Pass a client
-// whose Transport is safehttp.NewSSRFSafeTransport(...) so private IPs and
-// non-http(s) schemes never leak through this endpoint.
-func New(httpClient *http.Client) *Handler {
+// New builds a Handler bound to the given outbound HTTP client and User-Agent
+// string. Pass a client whose Transport is safehttp.NewSSRFSafeTransport(...)
+// so private IPs and non-http(s) schemes never leak through this endpoint.
+// userAgent should normally be cfg.UserAgent so feed servers see the same
+// `Misskey-Go/<ver>` identification used everywhere else.
+func New(httpClient *http.Client, userAgent string) *Handler {
 	return &Handler{
 		httpClient: httpClient,
-		parser:     gofeed.NewParser(),
+		userAgent:  userAgent,
+		// gofeed.Parser の goroutine 安全性は明記されていないため pool 経由で
+		// 1 リクエスト 1 インスタンスに分離する。Pool reuse でアロケーションは
+		// 実質ゼロに保つ。
+		parserPool: &sync.Pool{New: func() any { return gofeed.NewParser() }},
 	}
 }
 
@@ -74,7 +87,9 @@ func (h *Handler) Fetch(c echo.Context) error {
 
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_URL", "url must be http(s).", "9c5ad7d3-6e15-4f3a-87b8-39ec2e91d5a3"))
+		// 不正 scheme / host 欠落と「URL 未指定」を frontend 側で別扱いに
+		// したい運用に備え、Misskey の慣行どおり別 ID を割り当てる。
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_URL", "url must be http(s).", "f5b2bd41-7c0a-4d49-b8c8-3d3a4d9b8e21"))
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), FetchTimeout)
@@ -83,10 +98,13 @@ func (h *Handler) Fetch(c echo.Context) error {
 	feed, err := h.fetchFeed(ctx, u.String())
 	if err != nil {
 		// SSRF block / dial fail / parse fail はすべて upstream 側の問題として
-		// 502 にまとめる。frontend は items の有無しか見ていないので、stub
-		// と同じく空 array を返す道もあるが、ウィジェット側で「取得失敗」と
+		// 502 にまとめる。err.Error() を直接 client に返すと resolved IP や
+		// SSRF 文言が漏れるため static メッセージに置き換え、詳細はサーバ側
+		// ログに残す。frontend は items の有無しか見ていないので、stub と
+		// 同じく空 array を返す道もあるが、ウィジェット側で「取得失敗」と
 		// 「フィードが空」を区別したい運用に備えて explicit error にする。
-		return c.JSON(http.StatusBadGateway, apierr.Error("UPSTREAM_ERROR", err.Error(), "0e0e1f5b-2c97-4f17-a51c-1f9c2e9b4d82"))
+		slog.WarnContext(ctx, "fetch-rss upstream failed", "url", u.String(), "err", err)
+		return c.JSON(http.StatusBadGateway, apierr.Error("UPSTREAM_ERROR", "Failed to fetch feed.", "0e0e1f5b-2c97-4f17-a51c-1f9c2e9b4d82"))
 	}
 
 	c.Response().Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", CacheSeconds))
@@ -103,6 +121,11 @@ func (h *Handler) fetchFeed(ctx context.Context, feedURL string) (*gofeed.Feed, 
 	// Misskey TS は `Accept: application/rss+xml, */*` を送る。Atom 専用 server
 	// 互換のため */* も付ける。
 	req.Header.Set("Accept", "application/rss+xml, */*")
+	if h.userAgent != "" {
+		// UA 必須の RSS 配信サーバ (Cloudflare 含む) で 403 にならないように
+		// するため、他の outbound 経路と同じ Misskey-Go/<ver> UA を送る。
+		req.Header.Set("User-Agent", h.userAgent)
+	}
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
@@ -119,7 +142,10 @@ func (h *Handler) fetchFeed(ctx context.Context, feedURL string) (*gofeed.Feed, 
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 
-	feed, err := h.parser.ParseString(string(body))
+	parser := h.parserPool.Get().(*gofeed.Parser)
+	defer h.parserPool.Put(parser)
+
+	feed, err := parser.Parse(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("parse feed: %w", err)
 	}

@@ -58,12 +58,16 @@ const sampleAtom = `<?xml version="1.0" encoding="utf-8"?>
   </entry>
 </feed>`
 
+// testUserAgent is the UA string used for handler-under-test wiring. Static
+// so individual tests can assert on it without threading the value around.
+const testUserAgent = "Misskey-Go/test (https://example.test)"
+
 // startFeedServer launches an httptest server returning the supplied body and
 // returns a Handler whose HTTP client targets that server. We bypass SSRF
 // concerns at the transport layer because httptest binds to 127.0.0.1; the
 // real wiring uses the SSRF-safe transport from server/outbound_http.go.
 func newTestHandler(_ *testing.T, srv *httptest.Server) *Handler {
-	return New(&http.Client{Timeout: FetchTimeout, Transport: srv.Client().Transport})
+	return New(&http.Client{Timeout: FetchTimeout, Transport: srv.Client().Transport}, testUserAgent)
 }
 
 func newRequestCtx(method, target string) (echo.Context, *httptest.ResponseRecorder) {
@@ -78,6 +82,9 @@ func newRequestCtx(method, target string) (echo.Context, *httptest.ResponseRecor
 func TestFetchRSS_BasicRSS2(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.Header.Get("Accept"), "application/rss+xml")
+		// Misskey-Go/<ver> 相当の UA が付くことを guard する。UA 必須の RSS
+		// 配信サーバ (Cloudflare 含む) で 403 にならない契約の regression 検知。
+		assert.Equal(t, testUserAgent, r.Header.Get("User-Agent"))
 		w.Header().Set("Content-Type", "application/rss+xml")
 		fmt.Fprint(w, sampleRSS2)
 	}))
@@ -181,7 +188,7 @@ func TestFetchRSS_POSTBody(t *testing.T) {
 }
 
 func TestFetchRSS_MissingURL(t *testing.T) {
-	h := New(&http.Client{Timeout: FetchTimeout})
+	h := New(&http.Client{Timeout: FetchTimeout}, testUserAgent)
 	c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss")
 	require.NoError(t, h.Fetch(c))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -190,10 +197,12 @@ func TestFetchRSS_MissingURL(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	errObj := resp["error"].(map[string]any)
 	assert.Equal(t, "INVALID_URL", errObj["code"])
+	// 空 URL と「URL は http(s) のみ」は別 ID で frontend が分岐できる
+	assert.Equal(t, "9c5ad7d3-6e15-4f3a-87b8-39ec2e91d5a3", errObj["id"])
 }
 
 func TestFetchRSS_InvalidScheme(t *testing.T) {
-	h := New(&http.Client{Timeout: FetchTimeout})
+	h := New(&http.Client{Timeout: FetchTimeout}, testUserAgent)
 	c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss?url=file:///etc/passwd")
 	require.NoError(t, h.Fetch(c))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -202,17 +211,18 @@ func TestFetchRSS_InvalidScheme(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	errObj := resp["error"].(map[string]any)
 	assert.Equal(t, "INVALID_URL", errObj["code"])
+	assert.Equal(t, "f5b2bd41-7c0a-4d49-b8c8-3d3a4d9b8e21", errObj["id"])
 }
 
 func TestFetchRSS_EmptyURLAfterTrim(t *testing.T) {
-	h := New(&http.Client{Timeout: FetchTimeout})
+	h := New(&http.Client{Timeout: FetchTimeout}, testUserAgent)
 	c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss?url=%20%20")
 	require.NoError(t, h.Fetch(c))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestFetchRSS_NoHostInURL(t *testing.T) {
-	h := New(&http.Client{Timeout: FetchTimeout})
+	h := New(&http.Client{Timeout: FetchTimeout}, testUserAgent)
 	c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss?url=http://")
 	require.NoError(t, h.Fetch(c))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -271,7 +281,7 @@ func TestFetchRSS_DialFails(t *testing.T) {
 			return nil, errors.New("ssrf block: connection to private IP refused")
 		}),
 	}
-	h := New(failingClient)
+	h := New(failingClient, testUserAgent)
 	c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss?url=http://10.0.0.1/feed.xml")
 	require.NoError(t, h.Fetch(c))
 	assert.Equal(t, http.StatusBadGateway, rec.Code)
@@ -280,6 +290,30 @@ func TestFetchRSS_DialFails(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	errObj := resp["error"].(map[string]any)
 	assert.Equal(t, "UPSTREAM_ERROR", errObj["code"])
+	// resolved IP / SSRF 文言が err.Error() 経由で漏れないこと: 静的メッセージ
+	// に置き換わっており、敏感な substring を含まない。
+	msg, _ := errObj["message"].(string)
+	assert.Equal(t, "Failed to fetch feed.", msg)
+	assert.NotContains(t, msg, "ssrf")
+	assert.NotContains(t, msg, "10.0.0.1")
+}
+
+// TestFetchRSS_NoUserAgent covers the wiring path where userAgent="" — the
+// handler must omit the header rather than send "User-Agent: ".
+func TestFetchRSS_NoUserAgent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Go's http server normalizes a missing UA to "Go-http-client/1.1".
+		// What we really want to assert is that *we* don't override it with
+		// our caller-provided string when it's empty.
+		assert.NotEqual(t, testUserAgent, r.Header.Get("User-Agent"))
+		fmt.Fprint(w, sampleRSS2)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := New(&http.Client{Timeout: FetchTimeout, Transport: srv.Client().Transport}, "")
+	c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(srv.URL))
+	require.NoError(t, h.Fetch(c))
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

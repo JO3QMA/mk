@@ -2225,7 +2225,7 @@ func (s *Server) setupRoutes() {
 	// fetch-rss — RSS / Atom feed プロキシ。frontend RSS / RSSTicker ウィジェット
 	// が GET で叩く実装になっているため Misskey TS と同じく allowGet 相当で
 	// GET / POST の両方を受け付ける。
-	fetchRSSHandler := apifetchrss.New(s.outboundClient(apifetchrss.FetchTimeout))
+	fetchRSSHandler := apifetchrss.New(s.outboundClient(apifetchrss.FetchTimeout), s.config.UserAgent)
 	api.GET("/fetch-rss", fetchRSSHandler.Fetch)
 	api.POST("/fetch-rss", fetchRSSHandler.Fetch)
 
