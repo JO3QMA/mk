@@ -552,7 +552,10 @@ func (h *Handler) QueueStats(c echo.Context) error {
 			continue
 		}
 		result[qname] = map[string]any{
-			"activeSince": nil, "active": info.Active, "waiting": info.Pending, "delayed": info.Scheduled,
+			// Bull の delayed は asynq の Scheduled (未来実行予定) と
+			// Retry (失敗後再試行待ち) の両方を含む。stream/queue_stats_publisher.go
+			// の WebSocket publisher と semantics を揃える (#654)。
+			"activeSince": nil, "active": info.Active, "waiting": info.Pending, "delayed": info.Scheduled + info.Retry,
 		}
 	}
 	return c.JSON(http.StatusOK, result)

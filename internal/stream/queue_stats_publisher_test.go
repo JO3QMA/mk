@@ -25,9 +25,15 @@ func (s *stubQueueInspector) GetQueueInfo(_ string) (*QueueStatsInfo, error) {
 	return s.info, nil
 }
 
-func TestQueueStatsPublisher_PublishesDeliverDepths(t *testing.T) {
+func TestQueueStatsPublisher_PublishesDeliverAndInboxDepths(t *testing.T) {
+	// stub は queue 名で値を切り替えられるようにする (deliver / inbox で
+	// 同じ inspector を共有するため)。
+	infos := map[string]*QueueStatsInfo{
+		"deliver": {Active: 3, Pending: 7, Scheduled: 2, Retry: 1},
+		"inbox":   {Active: 5, Pending: 11, Scheduled: 0, Retry: 4},
+	}
+	insp := &perQueueInspector{infos: infos}
 	pub := &capturePubSub{}
-	insp := &stubQueueInspector{info: &QueueStatsInfo{Active: 3, Pending: 7, Scheduled: 2, Retry: 1}}
 	p := NewQueueStatsPublisher(insp, pub, 30*time.Millisecond)
 	p.Start()
 	time.Sleep(60 * time.Millisecond)
@@ -45,7 +51,9 @@ func TestQueueStatsPublisher_PublishesDeliverDepths(t *testing.T) {
 				ActiveSincePrevTick int `json:"activeSincePrevTick"`
 			} `json:"deliver"`
 			Inbox struct {
-				Active int `json:"active"`
+				Active  int `json:"active"`
+				Waiting int `json:"waiting"`
+				Delayed int `json:"delayed"`
 			} `json:"inbox"`
 		}
 		require.NoError(t, json.Unmarshal(c.payload, &body))
@@ -53,9 +61,22 @@ func TestQueueStatsPublisher_PublishesDeliverDepths(t *testing.T) {
 		assert.Equal(t, 7, body.Deliver.Waiting)
 		// Bull delayed = asynq Scheduled + Retry
 		assert.Equal(t, 3, body.Deliver.Delayed)
-		// inbox is a compatibility zero stub (mk-go has no inbox queue).
-		assert.Equal(t, 0, body.Inbox.Active)
+		// inbox は #534 で asynq queue 化、#565 で worker 化されたので
+		// 実数を出す (#654)。
+		assert.Equal(t, 5, body.Inbox.Active)
+		assert.Equal(t, 11, body.Inbox.Waiting)
+		assert.Equal(t, 4, body.Inbox.Delayed)
 	}
+}
+
+// perQueueInspector returns a different QueueStatsInfo per queue name so
+// tests can verify deliver / inbox are queried independently.
+type perQueueInspector struct {
+	infos map[string]*QueueStatsInfo
+}
+
+func (s *perQueueInspector) GetQueueInfo(qname string) (*QueueStatsInfo, error) {
+	return s.infos[qname], nil
 }
 
 func TestQueueStatsPublisher_InspectorErrorPublishesZeros(t *testing.T) {

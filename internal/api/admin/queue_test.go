@@ -491,3 +491,33 @@ func TestQueueStatsAdmin(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "deliver")
 }
+
+// TestQueueStats_DelayedIncludesScheduledAndRetry guards #654: Misskey
+// frontend の WidgetJobQueue は Bull 用語の delayed をグラフ化するが、
+// asynq では Scheduled (未来実行予定) と Retry (失敗後再試行待ち) の
+// 2 つに分かれる。delayed = Scheduled + Retry を返さないと再試行待ちが
+// dashboard に出ないため、この合算が REST API でも維持されることを guard。
+func TestQueueStats_DelayedIncludesScheduledAndRetry(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	insp := &stubQueueInspector{
+		info: map[string]*apiadmin.QueueInfoResult{
+			"deliver": {Queue: "deliver", Active: 1, Pending: 2, Scheduled: 3, Retry: 4},
+			"inbox":   {Queue: "inbox", Active: 0, Pending: 0, Scheduled: 5, Retry: 6},
+		},
+	}
+	h.SetQueueInspector(insp)
+
+	rec := doPost(h.QueueStats, `{}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	// deliver: Scheduled 3 + Retry 4 = 7
+	assert.EqualValues(t, 1, resp["deliver"]["active"])
+	assert.EqualValues(t, 2, resp["deliver"]["waiting"])
+	assert.EqualValues(t, 7, resp["deliver"]["delayed"], "delayed must be Scheduled+Retry")
+
+	// inbox: Scheduled 5 + Retry 6 = 11
+	assert.EqualValues(t, 11, resp["inbox"]["delayed"], "delayed must be Scheduled+Retry")
+}
