@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/core/moderationlog"
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
@@ -39,21 +40,42 @@ func (h *Handler) logModeration(c echo.Context, t moderationlog.LogType, info ma
 }
 
 // logUserAction records a moderation_log entry for an action that
-// targets a single user. The {userId, userUsername, userHost} payload
-// is built from a fresh user lookup, matching the Misskey TS frontend
-// schema for user-targeted log types (suspend, unsuspend, resetPassword,
-// deleteAccount, unsetUserAvatar, unsetUserBanner).
+// targets a single user, looking up the user by ID. The {userId,
+// userUsername, userHost} payload is built from a fresh user lookup,
+// matching the Misskey TS frontend schema for user-targeted log types
+// (suspend, unsuspend, resetPassword, deleteAccount, unsetUserAvatar,
+// unsetUserBanner).
 //
 // Convenience wrapper around logModeration. For user-targeted log
 // types that need extra fields (updateUserNote with before/after,
 // assignRole with role info, etc.), build the info map yourself and
-// call logModeration directly.
+// call logModeration directly. When the caller already has the
+// *model.User in scope (e.g. SuspendUser called FindByID before
+// flipping the flag), prefer logUserActionWithUser to avoid a second
+// DB lookup.
 func (h *Handler) logUserAction(c echo.Context, t moderationlog.LogType, targetUserID string) {
 	if h.userRepo == nil {
 		return
 	}
 	target, err := h.userRepo.FindByID(targetUserID)
 	if err != nil || target == nil {
+		// Rare race (user deleted concurrently with the moderation
+		// action) or callers passing a bogus id — debug-level so
+		// production noise stays low while still leaving a trail when
+		// debugging missing log entries.
+		slog.DebugContext(c.Request().Context(), "moderation log: target user not found",
+			"type", t, "targetUserId", targetUserID)
+		return
+	}
+	h.logUserActionWithUser(c, t, target)
+}
+
+// logUserActionWithUser is the same as logUserAction but takes the
+// already-looked-up user object, skipping the redundant FindByID.
+// Use this from handlers that load the target user up-front for their
+// own logic (e.g. existence check) so we don't pay for two SELECTs.
+func (h *Handler) logUserActionWithUser(c echo.Context, t moderationlog.LogType, target *model.User) {
+	if target == nil {
 		return
 	}
 	h.logModeration(c, t, moderationlog.UserInfo(target))

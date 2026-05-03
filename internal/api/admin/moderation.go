@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -57,6 +58,10 @@ func (h *Handler) UpdateUserNote(c echo.Context) error {
 	}
 	target, err := h.userRepo.FindByID(req.UserID)
 	if err != nil || target == nil {
+		// UpdateProfile が成功した直後に user lookup が失敗するのは
+		// 並行削除等のレアケース。debug-level に残して早期 return する。
+		slog.DebugContext(c.Request().Context(), "moderation log: target user not found after UpdateUserNote",
+			"userId", req.UserID)
 		return c.NoContent(http.StatusNoContent)
 	}
 	info := moderationlog.UserInfo(target)

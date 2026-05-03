@@ -677,14 +677,15 @@ func (h *Handler) SuspendUser(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
-	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
+	user, err := h.userRepo.FindByID(req.UserID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "2b730f78-1179-461b-88ad-d24c9af1a5ce"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true}); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	h.logUserAction(c, moderationlog.LogSuspend, req.UserID)
+	h.logUserActionWithUser(c, moderationlog.LogSuspend, user)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -697,14 +698,15 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
-	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
+	user, err := h.userRepo.FindByID(req.UserID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "2b730f78-1179-461b-88ad-d24c9af1a5ce"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": false}); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
-	h.logUserAction(c, moderationlog.LogUnsuspend, req.UserID)
+	h.logUserActionWithUser(c, moderationlog.LogUnsuspend, user)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -1134,6 +1136,11 @@ func (h *Handler) RolesUpdate(c echo.Context) error {
 	}
 	if req.IsPublic != nil {
 		fields["isPublic"] = *req.IsPublic
+	}
+	if len(fields) == 0 {
+		// 全フィールドが nil = 何も変更しないリクエスト。before == after の
+		// 無意味な log を書かずに早期 return する。
+		return c.NoContent(http.StatusNoContent)
 	}
 	after, err := h.roleService.UpdateFields(req.RoleID, fields)
 	if err != nil {
