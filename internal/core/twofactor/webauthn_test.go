@@ -67,7 +67,7 @@ func TestNewWebAuthnService_OK(t *testing.T) {
 
 // --- session helpers (real Redis) ---
 
-func TestPutAndTakeSession_Roundtrip(t *testing.T) {
+func TestPutAndTakeLoginSession_Roundtrip(t *testing.T) {
 	requireRedis(t)
 	twofaTestRedis.FlushAll(context.Background())
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
@@ -75,32 +75,32 @@ func TestPutAndTakeSession_Roundtrip(t *testing.T) {
 
 	// fake SessionData
 	sd := makeFakeSessionData()
-	sid, err := svc.putSession(context.Background(), "alice", sd)
+	sid, err := svc.putLoginSession(context.Background(), "alice", sd)
 	require.NoError(t, err)
 	assert.NotEmpty(t, sid)
 
-	got, err := svc.takeSession(context.Background(), "alice", sid)
+	got, err := svc.takeLoginSession(context.Background(), "alice", sid)
 	require.NoError(t, err)
 	assert.Equal(t, sd.Challenge, got.Challenge)
 }
 
-func TestTakeSession_Missing(t *testing.T) {
+func TestTakeLoginSession_Missing(t *testing.T) {
 	requireRedis(t)
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
 	require.NoError(t, err)
-	_, err = svc.takeSession(context.Background(), "alice", "ghost")
+	_, err = svc.takeLoginSession(context.Background(), "alice", "ghost")
 	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
 }
 
-func TestTakeSession_NilRedis(t *testing.T) {
+func TestTakeLoginSession_NilRedis(t *testing.T) {
 	svc := &WebAuthnService{wa: nil, redis: nil}
-	_, err := svc.takeSession(context.Background(), "alice", "x")
+	_, err := svc.takeLoginSession(context.Background(), "alice", "x")
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
-func TestPutSession_NilRedis(t *testing.T) {
+func TestPutLoginSession_NilRedis(t *testing.T) {
 	svc := &WebAuthnService{wa: nil, redis: nil}
-	_, err := svc.putSession(context.Background(), "alice", makeFakeSessionData())
+	_, err := svc.putLoginSession(context.Background(), "alice", makeFakeSessionData())
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
@@ -111,11 +111,14 @@ func TestBeginRegistration(t *testing.T) {
 	twofaTestRedis.FlushAll(context.Background())
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
 	require.NoError(t, err)
-	creation, sid, err := svc.BeginRegistration(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil)
+	creation, err := svc.BeginRegistration(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil)
 	require.NoError(t, err)
-	assert.NotEmpty(t, sid)
-	assert.NotNil(t, creation)
+	require.NotNil(t, creation)
 	assert.NotEmpty(t, creation.Response.Challenge)
+	// registration session が user 単位 1 件で保存されていること
+	got, err := svc.takeRegistrationSession(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.NotEmpty(t, got.Challenge)
 }
 
 func TestBeginLogin(t *testing.T) {
@@ -135,7 +138,7 @@ func TestBeginLogin(t *testing.T) {
 
 func TestBeginRegistration_NotConfigured(t *testing.T) {
 	svc := &WebAuthnService{}
-	_, _, err := svc.BeginRegistration(context.Background(), &model.User{ID: "x"}, nil)
+	_, err := svc.BeginRegistration(context.Background(), &model.User{ID: "x"}, nil)
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
@@ -148,7 +151,7 @@ func TestBeginLogin_NotConfigured(t *testing.T) {
 func TestFinishRegistration_NotConfigured(t *testing.T) {
 	svc := &WebAuthnService{}
 	req := httptest.NewRequest("POST", "/", strings.NewReader(""))
-	_, err := svc.FinishRegistration(context.Background(), &model.User{ID: "x"}, nil, "sid", req)
+	_, err := svc.FinishRegistration(context.Background(), &model.User{ID: "x"}, nil, req)
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
@@ -165,7 +168,7 @@ func TestFinishRegistration_SessionMissing(t *testing.T) {
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
 	require.NoError(t, err)
 	req := httptest.NewRequest("POST", "/", strings.NewReader(""))
-	_, err = svc.FinishRegistration(context.Background(), &model.User{ID: "alice"}, nil, "ghost", req)
+	_, err = svc.FinishRegistration(context.Background(), &model.User{ID: "alice"}, nil, req)
 	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
 }
 
@@ -270,8 +273,8 @@ func TestNewSessionID_RandError(t *testing.T) {
 
 // --- key helper ---
 
-func TestSessionKey(t *testing.T) {
-	assert.Equal(t, "twofa:webauthn:alice:sid1", sessionKey("alice", "sid1"))
+func TestLoginSessionKey(t *testing.T) {
+	assert.Equal(t, "twofa:webauthn:alice:sid1", loginSessionKey("alice", "sid1"))
 }
 
 // --- BeginRegistration / BeginLogin Redis error paths ---
@@ -283,20 +286,7 @@ func TestBeginRegistration_PutSessionFails(t *testing.T) {
 	require.NoError(t, c.Close())
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", c)
 	require.NoError(t, err)
-	_, _, err = svc.BeginRegistration(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil)
-	assert.Error(t, err)
-}
-
-// putSession の rand 失敗経路もカバーする (newSessionID が err を返す)
-func TestBeginRegistration_RandError(t *testing.T) {
-	requireRedis(t)
-	twofaTestRedis.FlushAll(context.Background())
-	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
-	require.NoError(t, err)
-	old := readRandom
-	defer func() { readRandom = old }()
-	readRandom = func(b []byte) (int, error) { return 0, errors.New("entropy depleted") }
-	_, _, err = svc.BeginRegistration(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil)
+	_, err = svc.BeginRegistration(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil)
 	assert.Error(t, err)
 }
 
@@ -336,11 +326,11 @@ func TestTakeSession_RedisError(t *testing.T) {
 	require.NoError(t, err)
 	// 一旦正常に PUT
 	sd := makeFakeSessionData()
-	sid, err := svc.putSession(context.Background(), "alice", sd)
+	sid, err := svc.putLoginSession(context.Background(), "alice", sd)
 	require.NoError(t, err)
 	// クライアント閉じてから take → connection closed エラー
 	require.NoError(t, c.Close())
-	_, err = svc.takeSession(context.Background(), "alice", sid)
+	_, err = svc.takeLoginSession(context.Background(), "alice", sid)
 	assert.Error(t, err)
 	assert.NotErrorIs(t, err, ErrWebAuthnSessionNotFound)
 }
@@ -375,11 +365,10 @@ func TestFinishRegistration_Success(t *testing.T) {
 		UserID:     []byte("test-user-id"),
 		CredParams: []protocol.CredentialParameter{{Type: protocol.PublicKeyCredentialType, Algorithm: webauthncose.AlgES256}},
 	}
-	sid, err := svc.putSession(context.Background(), "test-user-id", sd)
-	require.NoError(t, err)
+	require.NoError(t, svc.putRegistrationSession(context.Background(), "test-user-id", sd))
 
 	httpReq := httptest.NewRequest("POST", "/", bytes.NewReader(body))
-	cred, err := svc.FinishRegistration(context.Background(), &model.User{ID: "test-user-id", Username: "test"}, nil, sid, httpReq)
+	cred, err := svc.FinishRegistration(context.Background(), &model.User{ID: "test-user-id", Username: "test"}, nil, httpReq)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	expectedCredID := decodeHex(t, credentialIDHex)
@@ -416,6 +405,76 @@ func buildAttestationResponse(t *testing.T, attObjectHex, clientDataJSONHex, cre
 	})
 	require.NoError(t, err)
 	return body
+}
+
+// --- registration session helpers (#698) ---
+//
+// upstream-compat な single-in-flight-per-user 経路。session id round-trip が
+// 無いので user 単位で 1 件だけ Redis に保持する。
+
+func TestRegistrationSessionKey(t *testing.T) {
+	assert.Equal(t, "twofa:webauthn:alice:registration", registrationSessionKey("alice"))
+}
+
+func TestPutAndTakeRegistrationSession_Roundtrip(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+
+	sd := makeFakeSessionData()
+	require.NoError(t, svc.putRegistrationSession(context.Background(), "alice", sd))
+
+	got, err := svc.takeRegistrationSession(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.Equal(t, sd.Challenge, got.Challenge)
+
+	// take は single-use: 2 回目は ErrWebAuthnSessionNotFound
+	_, err = svc.takeRegistrationSession(context.Background(), "alice")
+	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
+}
+
+func TestPutRegistrationSession_Overwrites(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+
+	first := makeFakeSessionData()
+	first.Challenge = "first"
+	second := makeFakeSessionData()
+	second.Challenge = "second"
+
+	require.NoError(t, svc.putRegistrationSession(context.Background(), "alice", first))
+	require.NoError(t, svc.putRegistrationSession(context.Background(), "alice", second))
+
+	got, err := svc.takeRegistrationSession(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "second", got.Challenge)
+}
+
+func TestPutRegistrationSession_NilRedis(t *testing.T) {
+	svc := &WebAuthnService{}
+	err := svc.putRegistrationSession(context.Background(), "alice", makeFakeSessionData())
+	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
+}
+
+func TestTakeRegistrationSession_NilRedis(t *testing.T) {
+	svc := &WebAuthnService{}
+	_, err := svc.takeRegistrationSession(context.Background(), "alice")
+	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
+}
+
+func TestTakeRegistrationSession_RedisError(t *testing.T) {
+	requireRedis(t)
+	c := redis.NewClient(&redis.Options{Addr: twofaTestRedis.Client.Options().Addr})
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", c)
+	require.NoError(t, err)
+	require.NoError(t, svc.putRegistrationSession(context.Background(), "alice", makeFakeSessionData()))
+	require.NoError(t, c.Close())
+	_, err = svc.takeRegistrationSession(context.Background(), "alice")
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, ErrWebAuthnSessionNotFound)
 }
 
 // --- ensure unused imports stay tidy ---

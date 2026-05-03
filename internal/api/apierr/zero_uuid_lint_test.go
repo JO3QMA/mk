@@ -15,12 +15,11 @@ import (
 // NOT_FOUND) flow through apierr helpers with stable UUIDs; this lint
 // keeps regressions from sneaking back in.
 //
-// Endpoint-specific codes still pending #673 Phase B (NO_SUCH_KEY /
-// REGISTRATION_FAILED / NO_SUCH_DRAFT / NO_SECURITY_KEYS / INVALID_TOKEN)
-// are listed in pendingZeroUUIDOccurrences below as exceptions that this
-// test tolerates until each gets its proper upstream UUID. **DO NOT add
-// new entries** — instead pick the right Misskey TS UUID and use the
-// apierr helper.
+// Endpoint-specific codes still pending #673 Phase B (NO_SUCH_DRAFT) are
+// listed in pendingZeroUUIDOccurrences below as exceptions that this test
+// tolerates until each gets its proper upstream UUID. **DO NOT add new
+// entries** — instead pick the right Misskey TS UUID and use the apierr
+// helper.
 func TestZeroUUIDLint(t *testing.T) {
 	const placeholder = "00000000-0000-0000-0000-000000000000"
 
@@ -31,7 +30,6 @@ func TestZeroUUIDLint(t *testing.T) {
 	}
 
 	pendingExceptions := map[string]int{
-		"api/i/handler_2fa.go":        5, // INVALID_TOKEN / REGISTRATION_FAILED / NO_SUCH_KEY x2 / NO_SECURITY_KEYS
 		"api/notes/handler_drafts.go": 1, // NO_SUCH_DRAFT
 	}
 
