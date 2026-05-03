@@ -1407,6 +1407,95 @@ func TestShowModerationLogs_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestShowModerationLogs_IncludesCreatedAt は frontend modlog.ModLog.vue
+// が `log.createdAt` を直接読んで MkTime に渡すため、handler が aidx ID
+// から派生した createdAt 文字列を必ず response に含めることを guard する。
+func TestShowModerationLogs_IncludesCreatedAt(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	modLogRepo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	// 既知の固定時刻で aidx ID を生成 → response の createdAt と照合
+	fixedTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	aidxID := gen.Generate(fixedTime)
+	require.NoError(t, modLogRepo.Create(&model.ModerationLog{ID: aidxID, UserID: "u1", Type: "suspend"}))
+	h.SetModLogService(moderationlog.New(modLogRepo, gen))
+
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+
+	createdAt, ok := resp[0]["createdAt"].(string)
+	require.True(t, ok, "createdAt must be present and be a string")
+
+	// Misskey の標準 format で parse 可能であること
+	parsed, err := time.Parse("2006-01-02T15:04:05.000Z", createdAt)
+	require.NoError(t, err, "createdAt must be parseable as Misskey-format ISO string")
+	// aidx の解像度は ms なので fixedTime と完全一致するはず
+	assert.WithinDuration(t, fixedTime, parsed, time.Millisecond)
+}
+
+// TestShowModerationLogs_NonAidxIDOmitsCreatedAt は aidx として parse でき
+// ない legacy ID が紛れ込んだ場合に handler が createdAt を埋めずに response
+// から省略する (= frontend 側で「Invalid Date」を表示しない) ことを guard
+// する。
+func TestShowModerationLogs_NonAidxIDOmitsCreatedAt(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	modLogRepo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	// aidx の base36 で扱えない文字 ("!") を混ぜて parse 失敗を強制する
+	require.NoError(t, modLogRepo.Create(&model.ModerationLog{ID: "!!!notaidx", UserID: "u1", Type: "suspend"}))
+	h.SetModLogService(moderationlog.New(modLogRepo, gen))
+
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	_, has := resp[0]["createdAt"]
+	assert.False(t, has, "createdAt must be omitted when ID cannot be parsed as aidx")
+}
+
+// TestShowModerationLogs_PreservesInfoJSON は datatypes.JSON で persist された
+// info が map[string]any 経由 marshal を通っても (key 順以外) 中身を保つこと
+// を guard する。frontend modlog detail dialog は info の structure を直接
+// 触るため、handler 側で誤って string 化したり再 escape するような変換を
+// 入れないようにする。
+func TestShowModerationLogs_PreservesInfoJSON(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	modLogRepo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+
+	infoJSON := []byte(`{"userId":"target1","userUsername":"alice","reason":"spam"}`)
+	require.NoError(t, modLogRepo.Create(&model.ModerationLog{
+		ID:     gen.Generate(time.Now()),
+		UserID: "admin1",
+		Type:   "suspend",
+		Info:   infoJSON,
+	}))
+	h.SetModLogService(moderationlog.New(modLogRepo, gen))
+
+	rec := doPost(h.ShowModerationLogs, `{}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	info, ok := resp[0]["info"].(map[string]any)
+	require.True(t, ok, "info must be a JSON object after round-trip")
+	assert.Equal(t, "target1", info["userId"])
+	assert.Equal(t, "alice", info["userUsername"])
+	assert.Equal(t, "spam", info["reason"])
+}
+
 // --- moderation log assertions for user moderation handlers ---
 
 func TestSuspendUser_WritesModerationLog(t *testing.T) {
