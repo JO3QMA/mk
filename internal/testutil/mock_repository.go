@@ -4537,6 +4537,12 @@ func (m *MockAbuseReportRepository) UpdateFields(id string, fields map[string]an
 type MockModerationLogRepository struct {
 	mu   sync.Mutex
 	Logs []*model.ModerationLog
+	// CreateCalls counts how many times Create was invoked. Combined with
+	// CreateManyCalls it lets bulk-handler tests assert that LogMany
+	// (batched goroutine + single multi-row INSERT, #671) is exercised
+	// instead of fanning out per-item Create calls.
+	CreateCalls     int
+	CreateManyCalls int
 }
 
 func NewMockModerationLogRepository() *MockModerationLogRepository {
@@ -4546,8 +4552,31 @@ func NewMockModerationLogRepository() *MockModerationLogRepository {
 func (m *MockModerationLogRepository) Create(log *model.ModerationLog) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.CreateCalls++
 	m.Logs = append(m.Logs, log)
 	return nil
+}
+
+// CreateMany appends a batch of logs in a single critical section. Mirrors
+// repository.ModerationLogRepository.CreateMany so test doubles can verify
+// LogMany batch behaviour (#671).
+func (m *MockModerationLogRepository) CreateMany(logs []*model.ModerationLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.CreateManyCalls++
+	m.Logs = append(m.Logs, logs...)
+	return nil
+}
+
+// CallCounts returns the (Create, CreateMany) call counts taken under the
+// repo's lock. Use from tests that need a consistent snapshot of both.
+func (m *MockModerationLogRepository) CallCounts() (create, createMany int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.CreateCalls, m.CreateManyCalls
 }
 
 func (m *MockModerationLogRepository) List(limit, offset int) ([]*model.ModerationLog, error) {

@@ -64,6 +64,11 @@ func (r *abuseReportRepository) UpdateFields(id string, fields map[string]any) e
 // ModerationLogRepository provides data access for the `moderation_log` table.
 type ModerationLogRepository interface {
 	Create(log *model.ModerationLog) error
+	// CreateMany batch-inserts logs in one SQL statement (GORM slice-insert
+	// uses a single multi-row INSERT). Used by Service.LogMany when bulk
+	// admin operations want to record N entries without spawning N
+	// goroutines + N round-trips (#671).
+	CreateMany(logs []*model.ModerationLog) error
 	List(limit, offset int) ([]*model.ModerationLog, error)
 }
 
@@ -77,6 +82,13 @@ func NewModerationLogRepository(db *gorm.DB) ModerationLogRepository {
 
 func (r *moderationLogRepository) Create(log *model.ModerationLog) error {
 	return r.db.Create(log).Error
+}
+
+func (r *moderationLogRepository) CreateMany(logs []*model.ModerationLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	return r.db.Create(&logs).Error
 }
 
 func (r *moderationLogRepository) List(limit, offset int) ([]*model.ModerationLog, error) {

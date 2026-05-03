@@ -147,6 +147,38 @@ func TestModerationLogRepository_CRUD(t *testing.T) {
 	assert.NotEmpty(t, logs)
 }
 
+func TestModerationLogRepository_CreateMany(t *testing.T) {
+	repo := NewModerationLogRepository(testDB)
+	createTestUser(t, "ml_batch_user")
+
+	rows := []*model.ModerationLog{
+		{ID: "ml_b1", UserID: "ml_batch_user", Type: "deleteCustomEmoji", Info: []byte(`{"emojiId":"e1"}`)},
+		{ID: "ml_b2", UserID: "ml_batch_user", Type: "deleteCustomEmoji", Info: []byte(`{"emojiId":"e2"}`)},
+		{ID: "ml_b3", UserID: "ml_batch_user", Type: "deleteCustomEmoji", Info: []byte(`{"emojiId":"e3"}`)},
+	}
+	require.NoError(t, repo.CreateMany(rows))
+	defer cleanupModLog(t, "ml_b1")
+	defer cleanupModLog(t, "ml_b2")
+	defer cleanupModLog(t, "ml_b3")
+
+	logs, err := repo.List(100, 0)
+	require.NoError(t, err)
+	// 3 件以上ある (他のテストの行も拾う可能性あるが少なくとも 3 件は入っている)
+	var found int
+	for _, l := range logs {
+		if l.UserID == "ml_batch_user" {
+			found++
+		}
+	}
+	assert.Equal(t, 3, found)
+}
+
+func TestModerationLogRepository_CreateMany_EmptyIsNoop(t *testing.T) {
+	repo := NewModerationLogRepository(testDB)
+	assert.NoError(t, repo.CreateMany(nil))
+	assert.NoError(t, repo.CreateMany([]*model.ModerationLog{}))
+}
+
 func TestModerationLogRepository_List_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
