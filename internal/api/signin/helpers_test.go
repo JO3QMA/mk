@@ -66,12 +66,90 @@ func TestNewPasskeyContext_Random(t *testing.T) {
 }
 
 func TestNewPasskeyContext_RandError(t *testing.T) {
-	old := readRandomBytes
-	defer func() { readRandomBytes = old }()
-	readRandomBytes = func(_ []byte) (int, error) { return 0, assert.AnError }
+	old := readRandom
+	defer func() { readRandom = old }()
+	readRandom = func(_ []byte) (int, error) { return 0, assert.AnError }
 	_, err := newPasskeyContext()
 	assert.Error(t, err)
 }
+
+// errSecurityKeyRepo は ListByUser で err を返す stub。resolvePasskeyUser の
+// kerr 伝搬経路を exercise するために使う。
+type errSecurityKeyRepo struct{}
+
+func (errSecurityKeyRepo) Create(*model.UserSecurityKey) error { return nil }
+func (errSecurityKeyRepo) FindByID(string) (*model.UserSecurityKey, error) {
+	return nil, testutil.ErrNotFound
+}
+func (errSecurityKeyRepo) ListByUser(string) ([]*model.UserSecurityKey, error) {
+	return nil, assert.AnError
+}
+func (errSecurityKeyRepo) UpdateName(string, string, string) error { return nil }
+func (errSecurityKeyRepo) UpdateCounter(string, int64) error       { return nil }
+func (errSecurityKeyRepo) Delete(string, string) error             { return nil }
+func (errSecurityKeyRepo) CountByUser(string) (int64, error)       { return 0, nil }
+
+// resolvePasskeyUser は user 不在 / securityKeyRepo nil / ListByUser err / 正常
+// の 4 分岐を持つ。webauthn 経由では signature verify を通せないので named method
+// として直接 unit test する (#705)。
+func TestResolvePasskeyUser_UserNotFound(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	h := NewHandler(repo)
+	_, _, err := h.resolvePasskeyUser(nil, []byte("ghost"))
+	assert.Error(t, err)
+}
+
+func TestResolvePasskeyUser_NoSecurityKeyRepo(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	repo.Users["u1"] = &model.User{ID: "u1"}
+	h := NewHandler(repo)
+	u, keys, err := h.resolvePasskeyUser(nil, []byte("u1"))
+	assert.NoError(t, err)
+	assert.NotNil(t, u)
+	assert.Nil(t, keys)
+}
+
+func TestResolvePasskeyUser_ListByUserError(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	repo.Users["u1"] = &model.User{ID: "u1"}
+	h := NewHandler(repo)
+	h.SetWebAuthn(nil, errSecurityKeyRepo{})
+	_, _, err := h.resolvePasskeyUser(nil, []byte("u1"))
+	assert.Error(t, err)
+}
+
+func TestResolvePasskeyUser_Success(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	repo.Users["u1"] = &model.User{ID: "u1"}
+	h := NewHandler(repo)
+	h.SetWebAuthn(nil, &inMemorySKInternal{
+		keys: map[string][]*model.UserSecurityKey{
+			"u1": {{ID: "AAEC"}},
+		},
+	})
+	u, keys, err := h.resolvePasskeyUser(nil, []byte("u1"))
+	assert.NoError(t, err)
+	assert.NotNil(t, u)
+	assert.Len(t, keys, 1)
+}
+
+// inMemorySKInternal: helpers_test.go (内部 package) からも使える簡易 stub。
+// handler_2fa_test.go の inMemorySK は signin_test package なので別途定義する。
+type inMemorySKInternal struct {
+	keys map[string][]*model.UserSecurityKey
+}
+
+func (r *inMemorySKInternal) Create(*model.UserSecurityKey) error { return nil }
+func (r *inMemorySKInternal) FindByID(string) (*model.UserSecurityKey, error) {
+	return nil, testutil.ErrNotFound
+}
+func (r *inMemorySKInternal) ListByUser(userID string) ([]*model.UserSecurityKey, error) {
+	return r.keys[userID], nil
+}
+func (r *inMemorySKInternal) UpdateName(string, string, string) error { return nil }
+func (r *inMemorySKInternal) UpdateCounter(string, int64) error       { return nil }
+func (r *inMemorySKInternal) Delete(string, string) error             { return nil }
+func (r *inMemorySKInternal) CountByUser(string) (int64, error)       { return 0, nil }
 
 // helper: build an echo.Context with empty body.
 func newCtx() echo.Context {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/api/signin"
@@ -114,7 +113,7 @@ func TestSigninWithPasskey_BadBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-// Step 1 中に entropy 枯渇 → 500。readRandomBytes seam を差し替える。
+// Step 1 中に entropy 枯渇 → 500。readRandom seam を差し替える。
 func TestSigninWithPasskey_NewContextRandError(t *testing.T) {
 	if signinTestRedis == nil {
 		t.Skip("redis testcontainer unavailable")
@@ -163,6 +162,3 @@ func TestSigninWithPasskey_PasswordlessNotEnabled_Fails(t *testing.T) {
 	rec := doPost(h.SigninWithPasskey, body)
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
-
-// 静的: signin handler の SigninWithPasskey を bind 可能であることを保証する
-var _ = strings.Repeat

@@ -86,8 +86,13 @@ func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
 
 // Signin handles POST /api/signin.
 // Misskey フロントエンドのログインフロー:
-// 1. username のみ → { finished: false, next: "password" or "captcha" }
+// 1. username のみ → { finished: false, next: "password" }
 // 2. username + password → { finished: true, id: "...", i: "token" }
+//
+// Note: `/api/signin` (legacy) と `/api/signin-flow` で step 1 の `next` 値が
+// 異なる。legacy はユーザの 2FA 設定に関わらず `'password'` 固定で返すのに対し、
+// `/signin-flow` は 2FA 無効ユーザに対して `'captcha'` を返す (TS upstream 互換)。
+// TS upstream 互換は `/signin-flow` のみ提供する。
 func (h *Handler) Signin(c echo.Context) error {
 	var req struct {
 		Username string  `json:"username"`

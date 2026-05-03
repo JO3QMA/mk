@@ -13,7 +13,6 @@ import (
 	"github.com/lib/pq"
 	"github.com/pquerna/otp/totp"
 	"github.com/redis/go-redis/v9"
-	"github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -267,9 +266,6 @@ func Test2FA_TOTP_FailureErrorID(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "cdf1235b-ac71-46d4-a3a6-84ccce48df6f", errMap["id"])
 }
-
-// 静的: signin.Handler の使用を保証する
-var _ = signin.NewHandler
 
 // security key 設定済みだが credential 検証で失敗 → upstream 互換の WebAuthn
 // 専用 ID `93b86c4b-...` を返す (#705)。

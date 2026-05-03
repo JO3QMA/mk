@@ -64,24 +64,31 @@ func (h *Handler) SigninWithPasskey(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, errBody("ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
 
-	resolver := func(rawID, userHandle []byte) (*model.User, []*model.UserSecurityKey, error) {
-		userID := string(userHandle)
-		u, ferr := h.userRepo.FindByID(userID)
-		if ferr != nil {
-			return nil, nil, ferr
-		}
-		if h.securityKeyRepo == nil {
-			return u, nil, nil
-		}
-		keys, _ := h.securityKeyRepo.ListByUser(userID)
-		return u, keys, nil
-	}
-
-	user, cred, err := h.webauthnSvc.FinishPasskeyLogin(c.Request().Context(), req.Context, httpReq, resolver)
+	user, cred, err := h.webauthnSvc.FinishPasskeyLogin(c.Request().Context(), req.Context, httpReq, h.resolvePasskeyUser)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, errBody("b18c89a7-5b5e-4cec-bb5b-0419f332d430"))
 	}
 	return h.finishPasskeySignin(c, user, cred)
+}
+
+// resolvePasskeyUser is the PasskeyUserResolver passed into
+// twofactor.FinishPasskeyLogin. クロージャを named method として切り出してある
+// のは、resolver の error 伝搬経路を unit test から直接 exercise しやすくする
+// ため。
+func (h *Handler) resolvePasskeyUser(_, userHandle []byte) (*model.User, []*model.UserSecurityKey, error) {
+	userID := string(userHandle)
+	u, ferr := h.userRepo.FindByID(userID)
+	if ferr != nil {
+		return nil, nil, ferr
+	}
+	if h.securityKeyRepo == nil {
+		return u, nil, nil
+	}
+	keys, kerr := h.securityKeyRepo.ListByUser(userID)
+	if kerr != nil {
+		return nil, nil, kerr
+	}
+	return u, keys, nil
 }
 
 // finishPasskeySignin handles the post-verify branch of /api/signin-with-passkey:
@@ -129,28 +136,20 @@ func (h *Handler) finishPasskeySignin(c echo.Context, user *model.User, cred *we
 // passkey-challenge context. UUID v4 でも互換性は崩れないが、依存を増やさない
 // ため crypto/rand から hex を生成する。
 //
-// `readRandomBytes` は変数経由でテストから差し替え可能にし、entropy 枯渇時の
-// エラー path をユニットテストできるようにする (readRandom 同様の test seam)。
+// `readRandom` は変数経由でテストから差し替え可能にし、entropy 枯渇時のエラー
+// path をユニットテストできるようにする (twofactor.readRandom と同じ seam パターン)。
 func newPasskeyContext() (string, error) {
 	buf := make([]byte, 16)
-	if _, err := readRandomBytes(buf); err != nil {
+	if _, err := readRandom(buf); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
 }
 
-// readRandomBytes is the indirection point for crypto/rand.Read. tests swap
-// this to exercise rand-failure paths.
-var readRandomBytes = rand.Read
-
-// SwapReadRandomBytes lets external tests stub the random source for the
-// passkey-context generator. Returns the previous value so callers can
-// restore it. Intentionally unused at runtime — keep next to the seam.
-func SwapReadRandomBytes(fn func([]byte) (int, error)) func([]byte) (int, error) {
-	old := readRandomBytes
-	readRandomBytes = fn
-	return old
-}
+// readRandom is the indirection point for crypto/rand.Read. tests swap this
+// to exercise rand-failure paths. test-only swapper は export_test.go に置く
+// (production binary には test seam を export しない)。
+var readRandom = rand.Read
 
 // okBody returns the same shape as Handler.ok but without writing the response.
 // Used by SigninWithPasskey which must wrap the body in `{signinResponse: ...}`.
