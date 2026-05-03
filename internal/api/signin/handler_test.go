@@ -163,7 +163,8 @@ func TestSigninFlow_Step1(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, false, resp["finished"])
-	assert.Equal(t, "password", resp["next"])
+	// 2FA 無効ユーザは TS upstream 互換で常に 'captcha' (#705)。
+	assert.Equal(t, "captcha", resp["next"])
 }
 
 func TestSigninFlow_Step2_Success(t *testing.T) {
@@ -262,8 +263,9 @@ func TestSigninFlow_CaptchaBlocksMissingToken(t *testing.T) {
 	h.SetCaptcha(captchaSvc)
 
 	// testcaptcha-response を送らないので CAPTCHA 検証失敗。
+	// TS upstream は 400 を返す (#705)。
 	rec := doPost(h.SigninFlow, `{"username":"capuser2","password":"pass"}`)
-	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestSigninFlow_CaptchaSkippedFor2FAUsers(t *testing.T) {
@@ -457,16 +459,18 @@ func TestSigninFlow_Step1_PasswordNext_When2FAEnabled(t *testing.T) {
 	assert.Equal(t, "password", resp["next"])
 }
 
-func TestSigninFlow_Step1_PasswordNext_WhenNoCaptcha(t *testing.T) {
+func TestSigninFlow_Step1_CaptchaNext_WhenNoCaptchaConfigured(t *testing.T) {
 	h, repo := newTestHandler(t)
 	createTestUser(repo, "nocap", "pass")
 
-	// captchaサービスなし → "password" を返す
+	// captchaサービスなしでも、TS upstream は 2FA 無効ユーザに対して常に
+	// 'captcha' を返す。フロント (MkSignin.vue) は instance meta で widget の
+	// 表示要否を判定するため、サーバ側の captcha 設定とは独立している (#705)。
 	rec := doPost(h.SigninFlow, `{"username":"nocap"}`)
 	assert.Equal(t, http.StatusOK, rec.Code)
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, false, resp["finished"])
-	assert.Equal(t, "password", resp["next"])
+	assert.Equal(t, "captcha", resp["next"])
 }

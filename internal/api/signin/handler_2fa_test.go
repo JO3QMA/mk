@@ -12,6 +12,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/pquerna/otp/totp"
+	"github.com/redis/go-redis/v9"
 	"github.com/shiroha-a/mk/internal/api/signin"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/model"
@@ -21,6 +22,16 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// redisClientFromTest opens a fresh redis client pointing at the same
+// testcontainer used by the package, useful for "closed redis" failure paths.
+func redisClientFromTest(t *testing.T) *redis.Client {
+	t.Helper()
+	if signinTestRedis == nil {
+		t.Fatalf("redis testcontainer required")
+	}
+	return redis.NewClient(&redis.Options{Addr: signinTestRedis.Client.Options().Addr})
+}
 
 var signinTestRedis *testutil.TestRedis
 
@@ -183,9 +194,15 @@ func Test2FA_WebAuthnWithKeys_ReturnsAssertionChallenge(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "captcha-keys", resp["next"])
-	assert.NotEmpty(t, resp["sessionId"])
-	assert.NotNil(t, resp["assertion"])
+	// TS upstream の SigninFlowResponse: `next: 'passkey'` + `authRequest` (#705)
+	assert.Equal(t, "passkey", resp["next"])
+	assert.Nil(t, resp["sessionId"], "sessionId must not be returned (server keeps challenge keyed by userId)")
+	authRequest, ok := resp["authRequest"].(map[string]any)
+	require.True(t, ok, "authRequest must be a JSON object")
+	// PublicKeyCredentialRequestOptions (TS の PublicKeyCredentialRequestOptionsJSON 互換)
+	// は challenge をトップレベルに持つ。`{publicKey: ...}` ラッパーがあると壊れる。
+	assert.NotEmpty(t, authRequest["challenge"])
+	assert.Nil(t, authRequest["publicKey"], "must not have a publicKey wrapper")
 }
 
 func Test2FA_WebAuthnFinishLogin_BadCredential(t *testing.T) {
@@ -193,6 +210,7 @@ func Test2FA_WebAuthnFinishLogin_BadCredential(t *testing.T) {
 	if signinTestRedis == nil {
 		t.Skip("redis testcontainer unavailable")
 	}
+	signinTestRedis.FlushAll(context.Background())
 	svc, err := twofactor.NewWebAuthnService("https://example.com", "Misskey", signinTestRedis.Client)
 	require.NoError(t, err)
 	skRepo := &inMemorySK{
@@ -203,10 +221,161 @@ func Test2FA_WebAuthnFinishLogin_BadCredential(t *testing.T) {
 	h.SetWebAuthn(svc, skRepo)
 	newTestUserWithTOTP(repo, "alice", "pass", "JBSWY3DPEHPK3PXP", nil)
 
-	// 存在しない sessionId + 空 credential → 403
-	rec := doPost(h.SigninFlow, `{"username":"alice","password":"pass","sessionId":"ghost","credential":{"id":"x","rawId":"x","type":"public-key","response":{}}}`)
+	// challenge を一切作らずに credential だけ送ると session not found で 403
+	rec := doPost(h.SigninFlow, `{"username":"alice","password":"pass","credential":{"id":"x","rawId":"x","type":"public-key","response":{}}}`)
 	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// Step 1 で 2FA 無効ユーザは TS upstream と同じく常に 'captcha' を返す (#705)。
+// captcha 設定の有無に関わらず、フロントが instance meta で widget の表示要否を
+// 判定するため。
+func TestStep1_NonTwoFactorUser_ReturnsCaptcha(t *testing.T) {
+	h, repo := newTestHandler(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hashStr := string(hash)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice", UsernameLower: "alice"}
+	repo.Profiles["u1"] = &model.UserProfile{UserID: "u1", Password: &hashStr}
+
+	rec := doPost(h.SigninFlow, `{"username":"alice"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, false, resp["finished"])
+	assert.Equal(t, "captcha", resp["next"])
+}
+
+func TestStep1_TwoFactorUser_ReturnsPassword(t *testing.T) {
+	h, repo := newTestHandler(t)
+	newTestUserWithTOTP(repo, "alice", "pass", "JBSWY3DPEHPK3PXP", nil)
+	rec := doPost(h.SigninFlow, `{"username":"alice"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "password", resp["next"])
+}
+
+// TOTP 失敗時のエラー ID は `cdf1235b-...` (TS 専用)。`932c904e-...`
+// (パスワード違い) と区別される (#705)。
+func Test2FA_TOTP_FailureErrorID(t *testing.T) {
+	h, repo := newTestHandler(t)
+	newTestUserWithTOTP(repo, "alice", "pass", "JBSWY3DPEHPK3PXP", nil)
+	rec := doPost(h.SigninFlow, `{"username":"alice","password":"pass","token":"000000"}`)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errMap, ok := resp["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "cdf1235b-ac71-46d4-a3a6-84ccce48df6f", errMap["id"])
 }
 
 // 静的: signin.Handler の使用を保証する
 var _ = signin.NewHandler
+
+// security key 設定済みだが credential 検証で失敗 → upstream 互換の WebAuthn
+// 専用 ID `93b86c4b-...` を返す (#705)。
+func Test2FA_WebAuthnFailureErrorID(t *testing.T) {
+	h, repo := newTestHandler(t)
+	if signinTestRedis == nil {
+		t.Skip("redis testcontainer unavailable")
+	}
+	signinTestRedis.FlushAll(context.Background())
+	svc, err := twofactor.NewWebAuthnService("https://example.com", "Misskey", signinTestRedis.Client)
+	require.NoError(t, err)
+	skRepo := &inMemorySK{
+		keys: map[string][]*model.UserSecurityKey{
+			"u1": {{ID: "AAEC", PublicKey: "AwQF", UserID: "u1"}},
+		},
+	}
+	h.SetWebAuthn(svc, skRepo)
+	newTestUserWithTOTP(repo, "alice", "pass", "JBSWY3DPEHPK3PXP", nil)
+
+	rec := doPost(h.SigninFlow, `{"username":"alice","password":"pass","credential":{"id":"x","rawId":"x","type":"public-key","response":{}}}`)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errMap := resp["error"].(map[string]any)
+	assert.Equal(t, "93b86c4b-72f9-40eb-9815-798928603d1e", errMap["id"])
+}
+
+// credential を送ったが鍵が無いユーザは passwordless でも通常でも 403 を返す。
+// (signin-flow path で webauthnSvc が nil または鍵未登録のケース)
+func Test2FA_WebAuthn_NoKeysButCredentialSent(t *testing.T) {
+	h, repo := newTestHandler(t)
+	// webauthnSvc を注入しない → hasKeys=false で 403
+	newTestUserWithTOTP(repo, "alice", "pass", "JBSWY3DPEHPK3PXP", nil)
+	rec := doPost(h.SigninFlow, `{"username":"alice","password":"pass","credential":{"id":"x","rawId":"x","type":"public-key","response":{}}}`)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errMap := resp["error"].(map[string]any)
+	assert.Equal(t, "93b86c4b-72f9-40eb-9815-798928603d1e", errMap["id"])
+}
+
+// 2FA + key 経路で BeginLogin が失敗 (Redis 接続エラー) すると TOTP に
+// fallback する: `next: 'totp'` を返す。
+func Test2FA_BeginLogin_Fail_FallsBackToTOTP(t *testing.T) {
+	h, repo := newTestHandler(t)
+	if signinTestRedis == nil {
+		t.Skip("redis testcontainer unavailable")
+	}
+	// 専用 redis client を閉じておく
+	closedClient := redisClientFromTest(t)
+	require.NoError(t, closedClient.Close())
+	svc, err := twofactor.NewWebAuthnService("https://example.com", "Misskey", closedClient)
+	require.NoError(t, err)
+	skRepo := &inMemorySK{
+		keys: map[string][]*model.UserSecurityKey{
+			"u1": {{ID: "AAEC", PublicKey: "AwQF", UserID: "u1"}},
+		},
+	}
+	h.SetWebAuthn(svc, skRepo)
+	newTestUserWithTOTP(repo, "alice", "pass", "JBSWY3DPEHPK3PXP", nil)
+
+	rec := doPost(h.SigninFlow, `{"username":"alice","password":"pass"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "totp", resp["next"])
+}
+
+// 2FA + key + 不正パスワード + passwordless 無効 → 403。
+func Test2FA_WebAuthn_BadPassword_NoPasswordless(t *testing.T) {
+	h, repo := newTestHandler(t)
+	if signinTestRedis == nil {
+		t.Skip("redis testcontainer unavailable")
+	}
+	signinTestRedis.FlushAll(context.Background())
+	svc, err := twofactor.NewWebAuthnService("https://example.com", "Misskey", signinTestRedis.Client)
+	require.NoError(t, err)
+	skRepo := &inMemorySK{
+		keys: map[string][]*model.UserSecurityKey{
+			"u1": {{ID: "AAEC", PublicKey: "AwQF", UserID: "u1"}},
+		},
+	}
+	h.SetWebAuthn(svc, skRepo)
+	newTestUserWithTOTP(repo, "alice", "pass", "JBSWY3DPEHPK3PXP", nil)
+
+	rec := doPost(h.SigninFlow, `{"username":"alice","password":"WRONG","credential":{"id":"x","rawId":"x","type":"public-key","response":{}}}`)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errMap := resp["error"].(map[string]any)
+	assert.Equal(t, "932c904e-9460-45b7-9ce6-7ed33be7eb2c", errMap["id"])
+}
+
+// SigninWithPasskey の Step 1 で BeginPasskeyLogin が失敗する path
+// (closed Redis) → 500。
+func TestSigninWithPasskey_BeginFails(t *testing.T) {
+	if signinTestRedis == nil {
+		t.Skip("redis testcontainer unavailable")
+	}
+	h, _ := newTestHandler(t)
+	closedClient := redisClientFromTest(t)
+	require.NoError(t, closedClient.Close())
+	svc, err := twofactor.NewWebAuthnService("https://example.com", "Misskey", closedClient)
+	require.NoError(t, err)
+	h.SetWebAuthn(svc, &inMemorySK{keys: map[string][]*model.UserSecurityKey{}})
+
+	rec := doPost(h.SigninWithPasskey, `{}`)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}

@@ -73,34 +73,54 @@ func TestPutAndTakeLoginSession_Roundtrip(t *testing.T) {
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
 	require.NoError(t, err)
 
-	// fake SessionData
 	sd := makeFakeSessionData()
-	sid, err := svc.putLoginSession(context.Background(), "alice", sd)
-	require.NoError(t, err)
-	assert.NotEmpty(t, sid)
+	require.NoError(t, svc.putLoginSession(context.Background(), "alice", sd))
 
-	got, err := svc.takeLoginSession(context.Background(), "alice", sid)
+	got, err := svc.takeLoginSession(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.Equal(t, sd.Challenge, got.Challenge)
+
+	// take は single-use: 2 回目は ErrWebAuthnSessionNotFound
+	_, err = svc.takeLoginSession(context.Background(), "alice")
+	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
+}
+
+func TestPutLoginSession_Overwrites(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+
+	first := makeFakeSessionData()
+	first.Challenge = "first"
+	second := makeFakeSessionData()
+	second.Challenge = "second"
+
+	require.NoError(t, svc.putLoginSession(context.Background(), "alice", first))
+	require.NoError(t, svc.putLoginSession(context.Background(), "alice", second))
+
+	got, err := svc.takeLoginSession(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "second", got.Challenge)
 }
 
 func TestTakeLoginSession_Missing(t *testing.T) {
 	requireRedis(t)
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
 	require.NoError(t, err)
-	_, err = svc.takeLoginSession(context.Background(), "alice", "ghost")
+	_, err = svc.takeLoginSession(context.Background(), "ghost")
 	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
 }
 
 func TestTakeLoginSession_NilRedis(t *testing.T) {
 	svc := &WebAuthnService{wa: nil, redis: nil}
-	_, err := svc.takeLoginSession(context.Background(), "alice", "x")
+	_, err := svc.takeLoginSession(context.Background(), "alice")
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
 func TestPutLoginSession_NilRedis(t *testing.T) {
 	svc := &WebAuthnService{wa: nil, redis: nil}
-	_, err := svc.putLoginSession(context.Background(), "alice", makeFakeSessionData())
+	err := svc.putLoginSession(context.Background(), "alice", makeFakeSessionData())
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
@@ -128,7 +148,7 @@ func TestBeginLogin(t *testing.T) {
 	require.NoError(t, err)
 	// 鍵が無いと go-webauthn は ErrBadRequest を返す。空でも sd 生成は試みる。
 	// アサーション: 鍵 0 個でも内部で AllowedCredentials=[] になる動作確認。
-	_, _, err = svc.BeginLogin(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil)
+	_, err = svc.BeginLogin(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil)
 	// 鍵 0 個だと "Found no credentials" 系のエラーになるので、ここでは
 	// エラーが返ることを許容する (実装依存)。
 	if err == nil {
@@ -144,7 +164,7 @@ func TestBeginRegistration_NotConfigured(t *testing.T) {
 
 func TestBeginLogin_NotConfigured(t *testing.T) {
 	svc := &WebAuthnService{}
-	_, _, err := svc.BeginLogin(context.Background(), &model.User{ID: "x"}, nil)
+	_, err := svc.BeginLogin(context.Background(), &model.User{ID: "x"}, nil)
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
@@ -158,7 +178,7 @@ func TestFinishRegistration_NotConfigured(t *testing.T) {
 func TestFinishLogin_NotConfigured(t *testing.T) {
 	svc := &WebAuthnService{}
 	req := httptest.NewRequest("POST", "/", strings.NewReader(""))
-	_, err := svc.FinishLogin(context.Background(), &model.User{ID: "x"}, nil, "sid", req)
+	_, err := svc.FinishLogin(context.Background(), &model.User{ID: "x"}, nil, req)
 	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
 }
 
@@ -178,8 +198,87 @@ func TestFinishLogin_SessionMissing(t *testing.T) {
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
 	require.NoError(t, err)
 	req := httptest.NewRequest("POST", "/", strings.NewReader(""))
-	_, err = svc.FinishLogin(context.Background(), &model.User{ID: "alice"}, nil, "ghost", req)
+	_, err = svc.FinishLogin(context.Background(), &model.User{ID: "alice"}, nil, req)
 	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
+}
+
+// session が存在するが credential body が壊れている場合、wa.FinishLogin が
+// エラーを返す path。session 読み出し → wa.FinishLogin → err を全て exercise。
+func TestFinishLogin_BadCredential(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+	require.NoError(t, svc.putLoginSession(context.Background(), "alice", makeFakeSessionData()))
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"id":"x","rawId":"x","type":"public-key","response":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	_, err = svc.FinishLogin(context.Background(), &model.User{ID: "alice", Username: "alice"}, nil, req)
+	assert.Error(t, err)
+}
+
+// 同じく FinishPasskeyLogin の wa.FinishDiscoverableLogin err path。
+func TestFinishPasskeyLogin_BadCredential(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+	require.NoError(t, svc.putPasskeySession(context.Background(), "ctx", makeFakeSessionData()))
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"id":"x","rawId":"x","type":"public-key","response":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resolver := func(rawID, userHandle []byte) (*model.User, []*model.UserSecurityKey, error) {
+		return &model.User{ID: "alice"}, nil, nil
+	}
+	_, _, err = svc.FinishPasskeyLogin(context.Background(), "ctx", req, resolver)
+	assert.Error(t, err)
+}
+
+// FinishPasskeyLogin の resolver closure を発火させる path。assertion body
+// は go-webauthn upstream の TestFinishLoginFailure 用 fixture を流用 (RPID =
+// webauthn.io)。resolver が err を返すと FinishDiscoverableLogin が err 伝播
+// するので、closure 内の `if err != nil` 分岐をカバーできる。
+func TestFinishPasskeyLogin_ResolverError(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://webauthn.io", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+
+	const (
+		credentialID = "AI7D5q2P0LS-Fal9ZT7CHM2N5BLbUunF92T8b6iYC199bO2kagSuU05-5dZGqb1SP0A0lyTWng"
+		userHandle   = "0ToAAAAAAAAAAA"
+		challenge    = "E4PTcIH_HfX1pC6Sigk1SC9NAlgeztN0439vi8z_c9k"
+	)
+
+	byteUserHandle, _ := base64.RawURLEncoding.DecodeString(userHandle)
+	// passkey (discoverable) session は UserID 空 が必須 (go-webauthn が
+	// ValidatePasskeyLogin の先頭でチェックする)。
+	sd := &webauthn.SessionData{
+		Challenge: challenge,
+	}
+	require.NoError(t, svc.putPasskeySession(context.Background(), "ctx", sd))
+
+	body := []byte(`{
+		"id":"` + credentialID + `",
+		"rawId":"` + credentialID + `",
+		"type":"public-key",
+		"response":{
+			"authenticatorData":"dKbqkhPJnC90siSSsyDPQCYqlMGpUKA5fyklC2CEHvBFXJJiGa3OAAI1vMYKZIsLJfHwVQMANwCOw-atj9C0vhWpfWU-whzNjeQS21Lpxfdk_G-omAtffWztpGoErlNOfuXWRqm9Uj9ANJck1p6lAQIDJiABIVggKAhfsdHcBIc0KPgAcRyAIK_-Vi-nCXHkRHPNaCMBZ-4iWCBxB8fGYQSBONi9uvq0gv95dGWlhJrBwCsj_a4LJQKVHQ",
+			"clientDataJSON":"eyJjaGFsbGVuZ2UiOiJFNFBUY0lIX0hmWDFwQzZTaWdrMVNDOU5BbGdlenROMDQzOXZpOHpfYzlrIiwibmV3X2tleXNfbWF5X2JlX2FkZGVkX2hlcmUiOiJkbyBub3QgY29tcGFyZSBjbGllbnREYXRhSlNPTiBhZ2FpbnN0IGEgdGVtcGxhdGUuIFNlZSBodHRwczovL2dvby5nbC95YWJQZXgiLCJvcmlnaW4iOiJodHRwczovL3dlYmF1dGhuLmlvIiwidHlwZSI6IndlYmF1dGhuLmdldCJ9",
+			"signature":"MEUCIBtIVOQxzFYdyWQyxaLR0tik1TnuPhGVhXVSNgFwLmN5AiEAnxXdCq0UeAVGWxOaFcjBZ_mEZoXqNboY5IkQDdlWZYc",
+			"userHandle":"` + userHandle + `"
+		}
+	}`)
+
+	req := httptest.NewRequest("POST", "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resolveCalled := false
+	resolver := func(rawID, userHandleArg []byte) (*model.User, []*model.UserSecurityKey, error) {
+		resolveCalled = true
+		assert.Equal(t, byteUserHandle, userHandleArg)
+		return nil, nil, errors.New("resolver fail")
+	}
+	_, _, err = svc.FinishPasskeyLogin(context.Background(), "ctx", req, resolver)
+	assert.Error(t, err)
+	assert.True(t, resolveCalled, "resolver closure must be invoked when body parses")
 }
 
 // --- userAdapter ---
@@ -255,26 +354,14 @@ func TestCredentialToModel_WithTransports(t *testing.T) {
 	assert.Equal(t, []string{"usb", "ble"}, []string(m.Transports))
 }
 
-// --- newSessionID ---
-
-func TestNewSessionID_NotEmpty(t *testing.T) {
-	id, err := newSessionID()
-	require.NoError(t, err)
-	assert.NotEmpty(t, id)
-}
-
-func TestNewSessionID_RandError(t *testing.T) {
-	old := readRandom
-	defer func() { readRandom = old }()
-	readRandom = func(b []byte) (int, error) { return 0, errors.New("entropy depleted") }
-	_, err := newSessionID()
-	assert.Error(t, err)
-}
-
-// --- key helper ---
+// --- key helpers ---
 
 func TestLoginSessionKey(t *testing.T) {
-	assert.Equal(t, "twofa:webauthn:alice:sid1", loginSessionKey("alice", "sid1"))
+	assert.Equal(t, "twofa:webauthn:alice:login", loginSessionKey("alice"))
+}
+
+func TestPasskeySessionKey(t *testing.T) {
+	assert.Equal(t, "twofa:webauthn:passkey:ctx1", passkeySessionKey("ctx1"))
 }
 
 // --- BeginRegistration / BeginLogin Redis error paths ---
@@ -290,7 +377,8 @@ func TestBeginRegistration_PutSessionFails(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// BeginLogin が assertion を返す経路 (鍵が 1 つ以上ある状態)
+// BeginLogin が assertion を返す経路 (鍵が 1 つ以上ある状態)。
+// session id は client へ返さず、サーバ側で user-keyed 保存される。
 func TestBeginLogin_WithCredential(t *testing.T) {
 	requireRedis(t)
 	twofaTestRedis.FlushAll(context.Background())
@@ -299,10 +387,13 @@ func TestBeginLogin_WithCredential(t *testing.T) {
 	keys := []*model.UserSecurityKey{
 		{ID: "AAEC", PublicKey: "AwQF", Counter: 1},
 	}
-	assertion, sid, err := svc.BeginLogin(context.Background(), &model.User{ID: "alice", Username: "alice"}, keys)
+	assertion, err := svc.BeginLogin(context.Background(), &model.User{ID: "alice", Username: "alice"}, keys)
 	require.NoError(t, err)
-	assert.NotEmpty(t, sid)
 	assert.NotNil(t, assertion)
+	// SessionData が Redis に user-keyed で残っていること
+	got, err := svc.takeLoginSession(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.NotEmpty(t, got.Challenge)
 }
 
 // BeginLogin で putSession が失敗する経路 (closed redis)
@@ -313,7 +404,7 @@ func TestBeginLogin_PutSessionFails(t *testing.T) {
 	svc, err := NewWebAuthnService("https://example.com", "Misskey", c)
 	require.NoError(t, err)
 	keys := []*model.UserSecurityKey{{ID: "AAEC", PublicKey: "AwQF", Counter: 0}}
-	_, _, err = svc.BeginLogin(context.Background(), &model.User{ID: "alice", Username: "alice"}, keys)
+	_, err = svc.BeginLogin(context.Background(), &model.User{ID: "alice", Username: "alice"}, keys)
 	assert.Error(t, err)
 }
 
@@ -326,11 +417,86 @@ func TestTakeSession_RedisError(t *testing.T) {
 	require.NoError(t, err)
 	// 一旦正常に PUT
 	sd := makeFakeSessionData()
-	sid, err := svc.putLoginSession(context.Background(), "alice", sd)
-	require.NoError(t, err)
+	require.NoError(t, svc.putLoginSession(context.Background(), "alice", sd))
 	// クライアント閉じてから take → connection closed エラー
 	require.NoError(t, c.Close())
-	_, err = svc.takeLoginSession(context.Background(), "alice", sid)
+	_, err = svc.takeLoginSession(context.Background(), "alice")
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, ErrWebAuthnSessionNotFound)
+}
+
+// --- BeginPasskeyLogin / passkey session helpers ---
+
+func TestBeginPasskeyLogin(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+	assertion, err := svc.BeginPasskeyLogin(context.Background(), "ctx-uuid-1")
+	require.NoError(t, err)
+	assert.NotNil(t, assertion)
+	assert.NotEmpty(t, assertion.Response.Challenge)
+	// 同じ context で take すると challenge が読めて、二度目は session not found
+	got, err := svc.takePasskeySession(context.Background(), "ctx-uuid-1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, got.Challenge)
+	_, err = svc.takePasskeySession(context.Background(), "ctx-uuid-1")
+	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
+}
+
+func TestBeginPasskeyLogin_NotConfigured(t *testing.T) {
+	svc := &WebAuthnService{}
+	_, err := svc.BeginPasskeyLogin(context.Background(), "x")
+	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
+}
+
+func TestBeginPasskeyLogin_PutSessionFails(t *testing.T) {
+	requireRedis(t)
+	c := redis.NewClient(&redis.Options{Addr: twofaTestRedis.Client.Options().Addr})
+	require.NoError(t, c.Close())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", c)
+	require.NoError(t, err)
+	_, err = svc.BeginPasskeyLogin(context.Background(), "ctx")
+	assert.Error(t, err)
+}
+
+func TestFinishPasskeyLogin_NotConfigured(t *testing.T) {
+	svc := &WebAuthnService{}
+	req := httptest.NewRequest("POST", "/", strings.NewReader(""))
+	_, _, err := svc.FinishPasskeyLogin(context.Background(), "ctx", req, nil)
+	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
+}
+
+func TestFinishPasskeyLogin_SessionMissing(t *testing.T) {
+	requireRedis(t)
+	twofaTestRedis.FlushAll(context.Background())
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", twofaTestRedis.Client)
+	require.NoError(t, err)
+	req := httptest.NewRequest("POST", "/", strings.NewReader(""))
+	_, _, err = svc.FinishPasskeyLogin(context.Background(), "ghost", req, nil)
+	assert.ErrorIs(t, err, ErrWebAuthnSessionNotFound)
+}
+
+func TestPutPasskeySession_NilRedis(t *testing.T) {
+	svc := &WebAuthnService{}
+	err := svc.putPasskeySession(context.Background(), "ctx", makeFakeSessionData())
+	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
+}
+
+func TestTakePasskeySession_NilRedis(t *testing.T) {
+	svc := &WebAuthnService{}
+	_, err := svc.takePasskeySession(context.Background(), "ctx")
+	assert.ErrorIs(t, err, ErrWebAuthnNotConfigured)
+}
+
+func TestTakePasskeySession_RedisError(t *testing.T) {
+	requireRedis(t)
+	c := redis.NewClient(&redis.Options{Addr: twofaTestRedis.Client.Options().Addr})
+	svc, err := NewWebAuthnService("https://example.com", "Misskey", c)
+	require.NoError(t, err)
+	require.NoError(t, svc.putPasskeySession(context.Background(), "ctx", makeFakeSessionData()))
+	require.NoError(t, c.Close())
+	_, err = svc.takePasskeySession(context.Background(), "ctx")
 	assert.Error(t, err)
 	assert.NotErrorIs(t, err, ErrWebAuthnSessionNotFound)
 }
