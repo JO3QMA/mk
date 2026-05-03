@@ -107,7 +107,7 @@ func (h *Handler) DeleteAllFilesOfUser(c echo.Context) error {
 		UserID string `json:"userId"`
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("userId is required."))
 	}
 	if h.driveFileRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -115,7 +115,7 @@ func (h *Handler) DeleteAllFilesOfUser(c echo.Context) error {
 	// 単一の DELETE 文で完結するため同期実行。大量ファイル (数万) の場合も
 	// PostgreSQL で 1 秒未満に収まる想定。将来バッチが必要なら queue へ。
 	if _, err := h.driveFileRepo.DeleteByUser(req.UserID); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.NoContent(http.StatusNoContent)
 }

@@ -28,7 +28,7 @@ func (h *Handler) GetIndexStats(c echo.Context) error {
 		FROM pg_stat_user_indexes
 		ORDER BY relname, indexrelname
 	`).Scan(&rows).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.JSON(http.StatusOK, rows)
 }
@@ -59,7 +59,7 @@ func (h *Handler) GetTableStats(c echo.Context) error {
 		  AND c.relnamespace IN (SELECT oid FROM pg_namespace WHERE nspname = 'public')
 		ORDER BY c.relname
 	`).Scan(&rows).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	// Misskey 本家は { tableName: { count, size } } の map 形式で返すのでそれに合わせる。
 	result := make(map[string]any, len(rows))

@@ -7,13 +7,23 @@ import (
 )
 
 // JSONInvalidParam writes a 400 INVALID_PARAM response to the client.
-func JSONInvalidParam(c echo.Context) error {
-	return c.JSON(http.StatusBadRequest, InvalidParam())
+// Optional msg overrides the default "Invalid param." text (UUID stays
+// fixed so frontend i18n lookups remain stable).
+func JSONInvalidParam(c echo.Context, msg ...string) error {
+	return c.JSON(http.StatusBadRequest, InvalidParam(msg...))
 }
 
 // JSONInternalError writes a 500 INTERNAL_ERROR response to the client.
-func JSONInternalError(c echo.Context) error {
-	return c.JSON(http.StatusInternalServerError, InternalError())
+// Optional msg overrides the default "Internal error." text.
+func JSONInternalError(c echo.Context, msg ...string) error {
+	return c.JSON(http.StatusInternalServerError, InternalError(msg...))
+}
+
+// JSONNotFound writes a 404 NOT_FOUND response to the client. mk-go 固有の
+// 汎用 404 (#673 Phase A)。endpoint 固有 NO_SUCH_* helper が無い箇所での
+// fallback。
+func JSONNotFound(c echo.Context, msg ...string) error {
+	return c.JSON(http.StatusNotFound, NotFound(msg...))
 }
 
 // JSONNoSuchUser writes a 404 NO_SUCH_USER response to the client.

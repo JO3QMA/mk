@@ -32,7 +32,7 @@ func (h *Handler) EmojiAddAliasesBulk(c echo.Context) error {
 	}
 	rows, err := h.emojiRepo.FindManyByIDs(req.IDs)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	for _, e := range rows {
 		merged := dedupe(append(append([]string{}, e.Aliases...), req.Aliases...))
@@ -60,7 +60,7 @@ func (h *Handler) EmojiCopy(c echo.Context) error {
 		EmojiID string `json:"emojiId"`
 	}
 	if err := c.Bind(&req); err != nil || req.EmojiID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "emojiId is required.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("emojiId is required."))
 	}
 	if h.emojiRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -109,7 +109,7 @@ func (h *Handler) EmojiCopy(c echo.Context) error {
 	}
 
 	if err := h.emojiRepo.Create(&copied); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	h.logModeration(c, moderationlog.LogAddCustomEmoji, map[string]any{
 		"emojiId": copied.ID,
@@ -143,7 +143,7 @@ func (h *Handler) EmojiDeleteBulk(c echo.Context) error {
 			"ids", req.IDs, "err", err)
 	}
 	if err := h.emojiRepo.DeleteMany(req.IDs); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	// per-emoji log を 1 batch にまとめる (#671)。Misskey TS 互換は per-emoji
 	// row 単位なので結果として永続化される行数は同じだが、N goroutine + N
@@ -231,7 +231,7 @@ func (h *Handler) EmojiListRemote(c echo.Context) error {
 	}
 	emojis, err := h.emojiRepo.ListRemoteWithFilter(req.Query, req.Host, req.SinceID, req.UntilID, req.Limit, req.Offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if emojis == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -259,7 +259,7 @@ func (h *Handler) EmojiRemoveAliasesBulk(c echo.Context) error {
 	}
 	rows, err := h.emojiRepo.FindManyByIDs(req.IDs)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	removeSet := make(map[string]bool, len(req.Aliases))
 	for _, a := range req.Aliases {
@@ -293,7 +293,7 @@ func (h *Handler) EmojiSetAliasesBulk(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"aliases": req.Aliases}); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -311,7 +311,7 @@ func (h *Handler) EmojiSetCategoryBulk(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"category": req.Category}); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -329,7 +329,7 @@ func (h *Handler) EmojiSetLicenseBulk(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.emojiRepo.UpdateFieldsMany(req.IDs, map[string]any{"license": req.License}); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.NoContent(http.StatusNoContent)
 }

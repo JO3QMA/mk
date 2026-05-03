@@ -17,7 +17,7 @@ func (h *Handler) CaptchaCurrent(c echo.Context) error {
 	}
 	meta, err := h.metaRepo.Fetch()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	var provider any
 	var siteKey *string
@@ -50,13 +50,13 @@ func (h *Handler) CaptchaSave(c echo.Context) error {
 		TurnstileSS *string `json:"turnstileSecretKey"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	// provider が空 or "none" の場合は captcha 無効化として扱う。
 	switch req.Provider {
 	case "", "none", "hcaptcha", "recaptcha", "turnstile":
 	default:
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Unknown captcha provider.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Unknown captcha provider."))
 	}
 	if h.metaRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -85,7 +85,7 @@ func (h *Handler) CaptchaSave(c echo.Context) error {
 		fields["turnstileSecretKey"] = *req.TurnstileSS
 	}
 	if err := h.metaRepo.Update(fields); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.NoContent(http.StatusNoContent)
 }

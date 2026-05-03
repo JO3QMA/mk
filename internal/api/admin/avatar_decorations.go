@@ -22,7 +22,7 @@ func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
 		RoleIDs     []string `json:"roleIdsThatCanBeUsedThisDecoration"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" || req.URL == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	d := &model.AvatarDecoration{
 		ID:          h.idGen.Generate(time.Now()),
@@ -32,7 +32,7 @@ func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
 		RoleIDs:     req.RoleIDs,
 	}
 	if err := h.avatarDecoRepo.Create(d); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	h.logModeration(c, moderationlog.LogCreateAvatarDecoration, map[string]any{
 		"avatarDecorationId": d.ID,
@@ -70,7 +70,7 @@ func (h *Handler) AvatarDecorationsList(c echo.Context) error {
 	}
 	rows, err := h.avatarDecoRepo.List()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if rows == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -91,11 +91,11 @@ func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
 		RoleIDs     *[]string `json:"roleIdsThatCanBeUsedThisDecoration"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	before, err := h.avatarDecoRepo.FindByID(req.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	fields := map[string]any{"updatedAt": time.Now()}
 	if req.Name != nil {
@@ -111,7 +111,7 @@ func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
 		fields["roleIdsThatCanBeUsedThisDecoration"] = *req.RoleIDs
 	}
 	if err := h.avatarDecoRepo.UpdateFields(req.ID, fields); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if after, err := h.avatarDecoRepo.FindByID(req.ID); err == nil && after != nil {
 		h.logModeration(c, moderationlog.LogUpdateAvatarDecoration, map[string]any{

@@ -24,19 +24,55 @@ func invoke(t *testing.T, fn func(echo.Context) error) (int, map[string]any) {
 }
 
 func TestJSONInvalidParam(t *testing.T) {
-	code, body := invoke(t, JSONInvalidParam)
+	code, body := invoke(t, func(c echo.Context) error { return JSONInvalidParam(c) })
 	assert.Equal(t, http.StatusBadRequest, code)
 	errObj := body["error"].(map[string]any)
 	assert.Equal(t, "INVALID_PARAM", errObj["code"])
 	assert.Equal(t, UUIDInvalidParam, errObj["id"])
+	assert.Equal(t, "Invalid param.", errObj["message"])
+}
+
+func TestJSONInvalidParam_CustomMessage(t *testing.T) {
+	code, body := invoke(t, func(c echo.Context) error { return JSONInvalidParam(c, "userId is required.") })
+	assert.Equal(t, http.StatusBadRequest, code)
+	errObj := body["error"].(map[string]any)
+	// UUID は固定 (i18n lookup 用)、message だけ override される
+	assert.Equal(t, UUIDInvalidParam, errObj["id"])
+	assert.Equal(t, "userId is required.", errObj["message"])
 }
 
 func TestJSONInternalError(t *testing.T) {
-	code, body := invoke(t, JSONInternalError)
+	code, body := invoke(t, func(c echo.Context) error { return JSONInternalError(c) })
 	assert.Equal(t, http.StatusInternalServerError, code)
 	errObj := body["error"].(map[string]any)
 	assert.Equal(t, "INTERNAL_ERROR", errObj["code"])
 	assert.Equal(t, UUIDInternalError, errObj["id"])
+	assert.Equal(t, "Internal error.", errObj["message"])
+}
+
+func TestJSONInternalError_CustomMessage(t *testing.T) {
+	code, body := invoke(t, func(c echo.Context) error { return JSONInternalError(c, "queue not configured.") })
+	assert.Equal(t, http.StatusInternalServerError, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, UUIDInternalError, errObj["id"])
+	assert.Equal(t, "queue not configured.", errObj["message"])
+}
+
+func TestJSONNotFound(t *testing.T) {
+	code, body := invoke(t, func(c echo.Context) error { return JSONNotFound(c) })
+	assert.Equal(t, http.StatusNotFound, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, "NOT_FOUND", errObj["code"])
+	assert.Equal(t, UUIDNotFound, errObj["id"])
+	assert.Equal(t, "Not found.", errObj["message"])
+}
+
+func TestJSONNotFound_CustomMessage(t *testing.T) {
+	code, body := invoke(t, func(c echo.Context) error { return JSONNotFound(c, "queue task not found.") })
+	assert.Equal(t, http.StatusNotFound, code)
+	errObj := body["error"].(map[string]any)
+	assert.Equal(t, UUIDNotFound, errObj["id"])
+	assert.Equal(t, "queue task not found.", errObj["message"])
 }
 
 func TestJSONNoSuchUser(t *testing.T) {

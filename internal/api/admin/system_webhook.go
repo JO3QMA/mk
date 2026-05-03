@@ -59,7 +59,7 @@ func (h *Handler) SystemWebhookCreate(c echo.Context) error {
 		IsActive *bool    `json:"isActive"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" || req.URL == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	isActive := true
 	if req.IsActive != nil {
@@ -75,7 +75,7 @@ func (h *Handler) SystemWebhookCreate(c echo.Context) error {
 		UpdatedAt: time.Now(),
 	}
 	if err := h.systemWebhookRepo.Create(sw); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	h.logModeration(c, moderationlog.LogCreateSystemWebhook, map[string]any{
 		"systemWebhookId": sw.ID,
@@ -113,7 +113,7 @@ func (h *Handler) SystemWebhookList(c echo.Context) error {
 	}
 	rows, err := h.systemWebhookRepo.List()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	if rows == nil {
 		return c.JSON(http.StatusOK, []any{})
@@ -124,7 +124,7 @@ func (h *Handler) SystemWebhookList(c echo.Context) error {
 // SystemWebhookShow handles POST /api/admin/system-webhook/show.
 func (h *Handler) SystemWebhookShow(c echo.Context) error {
 	if h.systemWebhookRepo == nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	var req struct {
 		ID string `json:"id"`
@@ -132,7 +132,7 @@ func (h *Handler) SystemWebhookShow(c echo.Context) error {
 	_ = c.Bind(&req)
 	sw, err := h.systemWebhookRepo.FindByID(req.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	return c.JSON(http.StatusOK, sw)
 }
@@ -175,12 +175,12 @@ func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
 		IsActive *bool     `json:"isActive"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	// 存在確認 (GORM Updates(map) は 0 行影響でも nil を返すため)
 	before, err := h.systemWebhookRepo.FindByID(req.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	fields := map[string]any{"updatedAt": time.Now()}
 	if req.Name != nil {
@@ -199,11 +199,11 @@ func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
 		fields["isActive"] = *req.IsActive
 	}
 	if err := h.systemWebhookRepo.UpdateAdminFields(req.ID, fields); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	sw, err := h.systemWebhookRepo.FindByID(req.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	h.logModeration(c, moderationlog.LogUpdateSystemWebhook, map[string]any{
 		"systemWebhookId": req.ID,

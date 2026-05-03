@@ -18,7 +18,7 @@ func (h *Handler) QueueClear(c echo.Context) error {
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	for _, q := range queues {
 		_, _ = h.queueInspector.DeleteAllPendingTasks(q)
@@ -115,7 +115,7 @@ func (h *Handler) QueueJobs(c echo.Context) error {
 	if req.Queue == "" {
 		qs, err := h.queueInspector.Queues()
 		if err != nil {
-			return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+			return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 		}
 		queues = qs
 	}
@@ -203,7 +203,7 @@ func (h *Handler) QueuePromoteJobs(c echo.Context) error {
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	promoted := 0
 	for _, q := range queues {
@@ -334,7 +334,7 @@ func (h *Handler) QueueQueueStats(c echo.Context) error {
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	out := map[string]any{}
 	for _, q := range queues {
@@ -369,7 +369,7 @@ func (h *Handler) QueueQueues(c echo.Context) error {
 	}
 	queues, err := h.queueInspector.Queues()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	result := make([]map[string]any, 0, len(queues))
 	for _, q := range queues {
@@ -390,13 +390,13 @@ func (h *Handler) QueueRemoveJob(c echo.Context) error {
 		ID    string `json:"id"`
 	}
 	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("queue and id are required."))
 	}
 	if h.queueInspector == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.queueInspector.DeleteTask(req.Queue, req.ID); err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -408,13 +408,13 @@ func (h *Handler) QueueRetryJob(c echo.Context) error {
 		ID    string `json:"id"`
 	}
 	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("queue and id are required."))
 	}
 	if h.queueInspector == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	if err := h.queueInspector.RunTask(req.Queue, req.ID); err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -426,14 +426,14 @@ func (h *Handler) QueueShowJob(c echo.Context) error {
 		ID    string `json:"id"`
 	}
 	if err := c.Bind(&req); err != nil || req.Queue == "" || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "queue and id are required.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("queue and id are required."))
 	}
 	if h.queueInspector == nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	t, err := h.queueInspector.GetTaskInfo(req.Queue, req.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	return c.JSON(http.StatusOK, packTaskSummary(t))
 }

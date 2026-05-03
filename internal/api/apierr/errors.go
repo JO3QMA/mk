@@ -28,9 +28,14 @@ func Error(code, message, id string) map[string]any {
 const (
 	UUIDInvalidParam  = "3d81ceae-475f-4600-b2a8-2bc116157532"
 	UUIDInternalError = "5d37dbcb-891e-41ca-a3d6-e690c97775ac"
-	UUIDNoSuchNote    = "24fcbfc6-2e37-42b6-8388-c29b3861a08d"
-	UUIDNoSuchUser    = "4362f8dc-731f-4ad8-a694-be5a88922a24"
-	UUIDAccessDenied  = "1fb7cb09-d46a-4fff-b8df-057708cce513"
+	// UUIDNotFound は Misskey TS 上流に対応する汎用 NOT_FOUND code が存在
+	// しない (上流は endpoint 固有 NO_SUCH_* を使う) ため mk-go 固有の
+	// 安定 UUID を発番する。frontend 側の i18n には未対応だが、code+id 組
+	// が安定するので将来 locale 引きを追加できる (#673 Phase A)。
+	UUIDNotFound     = "8e6f5b1d-4f62-4ae0-9d3c-7c8d5b2e9f12"
+	UUIDNoSuchNote   = "24fcbfc6-2e37-42b6-8388-c29b3861a08d"
+	UUIDNoSuchUser   = "4362f8dc-731f-4ad8-a694-be5a88922a24"
+	UUIDAccessDenied = "1fb7cb09-d46a-4fff-b8df-057708cce513"
 
 	// UUIDs for notes/create errors (third_party/misskey/.../endpoints/notes/create.ts).
 	UUIDNoSuchRenoteTarget                                         = "b5c90186-4ab0-49c8-9bba-a1f76c282ba4"
@@ -55,14 +60,49 @@ const (
 	UUIDFailedToResolveRemoteUser = "ef7b9be4-9cba-4e6f-ab41-90ed171c7d3c"
 )
 
-// InvalidParam returns a 400 INVALID_PARAM error response.
-func InvalidParam() map[string]any {
-	return Error("INVALID_PARAM", "Invalid param.", UUIDInvalidParam)
+// InvalidParam returns a 400 INVALID_PARAM error response. The optional
+// msg argument overrides the default "Invalid param." human-readable text;
+// the UUID is fixed regardless so frontend i18n lookups remain stable
+// (Misskey TS の INVALID_PARAM は単一 UUID で message は dev 向け説明)。
+//
+// Only msg[0] is used; subsequent values are silently ignored. An empty
+// string ("") is treated the same as no argument and falls back to the
+// default text — callers cannot suppress the message with "".
+func InvalidParam(msg ...string) map[string]any {
+	m := "Invalid param."
+	if len(msg) > 0 && msg[0] != "" {
+		m = msg[0]
+	}
+	return Error("INVALID_PARAM", m, UUIDInvalidParam)
 }
 
-// InternalError returns a 500 INTERNAL_ERROR error response.
-func InternalError() map[string]any {
-	return Error("INTERNAL_ERROR", "Internal error.", UUIDInternalError)
+// InternalError returns a 500 INTERNAL_ERROR error response. The optional
+// msg argument overrides the default "Internal error." text; the UUID is
+// fixed regardless so frontend i18n lookups remain stable.
+//
+// Only msg[0] is used; subsequent values are silently ignored. An empty
+// string ("") falls back to the default text.
+func InternalError(msg ...string) map[string]any {
+	m := "Internal error."
+	if len(msg) > 0 && msg[0] != "" {
+		m = msg[0]
+	}
+	return Error("INTERNAL_ERROR", m, UUIDInternalError)
+}
+
+// NotFound returns a 404 NOT_FOUND error response. mk-go 固有の汎用 404
+// (Misskey TS には対応する code が無く endpoint 固有 NO_SUCH_* を使う)。
+// 該当 endpoint で具体的な NO_SUCH_* helper を新設する余裕が無い時の
+// fallback で使う。msg は dev 向け説明として override 可能。
+//
+// Only msg[0] is used; subsequent values are silently ignored. An empty
+// string ("") falls back to the default text.
+func NotFound(msg ...string) map[string]any {
+	m := "Not found."
+	if len(msg) > 0 && msg[0] != "" {
+		m = msg[0]
+	}
+	return Error("NOT_FOUND", m, UUIDNotFound)
 }
 
 // NoSuchNote returns a 404 NO_SUCH_NOTE error response.

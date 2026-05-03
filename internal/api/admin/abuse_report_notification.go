@@ -22,7 +22,7 @@ func (h *Handler) AbuseReportNotificationRecipientCreate(c echo.Context) error {
 		SystemWebhookID *string `json:"systemWebhookId"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	if req.Method == "" {
 		req.Method = "email"
@@ -36,7 +36,7 @@ func (h *Handler) AbuseReportNotificationRecipientCreate(c echo.Context) error {
 		IsActive:        true,
 	}
 	if err := h.recipientRepo.Create(r); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	h.logModeration(c, moderationlog.LogCreateAbuseReportNotificationRecipient, map[string]any{
 		"recipientId": r.ID,
@@ -74,7 +74,7 @@ func (h *Handler) AbuseReportNotificationRecipientList(c echo.Context) error {
 	}
 	rows, err := h.recipientRepo.List()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	// nil を明示的に空配列化 (クライアント互換)
 	if rows == nil {
@@ -86,7 +86,7 @@ func (h *Handler) AbuseReportNotificationRecipientList(c echo.Context) error {
 // AbuseReportNotificationRecipientShow handles POST /api/admin/abuse-report/notification-recipient/show.
 func (h *Handler) AbuseReportNotificationRecipientShow(c echo.Context) error {
 	if h.recipientRepo == nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	var req struct {
 		ID string `json:"id"`
@@ -94,7 +94,7 @@ func (h *Handler) AbuseReportNotificationRecipientShow(c echo.Context) error {
 	_ = c.Bind(&req)
 	r, err := h.recipientRepo.FindByID(req.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	return c.JSON(http.StatusOK, r)
 }
@@ -113,7 +113,7 @@ func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
 		SystemWebhookID *string `json:"systemWebhookId"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	before, _ := h.recipientRepo.FindByID(req.ID)
 	fields := map[string]any{}
@@ -135,11 +135,11 @@ func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
 	// GORM Updates(map) は対象なしでも nil を返すため、ここでのエラーは DB 障害
 	// 等の真の失敗。NotFound は続く FindByID で検出する。
 	if err := h.recipientRepo.Update(req.ID, fields); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	r, err := h.recipientRepo.FindByID(req.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
 	}
 	if before != nil {
 		h.logModeration(c, moderationlog.LogUpdateAbuseReportNotificationRecipient, map[string]any{
