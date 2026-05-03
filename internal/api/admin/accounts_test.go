@@ -210,6 +210,21 @@ func TestAccountsFindByEmail_ResponseShape(t *testing.T) {
 	assert.False(t, hasUsernameLower, "usernameLower is an internal field and must not be exposed")
 }
 
+func TestUpdateProxyAccount_WritesModerationLog(t *testing.T) {
+	// #664: updateProxyAccountDescription log を出す (before:null, after:string)。
+	h, userRepo, _, _ := newTestHandler(t)
+	proxy := &model.User{ID: "u-proxy", Username: "proxy.actor", UsernameLower: "proxy.actor"}
+	require.NoError(t, userRepo.Create(proxy))
+	require.NoError(t, userRepo.CreateProfile(&model.UserProfile{UserID: proxy.ID}))
+	h.SetSystemAccountFetcher(&stubSystemAccountFetcher{user: proxy})
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.UpdateProxyAccount, `{"description":"hello"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "updateProxyAccountDescription", repo.Snapshot()[0].Type)
+}
+
 func TestAccountsDelete_WritesModerationLog(t *testing.T) {
 	h, userRepo, _, _ := newTestHandler(t)
 	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}

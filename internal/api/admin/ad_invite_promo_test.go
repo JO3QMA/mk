@@ -397,6 +397,104 @@ func TestInviteCreate(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, doPost(h.InviteCreate, `{}`, adminUser).Code)
 }
 
+// --- moderation log assertions (#662 + #665) ---
+
+func TestAdCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAdRepo(testutil.NewMockAdRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AdCreate, `{"url":"https://x","imageUrl":"https://y"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "createAd", repo.Snapshot()[0].Type)
+}
+
+func TestAdUpdate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	adRepo := testutil.NewMockAdRepository()
+	require.NoError(t, adRepo.Create(&model.Ad{ID: "ad1", URL: "https://x", ImageURL: "https://y"}))
+	h.SetAdRepo(adRepo)
+	repo := attachModLog(t, h)
+
+	url := "https://updated"
+	body := fmt.Sprintf(`{"id":"ad1","url":%q}`, url)
+	rec := doPost(h.AdUpdate, body, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "updateAd", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	require.NotNil(t, info["before"])
+	require.NotNil(t, info["after"])
+}
+
+func TestAdDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	adRepo := testutil.NewMockAdRepository()
+	require.NoError(t, adRepo.Create(&model.Ad{ID: "ad1", URL: "https://x", ImageURL: "https://y"}))
+	h.SetAdRepo(adRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AdDelete, `{"id":"ad1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteAd", repo.Snapshot()[0].Type)
+}
+
+func TestInviteCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetInviteRepo(testutil.NewMockRegistrationTicketRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.InviteCreate, `{"count":2}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "createInvitation", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	require.NotNil(t, info["invitations"])
+}
+
+func TestAvatarDecorationsCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAvatarDecorationRepo(testutil.NewMockAvatarDecorationRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AvatarDecorationsCreate, `{"name":"crown","url":"https://x"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "createAvatarDecoration", repo.Snapshot()[0].Type)
+}
+
+func TestAvatarDecorationsUpdate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	avatarRepo := testutil.NewMockAvatarDecorationRepository()
+	require.NoError(t, avatarRepo.Create(&model.AvatarDecoration{ID: "d1", Name: "crown"}))
+	h.SetAvatarDecorationRepo(avatarRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AvatarDecorationsUpdate, `{"id":"d1","name":"jewel"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "updateAvatarDecoration", repo.Snapshot()[0].Type)
+}
+
+func TestAvatarDecorationsDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	avatarRepo := testutil.NewMockAvatarDecorationRepository()
+	require.NoError(t, avatarRepo.Create(&model.AvatarDecoration{ID: "d1", Name: "doomed"}))
+	h.SetAvatarDecorationRepo(avatarRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AvatarDecorationsDelete, `{"id":"d1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteAvatarDecoration", repo.Snapshot()[0].Type)
+}
+
 func TestInviteList(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusOK, doPost(h.InviteList, `{}`, adminUser).Code)
@@ -405,4 +503,91 @@ func TestInviteList(t *testing.T) {
 func TestPromoCreate(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.PromoCreate, `{}`, adminUser).Code)
+}
+
+// --- moderation log assertions (#662 ad / invite + #665 avatar decoration) ---
+
+func TestAdCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAdRepo(testutil.NewMockAdRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AdCreate, `{"url":"https://x","imageUrl":"https://y"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "createAd", repo.Snapshot()[0].Type)
+}
+
+func TestAdUpdate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	adRepo := testutil.NewMockAdRepository()
+	require.NoError(t, adRepo.Create(&model.Ad{ID: "a1", URL: "https://x", ImageURL: "https://y", Place: "square"}))
+	h.SetAdRepo(adRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AdUpdate, `{"id":"a1","memo":"updated"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "updateAd", repo.Snapshot()[0].Type)
+}
+
+func TestAdDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	adRepo := testutil.NewMockAdRepository()
+	require.NoError(t, adRepo.Create(&model.Ad{ID: "a1"}))
+	h.SetAdRepo(adRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AdDelete, `{"id":"a1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteAd", repo.Snapshot()[0].Type)
+}
+
+func TestInviteCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetInviteRepo(testutil.NewMockRegistrationTicketRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.InviteCreate, `{"count":2}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "createInvitation", repo.Snapshot()[0].Type)
+}
+
+func TestAvatarDecorationsCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetAvatarDecorationRepo(testutil.NewMockAvatarDecorationRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AvatarDecorationsCreate, `{"name":"deco1","url":"https://x.png"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "createAvatarDecoration", repo.Snapshot()[0].Type)
+}
+
+func TestAvatarDecorationsUpdate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	decoRepo := testutil.NewMockAvatarDecorationRepository()
+	require.NoError(t, decoRepo.Create(&model.AvatarDecoration{ID: "d1", Name: "old", URL: "https://x"}))
+	h.SetAvatarDecorationRepo(decoRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AvatarDecorationsUpdate, `{"id":"d1","name":"new"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "updateAvatarDecoration", repo.Snapshot()[0].Type)
+}
+
+func TestAvatarDecorationsDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	decoRepo := testutil.NewMockAvatarDecorationRepository()
+	require.NoError(t, decoRepo.Create(&model.AvatarDecoration{ID: "d1"}))
+	h.SetAvatarDecorationRepo(decoRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AvatarDecorationsDelete, `{"id":"d1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteAvatarDecoration", repo.Snapshot()[0].Type)
 }
