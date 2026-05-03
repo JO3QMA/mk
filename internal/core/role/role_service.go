@@ -307,6 +307,26 @@ func (s *Service) ListByRole(roleID, untilID, sinceID string, limit int) ([]*mod
 	return s.assignmentRepo.ListByRole(roleID, untilID, sinceID, limit)
 }
 
+// UpdateFields updates the named columns of an existing role and
+// returns the role state after the update for audit logging. Returns
+// ErrRoleNotFound if the role does not exist before the update.
+//
+// Misskey TS counterpart: admin/roles/update mutates the role then
+// reads it back to render before/after diffs. We mirror that flow so
+// the moderation log can include both snapshots.
+func (s *Service) UpdateFields(id string, fields map[string]any) (*model.Role, error) {
+	if _, err := s.roleRepo.FindByID(id); err != nil {
+		return nil, ErrRoleNotFound
+	}
+	if len(fields) == 0 {
+		return s.roleRepo.FindByID(id)
+	}
+	if err := s.roleRepo.UpdateFields(id, fields); err != nil {
+		return nil, err
+	}
+	return s.roleRepo.FindByID(id)
+}
+
 // Delete removes a role.
 func (s *Service) Delete(id string) error {
 	if _, err := s.roleRepo.FindByID(id); err != nil {

@@ -650,3 +650,54 @@ type failingListByRoleAssignRepo struct {
 func (f *failingListByRoleAssignRepo) ListByRole(_, _, _ string, _ int) ([]*model.RoleAssignment, error) {
 	return nil, assert.AnError
 }
+
+func TestUpdateFields_Success(t *testing.T) {
+	svc, roleRepo, _, _ := newTestService(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Old", Description: "x"}
+
+	after, err := svc.UpdateFields("r1", map[string]any{"name": "New"})
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	assert.Equal(t, "New", after.Name)
+	assert.Equal(t, "x", after.Description, "untouched fields stay intact")
+}
+
+func TestUpdateFields_NotFound(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	_, err := svc.UpdateFields("ghost", map[string]any{"name": "x"})
+	assert.ErrorIs(t, err, role.ErrRoleNotFound)
+}
+
+func TestUpdateFields_EmptyFieldsReturnsCurrent(t *testing.T) {
+	// 空 map の場合は UpdateFields を呼ばずに現在値を返す。
+	// admin/roles/update が optional pointer 全部 nil で来たケース。
+	svc, roleRepo, _, _ := newTestService(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Stay"}
+
+	after, err := svc.UpdateFields("r1", map[string]any{})
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	assert.Equal(t, "Stay", after.Name)
+}
+
+// failingUpdateFieldsRoleRepo は UpdateFields で error を返す stub。
+type failingUpdateFieldsRoleRepo struct {
+	*testutil.MockRoleRepository
+}
+
+func (f *failingUpdateFieldsRoleRepo) UpdateFields(_ string, _ map[string]any) error {
+	return assert.AnError
+}
+
+func TestUpdateFields_RepoError(t *testing.T) {
+	roleRepo := testutil.NewMockRoleRepository()
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Old"}
+	wrapped := &failingUpdateFieldsRoleRepo{roleRepo}
+	assignRepo := testutil.NewMockRoleAssignmentRepository(roleRepo)
+	metaRepo := testutil.NewMockMetaRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := role.NewService(wrapped, assignRepo, metaRepo, idGen)
+
+	_, err := svc.UpdateFields("r1", map[string]any{"name": "New"})
+	assert.Error(t, err)
+}

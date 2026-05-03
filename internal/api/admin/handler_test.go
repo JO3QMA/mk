@@ -1406,3 +1406,122 @@ func TestShowModerationLogs_InvalidJSON(t *testing.T) {
 	rec := doPost(h.ShowModerationLogs, `invalid`, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+// --- moderation log assertions for user moderation handlers ---
+
+func TestSuspendUser_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.SuspendUser, `{"userId":"u1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "admin1", logs[0].UserID)
+	assert.Equal(t, "suspend", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "u1", info["userId"])
+	assert.Equal(t, "alice", info["userUsername"])
+}
+
+func TestUnsuspendUser_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, _ := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.UnsuspendUser, `{"userId":"u1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "unsuspend", repo.Snapshot()[0].Type)
+}
+
+// --- moderation log assertions for role handlers ---
+
+func TestRolesCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.RolesCreate, `{"name":"Mod"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "createRole", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.NotEmpty(t, info["roleId"])
+	assert.NotNil(t, info["role"])
+}
+
+func TestRolesUpdate_WritesModerationLog(t *testing.T) {
+	h, _, _, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Old"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.RolesUpdate, `{"roleId":"r1","name":"New"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	// DB 更新も走る (#651 PR-A bonus fix)
+	assert.Equal(t, "New", roleRepo.Roles["r1"].Name)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "updateRole", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "r1", info["roleId"])
+	require.NotNil(t, info["before"])
+	require.NotNil(t, info["after"])
+}
+
+func TestRolesDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, roleRepo := newTestHandler(t)
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.RolesDelete, `{"roleId":"r1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "deleteRole", logs[0].Type)
+}
+
+func TestRolesAssign_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, roleRepo := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.RolesAssign, `{"userId":"u1","roleId":"r1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "assignRole", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "u1", info["userId"])
+	assert.Equal(t, "alice", info["userUsername"])
+	assert.Equal(t, "r1", info["roleId"])
+	assert.Equal(t, "Mod", info["roleName"])
+}
+
+func TestRolesUnassign_WritesModerationLog(t *testing.T) {
+	h, userRepo, _, roleRepo := newTestHandler(t)
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Mod"}
+	// assign を先に行ってから modlog spy を取り付け、unassign 1 件だけ観測する
+	doPost(h.RolesAssign, `{"userId":"u1","roleId":"r1"}`, adminUser)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.RolesUnassign, `{"userId":"u1","roleId":"r1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "unassignRole", repo.Snapshot()[0].Type)
+}

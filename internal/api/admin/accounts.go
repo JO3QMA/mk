@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/queue"
 )
 
@@ -17,7 +18,9 @@ func (h *Handler) AccountsDelete(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.NoContent(http.StatusNoContent)
 	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
+	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true}); err == nil {
+		h.logUserAction(c, moderationlog.LogDeleteAccount, req.UserID)
+	}
 	h.scheduleAccountCascade(req.UserID)
 	return c.NoContent(http.StatusNoContent)
 }
@@ -57,7 +60,9 @@ func (h *Handler) DeleteAccount(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.NoContent(http.StatusNoContent)
 	}
-	_ = h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true})
+	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true}); err == nil {
+		h.logUserAction(c, moderationlog.LogDeleteAccount, req.UserID)
+	}
 	h.scheduleAccountCascade(req.UserID)
 	return c.NoContent(http.StatusNoContent)
 }

@@ -242,8 +242,9 @@ func TestResetPasswordAdmin_NoLogWhenTargetMissing(t *testing.T) {
 	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	time.Sleep(50 * time.Millisecond)
-	assert.Empty(t, repo.Snapshot(), "target missing → log must be skipped")
+	require.Never(t, func() bool {
+		return len(repo.Snapshot()) > 0
+	}, 100*time.Millisecond, 10*time.Millisecond, "target missing → log must not be written")
 }
 
 func TestResetPasswordAdmin_NoLogWhenActorMissing(t *testing.T) {
@@ -259,8 +260,9 @@ func TestResetPasswordAdmin_NoLogWhenActorMissing(t *testing.T) {
 	rec := doPost(h.ResetPassword, `{"userId":"u1"}`, nil) // actor 未配線
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	time.Sleep(50 * time.Millisecond)
-	assert.Empty(t, repo.Snapshot(), "actor missing → log must be skipped")
+	require.Never(t, func() bool {
+		return len(repo.Snapshot()) > 0
+	}, 100*time.Millisecond, 10*time.Millisecond, "actor missing → log must not be written")
 }
 
 func TestResetPasswordAdmin_ResetRepoErrorFallsBack(t *testing.T) {

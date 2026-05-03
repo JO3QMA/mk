@@ -677,13 +677,15 @@ func (h *Handler) SuspendUser(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
-	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
+	user, err := h.userRepo.FindByID(req.UserID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "2b730f78-1179-461b-88ad-d24c9af1a5ce"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true}); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	h.logUserActionWithUser(c, moderationlog.LogSuspend, user)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -696,13 +698,15 @@ func (h *Handler) UnsuspendUser(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
-	if _, err := h.userRepo.FindByID(req.UserID); err != nil {
+	user, err := h.userRepo.FindByID(req.UserID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "2b730f78-1179-461b-88ad-d24c9af1a5ce"))
 	}
 
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": false}); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	h.logUserActionWithUser(c, moderationlog.LogUnsuspend, user)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -1069,6 +1073,10 @@ func (h *Handler) RolesCreate(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	h.logModeration(c, moderationlog.LogCreateRole, map[string]any{
+		"roleId": r.ID,
+		"role":   r,
+	})
 	return c.JSON(http.StatusOK, r)
 }
 
@@ -1109,7 +1117,8 @@ func (h *Handler) RolesUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	if _, err := h.roleService.Show(req.RoleID); err != nil {
+	before, err := h.roleService.Show(req.RoleID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
 	fields := map[string]any{}
@@ -1128,8 +1137,23 @@ func (h *Handler) RolesUpdate(c echo.Context) error {
 	if req.IsPublic != nil {
 		fields["isPublic"] = *req.IsPublic
 	}
-	// RoleService には UpdateFields がないので RoleRepo 経由
-	// (Service.Show で存在確認済み)
+	if len(fields) == 0 {
+		// 全フィールドが nil = 何も変更しないリクエスト。before == after の
+		// 無意味な log を書かずに早期 return する。
+		return c.NoContent(http.StatusNoContent)
+	}
+	after, err := h.roleService.UpdateFields(req.RoleID, fields)
+	if err != nil {
+		if err == role.ErrRoleNotFound {
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
+		}
+		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	h.logModeration(c, moderationlog.LogUpdateRole, map[string]any{
+		"roleId": req.RoleID,
+		"before": before,
+		"after":  after,
+	})
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -1141,9 +1165,15 @@ func (h *Handler) RolesDelete(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.RoleID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "roleId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
+	// 削除直後だと role 情報を取れないので事前に snapshot を取って log info に含める
+	snapshot, _ := h.roleService.Show(req.RoleID)
 	if err := h.roleService.Delete(req.RoleID); err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
+	h.logModeration(c, moderationlog.LogDeleteRole, map[string]any{
+		"roleId": req.RoleID,
+		"role":   snapshot,
+	})
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -1172,6 +1202,7 @@ func (h *Handler) RolesAssign(c echo.Context) error {
 		}
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	h.logRoleAssignment(c, moderationlog.LogAssignRole, req.UserID, req.RoleID)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -1190,6 +1221,7 @@ func (h *Handler) RolesUnassign(c echo.Context) error {
 		}
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
+	h.logRoleAssignment(c, moderationlog.LogUnassignRole, req.UserID, req.RoleID)
 	return c.NoContent(http.StatusNoContent)
 }
 
