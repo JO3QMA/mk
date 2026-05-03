@@ -3,6 +3,8 @@ package apierr_test
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -71,45 +73,30 @@ func TestZeroUUIDLint(t *testing.T) {
 	for path, n := range violations {
 		want, ok := pendingExceptions[path]
 		if !ok {
-			unexpected = append(unexpected, path+" ("+itoa(n)+" occurrences)")
+			unexpected = append(unexpected, path+" ("+strconv.Itoa(n)+" occurrences)")
 			continue
 		}
 		if n != want {
-			unexpected = append(unexpected, path+" ("+itoa(n)+" occurrences, exception expected "+itoa(want)+")")
+			unexpected = append(unexpected, path+" ("+strconv.Itoa(n)+" occurrences, exception expected "+strconv.Itoa(want)+")")
 		}
 	}
+	// pendingExceptions is iterated to detect stale exception entries.
+	// Sort the keys so the failure messages are deterministic across runs
+	// (Go map iteration order is randomized, which makes CI logs noisy).
+	stalePending := make([]string, 0, len(pendingExceptions))
 	for path := range pendingExceptions {
 		if _, ok := violations[path]; !ok {
-			t.Errorf("pending exception %q has no zero-UUID matches anymore — remove the entry from pendingExceptions", path)
+			stalePending = append(stalePending, path)
 		}
+	}
+	sort.Strings(stalePending)
+	for _, path := range stalePending {
+		t.Errorf("pending exception %q has no zero-UUID matches anymore — remove the entry from pendingExceptions", path)
 	}
 
 	if len(unexpected) > 0 {
+		sort.Strings(unexpected)
 		t.Errorf("zero-UUID placeholder regressions found in %d file(s):\n  - %s\n\nUse apierr.{InvalidParam,InternalError,NotFound,NoSuchUser,NoSuchNote,...} helpers (or add a new typed helper with the upstream Misskey UUID) instead of \"00000000-0000-0000-0000-000000000000\".",
 			len(unexpected), strings.Join(unexpected, "\n  - "))
 	}
-}
-
-// itoa wraps strconv.Itoa to avoid importing strconv just for one call.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

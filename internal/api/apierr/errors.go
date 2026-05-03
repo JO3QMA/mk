@@ -64,6 +64,10 @@ const (
 // msg argument overrides the default "Invalid param." human-readable text;
 // the UUID is fixed regardless so frontend i18n lookups remain stable
 // (Misskey TS の INVALID_PARAM は単一 UUID で message は dev 向け説明)。
+//
+// Only msg[0] is used; subsequent values are silently ignored. An empty
+// string ("") is treated the same as no argument and falls back to the
+// default text — callers cannot suppress the message with "".
 func InvalidParam(msg ...string) map[string]any {
 	m := "Invalid param."
 	if len(msg) > 0 && msg[0] != "" {
@@ -75,6 +79,9 @@ func InvalidParam(msg ...string) map[string]any {
 // InternalError returns a 500 INTERNAL_ERROR error response. The optional
 // msg argument overrides the default "Internal error." text; the UUID is
 // fixed regardless so frontend i18n lookups remain stable.
+//
+// Only msg[0] is used; subsequent values are silently ignored. An empty
+// string ("") falls back to the default text.
 func InternalError(msg ...string) map[string]any {
 	m := "Internal error."
 	if len(msg) > 0 && msg[0] != "" {
@@ -87,6 +94,9 @@ func InternalError(msg ...string) map[string]any {
 // (Misskey TS には対応する code が無く endpoint 固有 NO_SUCH_* を使う)。
 // 該当 endpoint で具体的な NO_SUCH_* helper を新設する余裕が無い時の
 // fallback で使う。msg は dev 向け説明として override 可能。
+//
+// Only msg[0] is used; subsequent values are silently ignored. An empty
+// string ("") falls back to the default text.
 func NotFound(msg ...string) map[string]any {
 	m := "Not found."
 	if len(msg) > 0 && msg[0] != "" {
