@@ -143,6 +143,17 @@ func packGame(g *model.ReversiGame, idGen id.Generator) map[string]any {
 	if g.User2 != nil {
 		result["user2"] = entity.PackUserLite(g.User2)
 	}
+	// winner は upstream Misskey TS の ReversiGameEntityService.packDetail と
+	// 同じく winnerId から UserLite を派生させる (#649)。frontend は
+	// `v-if="game.winner"` で勝敗表示を切り替えるため、winnerId だけでは
+	// draw に倒れる。
+	if g.WinnerID != nil {
+		if g.User1 != nil && g.User1.ID == *g.WinnerID {
+			result["winner"] = entity.PackUserLite(g.User1)
+		} else if g.User2 != nil && g.User2.ID == *g.WinnerID {
+			result["winner"] = entity.PackUserLite(g.User2)
+		}
+	}
 	return result
 }
 

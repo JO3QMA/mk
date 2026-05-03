@@ -485,6 +485,63 @@ func TestPackGame_EmbedsUserLiteMaps(t *testing.T) {
 	assert.Equal(t, "bob", u2["id"])
 }
 
+// TestPackGame_WinnerField は winnerId から winner UserLite が派生することを
+// guard する。frontend (game.board.vue) の `v-if="game.winner"` 判定が
+// winner 欠落で常に draw 表示になる #649 の regression 検知用。
+func TestPackGame_WinnerField(t *testing.T) {
+	user1 := &model.User{ID: "alice", Username: "alice"}
+	user2 := &model.User{ID: "bob", Username: "bob"}
+	winnerID := "alice"
+
+	t.Run("user1 wins", func(t *testing.T) {
+		g := &model.ReversiGame{
+			ID: "g1", User1ID: "alice", User2ID: "bob",
+			User1: user1, User2: user2,
+			WinnerID: &winnerID,
+		}
+		out := packGame(g)
+		w, ok := out["winner"].(map[string]any)
+		require.True(t, ok, "winner must be present")
+		assert.Equal(t, "alice", w["id"])
+	})
+
+	t.Run("user2 wins", func(t *testing.T) {
+		bobID := "bob"
+		g := &model.ReversiGame{
+			ID: "g1", User1ID: "alice", User2ID: "bob",
+			User1: user1, User2: user2,
+			WinnerID: &bobID,
+		}
+		out := packGame(g)
+		w, ok := out["winner"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "bob", w["id"])
+	})
+
+	t.Run("draw (winnerId nil)", func(t *testing.T) {
+		g := &model.ReversiGame{
+			ID: "g1", User1ID: "alice", User2ID: "bob",
+			User1: user1, User2: user2,
+		}
+		out := packGame(g)
+		_, has := out["winner"]
+		assert.False(t, has, "winner must be omitted when WinnerID is nil")
+	})
+
+	t.Run("user objects not preloaded", func(t *testing.T) {
+		// User1/User2 が preload されていない場合でも winnerId は出る
+		// (UserLite は出せないので winner だけ省略する fallback 挙動)
+		g := &model.ReversiGame{
+			ID: "g1", User1ID: "alice", User2ID: "bob",
+			WinnerID: &winnerID,
+		}
+		out := packGame(g)
+		_, has := out["winner"]
+		assert.False(t, has)
+		assert.Equal(t, &winnerID, out["winnerId"])
+	})
+}
+
 // sessionID が与えられれば random でも両サイドで一致する決定論的な値を返す。
 func TestPickBlack_FederatedDeterministic(t *testing.T) {
 	// 同じ session で複数回呼んでも同じ値

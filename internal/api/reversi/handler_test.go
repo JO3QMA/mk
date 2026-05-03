@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	corereversi "github.com/shiroha-a/mk/internal/core/reversi"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -718,3 +720,54 @@ func TestMatch_EmptyUserIDIsRandomMatch(t *testing.T) {
 	assert.Len(t, repo.games, 1)
 	assert.Equal(t, 0, d.calls)
 }
+
+// TestPackGame_WinnerField guards that REST packGame derives a `winner`
+// UserLite from winnerId. The frontend (game.board.vue) drives its
+// `won/draw` display via `v-if="game.winner"` — without this field the
+// game result is rendered as a draw on every viewer (#649).
+func TestPackGame_WinnerField(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	gid := idGen.Generate(timeRef())
+	user1 := &model.User{ID: "alice", Username: "alice"}
+	user2 := &model.User{ID: "bob", Username: "bob"}
+
+	t.Run("user1 wins", func(t *testing.T) {
+		winnerID := "alice"
+		g := &model.ReversiGame{
+			ID: gid, User1ID: "alice", User2ID: "bob",
+			User1: user1, User2: user2, WinnerID: &winnerID,
+		}
+		out := packGame(g, idGen)
+		w, ok := out["winner"].(entity.UserLite)
+		require.True(t, ok, "winner must be present and be a UserLite")
+		assert.Equal(t, "alice", w.ID)
+		assert.Equal(t, &winnerID, out["winnerId"])
+	})
+
+	t.Run("user2 wins", func(t *testing.T) {
+		winnerID := "bob"
+		g := &model.ReversiGame{
+			ID: gid, User1ID: "alice", User2ID: "bob",
+			User1: user1, User2: user2, WinnerID: &winnerID,
+		}
+		out := packGame(g, idGen)
+		w, ok := out["winner"].(entity.UserLite)
+		require.True(t, ok)
+		assert.Equal(t, "bob", w.ID)
+	})
+
+	t.Run("draw (winnerId nil)", func(t *testing.T) {
+		g := &model.ReversiGame{
+			ID: gid, User1ID: "alice", User2ID: "bob",
+			User1: user1, User2: user2,
+		}
+		out := packGame(g, idGen)
+		_, has := out["winner"]
+		assert.False(t, has, "winner must be omitted when WinnerID is nil")
+	})
+}
+
+// timeRef returns a fixed deterministic time for aidx Generate calls in
+// pack tests — keeps id generation reproducible even though the actual
+// timestamp value is irrelevant.
+func timeRef() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
