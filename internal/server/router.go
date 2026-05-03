@@ -32,6 +32,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/drive"
 	apiemojis "github.com/shiroha-a/mk/internal/api/emojis"
 	apifederation "github.com/shiroha-a/mk/internal/api/federation"
+	apifetchrss "github.com/shiroha-a/mk/internal/api/fetchrss"
 	apiflash "github.com/shiroha-a/mk/internal/api/flash"
 	"github.com/shiroha-a/mk/internal/api/following"
 	apigallery "github.com/shiroha-a/mk/internal/api/gallery"
@@ -2221,10 +2222,12 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, map[string]any{"type": "unknown", "data": map[string]any{}})
 	})
 
-	// fetch-rss — RSS parser (stub)
-	api.POST("/fetch-rss", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{"items": []any{}})
-	})
+	// fetch-rss — RSS / Atom feed プロキシ。frontend RSS / RSSTicker ウィジェット
+	// が GET で叩く実装になっているため Misskey TS と同じく allowGet 相当で
+	// GET / POST の両方を受け付ける。
+	fetchRSSHandler := apifetchrss.New(s.outboundClient(apifetchrss.FetchTimeout))
+	api.GET("/fetch-rss", fetchRSSHandler.Fetch)
+	api.POST("/fetch-rss", fetchRSSHandler.Fetch)
 
 	// page-push — page scriptが任意のeventをpage所有者のmainに emit する。
 	api.POST("/page-push", pagesHandler.PagePush, middleware.RequireAuth())
