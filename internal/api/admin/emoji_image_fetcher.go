@@ -90,6 +90,11 @@ func (f *EmojiImageFetcherImpl) FetchAndStore(ctx context.Context, imageURL stri
 		driveName = path.Base(u.Path)
 	}
 
+	// Force: true は upstream Misskey TS の uploadFromUrl({force: true}) と
+	// 同じく明示的に指定する。EmojiCopy 経路では user==nil が渡されるため
+	// drive.Service.Upload は md5 dedup を既に skip していて Force は no-op
+	// になるが、user 付きで本 fetcher を再利用する将来経路 (例: emoji 単発
+	// 追加 UI) で「重複しても新しいファイルを作る」契約を読み手に明示する。
 	df, err := f.driveSvc.Upload(drive.UploadInput{
 		User:  user,
 		Body:  body,

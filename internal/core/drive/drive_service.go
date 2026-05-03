@@ -297,6 +297,9 @@ func (s *Service) Upload(in UploadInput) (*model.DriveFile, error) {
 			s.mainStreamPublisher.PublishMainEvent(in.User.ID, "driveFileCreated", entity.PackDriveFile(f, s.idGen))
 		}
 	}
+	// chartHook は user nil でも発火させる: bytes / count は instance-wide
+	// stats なので custom emoji 等の system file もインスタンスストレージの
+	// 一部として計上したい (uploader UI 反映の publishEvent とは異なる扱い)。
 	if s.chartHook != nil {
 		s.chartHook.OnFileUploaded(f)
 	}

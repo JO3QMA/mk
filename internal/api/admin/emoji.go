@@ -96,8 +96,12 @@ func (h *Handler) EmojiCopy(c echo.Context) error {
 		} else {
 			copied.PublicURL = df.URL
 		}
+		// webpublic / fallback いずれの経路も defensive copy で *string を
+		// 作って df のポインタを共有しない (df 側を後から触る経路は無いが、
+		// 型 (*string) を扱う読み手のメンタルモデルを揃えるため)。
 		if df.WebpublicType != nil && *df.WebpublicType != "" {
-			copied.Type = df.WebpublicType
+			t := *df.WebpublicType
+			copied.Type = &t
 		} else if df.Type != "" {
 			t := df.Type
 			copied.Type = &t
