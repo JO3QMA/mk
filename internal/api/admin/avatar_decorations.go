@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/model"
 )
 
@@ -33,6 +34,10 @@ func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
 	if err := h.avatarDecoRepo.Create(d); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
+	h.logModeration(c, moderationlog.LogCreateAvatarDecoration, map[string]any{
+		"avatarDecorationId": d.ID,
+		"avatarDecoration":   d,
+	})
 	return c.JSON(http.StatusOK, d)
 }
 
@@ -45,7 +50,16 @@ func (h *Handler) AvatarDecorationsDelete(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	_ = h.avatarDecoRepo.Delete(req.ID)
+	if req.ID == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	snapshot, _ := h.avatarDecoRepo.FindByID(req.ID)
+	if err := h.avatarDecoRepo.Delete(req.ID); err == nil && snapshot != nil {
+		h.logModeration(c, moderationlog.LogDeleteAvatarDecoration, map[string]any{
+			"avatarDecorationId": req.ID,
+			"avatarDecoration":   snapshot,
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -79,7 +93,8 @@ func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
 	}
-	if _, err := h.avatarDecoRepo.FindByID(req.ID); err != nil {
+	before, err := h.avatarDecoRepo.FindByID(req.ID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	fields := map[string]any{"updatedAt": time.Now()}
@@ -97,6 +112,13 @@ func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
 	}
 	if err := h.avatarDecoRepo.UpdateFields(req.ID, fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if after, err := h.avatarDecoRepo.FindByID(req.ID); err == nil && after != nil {
+		h.logModeration(c, moderationlog.LogUpdateAvatarDecoration, map[string]any{
+			"avatarDecorationId": req.ID,
+			"before":             before,
+			"after":              after,
+		})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

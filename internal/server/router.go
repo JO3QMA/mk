@@ -1683,7 +1683,12 @@ func (s *Server) setupRoutes() {
 			miscsmtp.SendWithOptions(host, port, smtpUser, smtpPass, fromAddr, to, subject, body, miscsmtp.Options{ProxyURL: s.config.ProxySmtp})
 		})
 	}
-	adminHandler.SetModLogService(coremodlog.New(modLogRepo, idGen))
+	modLogService := coremodlog.New(modLogRepo, idGen)
+	adminHandler.SetModLogService(modLogService)
+	// announcements (別パッケージの Handler) も AdminCreate/Update/Delete で
+	// modlog を書くため同じ service instance を共有する。
+	announcementHandler.SetModLogService(modLogService)
+	announcementHandler.SetUserRepo(userRepo)
 	adminHandler.SetEmojiRepo(emojiRepo)
 	adminHandler.SetDriveFileRepo(driveFileRepo)
 	adminHandler.SetAdminDB(s.db)

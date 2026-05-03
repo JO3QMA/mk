@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/model"
 )
 
@@ -76,6 +77,10 @@ func (h *Handler) SystemWebhookCreate(c echo.Context) error {
 	if err := h.systemWebhookRepo.Create(sw); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
+	h.logModeration(c, moderationlog.LogCreateSystemWebhook, map[string]any{
+		"systemWebhookId": sw.ID,
+		"webhook":         sw,
+	})
 	return c.JSON(http.StatusOK, sw)
 }
 
@@ -88,7 +93,16 @@ func (h *Handler) SystemWebhookDelete(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	_ = h.systemWebhookRepo.Delete(req.ID)
+	if req.ID == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	snapshot, _ := h.systemWebhookRepo.FindByID(req.ID)
+	if err := h.systemWebhookRepo.Delete(req.ID); err == nil && snapshot != nil {
+		h.logModeration(c, moderationlog.LogDeleteSystemWebhook, map[string]any{
+			"systemWebhookId": req.ID,
+			"webhook":         snapshot,
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -164,7 +178,8 @@ func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
 	}
 	// 存在確認 (GORM Updates(map) は 0 行影響でも nil を返すため)
-	if _, err := h.systemWebhookRepo.FindByID(req.ID); err != nil {
+	before, err := h.systemWebhookRepo.FindByID(req.ID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
 	}
 	fields := map[string]any{"updatedAt": time.Now()}
@@ -190,5 +205,10 @@ func (h *Handler) SystemWebhookUpdate(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
+	h.logModeration(c, moderationlog.LogUpdateSystemWebhook, map[string]any{
+		"systemWebhookId": req.ID,
+		"before":          before,
+		"after":           sw,
+	})
 	return c.JSON(http.StatusOK, sw)
 }

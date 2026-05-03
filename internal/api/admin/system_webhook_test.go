@@ -221,3 +221,47 @@ func TestSystemWebhookUpdate(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	assert.Equal(t, http.StatusNoContent, doPost(h.SystemWebhookUpdate, `{}`, adminUser).Code)
 }
+
+// --- moderation log assertions (#665) ---
+
+func TestSystemWebhookCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetSystemWebhookRepo(testutil.NewMockSystemWebhookRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.SystemWebhookCreate, `{"name":"hook","url":"https://x"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "createSystemWebhook", repo.Snapshot()[0].Type)
+}
+
+func TestSystemWebhookUpdate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	whRepo := testutil.NewMockSystemWebhookRepository()
+	require.NoError(t, whRepo.Create(&model.SystemWebhook{ID: "w1", Name: "old", URL: "https://x"}))
+	h.SetSystemWebhookRepo(whRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.SystemWebhookUpdate, `{"id":"w1","name":"new"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "updateSystemWebhook", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	require.NotNil(t, info["before"])
+	require.NotNil(t, info["after"])
+}
+
+func TestSystemWebhookDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	whRepo := testutil.NewMockSystemWebhookRepository()
+	require.NoError(t, whRepo.Create(&model.SystemWebhook{ID: "w1", Name: "doomed", URL: "https://x"}))
+	h.SetSystemWebhookRepo(whRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.SystemWebhookDelete, `{"id":"w1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteSystemWebhook", repo.Snapshot()[0].Type)
+}

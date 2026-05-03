@@ -1,11 +1,13 @@
 package announcements
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -26,6 +28,8 @@ type Handler struct {
 	repo                repository.AnnouncementRepository
 	idGen               id.Generator
 	mainStreamPublisher MainStreamPublisher
+	modLogService       *moderationlog.Service
+	userRepo            repository.UserRepository
 }
 
 // NewHandler creates a new announcements Handler.
@@ -38,6 +42,57 @@ func NewHandler(repo repository.AnnouncementRepository, idGen id.Generator) *Han
 // disables emit.
 func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
 	h.mainStreamPublisher = p
+}
+
+// SetModLogService attaches the moderation log writer used by AdminCreate/
+// AdminUpdate/AdminDelete. Wired alongside SetUserRepo so user-targeted
+// announcements can resolve {userId, userUsername, userHost} for the log
+// info payload. nil leaves logs disabled (graceful for tests).
+func (h *Handler) SetModLogService(s *moderationlog.Service) {
+	h.modLogService = s
+}
+
+// SetUserRepo attaches the user repository for resolving target user
+// metadata when emitting per-user announcement moderation logs.
+func (h *Handler) SetUserRepo(r repository.UserRepository) {
+	h.userRepo = r
+}
+
+// logAnnouncementAction writes a moderation_log row for a global or
+// user-targeted announcement action. Returns silently if the service or
+// actor is missing — audit logging never blocks the underlying action.
+//
+// globalType / userType の 2 つを取り、announcement の userId 有無で
+// どちらの type を使うか分岐する (Misskey TS の AnnouncementService と同じ
+// semantics)。info には announcement / before / after を caller から渡す。
+//
+// Ownership: helper は user-targeted announcement の場合に info map へ
+// {userId, userUsername, userHost} を **追記** する。caller は呼び出し後
+// に info を再利用しない前提で渡すこと。同 map を別目的で保持する場合は
+// あらかじめコピーしてから渡す。
+func (h *Handler) logAnnouncementAction(c echo.Context, globalType, userType moderationlog.LogType, a *model.Announcement, info map[string]any) {
+	if h.modLogService == nil || a == nil {
+		return
+	}
+	ctx := c.Request().Context()
+	actor := middleware.GetUser(c)
+	if actor == nil {
+		slog.WarnContext(ctx, "moderation log: skipping — actor missing in moderator-only handler",
+			"announcementId", a.ID)
+		return
+	}
+	t := globalType
+	if a.UserID != nil {
+		t = userType
+		if h.userRepo != nil {
+			if target, err := h.userRepo.FindByID(*a.UserID); err == nil && target != nil {
+				info["userId"] = target.ID
+				info["userUsername"] = target.Username
+				info["userHost"] = target.Host
+			}
+		}
+	}
+	h.modLogService.Log(ctx, actor.ID, t, info)
 }
 
 // List handles POST /api/announcements.
@@ -166,6 +221,10 @@ func (h *Handler) AdminCreate(c echo.Context) error {
 		body := map[string]any{"announcement": entity.PackAnnouncement(a, h.idGen, false)}
 		h.mainStreamPublisher.PublishMainEvent(*a.UserID, "announcementCreated", body)
 	}
+	h.logAnnouncementAction(c, moderationlog.LogCreateGlobalAnnouncement, moderationlog.LogCreateUserAnnouncement, a, map[string]any{
+		"announcementId": a.ID,
+		"announcement":   a,
+	})
 	return c.JSON(http.StatusOK, a)
 }
 
@@ -180,6 +239,11 @@ func (h *Handler) AdminUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
+	// before snapshot for moderation log + global/user 分岐判定
+	before, err := h.repo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
+	}
 	fields := map[string]any{}
 	if req.Title != nil {
 		fields["title"] = *req.Title
@@ -190,9 +254,21 @@ func (h *Handler) AdminUpdate(c echo.Context) error {
 	if req.IsActive != nil {
 		fields["isActive"] = *req.IsActive
 	}
+	if len(fields) == 0 {
+		return c.NoContent(http.StatusNoContent)
+	}
 	if err := h.repo.UpdateFields(req.ID, fields); err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
 	}
+	after, err := h.repo.FindByID(req.ID)
+	if err != nil {
+		return c.NoContent(http.StatusNoContent)
+	}
+	h.logAnnouncementAction(c, moderationlog.LogUpdateGlobalAnnouncement, moderationlog.LogUpdateUserAnnouncement, before, map[string]any{
+		"announcementId": req.ID,
+		"before":         before,
+		"after":          after,
+	})
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -204,8 +280,16 @@ func (h *Handler) AdminDelete(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "id is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
+	// snapshot before delete (log info に含める + global/user 分岐判定)
+	snapshot, _ := h.repo.FindByID(req.ID)
 	if err := h.repo.Delete(req.ID); err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ANNOUNCEMENT", "No such announcement.", "b57b5e1d-0158-4f8d-bd54-1ab374089a15"))
+	}
+	if snapshot != nil {
+		h.logAnnouncementAction(c, moderationlog.LogDeleteGlobalAnnouncement, moderationlog.LogDeleteUserAnnouncement, snapshot, map[string]any{
+			"announcementId": req.ID,
+			"announcement":   snapshot,
+		})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

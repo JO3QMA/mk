@@ -147,6 +147,20 @@ func TestUnsetUserBanner_WritesModerationLog(t *testing.T) {
 	assert.Equal(t, "unsetUserBanner", repo.Snapshot()[0].Type)
 }
 
+func TestUpdateAbuseUserReport_WritesModerationLog(t *testing.T) {
+	// #664: resolveAbuseReport log を出すことを確認。
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	require.NoError(t, abuseRepo.Create(&model.AbuseUserReport{ID: "r1", TargetUserID: "u1", ReporterID: "u2"}))
+	h.SetAbuseRepo(abuseRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.UpdateAbuseUserReport, `{"reportId":"r1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "resolveAbuseReport", repo.Snapshot()[0].Type)
+}
+
 func TestUpdateUserNote_WritesModerationLog(t *testing.T) {
 	h, userRepo, _, _ := newTestHandler(t)
 	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}

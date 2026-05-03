@@ -3,8 +3,12 @@ package admin_test
 import (
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/shiroha-a/mk/internal/model"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestForwardAbuseUserReport(t *testing.T) {
@@ -37,4 +41,21 @@ func TestForwardAbuseUserReport_ForwarderError(t *testing.T) {
 	h.SetAbuseForwarder(&stubAbuseForwarder{err: assertError{}})
 	rec := doPost(h.ForwardAbuseUserReport, `{"reportId":"r1"}`, adminUser)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- moderation log assertion (#664) ---
+
+func TestForwardAbuseUserReport_WritesModerationLog(t *testing.T) {
+	// forwarder 未配線 fallback path で abuseRepo の DB フラグが立った時に
+	// forwardAbuseReport log が書かれることを確認。
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	require.NoError(t, abuseRepo.Create(&model.AbuseUserReport{ID: "r1", TargetUserID: "u1", ReporterID: "u2"}))
+	h.SetAbuseRepo(abuseRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.ForwardAbuseUserReport, `{"reportId":"r1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "forwardAbuseReport", repo.Snapshot()[0].Type)
 }

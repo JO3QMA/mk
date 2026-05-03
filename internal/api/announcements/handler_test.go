@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/announcements"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -504,4 +505,72 @@ func TestReadAnnouncement_MarkReadError(t *testing.T) {
 	h := announcements.NewHandler(repo, idGen)
 	rec := doPost(h.ReadAnnouncement, `{"announcementId":"a1"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// --- moderation log assertions (#662) ---
+
+// attachAnnouncementModLog wires a fresh modlog service backed by the
+// race-safe testutil mock and returns it.
+func attachAnnouncementModLog(t *testing.T, h *announcements.Handler) *testutil.MockModerationLogRepository {
+	t.Helper()
+	repo := testutil.NewMockModerationLogRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	h.SetModLogService(moderationlog.New(repo, gen))
+	return repo
+}
+
+func TestAdminCreate_WritesGlobalAnnouncementLog(t *testing.T) {
+	h, _ := newTestHandler(t)
+	repo := attachAnnouncementModLog(t, h)
+
+	rec := doPost(h.AdminCreate, `{"title":"hi","text":"world"}`, &model.User{ID: "admin1"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "createGlobalAnnouncement", logs[0].Type)
+}
+
+func TestAdminCreate_WritesUserAnnouncementLog(t *testing.T) {
+	h, _ := newTestHandler(t)
+	userRepo := testutil.NewMockUserRepository()
+	userRepo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+	h.SetUserRepo(userRepo)
+	repo := attachAnnouncementModLog(t, h)
+
+	rec := doPost(h.AdminCreate, `{"title":"hi","text":"world","userId":"u1"}`, &model.User{ID: "admin1"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "createUserAnnouncement", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	assert.Equal(t, "u1", info["userId"])
+	assert.Equal(t, "alice", info["userUsername"])
+}
+
+func TestAdminUpdate_WritesAnnouncementLog(t *testing.T) {
+	h, mockRepo := newTestHandler(t)
+	require.NoError(t, mockRepo.Create(&model.Announcement{ID: "a1", Title: "old", Text: "old"}))
+	repo := attachAnnouncementModLog(t, h)
+
+	rec := doPost(h.AdminUpdate, `{"id":"a1","title":"new"}`, &model.User{ID: "admin1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "updateGlobalAnnouncement", repo.Snapshot()[0].Type)
+}
+
+func TestAdminDelete_WritesAnnouncementLog(t *testing.T) {
+	h, mockRepo := newTestHandler(t)
+	require.NoError(t, mockRepo.Create(&model.Announcement{ID: "a1", Title: "doomed"}))
+	repo := attachAnnouncementModLog(t, h)
+
+	rec := doPost(h.AdminDelete, `{"id":"a1"}`, &model.User{ID: "admin1"})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteGlobalAnnouncement", repo.Snapshot()[0].Type)
 }

@@ -884,8 +884,23 @@ func (h *Handler) UpdateMeta(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}
 
+	// before snapshot for moderation log。Misskey TS の updateServerSettings
+	// info は full meta の before/after で SMTP secret 等もそのまま記録する
+	// 仕様 (上流 update-meta.ts でも mask 無し)。互換性最優先で同じ挙動。
+	//
+	// 順序メモ: maybeAutoGenerateVAPID は fields map に鍵を inject するが
+	// metaRepo の DB 状態は触らないので、ここで Fetch() しても VAPID 生成
+	// 前後で値は変わらない。よって before lookup の位置は VAPID 生成の前
+	// でも後でも結果は同じ。可読性のため Update 直前に置いている。
+	beforeMeta, _ := h.metaRepo.Fetch()
 	if err := h.metaRepo.Update(fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+	if afterMeta, err := h.metaRepo.Fetch(); err == nil {
+		h.logModeration(c, moderationlog.LogUpdateServerSettings, map[string]any{
+			"before": beforeMeta,
+			"after":  afterMeta,
+		})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

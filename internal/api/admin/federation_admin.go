@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
 )
@@ -111,6 +112,12 @@ func (h *Handler) FederationRemoveAllFollowing(c echo.Context) error {
 }
 
 // FederationUpdateInstance handles POST /api/admin/federation/update-instance.
+//
+// Misskey TS 互換 (admin/federation/update-instance.ts) で `isSuspended` 変更時に
+// `suspendRemoteInstance` / `unsuspendRemoteInstance`、`moderationNote` 変更時に
+// `updateRemoteInstanceNote` の moderation_log を **個別に** 出力する。1 リクエ
+// ストで両方変更されれば 2 ログ。`isBlocked` / `isSilenced` は TS 仕様に該当
+// type が無いので skip。
 func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 	if h.adminDB == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -123,6 +130,14 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 		ModerationNote string `json:"moderationNote"`
 	}
 	if err := c.Bind(&req); err != nil || req.Host == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	// before snapshot for moderation log diff (`isSuspended` の変化判定 +
+	// `moderationNote` の before/after)。lookup 失敗は instance 不在として
+	// no-op で 204 を返す (元の挙動は単純 Updates 1 回だけだったので失敗時
+	// silent と一貫)。
+	var before model.Instance
+	if err := h.adminDB.Where(`"host" = ?`, req.Host).First(&before).Error; err != nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	updates := map[string]any{}
@@ -140,6 +155,27 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 	}
 	if len(updates) > 0 {
 		h.adminDB.Model(&model.Instance{}).Where(`"host" = ?`, req.Host).Updates(updates)
+	}
+	// suspend / unsuspend と moderationNote 変更で個別 log を出す。
+	// SuspensionState != "none" を「suspended」と扱う。
+	beforeSuspended := before.SuspensionState != model.SuspensionStateNone
+	if req.IsSuspended != nil && *req.IsSuspended != beforeSuspended {
+		t := moderationlog.LogSuspendRemoteInstance
+		if !*req.IsSuspended {
+			t = moderationlog.LogUnsuspendRemoteInstance
+		}
+		h.logModeration(c, t, map[string]any{
+			"id":   before.ID,
+			"host": before.Host,
+		})
+	}
+	if req.ModerationNote != "" && req.ModerationNote != before.ModerationNote {
+		h.logModeration(c, moderationlog.LogUpdateRemoteInstanceNote, map[string]any{
+			"id":     before.ID,
+			"host":   before.Host,
+			"before": before.ModerationNote,
+			"after":  req.ModerationNote,
+		})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

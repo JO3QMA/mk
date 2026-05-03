@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
@@ -57,6 +58,11 @@ func (h *Handler) InviteCreate(c echo.Context) error {
 			continue
 		}
 		tickets = append(tickets, t)
+	}
+	if len(tickets) > 0 {
+		h.logModeration(c, moderationlog.LogCreateInvitation, map[string]any{
+			"invitations": tickets,
+		})
 	}
 	return c.JSON(http.StatusOK, h.packInviteTickets(tickets))
 }

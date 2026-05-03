@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/model"
 )
 
@@ -37,6 +38,10 @@ func (h *Handler) AbuseReportNotificationRecipientCreate(c echo.Context) error {
 	if err := h.recipientRepo.Create(r); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}
+	h.logModeration(c, moderationlog.LogCreateAbuseReportNotificationRecipient, map[string]any{
+		"recipientId": r.ID,
+		"recipient":   r,
+	})
 	return c.JSON(http.StatusOK, r)
 }
 
@@ -49,7 +54,16 @@ func (h *Handler) AbuseReportNotificationRecipientDelete(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	_ = c.Bind(&req)
-	_ = h.recipientRepo.Delete(req.ID)
+	if req.ID == "" {
+		return c.NoContent(http.StatusNoContent)
+	}
+	snapshot, _ := h.recipientRepo.FindByID(req.ID)
+	if err := h.recipientRepo.Delete(req.ID); err == nil && snapshot != nil {
+		h.logModeration(c, moderationlog.LogDeleteAbuseReportNotificationRecipient, map[string]any{
+			"recipientId": req.ID,
+			"recipient":   snapshot,
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -101,6 +115,7 @@ func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "00000000-0000-0000-0000-000000000000"))
 	}
+	before, _ := h.recipientRepo.FindByID(req.ID)
 	fields := map[string]any{}
 	if req.Name != nil {
 		fields["name"] = *req.Name
@@ -125,6 +140,13 @@ func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
 	r, err := h.recipientRepo.FindByID(req.ID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, apierr.Error("NOT_FOUND", "Not found.", "00000000-0000-0000-0000-000000000000"))
+	}
+	if before != nil {
+		h.logModeration(c, moderationlog.LogUpdateAbuseReportNotificationRecipient, map[string]any{
+			"recipientId": req.ID,
+			"before":      before,
+			"after":       r,
+		})
 	}
 	return c.JSON(http.StatusOK, r)
 }

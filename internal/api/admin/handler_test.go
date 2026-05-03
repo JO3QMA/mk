@@ -1511,6 +1511,18 @@ func TestRolesAssign_WritesModerationLog(t *testing.T) {
 	assert.Equal(t, "Mod", info["roleName"])
 }
 
+func TestUpdateMeta_WritesModerationLog(t *testing.T) {
+	// #664: updateServerSettings log が before/after 込みで書かれる。
+	h, _, metaRepo, _ := newTestHandler(t)
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.UpdateMeta, `{"name":"new"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "updateServerSettings", repo.Snapshot()[0].Type)
+}
+
 func TestRolesUpdate_NoFieldsReturnsNoContentWithoutLog(t *testing.T) {
 	// 全 optional pointer が nil のリクエストは log を書かずに 204 で帰る
 	// (#668 review minor #2)。
