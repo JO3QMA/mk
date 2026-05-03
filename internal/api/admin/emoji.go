@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -95,8 +96,13 @@ func (h *Handler) EmojiDeleteBulk(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	// per-emoji log のため削除前に snapshot を取得。失敗しても削除自体は
-	// 続行する (snapshot 失敗で監査が落ちるより操作完遂が優先)。
-	snapshots, _ := h.emojiRepo.FindManyByIDs(req.IDs)
+	// 続行する (snapshot 失敗で監査が落ちるより操作完遂が優先)。エラー時は
+	// log が出ない理由を debug-level で残して運用時の追跡を可能にする。
+	snapshots, err := h.emojiRepo.FindManyByIDs(req.IDs)
+	if err != nil {
+		slog.DebugContext(c.Request().Context(), "moderation log: snapshot lookup failed before delete-bulk",
+			"ids", req.IDs, "err", err)
+	}
 	if err := h.emojiRepo.DeleteMany(req.IDs); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "00000000-0000-0000-0000-000000000000"))
 	}

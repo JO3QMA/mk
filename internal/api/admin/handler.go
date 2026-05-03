@@ -1347,6 +1347,12 @@ func (h *Handler) EmojiAdd(c echo.Context) error {
 // Misskey TS の admin/emoji/update は name/category/aliases に加え license/
 // isSensitive/localOnly も受け付ける。フロントの編集ダイアログがこれら全部
 // 送信するため Request struct を Misskey 互換に拡張する (#650 問題 2)。
+//
+// Aliases は []string なので nil (省略) と [] (空配列) が型で区別できない。
+// Misskey TS 側も optional `?` で undefined と空配列を区別しないため、
+// nil != 空配列でない場合に "aliases を全削除" として扱う。実装上は
+// `req.Aliases != nil` で「フロントが aliases フィールドを明示送信した」
+// と判定しており、空配列送信なら全削除、フィールド欠落なら現状維持。
 func (h *Handler) EmojiUpdate(c echo.Context) error {
 	var req struct {
 		ID          string   `json:"id"`
