@@ -959,6 +959,17 @@ func packGame(game *model.ReversiGame) map[string]any {
 	if game.User2 != nil {
 		out["user2"] = userLiteMap(game.User2)
 	}
+	// winner は upstream Misskey TS の ReversiGameEntityService.packDetail と
+	// 同じく winnerId から派生させて UserLite として埋める。frontend
+	// (game.board.vue) は `v-if="game.winner"` で勝敗表示を切り替えるため、
+	// winnerId だけでは draw に倒れて #649 の症状になる。
+	if game.WinnerID != nil {
+		if game.User1 != nil && game.User1.ID == *game.WinnerID {
+			out["winner"] = userLiteMap(game.User1)
+		} else if game.User2 != nil && game.User2.ID == *game.WinnerID {
+			out["winner"] = userLiteMap(game.User2)
+		}
+	}
 	return out
 }
 
