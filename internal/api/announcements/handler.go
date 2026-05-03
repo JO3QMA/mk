@@ -65,6 +65,11 @@ func (h *Handler) SetUserRepo(r repository.UserRepository) {
 // globalType / userType の 2 つを取り、announcement の userId 有無で
 // どちらの type を使うか分岐する (Misskey TS の AnnouncementService と同じ
 // semantics)。info には announcement / before / after を caller から渡す。
+//
+// Ownership: helper は user-targeted announcement の場合に info map へ
+// {userId, userUsername, userHost} を **追記** する。caller は呼び出し後
+// に info を再利用しない前提で渡すこと。同 map を別目的で保持する場合は
+// あらかじめコピーしてから渡す。
 func (h *Handler) logAnnouncementAction(c echo.Context, globalType, userType moderationlog.LogType, a *model.Announcement, info map[string]any) {
 	if h.modLogService == nil || a == nil {
 		return

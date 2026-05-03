@@ -229,7 +229,7 @@ func TestSystemWebhookCreate_WritesModerationLog(t *testing.T) {
 	h.SetSystemWebhookRepo(testutil.NewMockSystemWebhookRepository())
 	repo := attachModLog(t, h)
 
-	rec := doPost(h.SystemWebhookCreate, `{"name":"wh","url":"https://x"}`, adminUser)
+	rec := doPost(h.SystemWebhookCreate, `{"name":"hook","url":"https://x"}`, adminUser)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
 	assert.Equal(t, "createSystemWebhook", repo.Snapshot()[0].Type)
@@ -245,13 +245,18 @@ func TestSystemWebhookUpdate_WritesModerationLog(t *testing.T) {
 	rec := doPost(h.SystemWebhookUpdate, `{"id":"w1","name":"new"}`, adminUser)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
-	assert.Equal(t, "updateSystemWebhook", repo.Snapshot()[0].Type)
+	logs := repo.Snapshot()
+	assert.Equal(t, "updateSystemWebhook", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	require.NotNil(t, info["before"])
+	require.NotNil(t, info["after"])
 }
 
 func TestSystemWebhookDelete_WritesModerationLog(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	whRepo := testutil.NewMockSystemWebhookRepository()
-	require.NoError(t, whRepo.Create(&model.SystemWebhook{ID: "w1"}))
+	require.NoError(t, whRepo.Create(&model.SystemWebhook{ID: "w1", Name: "doomed", URL: "https://x"}))
 	h.SetSystemWebhookRepo(whRepo)
 	repo := attachModLog(t, h)
 

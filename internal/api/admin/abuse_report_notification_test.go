@@ -150,6 +150,50 @@ func TestAbuseReportNotificationRecipientUpdate(t *testing.T) {
 
 // --- moderation log assertions (#665) ---
 
+func TestRecipientCreate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	h.SetRecipientRepo(testutil.NewMockAbuseReportNotificationRecipientRepository())
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AbuseReportNotificationRecipientCreate, `{"name":"r","method":"email"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "createAbuseReportNotificationRecipient", repo.Snapshot()[0].Type)
+}
+
+func TestRecipientUpdate_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rcpRepo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	require.NoError(t, rcpRepo.Create(&model.AbuseReportNotificationRecipient{ID: "r1", Name: "old", Method: "email"}))
+	h.SetRecipientRepo(rcpRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AbuseReportNotificationRecipientUpdate, `{"id":"r1","name":"new"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	logs := repo.Snapshot()
+	assert.Equal(t, "updateAbuseReportNotificationRecipient", logs[0].Type)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(logs[0].Info, &info))
+	require.NotNil(t, info["before"])
+	require.NotNil(t, info["after"])
+}
+
+func TestRecipientDelete_WritesModerationLog(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	rcpRepo := testutil.NewMockAbuseReportNotificationRecipientRepository()
+	require.NoError(t, rcpRepo.Create(&model.AbuseReportNotificationRecipient{ID: "r1", Name: "doomed", Method: "email"}))
+	h.SetRecipientRepo(rcpRepo)
+	repo := attachModLog(t, h)
+
+	rec := doPost(h.AbuseReportNotificationRecipientDelete, `{"id":"r1"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Eventually(t, func() bool { return len(repo.Snapshot()) == 1 }, 500*time.Millisecond, 5*time.Millisecond)
+	assert.Equal(t, "deleteAbuseReportNotificationRecipient", repo.Snapshot()[0].Type)
+}
+
+// --- moderation log assertions (#665) ---
+
 func TestAbuseReportNotificationRecipientCreate_WritesModerationLog(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	h.SetRecipientRepo(testutil.NewMockAbuseReportNotificationRecipientRepository())
