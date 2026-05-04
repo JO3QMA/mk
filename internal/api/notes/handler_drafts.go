@@ -46,7 +46,7 @@ func (h *Handler) DraftsCreate(c echo.Context) error {
 		FileIDs    []string `json:"fileIds"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
 	if req.Visibility == "" {
 		req.Visibility = "public"
@@ -60,7 +60,7 @@ func (h *Handler) DraftsCreate(c echo.Context) error {
 		FileIDs:    req.FileIDs,
 	}
 	if err := h.draftRepo.Create(draft); err != nil {
-		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
 	}
 	return c.JSON(http.StatusOK, packDraft(draft, h.idGen))
 }
@@ -79,11 +79,11 @@ func (h *Handler) DraftsUpdate(c echo.Context) error {
 		FileIDs    []string `json:"fileIds"`
 	}
 	if err := c.Bind(&req); err != nil || req.DraftID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "draftId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("draftId is required."))
 	}
 	draft, err := h.draftRepo.FindByIDAndUser(req.DraftID, user.ID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_DRAFT", "No such draft.", "00000000-0000-0000-0000-000000000000"))
+		return c.JSON(http.StatusNotFound, apierr.NoSuchNoteDraft())
 	}
 	if req.Text != nil {
 		draft.Text = req.Text
@@ -111,9 +111,21 @@ func (h *Handler) DraftsDelete(c echo.Context) error {
 		DraftID string `json:"draftId"`
 	}
 	if err := c.Bind(&req); err != nil || req.DraftID == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "draftId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("draftId is required."))
 	}
-	_ = h.draftRepo.Delete(req.DraftID, user.ID)
+	// upstream notes/drafts/delete.ts は存在チェックして無ければ
+	// `NO_SUCH_NOTE_DRAFT` を返す。silent 204 だと frontend が削除確認 UI
+	// で「該当 draft が無い」フィードバックを出せないので、本家挙動に合わせて
+	// 404 を返すよう修正 (#688 review follow-up)。
+	// Delete は RowsAffected を返すので、Find → Delete の 2 query 化を避け
+	// つつ TOCTOU race も発生しない (DB 1 文で atomic に「あれば削除」)。
+	rowsAffected, err := h.draftRepo.Delete(req.DraftID, user.ID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
+	}
+	if rowsAffected == 0 {
+		return c.JSON(http.StatusNotFound, apierr.NoSuchNoteDraft())
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

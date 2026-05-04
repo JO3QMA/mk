@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -72,9 +73,12 @@ func (m *mockDraftRepo) Update(d *model.NoteDraft) error {
 	m.drafts[d.ID] = d
 	return nil
 }
-func (m *mockDraftRepo) Delete(id, _ string) error {
+func (m *mockDraftRepo) Delete(id, _ string) (int64, error) {
+	if _, ok := m.drafts[id]; !ok {
+		return 0, nil
+	}
 	delete(m.drafts, id)
-	return nil
+	return 1, nil
 }
 func (m *mockDraftRepo) CountByUser(userID string) (int64, error) {
 	var count int64
@@ -165,9 +169,16 @@ func TestDraftsUpdate_Success(t *testing.T) {
 }
 
 func TestDraftsUpdate_NotFound(t *testing.T) {
+	// #688: 存在しない draftId 指定時に upstream notes/drafts/update 互換の
+	// NO_SUCH_NOTE_DRAFT (UUID 49cd6b9d-...) を返すこと。
 	h, _ := newDraftHandlerWithRepo()
 	rec := postDraft(h.DraftsUpdate, `{"draftId":"ghost"}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_NOTE_DRAFT", errObj["code"])
+	assert.Equal(t, apierr.UUIDNoSuchNoteDraft, errObj["id"])
 }
 
 func TestDraftsUpdate_InvalidParam(t *testing.T) {
@@ -196,6 +207,21 @@ func TestDraftsDelete_InvalidParam(t *testing.T) {
 	h, _ := newDraftHandlerWithRepo()
 	rec := postDraft(h.DraftsDelete, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDraftsDelete_NotFound(t *testing.T) {
+	// #688 review follow-up: 存在しない draftId で削除しても upstream
+	// notes/drafts/delete.ts と同じく `NO_SUCH_NOTE_DRAFT` を返す。silent
+	// 204 だと frontend が「該当 draft が無い」を観測できないので 404 が
+	// 期待挙動。
+	h, _ := newDraftHandlerWithRepo()
+	rec := postDraft(h.DraftsDelete, `{"draftId":"ghost"}`, &model.User{ID: "u1"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errObj := resp["error"].(map[string]any)
+	assert.Equal(t, "NO_SUCH_NOTE_DRAFT", errObj["code"])
+	assert.Equal(t, apierr.UUIDNoSuchNoteDraft, errObj["id"])
 }
 
 // --- DraftsCount ---
