@@ -154,8 +154,11 @@ func (req federationUpdateInstanceRequest) updates() map[string]any {
 // `updateRemoteInstanceNote` の moderation_log を **個別に** 出力する。1 リクエ
 // ストで両方変更されれば 2 ログ。`isBlocked` / `isSilenced` は TS 仕様に該当
 // type が無いので skip。
+//
+// instance 行の lookup / 更新は `InstanceRepository` (#676 で DI 化) を経由する。
+// 未配線時は no-op で 204 を返す (元の挙動と一貫)。
 func (h *Handler) FederationUpdateInstance(c echo.Context) error {
-	if h.adminDB == nil {
+	if h.instanceRepo == nil {
 		return c.NoContent(http.StatusNoContent)
 	}
 	var req federationUpdateInstanceRequest
@@ -166,12 +169,21 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 	// `moderationNote` の before/after)。lookup 失敗は instance 不在として
 	// no-op で 204 を返す (元の挙動は単純 Updates 1 回だけだったので失敗時
 	// silent と一貫)。
-	var before model.Instance
-	if err := h.adminDB.Where(`"host" = ?`, req.Host).First(&before).Error; err != nil {
+	beforePtr, err := h.instanceRepo.FindByHost(req.Host)
+	if err != nil {
 		return c.NoContent(http.StatusNoContent)
 	}
+	// 値コピーで snapshot を凍結する: UpdateFields の実装によっては同じ struct
+	// を mutate することがあり (例: in-memory mock)、後段の moderation log diff
+	// で before/after が両方 after 値になる退行を防ぐ。
+	//
+	// 注意: 浅 copy なので *string 等の pointer field は参照先を共有する。
+	// 現状 log で参照する `SuspensionState string` / `ModerationNote string`
+	// は scalar なので問題なし。pointer field を log に含める拡張が入った
+	// 時は deep copy への昇格を検討。
+	before := *beforePtr
 	if updates := req.updates(); len(updates) > 0 {
-		h.adminDB.Model(&model.Instance{}).Where(`"host" = ?`, req.Host).Updates(updates)
+		_ = h.instanceRepo.UpdateFields(req.Host, updates)
 	}
 	// suspend / unsuspend と moderationNote 変更で個別 log を出す。
 	// SuspensionState != "none" を「suspended」と扱う。
