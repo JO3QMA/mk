@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
+	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -73,6 +74,7 @@ type Service struct {
 	idGen               id.Generator
 	publisher           StreamingPublisher
 	userRepo            repository.UserRepository
+	followingRepo       repository.FollowingRepository
 	renderer            *activitypub.Renderer
 	urls                *activitypub.URLBuilder
 	deliverer           APDeliverer
@@ -107,14 +109,113 @@ func (s *Service) SetAPDelivery(userRepo repository.UserRepository, renderer *ac
 	s.deliverer = deliverer
 }
 
+// SetFollowingRepo wires the following repository so chatScope=followers /
+// following / mutual checks can be enforced (#692). 未配線のままで granular
+// scope を持つ recipient へ送信しようとすると `canChat` が fail-closed で
+// reject する (旧実装の silent allow は意図しない open relay を作るため
+// PR #708 review で改めた)。production では必ず配線する。
+func (s *Service) SetFollowingRepo(repo repository.FollowingRepository) {
+	s.followingRepo = repo
+}
+
+// ErrChatScopeViolation is returned when a chat message is rejected because
+// the recipient's chatScope does not allow the sender. CherryPick の
+// `Error('recipient is cannot chat (...)')` 相当 (#692)。
+var ErrChatScopeViolation = errors.New("chat scope violation")
+
+// ErrChatScopeUnconfigured is returned when canChat() needs to consult the
+// following graph (chatScope = followers / following / mutual) but no
+// FollowingRepository was wired. Treated as fail-closed (= reject) instead
+// of silently degrading to everyone, which would be an open relay (#708 review)。
+var ErrChatScopeUnconfigured = errors.New("chat scope check unconfigured: followingRepo missing")
+
+// canChat reports whether `sender` is allowed to send a 1-on-1 chat to
+// `recipient` based on recipient.chatScope. Returns nil when allowed.
+//
+// scope semantics (CherryPick / Misskey TS と一致):
+//   - "everyone": 誰からでも受信
+//   - "followers": 受信者を follow している人だけ (sender が recipient の follower)
+//   - "following": 受信者が follow している人だけ (recipient が sender を follow)
+//   - "mutual": 双方向
+//   - "none": 完全拒否
+//
+// remote recipient の場合は、AP に expose されるのは `_misskey_canChat`
+// (boolean) だけなので chatScope は "everyone" / "none" の二値しか取り得ない
+// (resolver で翻訳済み, #692)。granular な判定は受信側 instance に委ねる。
+//
+// followingRepo 未配線で granular scope を判定しないといけない局面では
+// `ErrChatScopeUnconfigured` を返して fail-closed する (#708 review #2)。
+// silent に everyone 降格すると production の wiring 忘れが open relay に
+// なり、chatScope 設定が黙って無効化される。
+func (s *Service) canChat(sender, recipient *model.User) error {
+	if recipient == nil || sender == nil {
+		return nil
+	}
+	if recipient.ChatScope == "none" {
+		return ErrChatScopeViolation
+	}
+	if !recipient.IsLocal() {
+		// 連合先のスコープは "everyone" / "none" の二値。connection grain の
+		// followers/following/mutual は remote 側で評価されるので mk-go では
+		// 'none' だけ事前 reject すれば十分。
+		return nil
+	}
+	switch recipient.ChatScope {
+	case "", "everyone":
+		return nil
+	}
+	// granular scope (followers / following / mutual) は follow graph 必須。
+	// 未配線なら fail-closed する。
+	if s.followingRepo == nil {
+		return ErrChatScopeUnconfigured
+	}
+	switch recipient.ChatScope {
+	case "followers":
+		ok, err := s.followingRepo.Exists(sender.ID, recipient.ID)
+		if err == nil && ok {
+			return nil
+		}
+		return ErrChatScopeViolation
+	case "following":
+		ok, err := s.followingRepo.Exists(recipient.ID, sender.ID)
+		if err == nil && ok {
+			return nil
+		}
+		return ErrChatScopeViolation
+	case "mutual":
+		ok1, e1 := s.followingRepo.Exists(sender.ID, recipient.ID)
+		ok2, e2 := s.followingRepo.Exists(recipient.ID, sender.ID)
+		if e1 == nil && e2 == nil && ok1 && ok2 {
+			return nil
+		}
+		return ErrChatScopeViolation
+	}
+	return nil
+}
+
 // --- Message lifecycle ---
 
 // CreateMessageToUser persists a direct-message row and fires the
 // `message` event on both conversation directions so that either user's
 // connected WebSocket subscribers see the message immediately.
+//
+// chatScope を強制する (#692)。recipient が local なら granular な
+// followers/following/mutual まで判定し、remote なら `_misskey_canChat`
+// 由来の "none" だけ事前 reject する (canChat() が分岐)。
 func (s *Service) CreateMessageToUser(ctx context.Context, fromUserID, toUserID, text, fileID string) (*model.ChatMessage, error) {
 	if fromUserID == "" || toUserID == "" {
 		return nil, ErrInvalidTarget
+	}
+	if s.userRepo != nil {
+		recipient, err := s.userRepo.FindByID(toUserID)
+		if err == nil {
+			sender, err := s.userRepo.FindByID(fromUserID)
+			if err == nil {
+				if err := s.canChat(sender, recipient); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 	msg := &model.ChatMessage{
 		ID:         s.idGen.Generate(time.Now()),
@@ -131,14 +232,14 @@ func (s *Service) CreateMessageToUser(ctx context.Context, fromUserID, toUserID,
 		return nil, fmt.Errorf("create user message: %w", err)
 	}
 	if s.publisher != nil {
-		s.publisher.PublishUserMessage(ctx, fromUserID, toUserID, EventMessage, packMessage(msg))
+		s.publisher.PublishUserMessage(ctx, fromUserID, toUserID, EventMessage, s.packMessageStream(msg))
 	}
 	// Misskey 本家の ChatService.createMessageToUser は、3 秒後に未読判定して
 	// newChatMessage を publishMainStream する。本実装では未読判定を省略し、
 	// 作成と同時に recipient (toUserID) の main に emit する (sender には
 	// 送らない: TS と同じ fan-out 方針)。
 	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(toUserID, "newChatMessage", packMessage(msg))
+		s.mainStreamPublisher.PublishMainEvent(toUserID, "newChatMessage", s.packMessageStream(msg))
 	}
 	// リモートユーザー宛ならAP配送 (best-effort)
 	s.tryDeliverToRemoteUser(msg, fromUserID, toUserID)
@@ -169,7 +270,13 @@ func (s *Service) tryDeliverToRemoteUser(msg *model.ChatMessage, fromUserID, toU
 		return
 	}
 	_ = s.repo.UpdateDeliveryStatus(msg.ID, true, false)
-	cm := s.renderer.RenderChatMessage(msg, senderURI, recipientURI)
+	// CherryPick 互換 wire format: Create + Note(_misskey_talk:true) (#692)。
+	// published は ChatMessage.ID (ULID/aidx) のタイムスタンプから導出する。
+	published := time.Now().UTC().Format(time.RFC3339)
+	if t, err := s.idGen.ParseTime(msg.ID); err == nil {
+		published = t.UTC().Format(time.RFC3339)
+	}
+	cm := s.renderer.RenderChatMessage(msg, senderURI, recipientURI, published)
 	body, err := json.Marshal(cm)
 	if err != nil {
 		_ = s.repo.UpdateDeliveryStatus(msg.ID, false, true)
@@ -187,6 +294,10 @@ func (s *Service) tryDeliverToRemoteUser(msg *model.ChatMessage, fromUserID, toU
 // CreateMessageViaAP persists a chat message received via ActivityPub from a
 // remote user. The uri parameter is the activity's canonical ID. AP retries
 // are common so URI-based dedup is performed (IngestNote と同じパターン).
+//
+// recipient の chatScope を必ず強制する (#692)。連合受信時は AP retry でこの
+// path が複数回踏まれるが、scope 違反は最初の試行で拒絶し、retry でも同じ
+// 結果になるので peer 側は dead letter で処理する。
 func (s *Service) CreateMessageViaAP(ctx context.Context, uri string, fromUser *model.User, toUserID, text string) (*model.ChatMessage, error) {
 	if fromUser == nil || toUserID == "" {
 		return nil, ErrInvalidTarget
@@ -195,6 +306,13 @@ func (s *Service) CreateMessageViaAP(ctx context.Context, uri string, fromUser *
 	if uri != "" {
 		if existing, err := s.repo.FindMessageByURI(uri); err == nil {
 			return existing, nil
+		}
+	}
+	if s.userRepo != nil {
+		if recipient, err := s.userRepo.FindByID(toUserID); err == nil && recipient.IsLocal() {
+			if err := s.canChat(fromUser, recipient); err != nil {
+				return nil, err
+			}
 		}
 	}
 	msg := &model.ChatMessage{
@@ -218,7 +336,7 @@ func (s *Service) CreateMessageViaAP(ctx context.Context, uri string, fromUser *
 	// recipient の main チャネルに newChatMessage を emit してフロントの
 	// 未読インジケータを更新させる。sender は remote なので emit 対象外。
 	if s.mainStreamPublisher != nil {
-		s.mainStreamPublisher.PublishMainEvent(toUserID, "newChatMessage", packMessage(msg))
+		s.mainStreamPublisher.PublishMainEvent(toUserID, "newChatMessage", s.packMessageStream(msg))
 	}
 	return msg, nil
 }
@@ -257,7 +375,7 @@ func (s *Service) CreateMessageToRoom(ctx context.Context, fromUserID, roomID, t
 		return nil, fmt.Errorf("create room message: %w", err)
 	}
 	if s.publisher != nil {
-		s.publisher.PublishRoomMessage(ctx, roomID, EventMessage, packMessage(msg))
+		s.publisher.PublishRoomMessage(ctx, roomID, EventMessage, s.packMessageStream(msg))
 	}
 	// Room 宛も同様に、sender 以外の全 member (owner 含む) の main に
 	// newChatMessage を emit する。Misskey 本家 ChatService
@@ -291,7 +409,7 @@ func (s *Service) emitRoomNewChatMessage(room *model.ChatRoom, fromUserID string
 		slog.Warn("chat: ListMembersByRoom failed, skipping newChatMessage emit", "roomID", room.ID, "err", err)
 		return
 	}
-	packed := packMessage(msg)
+	packed := s.packMessageStream(msg)
 	// 重複 emit を防ぐため set 相当で ID を管理する (membership + owner)。
 	emitted := make(map[string]bool, len(members)+1)
 	if room.OwnerID != fromUserID {
@@ -346,7 +464,7 @@ func (s *Service) UpdateMessage(ctx context.Context, userID, messageID, text str
 		return nil, fmt.Errorf("update message: %w", err)
 	}
 	if s.publisher != nil {
-		body := packMessage(msg)
+		body := s.packMessageStream(msg)
 		if msg.ToRoomID != nil {
 			s.publisher.PublishRoomMessage(ctx, *msg.ToRoomID, EventEdited, body)
 		} else if msg.ToUserID != nil {
@@ -396,7 +514,8 @@ func (s *Service) IsRoomMember(userID, roomID string) (bool, error) {
 
 // packMessage produces a JSON-serializable projection of a ChatMessage for
 // outbound WebSocket events. フロント互換のため本家 ChatMessageLite と同じ
-// 主要フィールドを含める。
+// 主要フィールドを含める。createdAt は idGen の初期化未完了時 (テスト等)
+// に欠落することがあるが、上位の Service.packMessage 経由なら必ず付く (#692)。
 func packMessage(msg *model.ChatMessage) map[string]any {
 	out := map[string]any{
 		"id":         msg.ID,
@@ -424,4 +543,40 @@ func packMessage(msg *model.ChatMessage) map[string]any {
 		out["reactions"] = []string(msg.Reactions)
 	}
 	return out
+}
+
+// packMessageStream is the service-level packer that adds createdAt + fromUser
+// on top of packMessage. WebSocket streaming や mainStream の `newChatMessage`
+// 配信に使う。createdAt 欠落だと FE 側の MkTime が NaN/NaN を表示する (#692)。
+func (s *Service) packMessageStream(msg *model.ChatMessage) map[string]any {
+	out := packMessage(msg)
+	if s.idGen != nil {
+		if t, err := s.idGen.ParseTime(msg.ID); err == nil {
+			out["createdAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		}
+	}
+	if msg.FromUser != nil {
+		out["fromUser"] = packUserStream(msg.FromUser)
+	}
+	if msg.ToUser != nil {
+		out["toUser"] = packUserStream(msg.ToUser)
+	}
+	return out
+}
+
+// packUserStream is a UserLite-shaped projection for stream payloads.
+// FE の MkAvatar / chat 一覧が avatarUrl / avatarBlurhash を読むため、
+// fromUser / toUser に含める。avatarUrl 未設定時は `entity.IdenticonURL`
+// 経由で identicon URL に fallback する (#692)。
+func packUserStream(u *model.User) map[string]any {
+	return map[string]any{
+		"id":             u.ID,
+		"username":       u.Username,
+		"name":           u.Name,
+		"host":           u.Host,
+		"avatarUrl":      entity.IdenticonURL(u),
+		"avatarBlurhash": u.AvatarBlurhash,
+		"isBot":          u.IsBot,
+		"isCat":          u.IsCat,
+	}
 }

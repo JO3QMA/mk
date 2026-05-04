@@ -23,6 +23,13 @@ type UserLite struct {
 	Emojis            map[string]string      `json:"emojis"`
 	OnlineStatus      string                 `json:"onlineStatus"`
 	BadgeRoles        []any                  `json:"badgeRoles"`
+	// CanChat は upstream Misskey TS の boolean field (#692)。FE の
+	// /chat/room.vue が `!user.canChat` で「DM 受け付け不可」warning を
+	// 出すので、出さないと local user 同士で DM できないと誤表示される。
+	// mk-go では chatScope!='none' を簡易判定として使う (upstream は
+	// roleService.policy.chatAvailability を参照するが、mk-go は role
+	// policy がまだ chat に対応していないため chatScope 由来で代替)。
+	CanChat bool `json:"canChat"`
 	// Optional TS-compat fields (Phase 7-5a)。
 	// TS側は `requireSigninToViewContents: user.x === false ? undefined : true`
 	// なので、値が true のときのみ expose する (*bool を &true に設定、
@@ -56,12 +63,17 @@ type UserDetailed struct {
 	NotesCount          int            `json:"notesCount"`
 	FollowersVisibility string         `json:"followersVisibility"`
 	FollowingVisibility string         `json:"followingVisibility"`
-	CreatedAt           string         `json:"createdAt"`
-	UpdatedAt           *string        `json:"updatedAt"`
-	URI                 *string        `json:"uri"`
-	URL                 *string        `json:"url"`
-	PinnedNoteIDs       []string       `json:"pinnedNoteIds"`
-	PinnedNotes         []any          `json:"pinnedNotes"`
+	// ChatScope は 1-on-1 チャットの受信許可レベル (#692)。FE の
+	// /settings/privacy が `i/update` レスポンスから直接 `$i.chatScope` に
+	// 反映するため、この field を expose しないと UI が保存後に古い値で
+	// 再描画される (DB は更新されているのに UI が "保存されない" と見える)。
+	ChatScope     string   `json:"chatScope"`
+	CreatedAt     string   `json:"createdAt"`
+	UpdatedAt     *string  `json:"updatedAt"`
+	URI           *string  `json:"uri"`
+	URL           *string  `json:"url"`
+	PinnedNoteIDs []string `json:"pinnedNoteIds"`
+	PinnedNotes   []any    `json:"pinnedNotes"`
 	// PinnedPageID is the user_profile.pinnedPageId. PinnedPage is the fully
 	// packed page object corresponding to that id (nil when the user has no
 	// pinned page or the page has been deleted). Both are populated by the
@@ -95,6 +107,24 @@ type InstanceLite struct {
 	ThemeColor      *string `json:"themeColor"`
 }
 
+// IdenticonURL returns the avatar URL for u, falling back to the local
+// `/identicon/<username>(@<host>)` route when the user has no explicit
+// avatarUrl. Mirrors upstream Misskey TS の identicon URL 規則。
+//
+// 共有 helper として切り出してあるので、UserLite 以外のレスポンス
+// (e.g. internal/api/chat の packUser / internal/core/chat の packUserStream)
+// も同じ規則を使える (#692 / #708 review)。
+func IdenticonURL(u *model.User) string {
+	if u.AvatarURL != nil && *u.AvatarURL != "" {
+		return *u.AvatarURL
+	}
+	host := ""
+	if u.Host != nil {
+		host = "@" + *u.Host
+	}
+	return "/identicon/" + u.Username + host
+}
+
 // PackUserLite converts a model.User to a UserLite DTO.
 // Instance (nested remote instance info) must be pre-fetched by the caller
 // via InstanceRepository and assigned to the returned UserLite.Instance.
@@ -105,22 +135,13 @@ type InstanceLite struct {
 // DB を叩かない。cache miss / TTL 切れでのみ admin catalog の List を 1 回
 // 引く (#521 / #524 review)。
 func PackUserLite(u *model.User) UserLite {
-	avatarURL := u.AvatarURL
-	// avatarUrlがnullの場合、identiconを生成
-	if avatarURL == nil || *avatarURL == "" {
-		host := ""
-		if u.Host != nil {
-			host = "@" + *u.Host
-		}
-		identicon := "/identicon/" + u.Username + host
-		avatarURL = &identicon
-	}
+	avatarURL := IdenticonURL(u)
 	out := UserLite{
 		ID:                u.ID,
 		Name:              u.Name,
 		Username:          u.Username,
 		Host:              u.Host,
-		AvatarURL:         avatarURL,
+		AvatarURL:         &avatarURL,
 		AvatarBlurhash:    u.AvatarBlurhash,
 		AvatarDecorations: resolveAvatarDecorations(u.AvatarDecorations),
 		IsBot:             u.IsBot,
@@ -128,6 +149,7 @@ func PackUserLite(u *model.User) UserLite {
 		Emojis:            make(map[string]string),
 		OnlineStatus:      "unknown",
 		BadgeRoles:        []any{},
+		CanChat:           u.ChatScope != "none",
 	}
 	// requireSigninToViewContents: true のときだけ出す (TS は false→undefined)
 	if u.RequireSigninToViewContents {
@@ -161,6 +183,7 @@ func PackUserDetailed(u *model.User, profile *model.UserProfile, idGens ...id.Ge
 		VerifiedLinks:       []string{},
 		FollowersVisibility: "public",
 		FollowingVisibility: "public",
+		ChatScope:           u.ChatScope,
 		URI:                 u.URI,
 		PinnedNoteIDs:       []string{},
 		PinnedNotes:         []any{},
