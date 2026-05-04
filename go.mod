@@ -26,6 +26,7 @@ require (
 	github.com/lib/pq v1.12.3
 	github.com/meilisearch/meilisearch-go v0.36.1
 	github.com/mmcdole/gofeed v1.3.0
+	github.com/mrjoshuak/go-jpeg2000 v1.2.1
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pquerna/otp v1.5.0
 	github.com/redis/go-redis/v9 v9.18.0
