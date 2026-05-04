@@ -86,8 +86,13 @@ func (h *Handler) SetMainStreamPublisher(p MainStreamPublisher) {
 
 // Signin handles POST /api/signin.
 // Misskey フロントエンドのログインフロー:
-// 1. username のみ → { finished: false, next: "password" or "captcha" }
+// 1. username のみ → { finished: false, next: "password" }
 // 2. username + password → { finished: true, id: "...", i: "token" }
+//
+// Note: `/api/signin` (legacy) と `/api/signin-flow` で step 1 の `next` 値が
+// 異なる。legacy はユーザの 2FA 設定に関わらず `'password'` 固定で返すのに対し、
+// `/signin-flow` は 2FA 無効ユーザに対して `'captcha'` を返す (TS upstream 互換)。
+// TS upstream 互換は `/signin-flow` のみ提供する。
 func (h *Handler) Signin(c echo.Context) error {
 	var req struct {
 		Username string  `json:"username"`
@@ -132,19 +137,22 @@ func (h *Handler) Signin(c echo.Context) error {
 // SigninFlow handles POST /api/signin-flow.
 // TS本家のmulti-step ログインフロー (Misskey 2026.x):
 //
-//	Step 1: { username }                           → { next: "password" }
-//	Step 2: { username, password }                 → 2FA 無し: { finished, id, i }
-//	                                               → TOTP / WebAuthn 有り: { next: "totp" / "captcha-keys" }
-//	Step 3 (TOTP):  { username, password, token }  → { finished, id, i }
-//	Step 3 (BU):    { username, password, token }  → backup code 検証
-//	Step 3 (Key):   { username, password, credential, ...session } → WebAuthn assertion 検証
+//	Step 1: { username }                          → 2FA 有: { next: "password" }、無: { next: "captcha" }
+//	Step 2: { username, password }                → 2FA 無し: { finished, id, i }
+//	                                              → 鍵あり: { next: "passkey", authRequest }
+//	                                              → 鍵なし: { next: "totp" }
+//	Step 3 (TOTP):  { username, password, token } → { finished, id, i }
+//	Step 3 (BU):    { username, password, token } → backup code 検証
+//	Step 3 (Key):   { username, password, credential } → WebAuthn assertion 検証
+//
+// Misskey TS upstream の SigninApiService と完全互換。フロントの MkSignin.vue は
+// `next` 値で switch するので、`'captcha' | 'password' | 'totp' | 'passkey'`
+// 以外は受け付けない (#705)。
 func (h *Handler) SigninFlow(c echo.Context) error {
 	var req struct {
-		Username string  `json:"username"`
-		Password *string `json:"password"`
-		Token    *string `json:"token"`
-		// SessionID + Credential はキー認証 step 3 で使う。
-		SessionID  *string         `json:"sessionId"`
+		Username   string          `json:"username"`
+		Password   *string         `json:"password"`
+		Token      *string         `json:"token"`
 		Credential json.RawMessage `json:"credential"`
 		// CAPTCHA tokens — フロントエンドは有効な provider の token だけ送る。
 		HcaptchaResponse    string `json:"hcaptcha-response"`
@@ -168,11 +176,13 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 	}
 
 	// Step 1: パスワード未提供 → 次のステップを指示
-	// TSと同じ分岐: 2FA有効 → "password"、2FA無効+captcha有効 → "captcha"、それ以外 → "password"
+	// TS upstream: 2FA 有効 → "password"、2FA 無効 → "captcha" (captcha 設定の有無に
+	// 関わらず常に 'captcha' を返す。フロントが captcha widget の表示要否を
+	// instance meta で判定する)。
 	if req.Password == nil {
 		next := "password"
 		if p, perr := h.userRepo.FindProfileByUserID(user.ID); perr == nil && p != nil {
-			if !p.TwoFactorEnabled && h.captchaSvc != nil && h.captchaSvc.IsEnabled() {
+			if !p.TwoFactorEnabled {
 				next = "captcha"
 			}
 		}
@@ -188,9 +198,7 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(*req.Password)); err != nil {
-		return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
-	}
+	passwordOK := bcrypt.CompareHashAndPassword([]byte(*profile.Password), []byte(*req.Password)) == nil
 
 	// CAPTCHA 検証 (password step 完了後、2FA 無しの場合のみ)。
 	// 本家 Misskey と同じく 2FA 有効なユーザーはキーデバイスが人間性を担保する
@@ -204,75 +212,95 @@ func (h *Handler) SigninFlow(c echo.Context) error {
 			Testcaptcha: req.TestcaptchaResponse,
 		}
 		if err := h.captchaSvc.Verify(c.Request().Context(), tokens); err != nil {
-			return c.JSON(http.StatusForbidden, errBody("e03a5f46-d309-4865-9b69-56282d94e1eb"))
+			return c.JSON(http.StatusBadRequest, errBody("ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 		}
+	}
+
+	if !profile.TwoFactorEnabled {
+		if !passwordOK {
+			return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+		}
+		return h.ok(c, user)
 	}
 
 	// 2FA 経路: TwoFactorEnabled が立っていたら 2 要素を要求する。
-	if profile.TwoFactorEnabled {
-		// security key を持っていれば WebAuthn step を最初に提示する (assertion challenge)。
-		hasKeys := false
-		var keys []*model.UserSecurityKey
-		if h.webauthnSvc != nil && h.securityKeyRepo != nil {
-			ks, err := h.securityKeyRepo.ListByUser(user.ID)
-			if err == nil && len(ks) > 0 {
-				hasKeys = true
-				keys = ks
-			}
+	// security key を持っていれば WebAuthn step を最初に提示する (assertion challenge)。
+	hasKeys := false
+	var keys []*model.UserSecurityKey
+	if h.webauthnSvc != nil && h.securityKeyRepo != nil {
+		ks, err := h.securityKeyRepo.ListByUser(user.ID)
+		if err == nil && len(ks) > 0 {
+			hasKeys = true
+			keys = ks
 		}
-
-		// Step 3 (Key): credential が来ていれば WebAuthn assertion を検証する。
-		if hasKeys && len(req.Credential) > 0 && req.SessionID != nil {
-			httpReq, werr := wrapWebAuthnRequest(c.Request(), req.Credential)
-			if werr != nil {
-				return c.JSON(http.StatusBadRequest, errBody("ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
-			}
-			cred, werr := h.webauthnSvc.FinishLogin(c.Request().Context(), user, keys, *req.SessionID, httpReq)
-			if werr != nil {
-				return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
-			}
-			// counter 更新
-			if h.securityKeyRepo != nil {
-				_ = h.securityKeyRepo.UpdateCounter(encodeCredID(cred.ID), int64(cred.Authenticator.SignCount))
-			}
-			return h.ok(c, user)
-		}
-
-		// Step 3 (TOTP / Backup): token フィールドで 2FA を検証する。
-		if req.Token != nil && *req.Token != "" {
-			// まず TOTP を試す。失敗したらバックアップコードにフォールバック。
-			if profile.TwoFactorSecret != nil && twofactor.Validate(*req.Token, *profile.TwoFactorSecret) {
-				return h.ok(c, user)
-			}
-			if remaining, berr := twofactor.ConsumeBackupCode([]string(profile.TwoFactorBackupSecret), *req.Token); berr == nil {
-				_ = h.userRepo.UpdateProfile(user.ID, map[string]any{
-					"twoFactorBackupSecret": pq.StringArray(remaining),
-				})
-				return h.ok(c, user)
-			}
-			return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
-		}
-
-		// 2FA が必要だが何も渡されていない → 次のステップを指示する。
-		next := "totp"
-		respBody := map[string]any{
-			"finished": false,
-			"next":     next,
-		}
-		// security key 保有なら assertion challenge を発行する。
-		if hasKeys && h.webauthnSvc != nil {
-			assertion, sid, werr := h.webauthnSvc.BeginLogin(c.Request().Context(), user, keys)
-			if werr == nil {
-				respBody["next"] = "captcha-keys"
-				respBody["sessionId"] = sid
-				respBody["assertion"] = assertion
-			}
-		}
-		return c.JSON(http.StatusOK, respBody)
 	}
 
-	// 認証成功 — トークン返却
-	return h.ok(c, user)
+	// Step 3 (TOTP / Backup): token フィールドで 2FA を検証する。
+	if req.Token != nil && *req.Token != "" {
+		if !passwordOK {
+			return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+		}
+		// まず TOTP を試す。失敗したらバックアップコードにフォールバック。
+		if profile.TwoFactorSecret != nil && twofactor.Validate(*req.Token, *profile.TwoFactorSecret) {
+			return h.ok(c, user)
+		}
+		if remaining, berr := twofactor.ConsumeBackupCode([]string(profile.TwoFactorBackupSecret), *req.Token); berr == nil {
+			_ = h.userRepo.UpdateProfile(user.ID, map[string]any{
+				"twoFactorBackupSecret": pq.StringArray(remaining),
+			})
+			return h.ok(c, user)
+		}
+		return c.JSON(http.StatusForbidden, errBody("cdf1235b-ac71-46d4-a3a6-84ccce48df6f"))
+	}
+
+	// Step 3 (Key): credential が来ていれば WebAuthn assertion を検証する。
+	if len(req.Credential) > 0 {
+		if !passwordOK && !profile.UsePasswordLessLogin {
+			return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+		}
+		if !hasKeys || h.webauthnSvc == nil {
+			return c.JSON(http.StatusForbidden, errBody("93b86c4b-72f9-40eb-9815-798928603d1e"))
+		}
+		httpReq, werr := wrapWebAuthnRequest(c.Request(), req.Credential)
+		if werr != nil {
+			return c.JSON(http.StatusBadRequest, errBody("ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+		}
+		cred, werr := h.webauthnSvc.FinishLogin(c.Request().Context(), user, keys, httpReq)
+		if werr != nil {
+			return c.JSON(http.StatusForbidden, errBody("93b86c4b-72f9-40eb-9815-798928603d1e"))
+		}
+		// counter 更新 (clone 検出用)
+		if h.securityKeyRepo != nil {
+			_ = h.securityKeyRepo.UpdateCounter(encodeCredID(cred.ID), int64(cred.Authenticator.SignCount))
+		}
+		return h.ok(c, user)
+	}
+
+	// 2FA が必要だが token / credential いずれも来ていない。
+	// password が違う場合はここで弾く (challenge を発行しない)。
+	if !passwordOK {
+		return c.JSON(http.StatusForbidden, errBody("932c904e-9460-45b7-9ce6-7ed33be7eb2c"))
+	}
+	// security key 保有なら assertion challenge を発行する (`next: 'passkey'`)。
+	// 本家 Misskey の SigninApiService と同じく `authRequest` フィールドに
+	// PublicKeyCredentialRequestOptionsJSON を入れる。go-webauthn が返す
+	// CredentialAssertion は `{publicKey: ...}` で 1 段ラップされているので
+	// 内側の Response (= PublicKeyCredentialRequestOptions) だけを送る。
+	if hasKeys && h.webauthnSvc != nil {
+		assertion, werr := h.webauthnSvc.BeginLogin(c.Request().Context(), user, keys)
+		if werr == nil {
+			return c.JSON(http.StatusOK, map[string]any{
+				"finished":    false,
+				"next":        "passkey",
+				"authRequest": assertion.Response,
+			})
+		}
+	}
+	// 鍵が無いか BeginLogin が失敗 → TOTP に fallback。
+	return c.JSON(http.StatusOK, map[string]any{
+		"finished": false,
+		"next":     "totp",
+	})
 }
 
 // ok returns the standard "logged in" response. 認証経路 (TOTP / WebAuthn /

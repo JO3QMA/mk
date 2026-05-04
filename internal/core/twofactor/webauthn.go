@@ -126,13 +126,12 @@ func (u *userAdapter) WebAuthnCredentials() []webauthn.Credential {
 
 // --- session storage ------------------------------------------------------
 
-// loginSessionKey returns the Redis key used to stash a SessionData blob
-// between BeginLogin and FinishLogin. The user id binds the session to one
-// account so a stolen sessionID alone cannot be replayed against a different
-// victim. Login flow needs a sessionID round-trip because the same user may
-// have multiple in-flight assertion challenges (e.g., browser tab + mobile).
-func loginSessionKey(userID, sessionID string) string {
-	return "twofa:webauthn:" + userID + ":" + sessionID
+// loginSessionKey is the Redis key for the 2FA-step assertion challenge.
+// Misskey TS の WebAuthnService.initiateAuthentication と同じく client は
+// session id を round-trip しないため user 単位で 1 件の challenge だけ保持
+// する。新規 challenge は既存を上書きする (#705)。
+func loginSessionKey(userID string) string {
+	return "twofa:webauthn:" + userID + ":login"
 }
 
 // registrationSessionKey is the Redis key for the upstream-compatible
@@ -144,58 +143,17 @@ func registrationSessionKey(userID string) string {
 	return "twofa:webauthn:" + userID + ":registration"
 }
 
-// putLoginSession serializes the SessionData and stores it under a freshly
-// generated random session id with TTL.
-func (s *WebAuthnService) putLoginSession(ctx context.Context, userID string, sd *webauthn.SessionData) (string, error) {
-	if s == nil || s.redis == nil {
-		return "", ErrWebAuthnNotConfigured
-	}
-	raw, err := json.Marshal(sd)
-	if err != nil {
-		return "", err
-	}
-	id, err := newSessionID()
-	if err != nil {
-		return "", err
-	}
-	if err := s.redis.Set(ctx, loginSessionKey(userID, id), raw, webAuthnSessionTTL).Err(); err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-// takeLoginSession loads-and-deletes a SessionData blob (single-use).
-func (s *WebAuthnService) takeLoginSession(ctx context.Context, userID, sessionID string) (*webauthn.SessionData, error) {
-	if s == nil || s.redis == nil {
-		return nil, ErrWebAuthnNotConfigured
-	}
-	key := loginSessionKey(userID, sessionID)
-	raw, err := s.redis.GetDel(ctx, key).Bytes()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, ErrWebAuthnSessionNotFound
-		}
-		return nil, err
-	}
-	var sd webauthn.SessionData
-	if err := json.Unmarshal(raw, &sd); err != nil {
-		return nil, err
-	}
-	return &sd, nil
-}
-
-// newSessionID generates a 24-byte URL-safe random id (192 bits of entropy).
-func newSessionID() (string, error) {
-	const n = 24
-	buf := make([]byte, n)
-	if _, err := readRandom(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
+// passkeySessionKey is the Redis key for the passwordless `signin-with-passkey`
+// flow. challenge は (まだ user が判明していないため) client 由来の random
+// `context` (UUID) で keyed する。Misskey TS の
+// WebAuthnService.initiateSignInWithPasskeyAuthentication と同じ命名規則。
+func passkeySessionKey(ctxID string) string {
+	return "twofa:webauthn:passkey:" + ctxID
 }
 
 // readRandom is a thin wrapper around crypto/rand.Read. Defined as a var so
-// tests can stub it for deterministic id generation.
+// tests can stub it for deterministic backup-code generation
+// (`backup_codes.go` consumes it).
 var readRandom = cryptorand.Read
 
 // --- public API -----------------------------------------------------------
@@ -281,31 +239,34 @@ func (s *WebAuthnService) takeRegistrationSession(ctx context.Context, userID st
 
 // BeginLogin starts an authentication assertion challenge for the given user.
 // Used during the 2FA step of /api/signin-flow when a security key is the
-// preferred second factor.
-func (s *WebAuthnService) BeginLogin(ctx context.Context, user *model.User, existing []*model.UserSecurityKey) (*protocol.CredentialAssertion, string, error) {
+// preferred second factor. The SessionData is keyed by user id alone — Misskey
+// TS upstream の signin プロトコルが client へ session id を返さないため
+// (#705)、同 user の新たな challenge は既存を上書きする。
+func (s *WebAuthnService) BeginLogin(ctx context.Context, user *model.User, existing []*model.UserSecurityKey) (*protocol.CredentialAssertion, error) {
 	if s == nil || s.wa == nil {
-		return nil, "", ErrWebAuthnNotConfigured
+		return nil, ErrWebAuthnNotConfigured
 	}
 	adapter := &userAdapter{user: user, keys: existing}
 	assertion, sd, err := s.wa.BeginLogin(adapter)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	sid, err := s.putLoginSession(ctx, user.ID, sd)
-	if err != nil {
-		return nil, "", err
+	if err := s.putLoginSession(ctx, user.ID, sd); err != nil {
+		return nil, err
 	}
-	return assertion, sid, nil
+	return assertion, nil
 }
 
-// FinishLogin verifies the assertion response. The returned Credential carries
+// FinishLogin verifies the assertion response. The challenge is loaded by user
+// id alone (no client-supplied session id), matching Misskey TS upstream の
+// WebAuthnService.verifyAuthentication (#705). The returned Credential carries
 // an updated counter; callers should persist it via UserSecurityKeyRepository
 // to detect cloned authenticators on subsequent logins.
-func (s *WebAuthnService) FinishLogin(ctx context.Context, user *model.User, existing []*model.UserSecurityKey, sessionID string, req *http.Request) (*webauthn.Credential, error) {
+func (s *WebAuthnService) FinishLogin(ctx context.Context, user *model.User, existing []*model.UserSecurityKey, req *http.Request) (*webauthn.Credential, error) {
 	if s == nil || s.wa == nil {
 		return nil, ErrWebAuthnNotConfigured
 	}
-	sd, err := s.takeLoginSession(ctx, user.ID, sessionID)
+	sd, err := s.takeLoginSession(ctx, user.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -315,6 +276,127 @@ func (s *WebAuthnService) FinishLogin(ctx context.Context, user *model.User, exi
 		return nil, err
 	}
 	return cred, nil
+}
+
+// putLoginSession overwrites any in-flight login challenge for the user.
+func (s *WebAuthnService) putLoginSession(ctx context.Context, userID string, sd *webauthn.SessionData) error {
+	if s == nil || s.redis == nil {
+		return ErrWebAuthnNotConfigured
+	}
+	raw, err := json.Marshal(sd)
+	if err != nil {
+		return err
+	}
+	return s.redis.Set(ctx, loginSessionKey(userID), raw, webAuthnSessionTTL).Err()
+}
+
+// takeLoginSession loads-and-deletes the login session blob (single-use).
+func (s *WebAuthnService) takeLoginSession(ctx context.Context, userID string) (*webauthn.SessionData, error) {
+	if s == nil || s.redis == nil {
+		return nil, ErrWebAuthnNotConfigured
+	}
+	raw, err := s.redis.GetDel(ctx, loginSessionKey(userID)).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrWebAuthnSessionNotFound
+		}
+		return nil, err
+	}
+	var sd webauthn.SessionData
+	if err := json.Unmarshal(raw, &sd); err != nil {
+		return nil, err
+	}
+	return &sd, nil
+}
+
+// PasskeyUserResolver is the lookup callback supplied by the API layer to map
+// a passkey credential (rawID + userHandle) back to a model.User and the user's
+// security keys list. The handler closes over the repositories so this package
+// stays free of repository dependencies.
+type PasskeyUserResolver func(rawID, userHandle []byte) (*model.User, []*model.UserSecurityKey, error)
+
+// BeginPasskeyLogin starts a passwordless ("usernameless") authentication
+// challenge. Misskey TS upstream の SigninWithPasskeyApiService が呼ぶ
+// initiateSignInWithPasskeyAuthentication 互換 (#705)。
+//
+// `ctxID` は client 由来 (random UUID) で、challenge を Redis に保存する key
+// として使う。FinishPasskeyLogin が同じ ctxID で取り出す。
+func (s *WebAuthnService) BeginPasskeyLogin(ctx context.Context, ctxID string) (*protocol.CredentialAssertion, error) {
+	if s == nil || s.wa == nil {
+		return nil, ErrWebAuthnNotConfigured
+	}
+	assertion, sd, err := s.wa.BeginDiscoverableLogin()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.putPasskeySession(ctx, ctxID, sd); err != nil {
+		return nil, err
+	}
+	return assertion, nil
+}
+
+// FinishPasskeyLogin verifies a passwordless assertion response. The browser
+// returns a credential whose `userHandle` carries the user id we stored at
+// registration time; resolver is invoked to load the User and its security
+// keys for verification.
+//
+// 戻り値の *model.User は signin 成功時のユーザー、*webauthn.Credential は
+// 更新された counter を含むので caller は UserSecurityKeyRepository.UpdateCounter
+// で永続化する責務を負う。
+func (s *WebAuthnService) FinishPasskeyLogin(ctx context.Context, ctxID string, req *http.Request, resolve PasskeyUserResolver) (*model.User, *webauthn.Credential, error) {
+	if s == nil || s.wa == nil {
+		return nil, nil, ErrWebAuthnNotConfigured
+	}
+	sd, err := s.takePasskeySession(ctx, ctxID)
+	if err != nil {
+		return nil, nil, err
+	}
+	var resolvedUser *model.User
+	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
+		u, keys, err := resolve(rawID, userHandle)
+		if err != nil {
+			return nil, err
+		}
+		resolvedUser = u
+		return &userAdapter{user: u, keys: keys}, nil
+	}
+	cred, err := s.wa.FinishDiscoverableLogin(handler, *sd, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resolvedUser, cred, nil
+}
+
+// putPasskeySession overwrites any in-flight passkey challenge for the
+// given context id. Returns ErrWebAuthnNotConfigured when redis is missing.
+func (s *WebAuthnService) putPasskeySession(ctx context.Context, ctxID string, sd *webauthn.SessionData) error {
+	if s == nil || s.redis == nil {
+		return ErrWebAuthnNotConfigured
+	}
+	raw, err := json.Marshal(sd)
+	if err != nil {
+		return err
+	}
+	return s.redis.Set(ctx, passkeySessionKey(ctxID), raw, webAuthnSessionTTL).Err()
+}
+
+// takePasskeySession loads-and-deletes the passwordless session blob.
+func (s *WebAuthnService) takePasskeySession(ctx context.Context, ctxID string) (*webauthn.SessionData, error) {
+	if s == nil || s.redis == nil {
+		return nil, ErrWebAuthnNotConfigured
+	}
+	raw, err := s.redis.GetDel(ctx, passkeySessionKey(ctxID)).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrWebAuthnSessionNotFound
+		}
+		return nil, err
+	}
+	var sd webauthn.SessionData
+	if err := json.Unmarshal(raw, &sd); err != nil {
+		return nil, err
+	}
+	return &sd, nil
 }
 
 // --- persistence helpers --------------------------------------------------

@@ -948,6 +948,7 @@ func (s *Server) setupRoutes() {
 	signinHandler.SetSigninRepo(signinRepo, idGen)
 	api.POST("/signin", signinHandler.Signin)
 	api.POST("/signin-flow", signinHandler.SigninFlow)
+	api.POST("/signin-with-passkey", signinHandler.SigninWithPasskey)
 
 	// パスワードリセット (認証不要)
 	resetReqRepo := repository.NewPasswordResetRequestRepository(s.db)

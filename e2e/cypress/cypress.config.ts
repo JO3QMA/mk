@@ -1,5 +1,6 @@
 import { defineConfig } from 'cypress';
 import * as path from 'path';
+import { authenticator } from 'otplib';
 
 // mk-go 側の Cypress ラッパー。
 //
@@ -18,8 +19,13 @@ export default defineConfig({
   e2e: {
     baseUrl: process.env.E2E_BASE_URL ?? 'http://localhost:3000',
 
-    // Spec / support / fixtures はすべて submodule の現物を指す。
-    specPattern: path.join(misskeyCypress, 'e2e', '**', '*.cy.{js,jsx,ts,tsx}'),
+    // Spec は upstream submodule の本家 spec と、mk-go 固有の追加 spec
+    // (`e2e/cypress/e2e/`) の双方を対象にする。upstream には無い WebAuthn /
+    // passkey 系 (#55, #698, #705) は後者で検証する。
+    specPattern: [
+      path.join(misskeyCypress, 'e2e', '**', '*.cy.{js,jsx,ts,tsx}'),
+      path.join(__dirname, 'e2e', '**', '*.cy.{js,jsx,ts,tsx}'),
+    ],
     // mk-go 固有の例外抑制を追加したローカル support を使う。
     // upstream の support はこのファイルから import される。
     supportFile: path.join(__dirname, 'support', 'e2e.ts'),
@@ -33,5 +39,15 @@ export default defineConfig({
     defaultCommandTimeout: 10_000,
     requestTimeout: 15_000,
     responseTimeout: 30_000,
+
+    // mk-go ローカル spec が使う node-side ヘルパ。WebAuthn 登録時の TOTP
+    // コード生成は browser から直接できないため task として外出しする。
+    setupNodeEvents(on) {
+      on('task', {
+        totpCode(secret: string): string {
+          return authenticator.generate(secret);
+        },
+      });
+    },
   },
 });
