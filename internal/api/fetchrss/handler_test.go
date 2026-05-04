@@ -1,6 +1,7 @@
 package fetchrss
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -322,6 +325,310 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { r
 
 // --- pack helper unit tests (carve out edge cases that don't surface from
 // the full RSS / Atom samples) ---
+
+// --- #683 server-side cache + singleflight tests ---
+
+// TestFetchRSS_CacheHit: 同 URL の 2 回目以降は upstream に到達せず in-memory
+// cache から bytes をそのまま返す。upstream hit カウントが 1 のまま増えない
+// ことで cache 経路が機能している保証になる。
+func TestFetchRSS_CacheHit(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		fmt.Fprint(w, sampleRSS2)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newTestHandler(t, srv)
+
+	// 1 回目: miss → upstream fetch
+	c1, rec1 := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(srv.URL))
+	require.NoError(t, h.Fetch(c1))
+	require.Equal(t, http.StatusOK, rec1.Code)
+
+	// 2 回目: hit → upstream は呼ばれないはず
+	c2, rec2 := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(srv.URL))
+	require.NoError(t, h.Fetch(c2))
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	assert.EqualValues(t, 1, hits.Load(), "cache hit should not reach upstream")
+	// hit / miss どちらも JSON body は同一であるべき
+	assert.JSONEq(t, rec1.Body.String(), rec2.Body.String())
+	// hit でも Cache-Control は同じ値
+	assert.Equal(t, "public, max-age=180", rec2.Header().Get("Cache-Control"))
+}
+
+// TestFetchRSS_CacheExpiry: TTL を過ぎると cache が破棄され upstream に再アクセス
+// する。SetClock で時計を進めるため Sleep 不要。
+func TestFetchRSS_CacheExpiry(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		fmt.Fprint(w, sampleRSS2)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newTestHandler(t, srv)
+	now := time.Now()
+	h.SetClock(func() time.Time { return now })
+	h.SetCacheTTL(60 * time.Second)
+
+	c1, _ := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(srv.URL))
+	require.NoError(t, h.Fetch(c1))
+
+	// 時計を TTL ぶん超えて進める
+	now = now.Add(61 * time.Second)
+
+	c2, _ := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(srv.URL))
+	require.NoError(t, h.Fetch(c2))
+
+	assert.EqualValues(t, 2, hits.Load(), "expired entry should trigger re-fetch")
+}
+
+// TestFetchRSS_Singleflight: 同 URL に対する concurrent miss は 1 fetch に
+// 集約され、upstream へは 1 回だけ届くこと (thundering herd 防止)。
+func TestFetchRSS_Singleflight(t *testing.T) {
+	var hits atomic.Int32
+	// upstream を意図的に少し遅延させて、N 個の caller が同時に singleflight
+	// 待ちに入るウィンドウを作る。
+	gate := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		<-gate // gate が close されるまでブロック
+		fmt.Fprint(w, sampleRSS2)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newTestHandler(t, srv)
+
+	const N = 20
+	var wg sync.WaitGroup
+	wg.Add(N)
+	results := make([]int, N)
+	for i := range N {
+		go func(idx int) {
+			defer wg.Done()
+			c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(srv.URL))
+			if err := h.Fetch(c); err != nil {
+				t.Errorf("Fetch %d: %v", idx, err)
+				return
+			}
+			results[idx] = rec.Code
+		}(i)
+	}
+
+	// 1 件目の goroutine が upstream に到達するまで polling で待つ
+	// (= sf.Do の closure 実行が始まったことの観測可能シグナル)。固定
+	// time.Sleep だと slow CI で前段が走り切らず flaky になり得るため。
+	waitForUpstreamHit(t, &hits, 1, 2*time.Second)
+	// 残り 19 caller も sf.Do に到達するまでの猶予 (sf.Do 内部で coalesce
+	// される時間)。closure 実行は既に始まっているので gate 解放前に到着すれば
+	// 全員が同じ result を共有する。
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+
+	for i, code := range results {
+		assert.Equal(t, http.StatusOK, code, "request %d should be 200", i)
+	}
+	// 重要: upstream に届いた件数は 1 (singleflight が coalesce した)
+	assert.EqualValues(t, 1, hits.Load(), "concurrent fetches must coalesce to one upstream call")
+}
+
+// waitForUpstreamHit polls until the atomic counter reaches `want` or the
+// timeout elapses. fixed time.Sleep だと slow CI で flaky になりがちな
+// 「upstream に届いた」の同期を polling で観測する。
+func waitForUpstreamHit(t *testing.T, hits *atomic.Int32, want int32, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for hits.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("upstream hit did not reach %d within %v (got %d)", want, timeout, hits.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestFetchRSS_Singleflight_CallerCancelDoesNotAbortPeers: caller A の context
+// cancel が in-flight の upstream fetch を中断せず、coalesced peer B も成功する
+// ことを保証する (Devin review #720 FLAG-1 regression guard)。
+//
+// 修正前: sf.Do 内 fetch が caller A の request ctx を共有していたため、A の
+// disconnect で fetchFeed が ctx canceled error を返し B も 502 を受け取った。
+// 修正後: closure は context.Background() + 5s timeout で fetch するので
+// caller cancel から切り離される。
+func TestFetchRSS_Singleflight_CallerCancelDoesNotAbortPeers(t *testing.T) {
+	var hits atomic.Int32
+	gate := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		<-gate
+		fmt.Fprint(w, sampleRSS2)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newTestHandler(t, srv)
+
+	target := "/api/fetch-rss?url=" + url.QueryEscape(srv.URL)
+
+	// Caller A: 途中で cancel する request context を持つ。
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	e := echo.New()
+	reqA := httptest.NewRequest(http.MethodGet, target, nil).WithContext(ctxA)
+	reqA.Header.Set("Content-Type", "application/json")
+	recA := httptest.NewRecorder()
+	cA := e.NewContext(reqA, recA)
+
+	// Caller B: cancel しない。同 URL なので sf.Do で A に coalesce される。
+	cB, recB := newRequestCtx(http.MethodGet, target)
+
+	// 重要: caller A が先に sf.Do に入って closure を実行する状態を保証する
+	// (= 後続 B が coalesce されるレースを再現可能にする)。
+	// goroutine scheduling だけだと B が先に走ることもあるので、A の upstream
+	// 到達 (hits == 1) を確認してから B を起動する。
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var errA error
+	go func() { defer wg.Done(); errA = h.Fetch(cA) }()
+	waitForUpstreamHit(t, &hits, 1, 2*time.Second)
+
+	// この時点で A が closure 実行中 (fetchFeed で gate 待機)。B を後から起動。
+	wg.Add(1)
+	var errB error
+	go func() { defer wg.Done(); errB = h.Fetch(cB) }()
+	// B が sf.Do に到達して coalesce されるための grace。
+	time.Sleep(50 * time.Millisecond)
+
+	// ここで caller A をキャンセル。修正前なら fetchCtx に伝播して fetchFeed
+	// が ctx canceled で abort、B も 502 を受け取る。
+	cancelA()
+	// 修正前のコードで cancel 検知が http.Client → fetchFeed → closure に
+	// 伝播するのにかかる時間を確保する (regression guard 必須の wait)。
+	// 修正後は fetchCtx が caller から切り離されているのでこの 20ms の意味は
+	// 無いが、un-fixed code でテストが正しく failing する条件を作るには
+	// この sleep が無いと close(gate) が cancel 伝播より先に走って false
+	// negative になる。
+	time.Sleep(20 * time.Millisecond)
+
+	// gate を開けて upstream を返答させる。fetch が cancel されていなければ
+	// body が読めて両 caller に同じ JSON が届く。
+	close(gate)
+	wg.Wait()
+
+	require.NoError(t, errA)
+	require.NoError(t, errB)
+	// A (キャンセル側) も 200 で完走するはず: writeCachedJSON は ctx を
+	// 観測しないので、キャンセルされていても response は body を書き出して
+	// 完了する。「A の cancel が response 自体を壊さない」契約の guard。
+	assert.Equal(t, http.StatusOK, recA.Code, "cancelled caller still completes the response")
+	// B (キャンセルしていない) は 200 で完走しているはず。これが 502 になっていたら
+	// caller cancel が peer に伝播してしまっている (regression)。
+	assert.Equal(t, http.StatusOK, recB.Code, "peer caller must not be aborted by sibling cancel")
+	assert.EqualValues(t, 1, hits.Load(), "upstream should be hit only once")
+}
+
+// TestFetchRSS_ErrorNotCached: upstream 5xx の場合は cache されず、次回呼び出し
+// で再度 upstream に到達する (短期障害から復旧した feed が古い 502 で塞がれない)。
+func TestFetchRSS_ErrorNotCached(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newTestHandler(t, srv)
+
+	for range 3 {
+		c, rec := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(srv.URL))
+		require.NoError(t, h.Fetch(c))
+		require.Equal(t, http.StatusBadGateway, rec.Code)
+	}
+	assert.EqualValues(t, 3, hits.Load(), "errors must not be cached")
+}
+
+// TestFetchRSS_CacheEvictionAtCapacity: cache 容量超過時に最古 entry を 1 件
+// 落とす振る舞いを保証する。SetCacheMaxEntries(2) + 3 URL push で 1 件 evict。
+func TestFetchRSS_CacheEvictionAtCapacity(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		// クエリで feed 種別を分岐しない (どの URL でも同一 body) — テストは
+		// hit カウントだけで evict を観測するため body 内容は重要ではない。
+		_ = r
+		fmt.Fprint(w, sampleRSS2)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newTestHandler(t, srv)
+	h.SetCacheMaxEntries(2)
+	now := time.Now()
+	h.SetClock(func() time.Time { return now })
+
+	urlA := srv.URL + "/?feed=a"
+	urlB := srv.URL + "/?feed=b"
+	urlC := srv.URL + "/?feed=c"
+
+	// A 投入 (cache: {A})
+	c, _ := newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(urlA))
+	require.NoError(t, h.Fetch(c))
+
+	// B 投入 (cache: {A, B}). A の expiresAt より B の expiresAt は新しい
+	now = now.Add(time.Second)
+	c, _ = newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(urlB))
+	require.NoError(t, h.Fetch(c))
+
+	// C 投入 (容量 2 超 → 最古 expiresAt の A が evict される。cache: {B, C})
+	now = now.Add(time.Second)
+	c, _ = newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(urlC))
+	require.NoError(t, h.Fetch(c))
+
+	// ここまでで upstream は 3 回叩かれている
+	assert.EqualValues(t, 3, hits.Load())
+
+	// B は cache hit (upstream 不変)
+	c, _ = newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(urlB))
+	require.NoError(t, h.Fetch(c))
+	assert.EqualValues(t, 3, hits.Load(), "B should hit cache")
+
+	// A は evict 済み → re-fetch (upstream 4 回目)
+	c, _ = newRequestCtx(http.MethodGet, "/api/fetch-rss?url="+url.QueryEscape(urlA))
+	require.NoError(t, h.Fetch(c))
+	assert.EqualValues(t, 4, hits.Load(), "A should have been evicted and re-fetched")
+}
+
+// TestFetchRSS_SetCacheTTL_RejectsNonPositive: SetCacheTTL は 0 / 負値を無視
+// する (default を維持) ことを assert。設定ミスで cache が事実上無効化されない
+// 安全策。
+func TestFetchRSS_SetCacheTTL_RejectsNonPositive(t *testing.T) {
+	h := New(&http.Client{Timeout: FetchTimeout}, testUserAgent)
+	original := h.cacheTTL
+	h.SetCacheTTL(0)
+	assert.Equal(t, original, h.cacheTTL)
+	h.SetCacheTTL(-1 * time.Second)
+	assert.Equal(t, original, h.cacheTTL)
+}
+
+// TestFetchRSS_SetCacheMaxEntries_RejectsNonPositive: 同様に soft cap も
+// 0 / 負値で上書きされない。
+func TestFetchRSS_SetCacheMaxEntries_RejectsNonPositive(t *testing.T) {
+	h := New(&http.Client{Timeout: FetchTimeout}, testUserAgent)
+	original := h.cacheMaxLen
+	h.SetCacheMaxEntries(0)
+	assert.Equal(t, original, h.cacheMaxLen)
+	h.SetCacheMaxEntries(-10)
+	assert.Equal(t, original, h.cacheMaxLen)
+}
+
+// TestFetchRSS_SetClock_NilIgnored: nil clock を渡しても default time.Now が
+// 維持されること。
+func TestFetchRSS_SetClock_NilIgnored(t *testing.T) {
+	h := New(&http.Client{Timeout: FetchTimeout}, testUserAgent)
+	h.SetClock(nil)
+	// 直接比較不可だが、cache 経路が時計を呼べることで indirect に保証する
+	require.NotNil(t, h.now)
+}
 
 func TestPackImage_Nil(t *testing.T) {
 	assert.Nil(t, packImage(nil))
