@@ -344,25 +344,40 @@ func TestTwoFAUpdateKey_Success(t *testing.T) {
 }
 
 // --- TwoFAPasswordLess ---
+//
+// upstream Misskey TS は paramDef を `{value: boolean}` で password を
+// 要求しない (#758)。本 endpoint は session で認証済み前提なので mk-go も
+// 合わせている。
 
-func TestTwoFAPasswordLess_NoPassword(t *testing.T) {
-	h, _, _ := newWebAuthnHandler(t)
-	rec := postExtra(h.TwoFAPasswordLess, `{}`, &model.User{ID: "u1"})
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+// value 未指定 (空 body) は default false 扱いで no-content 成功する。
+// upstream の paramDef は required:['value'] だが mk-go の echo Bind は
+// JSON body 欠落を default 値で埋めるので、ここで bad request にしない。
+func TestTwoFAPasswordLess_EmptyBodyDefaultsFalse(t *testing.T) {
+	h, repo, _ := newWebAuthnHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	repo.Profiles["u1"].UsePasswordLessLogin = true
+	rec := postExtra(h.TwoFAPasswordLess, `{}`, user)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.False(t, repo.Profiles["u1"].UsePasswordLessLogin)
 }
 
+// value=true で security key 0 件 → noKey error + profile が
+// usePasswordLessLogin=false に巻き戻される (upstream 互換)。
 func TestTwoFAPasswordLess_EnableNoKeys(t *testing.T) {
 	h, repo, _ := newWebAuthnHandler(t)
 	user := setupUserWithPassword(repo, "u1", "pass")
-	rec := postExtra(h.TwoFAPasswordLess, `{"password":"pass","value":true}`, user)
+	repo.Profiles["u1"].UsePasswordLessLogin = true
+	rec := postExtra(h.TwoFAPasswordLess, `{"value":true}`, user)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.False(t, repo.Profiles["u1"].UsePasswordLessLogin,
+		"upstream rolls back the flag before throwing noKey")
 }
 
 func TestTwoFAPasswordLess_EnableWithKey(t *testing.T) {
 	h, repo, skRepo := newWebAuthnHandler(t)
 	user := setupUserWithPassword(repo, "u1", "pass")
 	require.NoError(t, skRepo.Create(&model.UserSecurityKey{ID: "k1", UserID: "u1"}))
-	rec := postExtra(h.TwoFAPasswordLess, `{"password":"pass","value":true}`, user)
+	rec := postExtra(h.TwoFAPasswordLess, `{"value":true}`, user)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.True(t, repo.Profiles["u1"].UsePasswordLessLogin)
 }
@@ -371,7 +386,78 @@ func TestTwoFAPasswordLess_Disable(t *testing.T) {
 	h, repo, _ := newWebAuthnHandler(t)
 	user := setupUserWithPassword(repo, "u1", "pass")
 	repo.Profiles["u1"].UsePasswordLessLogin = true
-	rec := postExtra(h.TwoFAPasswordLess, `{"password":"pass","value":false}`, user)
+	rec := postExtra(h.TwoFAPasswordLess, `{"value":false}`, user)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.False(t, repo.Profiles["u1"].UsePasswordLessLogin)
+}
+
+// publishMeUpdatedPartial 経由で frontend の $i に partial merge される
+// payload が main stream に送られていることを assert する (#758)。
+func TestTwoFAPasswordLess_PublishesPartialMeUpdated(t *testing.T) {
+	h, repo, skRepo := newWebAuthnHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	require.NoError(t, skRepo.Create(&model.UserSecurityKey{ID: "k1", UserID: "u1"}))
+	pub := &stubIMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	rec := postExtra(h.TwoFAPasswordLess, `{"value":true}`, user)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "meUpdated", pub.calls[0].eventType)
+	body, ok := pub.calls[0].body.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, body["usePasswordLessLogin"])
+}
+
+// publishMeUpdatedPartial: mainStreamPublisher が wire されていない場合は
+// no-op (production の fallback path 確保 + test の panic 防止)。
+func TestPublishMeUpdatedPartial_NoPublisherIsNoop(t *testing.T) {
+	h, _, _ := newWebAuthnHandler(t)
+	// SetMainStreamPublisher を呼ばずそのまま invoke しても panic しない。
+	h.publishMeUpdatedPartial("u1", map[string]any{"x": 1})
+}
+
+// publishMeUpdatedPartial: 空 fields は publish しない (no-op)。
+func TestPublishMeUpdatedPartial_EmptyFieldsIsNoop(t *testing.T) {
+	h, _, _ := newWebAuthnHandler(t)
+	pub := &stubIMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+	h.publishMeUpdatedPartial("u1", nil)
+	h.publishMeUpdatedPartial("u1", map[string]any{})
+	assert.Empty(t, pub.calls, "no PublishMainEvent for empty fields")
+}
+
+// publishMeUpdated (full UserDetailed): publisher が wire されていれば
+// userService.ShowByID 経由で User+Profile を packed publish する。
+func TestPublishMeUpdated_FullPublishWhenWired(t *testing.T) {
+	h, repo, _ := newWebAuthnHandler(t)
+	setupUserWithPassword(repo, "u1", "pass")
+	pub := &stubIMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	h.publishMeUpdated("u1")
+	require.Len(t, pub.calls, 1)
+	assert.Equal(t, "u1", pub.calls[0].userID)
+	assert.Equal(t, "meUpdated", pub.calls[0].eventType)
+	assert.NotNil(t, pub.calls[0].body)
+}
+
+// publishMeUpdated: 存在しない userID は ShowByID で err → publish せず
+// log だけ残す。
+func TestPublishMeUpdated_UnknownUserIsNoop(t *testing.T) {
+	h, _, _ := newWebAuthnHandler(t)
+	pub := &stubIMainStreamPublisher{}
+	h.SetMainStreamPublisher(pub)
+
+	h.publishMeUpdated("nonexistent")
+	assert.Empty(t, pub.calls, "no publish for unknown user")
+}
+
+// publishMeUpdated: publisher 未配線は no-op (production の fallback path)。
+func TestPublishMeUpdated_NoPublisherIsNoop(t *testing.T) {
+	h, _, _ := newWebAuthnHandler(t)
+	// SetMainStreamPublisher を呼ばずに invoke しても panic しない。
+	h.publishMeUpdated("u1")
 }

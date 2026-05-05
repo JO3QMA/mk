@@ -321,6 +321,13 @@ func (h *Handler) TwoFAKeyDone(c echo.Context) error {
 // publishMeUpdated は upstream `meUpdated` event を main stream に流す。
 // 失敗は best-effort で握り潰す (publishing は副次的なので main flow を
 // 止めない)。userService.ShowByID で User + Profile を 1 度に取得する。
+//
+// frontend (main-boot.ts) は payload を updateCurrentAccountPartial で
+// 部分 merge するので、本 helper が送る UserDetailed の field がそのまま
+// `$i` に反映される。ただし entity.PackUserDetailed は private profile
+// field (usePasswordLessLogin / autoAcceptFollowed 等) を含まないため、
+// それらを更新する endpoint は publishMeUpdatedPartial で当該 field
+// だけ送る (#758)。
 func (h *Handler) publishMeUpdated(userID string) {
 	if h.mainStreamPublisher == nil {
 		return
@@ -332,6 +339,18 @@ func (h *Handler) publishMeUpdated(userID string) {
 	}
 	packed := entity.PackUserDetailed(bundle.User, bundle.Profile, h.idGen)
 	h.mainStreamPublisher.PublishMainEvent(userID, "meUpdated", packed)
+}
+
+// publishMeUpdatedPartial は specific field のみを `meUpdated` payload と
+// して送る。frontend は updateCurrentAccountPartial で部分 merge する
+// ので、entity.PackUserDetailed が含まない private profile field を
+// 更新した endpoint がこの helper で当該 field だけ publish できる
+// (#758)。fields が空 / mainStreamPublisher 未配線なら no-op。
+func (h *Handler) publishMeUpdatedPartial(userID string, fields map[string]any) {
+	if h.mainStreamPublisher == nil || len(fields) == 0 {
+		return
+	}
+	h.mainStreamPublisher.PublishMainEvent(userID, "meUpdated", fields)
 }
 
 // TwoFARemoveKey handles POST /api/i/2fa/remove-key.
@@ -390,24 +409,48 @@ func (h *Handler) TwoFAUpdateKey(c echo.Context) error {
 // TwoFAPasswordLess handles POST /api/i/2fa/password-less.
 // `usePasswordLessLogin` フラグを切り替える。WebAuthn 鍵が登録されていないと
 // 有効化できない (パスワードレスログインの前提が成立しないため)。
+//
+// upstream Misskey TS は paramDef を `{value: boolean}` (required: ['value'])
+// で password を要求しない (#758)。secure endpoint なので RequireAuth
+// middleware で session ベース認証が済んでいる前提。mk-go も合わせて
+// password 必須を撤回する。
 func (h *Handler) TwoFAPasswordLess(c echo.Context) error {
 	var req struct {
-		Password string `json:"password"`
-		Value    bool   `json:"value"`
+		Value bool `json:"value"`
 	}
-	if err := c.Bind(&req); err != nil || req.Password == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "password is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "invalid request body.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
-	user, _, ok := h.requireWebAuthn(c, req.Password)
-	if !ok {
-		return nil
+	user := middleware.GetUser(c)
+	if user == nil {
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	}
 	if req.Value {
-		if n, err := h.securityKeyRepo.CountByUser(user.ID); err != nil || n == 0 {
+		// security key が無いと passwordless 有効化不可。upstream は同じ
+		// branch で profile を `usePasswordLessLogin=false` に巻き戻して
+		// から error を返すので mk-go も合わせる。WebAuthn 未配線
+		// (securityKeyRepo == nil) は鍵 0 件と等価扱い。
+		hasKey := false
+		if h.securityKeyRepo != nil {
+			if n, err := h.securityKeyRepo.CountByUser(user.ID); err == nil && n > 0 {
+				hasKey = true
+			}
+		}
+		if !hasKey {
+			_ = h.userService.UpdateProfileFields(user.ID, map[string]any{
+				"usePasswordLessLogin": false,
+			})
 			return c.JSON(http.StatusBadRequest, apierr.NoSecurityKey())
 		}
 	}
 	_ = h.userService.UpdateProfileFields(user.ID, map[string]any{
+		"usePasswordLessLogin": req.Value,
+	})
+	// usePasswordLessLogin は /api/i 経路の private profile field 群に属し、
+	// entity.PackUserDetailed が含まないため publishMeUpdated (UserDetailed
+	// publish) では frontend の $i に反映されない (#758)。partial helper で
+	// 当該 field だけ送る。
+	h.publishMeUpdatedPartial(user.ID, map[string]any{
 		"usePasswordLessLogin": req.Value,
 	})
 	return c.NoContent(http.StatusNoContent)
