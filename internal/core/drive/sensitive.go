@@ -1,10 +1,10 @@
 package drive
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -89,15 +89,32 @@ func IsVideoMIME(mime string) bool {
 	return strings.HasPrefix(mime, "video/")
 }
 
+// DefaultHTTPDetectorTimeout is the default per-request timeout when
+// HTTPDetectorOptions.Timeout is zero.
+const DefaultHTTPDetectorTimeout = 30 * time.Second
+
+// HTTPDetectorOptions tunes outbound behaviour of HTTPDetector (#751)。
+// AuthHeader が空でなければ "Name: value" として 1 行の HTTP header を注入
+// する (例: "Authorization: Bearer xxx" / "X-API-Key: xxx")。SaaS detector
+// (Cloudflare Workers AI / AWS Rekognition 等) を thin proxy なしで直接
+// 呼ぶための仕組み。Timeout==0 なら DefaultHTTPDetectorTimeout (30s)。
+type HTTPDetectorOptions struct {
+	AuthHeader string
+	Timeout    time.Duration
+}
+
 // HTTPDetector calls an external HTTP service for NSFW detection.
 // リクエスト: POST <url> with body bytes, Content-Type header.
 // レスポンス: JSON { "score": float64 }.
 type HTTPDetector struct {
-	url    string
-	client *http.Client
+	url        string
+	client     *http.Client
+	authHeader string
+	timeout    time.Duration
 }
 
-// NewHTTPDetector creates a detector that calls the given URL.
+// NewHTTPDetector creates a detector that calls the given URL with default
+// options (no auth header, 30s timeout)。後方互換のため signature を維持。
 //
 // client は detector が POST に使う outbound HTTP client。nil なら 30s
 // timeout の素の Client にフォールバックするが、production では SSRF-safe
@@ -105,21 +122,54 @@ type HTTPDetector struct {
 // operator が信頼する endpoint だが、operator 設定で outbound 経路を集約
 // したい場合のため forward proxy には乗せる。
 func NewHTTPDetector(url string, client *http.Client) *HTTPDetector {
+	return NewHTTPDetectorWithOptions(url, client, HTTPDetectorOptions{})
+}
+
+// NewHTTPDetectorWithOptions is the explicit form for callers that need to
+// configure auth header / timeout (#751)。
+//
+// per-request timeout は Detect 内の context.WithTimeout で一本化して制御
+// するので、client.Timeout は明示的にセットしない (caller が production の
+// outbound client を渡す場合はその client が持つ timeout がさらに上限となる、
+// テストで nil 渡しの場合は context-only)。
+func NewHTTPDetectorWithOptions(url string, client *http.Client, opts HTTPDetectorOptions) *HTTPDetector {
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultHTTPDetectorTimeout
+	}
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = &http.Client{}
 	}
 	return &HTTPDetector{
-		url:    url,
-		client: client,
+		url:        url,
+		client:     client,
+		authHeader: strings.TrimSpace(opts.AuthHeader),
+		timeout:    timeout,
 	}
 }
 
 func (d *HTTPDetector) Detect(ctx context.Context, body []byte, mime string) (float64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, io.NopCloser(strings.NewReader(string(body))))
+	// caller が ctx を渡してくれていれば cancellation がそのまま効く。
+	// per-request timeout は Detector 側で WithTimeout して固定する
+	// (caller の ctx に独自 deadline があればそちらが先に hit するので
+	// どちらにも上限がかかる)。
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+
+	// bytes.NewReader 直接で OK。`io.NopCloser(strings.NewReader(string(body)))`
+	// は []byte → string → []byte で 2 回 copy する典型的な anti-pattern。
+	// http.NewRequestWithContext は io.Reader を受けて Close 不要 (内部で nil 確認)。
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, bytes.NewReader(body))
 	if err != nil {
 		return 0, fmt.Errorf("sensitive: request creation: %w", err)
 	}
 	req.Header.Set("Content-Type", mime)
+	if d.authHeader != "" {
+		// "Name: value" を 1 件分注入する。複数 header は scope 外 (#751)。
+		if name, value, ok := strings.Cut(d.authHeader, ":"); ok {
+			req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
+		}
+	}
 
 	resp, err := d.client.Do(req)
 	if err != nil {
