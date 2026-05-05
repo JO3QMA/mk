@@ -8,6 +8,14 @@ import (
 	"gorm.io/gorm"
 )
 
+// SearchOrigin は users/search の origin 引数の enum。upstream Misskey TS の
+// paramDef enum (`local` / `remote` / `combined`) に揃える (#763)。
+const (
+	SearchOriginLocal    = "local"
+	SearchOriginRemote   = "remote"
+	SearchOriginCombined = "combined"
+)
+
 // UserRepository provides data access for users.
 type UserRepository interface {
 	Create(u *model.User) error
@@ -36,7 +44,11 @@ type UserRepository interface {
 	// UPDATE していたが、CachedUserRepository wrapper の invalidate を
 	// 通すため userRepo 経由に統一する (Devin review #552 BUG-2)。
 	IncrementNotesCount(userID string, delta int) error
-	SearchByUsername(query string, limit, offset int) ([]*model.User, error)
+	// SearchByUsername は usernameLower の prefix で user を検索する。
+	// origin は upstream Misskey TS と同じ semantics (#763)。値は
+	// SearchOriginLocal / SearchOriginRemote / SearchOriginCombined を使う。
+	// 空文字列 / 未知値は SearchOriginCombined と同等扱い。
+	SearchByUsername(query string, limit, offset int, origin string) ([]*model.User, error)
 	UpdateUser(userID string, fields map[string]any) error
 	UpdateProfile(userID string, fields map[string]any) error
 	CreateProfile(profile *model.UserProfile) error
@@ -199,10 +211,18 @@ func (r *userRepository) IncrementNotesCount(userID string, delta int) error {
 
 // SearchByUsername returns users whose usernameLower starts with the given query.
 // Phase 4でMeilisearch統合予定だが、現状は単純なLIKE検索のみ。
-func (r *userRepository) SearchByUsername(query string, limit, offset int) ([]*model.User, error) {
+//
+// origin で host filter を切り替える (#763)。
+func (r *userRepository) SearchByUsername(query string, limit, offset int, origin string) ([]*model.User, error) {
 	var users []*model.User
-	if err := r.db.
-		Where("\"usernameLower\" LIKE ?", query+"%").
+	q := r.db.Where("\"usernameLower\" LIKE ?", query+"%")
+	switch origin {
+	case SearchOriginLocal:
+		q = q.Where("\"host\" IS NULL")
+	case SearchOriginRemote:
+		q = q.Where("\"host\" IS NOT NULL")
+	}
+	if err := q.
 		Order("\"followersCount\" DESC, id ASC").
 		Limit(limit).
 		Offset(offset).

@@ -373,8 +373,11 @@ func (h *Handler) Show(c echo.Context) error {
 
 // SearchRequest is the request body for users/search.
 type SearchRequest struct {
-	Query  string `json:"query"`
-	Limit  int    `json:"limit"`
+	Query string `json:"query"`
+	Limit int    `json:"limit"`
+	// Origin は upstream Misskey TS と同じ enum: "local" / "remote" /
+	// "combined" (default)。空 / 不明値は "combined" 扱い (#763)。
+	Origin string `json:"origin"`
 	Offset int    `json:"offset"`
 }
 
@@ -387,8 +390,19 @@ func (h *Handler) Search(c echo.Context) error {
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
+	// origin の enum 検証 (#763)。upstream Misskey TS は paramDef の
+	// JSON schema で 不正値を 400 reject する。mk-go も同等にする。
+	// 空文字列は default (combined) として許容。
+	switch req.Origin {
+	case "":
+		req.Origin = repository.SearchOriginCombined
+	case repository.SearchOriginLocal, repository.SearchOriginRemote, repository.SearchOriginCombined:
+		// OK
+	default:
+		return apierr.JSONInvalidParam(c)
+	}
 
-	users, err := h.userService.Search(req.Query, req.Limit, req.Offset)
+	users, err := h.userService.Search(req.Query, req.Limit, req.Offset, req.Origin)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
