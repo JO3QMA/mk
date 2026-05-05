@@ -2,6 +2,7 @@ package note
 
 import (
 	"errors"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -38,6 +39,14 @@ type DeleteTimelineHook interface {
 	OnNoteDeleted(note *model.Note, author *model.User)
 }
 
+// DeleteNoteStreamHook is invoked after a note is deleted so the stream
+// layer can publish a `deleted` event to `noteStream:<noteID>` for any
+// WebSocket clients that have called subNote on this note (#700)。
+// 失敗はベストエフォート扱いなので戻り値を持たない。
+type DeleteNoteStreamHook interface {
+	OnNoteDeleted(noteID string, deletedAt time.Time)
+}
+
 // DeleteService provides note deletion logic.
 type DeleteService struct {
 	noteRepo       repository.NoteRepository
@@ -45,6 +54,7 @@ type DeleteService struct {
 	indexHook      IndexHook
 	chartHook      DeleteChartHook
 	timelineHook   DeleteTimelineHook
+	noteStreamHook DeleteNoteStreamHook
 }
 
 // NewDeleteService creates a new DeleteService.
@@ -75,6 +85,13 @@ func (s *DeleteService) SetTimelineHook(h DeleteTimelineHook) {
 	s.timelineHook = h
 }
 
+// SetNoteStreamHook attaches a DeleteNoteStreamHook invoked after Delete so
+// the stream layer can publish `deleted` events on `noteStream:<noteID>`
+// (#700)。
+func (s *DeleteService) SetNoteStreamHook(h DeleteNoteStreamHook) {
+	s.noteStreamHook = h
+}
+
 // Delete removes a note authored by the given user. It returns
 // ErrNoteNotFound when the note does not exist and ErrNoteAccessDenied when
 // the user is not the author.
@@ -91,6 +108,13 @@ func (s *DeleteService) Delete(user *model.User, noteID string) error {
 	if note.UserID != user.ID {
 		return ErrNoteAccessDenied
 	}
+
+	// 上流 NoteDeleteService が Delete 冒頭で deletedAt を確定させ publish と
+	// federation の Delete activity 両方に渡しているのに合わせ、ここで一度
+	// 取得して noteStream publish に使う。federation 側は別途自分で時刻を
+	// 決めるが、本実装でも publish 直前に再取得すると noteStream の
+	// deletedAt と federation activity の timestamp に不要な差が出るため。
+	deletedAt := time.Now()
 
 	if err := s.noteRepo.Delete(note); err != nil {
 		return err
@@ -116,6 +140,11 @@ func (s *DeleteService) Delete(user *model.User, noteID string) error {
 	// Redis fanout timeline 残留を防ぐ (#379)。ベストエフォート。
 	if s.timelineHook != nil {
 		s.timelineHook.OnNoteDeleted(note, user)
+	}
+	// noteStream に deleted を publish して subNote 購読中の WebSocket
+	// クライアントへ即時反映する (#700)。失敗はベストエフォート。
+	if s.noteStreamHook != nil {
+		s.noteStreamHook.OnNoteDeleted(note.ID, deletedAt)
 	}
 	return nil
 }
