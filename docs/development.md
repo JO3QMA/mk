@@ -67,6 +67,22 @@ make dev
 | `make migrate-down` | 1段階ロールバック |
 | `make migrate-create` | 新規マイグレーションファイル作成 |
 
+#### 大規模テーブルへの index 追加
+
+`golang-migrate/v4` の postgres driver は migration を **transaction 外** (auto-commit) で実行する (`runStatement` が `ExecContext` を直接呼ぶ)。そのため大規模テーブルへの index 追加では `CREATE INDEX CONCURRENTLY` を直接書ける:
+
+```sql
+-- migration/0000XX_large_index.up.sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_xxx" ON "yyy" ("zzz");
+```
+
+通常の `CREATE INDEX` は ACCESS EXCLUSIVE lock を取って書き込みを一時 block するが、`CONCURRENTLY` 付きなら Share lock のみで online で適用できる。production の数百万行クラスのテーブルでは推奨。
+
+注意点:
+- **`CONCURRENTLY` を含む migration は single-statement にする**。複数 statement を入れて途中で失敗すると、transaction 外実行ゆえ部分適用 (一部 statement だけ反映、残りは未適用) になり手動 cleanup が必要になる。1 ファイル 1 index が安全
+- migration ファイル内に複数 statement を入れるなら `x-multi-statement=true` URL 拡張が必要 (現状未使用、`CONCURRENTLY` migration では避けること)
+- `CONCURRENTLY` は失敗時に invalid index が残るので down migration で `DROP INDEX IF EXISTS` を必ず書く
+
 ### Docker
 
 | ターゲット | 内容 |
