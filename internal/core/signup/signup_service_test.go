@@ -1,6 +1,7 @@
 package signup_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,54 @@ func TestSignup_TooLongUsername(t *testing.T) {
 	}
 	_, err := svc.Signup(string(long), "pass", false)
 	assert.ErrorIs(t, err, signup.ErrInvalidUsername)
+}
+
+// upstream Misskey TS の `localUsernameSchema` は `^\w{1,20}$` (#800)。
+// 境界 (= 20 char OK / 21 char NG) を明示する。リテラルではなく
+// strings.Repeat で長さを構築することで、境界値が一目で判別できるよう
+// にしている。
+func TestSignup_UsernameLengthBoundary(t *testing.T) {
+	cases := []struct {
+		desc    string
+		length  int
+		wantErr error
+	}{
+		{"max_20_chars_accepted", 20, nil},
+		{"over_21_chars_rejected", 21, signup.ErrInvalidUsername},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			svc, _, _ := newTestService(t)
+			username := strings.Repeat("a", tc.length)
+			_, err := svc.Signup(username, "pass", false)
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				assert.ErrorIs(t, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// `\w` 外の character (= [a-zA-Z0-9_] 以外) はすべて reject される。
+func TestSignup_UsernameIllegalCharsRejected(t *testing.T) {
+	cases := []struct {
+		desc     string
+		username string
+	}{
+		{"hyphen", "alice-bob"},
+		{"dot", "alice.bob"},
+		{"at_sign", "alice@bob"},
+		{"middle_space", "alice bob"},
+		{"non_ascii_japanese", "アリス"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			svc, _, _ := newTestService(t)
+			_, err := svc.Signup(tc.username, "pass", false)
+			assert.ErrorIs(t, err, signup.ErrInvalidUsername)
+		})
+	}
 }
 
 func TestSignup_PreservedUsernameRejected(t *testing.T) {
