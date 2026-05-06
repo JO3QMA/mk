@@ -80,19 +80,6 @@ func parseResp(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return resp
 }
 
-// assertFastifyError は upstream Misskey TS の Fastify-style reply error
-// shape (= {statusCode, error, message}) を expectations に対して assert
-// する。#802 で signup endpoint の username / captcha 系 error を upstream
-// に揃えたため、対応 test はこの helper を使う。
-func assertFastifyError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
-	t.Helper()
-	require.Equal(t, status, rec.Code)
-	resp := parseResp(t, rec)
-	require.EqualValues(t, status, resp["statusCode"])
-	require.Equal(t, http.StatusText(status), resp["error"])
-	require.Equal(t, "Error: "+code, resp["message"])
-}
-
 // --- Success ---
 
 func TestSignup_Success(t *testing.T) {
@@ -146,14 +133,14 @@ func TestSignup_DuplicateUsername(t *testing.T) {
 	rec := doPost(h.Signup, `{"username":"taken","password":"pass"}`)
 	// upstream Misskey TS と整合 (#798 status, #802 shape): 400 +
 	// Fastify-style reply error の `Error: DUPLICATED_USERNAME` message。
-	assertFastifyError(t, rec, http.StatusBadRequest, "DUPLICATED_USERNAME")
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "DUPLICATED_USERNAME")
 }
 
 func TestSignup_ReservedUsername(t *testing.T) {
 	h, _, metaRepo := newTestHandler(t)
 	metaRepo.Meta.PreservedUsernames = []string{"admin", "root"}
 	rec := doPost(h.Signup, `{"username":"admin","password":"pass"}`)
-	assertFastifyError(t, rec, http.StatusBadRequest, "USED_USERNAME")
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "USED_USERNAME")
 }
 
 // --- Meta errors ---
@@ -257,7 +244,9 @@ func TestSignupPending_Success(t *testing.T) {
 func TestSignupPending_InvalidParam(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	rec := doPost(h.SignupPending, `{}`)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	// upstream は handler 全体が try-catch で囲まれていて status 400 +
+	// Fastify shape を返す (#809)。code が空の場合も同 shape に揃える。
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "INVALID_PARAM")
 }
 
 func TestSignupPending_NotFound(t *testing.T) {
@@ -271,7 +260,9 @@ func TestSignupPending_NotFound(t *testing.T) {
 	h := apisignup.NewHandler(svc, metaRepo, idGen)
 
 	rec := doPost(h.SignupPending, `{"code":"ghost"}`)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	// upstream に揃えて 400 + NO_SUCH_CODE (旧 mk-go は 404)。#809 で
+	// status drift も解消。
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "NO_SUCH_CODE")
 }
 
 // --- Registration disabled (invitation code) ---
@@ -363,7 +354,7 @@ func TestSignup_CaptchaFailed(t *testing.T) {
 	// testcaptcha-response が空 → 検証失敗
 	rec := doPost(h.Signup, `{"username":"alice","password":"pass"}`)
 	// upstream は captcha 失敗を Fastify-style reply error で返す (#802)。
-	assertFastifyError(t, rec, http.StatusBadRequest, "CAPTCHA_FAILED")
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "CAPTCHA_FAILED")
 }
 
 func TestSignup_CaptchaSuccess(t *testing.T) {
@@ -485,7 +476,9 @@ func TestSignupPending_Expired(t *testing.T) {
 	pendingRepo.Rows[old] = row
 
 	rec := doPost(h.SignupPending, `{"code":"`+row.Code+`"}`)
-	assert.Equal(t, http.StatusGone, rec.Code)
+	// upstream に揃えて 400 + EXPIRED (旧 mk-go は 410)。#809 で status
+	// drift も解消。
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "EXPIRED")
 }
 
 // SignupPending: username clash 後の Conflict
@@ -504,8 +497,9 @@ func TestSignupPending_UsernameClash(t *testing.T) {
 	require.NoError(t, userRepo.Create(&model.User{ID: "u_c2", Username: "Clash2", UsernameLower: "clash2"}))
 
 	rec := doPost(h.SignupPending, `{"code":"`+row.Code+`"}`)
-	// upstream 整合 (#798): duplicate は 400 + DUPLICATED_USERNAME。
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	// upstream 整合 (#798 status, #802/#809 shape): duplicate は 400 +
+	// Fastify shape DUPLICATED_USERNAME。
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "DUPLICATED_USERNAME")
 }
 
 // emailSender が未設定でも pending row 自体は作られて 204 を返す (テスト用 setup)
@@ -601,7 +595,7 @@ func TestSignup_EmailRequired_ReservedUsername(t *testing.T) {
 	metaRepo.Meta.EmailRequiredForSignup = true
 	metaRepo.Meta.PreservedUsernames = []string{"admin"}
 	rec := doPost(h.Signup, `{"username":"admin","password":"pass","emailAddress":"x@example.com"}`)
-	assertFastifyError(t, rec, http.StatusBadRequest, "USED_USERNAME")
+	testutil.AssertFastifyError(t, rec, http.StatusBadRequest, "USED_USERNAME")
 }
 
 // 注: SignupPending の ErrInvitationAlreadyUsed / ErrInvitationRevoked は
