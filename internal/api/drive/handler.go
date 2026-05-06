@@ -95,6 +95,13 @@ func (h *Handler) emojiLookup() entity.EmojiLookup {
 // packDriveFileFull packs a drive file and, when repositories are wired,
 // embeds the owning folder/user as nested objects. Matches Misskey's
 // packDriveFileSchema which exposes both `folder` and `user`.
+//
+// 注: 戻り値は upstream の `pack(file, { detail: true, withUser: true })`
+// 相当 (= owner ID と user 込み)。upstream で `pack(file, { self: true })`
+// 経路 (= drive/files/create) を呼ぶ endpoint では userId / user / folder
+// を null にする必要があり、本関数を直接 c.JSON に渡すと drift する
+// (#812)。self path 用に新 helper を作るか、呼び出し側で post-fixup する
+// こと。
 func (h *Handler) packDriveFileFull(f *model.DriveFile) entity.DriveFileEntity {
 	// list loop (FilesList / FilesFind / Stream) からも呼ばれ、1ファイル
 	// 当たり最大2 DB read (O(N) queries)が発生する。1ページ上限が10-100
@@ -172,7 +179,14 @@ func (h *Handler) FilesCreate(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	return c.JSON(http.StatusOK, h.packDriveFileFull(f))
+	// upstream `drive/files/create` は `pack(file, { self: true })` で
+	// userId / user を null にする (= withUser がデフォルト false)。本実装も
+	// 同 shape に揃える (#812)。show / find 等の他 endpoint は別 packing で
+	// owner ID を出すので維持。
+	out := h.packDriveFileFull(f)
+	out.UserID = nil
+	out.User = nil
+	return c.JSON(http.StatusOK, out)
 }
 
 // FileIDRequest is the body for show/delete and similar single-file ops.
