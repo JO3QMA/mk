@@ -1,0 +1,108 @@
+name: Playwright (nightly)
+
+# #744 Phase 1 の Playwright spec を nightly で TS image + mk-go の両 backend
+# に対して実行し、drop-in shape drift / 連動 endpoint の regression を自動
+# 検知する。
+#
+# - schedule: 毎日 17:00 UTC (≒ JST 02:00)。dropin-e2e (18:00 UTC) /
+#   dropin-frontend-e2e (19:00 UTC) と被らせない
+# - workflow_dispatch: 任意の ref に対して手動実行可能
+# - PR の required check には**入れない**。spec 数が増えれば実行時間が伸び
+#   るのと、外部 image pull (TS image) が flaky 要素になる可能性があるため
+# - matrix: backend = [mk-go, ts] で並列実行。片方が失敗しても他方は完走
+# - 失敗時は playwright test-results + docker compose logs を artifact 化
+
+on:
+  schedule:
+    # 毎日 17:00 UTC (= JST 02:00)。develop ブランチに対して走る。
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / SHA to test"
+        required: false
+        default: "develop"
+
+permissions:
+  contents: read
+
+jobs:
+  spec:
+    name: spec (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      # matrix.include で backend 固有の make target / compose 引数 /
+      # prepull コマンドを variables 化する。各 step は条件分岐なしで
+      # `${{ matrix.* }}` を展開するだけになり DRY を担保する。
+      matrix:
+        include:
+          - backend: mk-go
+            up_target: playwright-up
+            test_target: playwright-test
+            down_target: playwright-down
+            compose_args: -f docker-compose.playwright.yml
+            # 本 repo Dockerfile を使うので外部 image pre-pull 不要。
+            prepull: ""
+          - backend: ts
+            up_target: playwright-ts-up
+            test_target: playwright-ts-test
+            down_target: playwright-ts-down
+            compose_args: -f docker-compose.playwright.yml -f docker-compose.playwright.ts.yml
+            # upstream image を先取りで pull しておく。次 step の compose up
+            # と並列化するために `&` background 化したい誘惑があるが、GitHub
+            # Actions の `run:` step は step 終了で shell が exit するため
+            # background process の継続が保証されない (= pre-pull 効果が
+            # 不確実)。foreground で完了を待ち、続く compose up 内の同
+            # image pull は docker daemon の cache hit で 0s で済む方が
+            # 確実。version は docker-compose.playwright.ts.yml と sync。
+            prepull: docker pull misskey/misskey:2026.3.2
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || 'develop' }}
+
+      - name: Pre-pull image (TS only)
+        if: matrix.prepull != ''
+        run: ${{ matrix.prepull }}
+
+      - name: Bring up stack
+        run: make ${{ matrix.up_target }}
+
+      - name: Run Playwright
+        run: make ${{ matrix.test_target }}
+
+      # 失敗時のみ playwright test-results (trace / screenshot 含む) を保存。
+      - name: Upload test-results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-${{ matrix.backend }}
+          path: tests/playwright/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # 失敗時のみ docker compose logs を artifact 化して原因調査できる
+      # ようにする。
+      - name: Capture docker compose logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/playwright-logs
+          docker compose ${{ matrix.compose_args }} logs \
+            > /tmp/playwright-logs/compose.log 2>&1 || true
+
+      - name: Upload logs artifact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-logs-${{ matrix.backend }}
+          path: /tmp/playwright-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Final teardown
+        if: always()
+        run: make ${{ matrix.down_target }} >/dev/null 2>&1 || true
