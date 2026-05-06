@@ -227,6 +227,38 @@ func (s *Server) Handler() http.Handler {
 	return s.echo
 }
 
+// StartBackgroundForTest starts the asynq queue worker (and optional
+// scheduler / chart management) without launching the HTTP listener.
+// 用途: e2e_federation 系のテストで `httptest.Server` 経由で echo handler を
+// 外部 listener にぶら下げつつ、deliver / inbox 処理など async queue 経路も
+// 動かしたい場合 (#435)。本番経路 (Server.Start) は HTTP listener を含めて
+// すべて起動するが、テストでは echo を test 側が制御するためここから queue
+// 部分だけ抽出する。
+//
+// production code から呼ばないこと。
+func (s *Server) StartBackgroundForTest() error {
+	if err := s.queueServer.Start(); err != nil {
+		return fmt.Errorf("start queue worker: %w", err)
+	}
+	if s.queueScheduler != nil {
+		// Server.Start と同じく Register エラーは観測可能にする (test 出力の
+		// noise にはならない、Register 失敗は scheduler driver 不具合の signal)。
+		if err := s.queueScheduler.RegisterChartJobs(); err != nil {
+			slog.Warn("chart scheduler register failed", "err", err)
+		}
+		if err := s.queueScheduler.RegisterInstanceRefreshJob(); err != nil {
+			slog.Warn("instance refresh scheduler register failed", "err", err)
+		}
+		if err := s.queueScheduler.RegisterRetentionJob(); err != nil {
+			slog.Warn("retention scheduler register failed", "err", err)
+		}
+		if err := s.queueScheduler.Start(); err != nil {
+			slog.Warn("scheduler start failed", "err", err)
+		}
+	}
+	return nil
+}
+
 // Start begins listening on the configured port (or UNIX domain socket) and
 // launches the asynq worker.
 //
