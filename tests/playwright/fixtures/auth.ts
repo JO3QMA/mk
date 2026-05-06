@@ -7,8 +7,33 @@
 // 1 度だけ)。本 fixture では signup endpoint と signin-flow の通常経路
 // のみ提供する。
 
+import { randomBytes } from 'node:crypto';
 import type { APIRequestContext } from '@playwright/test';
 import { callApi } from './api';
+
+// upstream Misskey TS の username 仕様: 1〜20 文字、`[a-zA-Z0-9_]`。
+// 本 helper はこの制約を必ず満たす uniq username を生成する。
+const USERNAME_MAX = 20;
+
+// randomUsername returns a uniq, validation-safe username for use in spec.
+// 8 文字 hex random suffix + "_" + prefix で max 20 文字に収める。upstream
+// の username regex は `^\w{1,20}$` で underscore 1 つは可。suffix は hex
+// (= alphanumeric) のみなので追加の sanitize 不要。
+//
+// prefix が長すぎる場合は **silent に切り捨てず throw** する。spec 作成時
+// に意図と違う username に縮められて debug 困難になる事故を防ぐ。
+export function randomUsername(prefix: string): string {
+  // 8 hex chars = 32 bit random で test 内 uniq には十分 (collision は
+  // 1 / 2^32 ~ 10^-10 オーダー)。
+  const suffix = randomBytes(4).toString('hex');
+  const maxPrefix = USERNAME_MAX - suffix.length - 1;
+  if (prefix.length > maxPrefix) {
+    throw new Error(
+      `randomUsername: prefix '${prefix}' exceeds ${maxPrefix} chars`,
+    );
+  }
+  return `${prefix}_${suffix}`;
+}
 
 export interface Principal {
   id: string;
