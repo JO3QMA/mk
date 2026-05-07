@@ -54,12 +54,26 @@ type Handler struct {
 	// userRepo は users/notes / users/search-by-username-and-host 経由で
 	// 表示する note list の hardMutedWords filter (#787) に使う。
 	userRepo repository.UserRepository
+	// noteReactionRepo は users/reactions endpoint で reactor 視点の reaction
+	// list を取得するために使う (#821 PR-D)。
+	noteReactionRepo repository.NoteReactionRepository
 }
 
 // SetUserRepo wires a UserRepository so users/notes filters out notes that
-// match the viewer's hardMutedWords (#787).
+// match the viewer's hardMutedWords (#787) and so users/reactions can run
+// the IS_REMOTE_USER / REACTIONS_NOT_PUBLIC access control (#821 PR-D).
+// 本番では必ず wire される (router.go で setupRoutes 時に呼ばれる)。
+// unwired の場合 users/reactions は access control を skip して
+// noteReactionRepo の有無に応じて空配列か list を返す test 互換 path に
+// 落ちる (= production 影響なし、test 用 fall-through)。
 func (h *Handler) SetUserRepo(r repository.UserRepository) {
 	h.userRepo = r
+}
+
+// SetNoteReactionRepo wires the NoteReactionRepository for users/reactions
+// (= reactor 視点の reaction list、#821 PR-D)。
+func (h *Handler) SetNoteReactionRepo(r repository.NoteReactionRepository) {
+	h.noteReactionRepo = r
 }
 
 // SetNoteFieldResolver wires the shared resolver that fills Files /
