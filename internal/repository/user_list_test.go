@@ -80,6 +80,60 @@ func TestUserListRepository_ListMembers_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// cancel 済 context で ListMembersByListIDs が err を伝播することを確認する
+// (handler 側 best-effort fallback の発動経路担保、#876)。
+func TestUserListRepository_ListMembersByListIDs_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewUserListRepository(testDB.WithContext(ctx))
+	_, err := repo.ListMembersByListIDs([]string{"x"})
+	assert.Error(t, err)
+}
+
+// users/lists/list の N+1 を消す batch fetch (#876)。空 input は空 map、
+// 複数 list 跨ぎは listID -> userIDs に正しく分配されることを確認する。
+func TestUserListRepository_ListMembersByListIDs(t *testing.T) {
+	repo := NewUserListRepository(testDB)
+	createTestUser(t, "ul_b_o")
+	createTestUser(t, "ul_b_m1")
+	createTestUser(t, "ul_b_m2")
+
+	// 空 input → 空 map (query を発行しない short-circuit)
+	out, err := repo.ListMembersByListIDs(nil)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	out, err = repo.ListMembersByListIDs([]string{})
+	require.NoError(t, err)
+	assert.Empty(t, out)
+
+	// list A: m1 + m2、list B: m1 のみ
+	listA := &model.UserList{ID: "ul_b_a", UserID: "ul_b_o", Name: "A"}
+	require.NoError(t, repo.Create(listA))
+	defer cleanupUserList(t, listA.ID)
+	listB := &model.UserList{ID: "ul_b_b", UserID: "ul_b_o", Name: "B"}
+	require.NoError(t, repo.Create(listB))
+	defer cleanupUserList(t, listB.ID)
+
+	require.NoError(t, repo.AddMember(&model.UserListMembership{ID: "ulm_b_1", UserListID: listA.ID, UserID: "ul_b_m1"}))
+	require.NoError(t, repo.AddMember(&model.UserListMembership{ID: "ulm_b_2", UserListID: listA.ID, UserID: "ul_b_m2"}))
+	require.NoError(t, repo.AddMember(&model.UserListMembership{ID: "ulm_b_3", UserListID: listB.ID, UserID: "ul_b_m1"}))
+
+	out, err = repo.ListMembersByListIDs([]string{listA.ID, listB.ID})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"ul_b_m1", "ul_b_m2"}, out[listA.ID])
+	assert.ElementsMatch(t, []string{"ul_b_m1"}, out[listB.ID])
+
+	// member の居ない list は map に key が出ない (caller 側で nil slice
+	// として扱う前提、entity.PackUserList は [] で serialize)。
+	listEmpty := &model.UserList{ID: "ul_b_empty", UserID: "ul_b_o", Name: "E"}
+	require.NoError(t, repo.Create(listEmpty))
+	defer cleanupUserList(t, listEmpty.ID)
+	out, err = repo.ListMembersByListIDs([]string{listEmpty.ID})
+	require.NoError(t, err)
+	_, ok := out[listEmpty.ID]
+	assert.False(t, ok)
+}
+
 // TestUserListRepository_AddMember_Duplicate verifies the (userListId, userId)
 // unique-constraint violation is mapped to ErrUserListDuplicateMember (#396),
 // so the API layer can return the TS-compat ALREADY_ADDED error.
