@@ -346,3 +346,33 @@ func TestMergeIDs_LimitClamping(t *testing.T) {
 	assert.Equal(t, "d", out[0])
 	assert.Equal(t, "c", out[1])
 }
+
+// toDBFilter は viewerID が non-empty のとき UseMutingSubquery=true を set
+// する production 経路を担保する (#894)。anonymous viewer (= "") では
+// subquery 経路を使わず literal MutedUserIDs もそのまま 0 件で SQL filter
+// は no-op になる。
+func TestToDBFilter_UseMutingSubquery(t *testing.T) {
+	out := toDBFilter(TimelineFilter{}, "viewer1")
+	assert.True(t, out.UseMutingSubquery, "viewerID 有なら subquery を使う")
+	assert.Equal(t, "viewer1", out.ViewerID)
+
+	out = toDBFilter(TimelineFilter{}, "")
+	assert.False(t, out.UseMutingSubquery, "anonymous viewer では subquery off")
+	assert.Equal(t, "", out.ViewerID)
+
+	// MutedUserIDs literal は SQL 経路に**伝搬しない**ことを明示的に
+	// 検証する (#894)。subquery 経路が production の SQL 経路で、literal
+	// は test override 専用の design intent を regression guard として固定。
+	out = toDBFilter(TimelineFilter{MutedUserIDs: []string{"u1", "u2"}}, "viewer2")
+	assert.Empty(t, out.MutedUserIDs, "literal は意図的に drop し subquery に委譲する")
+
+	// MutedChannelIDs / その他 filter はそのまま伝搬する (regression guard)。
+	withReplies := true
+	out = toDBFilter(TimelineFilter{
+		MutedChannelIDs: []string{"ch1"},
+		WithReplies:     &withReplies,
+	}, "viewer3")
+	assert.Equal(t, []string{"ch1"}, out.MutedChannelIDs)
+	assert.NotNil(t, out.WithReplies)
+	assert.True(t, *out.WithReplies)
+}
