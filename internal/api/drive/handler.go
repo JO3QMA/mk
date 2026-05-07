@@ -4,6 +4,7 @@ package drive
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -354,6 +355,10 @@ type FolderIDRequest struct {
 }
 
 // FoldersShow handles POST /api/drive/folders/show.
+//
+// upstream Misskey TS は `pack(folder, { detail: true })` で foldersCount /
+// filesCount / parent (recursive) を埋めて返す。本実装も同 shape に揃える
+// (#845)。default mode (= create / update / find) は影響なし。
 func (h *Handler) FoldersShow(c echo.Context) error {
 	user := middleware.GetUser(c)
 	var req FolderIDRequest
@@ -364,7 +369,50 @@ func (h *Handler) FoldersShow(c echo.Context) error {
 	if err != nil {
 		return mapFolderError(c, err)
 	}
-	return c.JSON(http.StatusOK, entity.PackDriveFolder(f, h.idGen))
+	return c.JSON(http.StatusOK, h.packDriveFolderDetail(f))
+}
+
+// packDriveFolderDetail packs a folder in upstream "detail" mode for
+// drive/folders/show. Adds foldersCount / filesCount / parent (recursive
+// detail pack) to the default 4 field. count は best-effort で取れない
+// ときは 0 を返す (= upstream も Promise が reject されると 0 相当)。
+//
+// repository が wired されていない (= 旧 test handler) と count は 0、
+// parent は nil。これは production runtime には影響しない (= router で
+// 必ず wired される)。
+func (h *Handler) packDriveFolderDetail(f *model.DriveFolder) entity.DriveFolderEntity {
+	e := entity.PackDriveFolder(f, h.idGen)
+	foldersCount := 0
+	filesCount := 0
+	if h.folderRepo != nil {
+		if n, err := h.folderRepo.CountChildFolders(f.ID); err != nil {
+			// silent 0 を返すと真の DB error と空 state が区別できないので
+			// 運用 debug 用に Warn で記録する。frontend には response が
+			// 0 で返るので影響なし。
+			slog.Warn("packDriveFolderDetail: CountChildFolders failed", "folderID", f.ID, "err", err)
+		} else {
+			foldersCount = n
+		}
+	}
+	if h.fileRepo != nil {
+		if n, err := h.fileRepo.CountByFolder(f.ID); err != nil {
+			slog.Warn("packDriveFolderDetail: CountByFolder failed", "folderID", f.ID, "err", err)
+		} else {
+			filesCount = n
+		}
+	}
+	e.FoldersCount = &foldersCount
+	e.FilesCount = &filesCount
+	if f.ParentID != nil && h.folderRepo != nil {
+		if parent, err := h.folderRepo.FindByID(*f.ParentID); err == nil {
+			parentPacked := h.packDriveFolderDetail(parent)
+			e.Parent = &parentPacked
+		} else {
+			// parent FindByID error は recursion 切断の原因。同上で Warn。
+			slog.Warn("packDriveFolderDetail: parent FindByID failed", "folderID", f.ID, "parentID", *f.ParentID, "err", err)
+		}
+	}
+	return e
 }
 
 // FoldersUpdateRequest is the body for drive/folders/update.
