@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/userlists"
@@ -137,6 +138,74 @@ func TestList_Error(t *testing.T) {
 	h := userlists.NewHandler(&failingListRepo{testutil.NewMockUserListRepository()}, idGen)
 	rec := doPost(h.List, `{}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// failingMembersRepo は ListMembers だけ error を返す stub。memberIDs
+// helper の error fallback path (= repo error 時に slog.Warn して nil を
+// 返し、PackUserList が空配列で serialize する) を cover する
+// (#871 shape preservation + PR #875 review feedback の error logging)。
+type failingMembersRepo struct {
+	*testutil.MockUserListRepository
+}
+
+func (f *failingMembersRepo) ListMembers(_ string) ([]*model.UserListMembership, error) {
+	return nil, assert.AnError
+}
+
+func TestList_MembersErrorFallsBackToEmptyUserIds(t *testing.T) {
+	repo := &failingMembersRepo{testutil.NewMockUserListRepository()}
+	repo.Lists["l1"] = &model.UserList{ID: "l1", UserID: "u1", Name: "broken-members"}
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(repo, idGen)
+	rec := doPost(h.List, `{}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out, 1)
+	// repo error でも shape は保たれ userIds は [] で出る (= upstream parity)。
+	assert.Equal(t, []any{}, out[0]["userIds"])
+}
+
+// memberIDs の happy path: ListMembers が member を返す場合に userIds が
+// 正しく埋まること (#871 shape の core path)。failingMembersRepo を使わない
+// 標準 mock 経由で AddMember → Show で round-trip する。命名は List 側の
+// TestList_MembersErrorFallsBackToEmptyUserIds と対称になるよう統一。
+func TestShow_PopulatedUserIdsAreReturnedFromMembers(t *testing.T) {
+	h, repo := newTestHandler(t)
+	idGen, _ := id.NewGenerator("aidx")
+	listID := idGen.Generate(time.Now())
+	memberMembershipID := idGen.Generate(time.Now())
+	repo.Lists[listID] = &model.UserList{ID: listID, UserID: "u1", Name: "with-members"}
+	require.NoError(t, repo.AddMember(&model.UserListMembership{
+		ID: memberMembershipID, UserListID: listID, UserID: "member1",
+	}))
+
+	rec := doPost(h.Show, `{"listId":"`+listID+`"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	userIDs, ok := out["userIds"].([]any)
+	require.True(t, ok)
+	require.Len(t, userIDs, 1)
+	assert.Equal(t, "member1", userIDs[0])
+}
+
+// Show endpoint も同 helper を経由するので、ListMembers error 時の shape
+// 保持を独立 test で守る (= 内部 helper 共有でも response 外形が崩れない
+// regression guard、PR #875 review feedback)。
+func TestShow_MembersErrorFallsBackToEmptyUserIds(t *testing.T) {
+	repo := &failingMembersRepo{testutil.NewMockUserListRepository()}
+	repo.Lists["l2"] = &model.UserList{ID: "l2", UserID: "u1", Name: "show-broken"}
+	idGen, _ := id.NewGenerator("aidx")
+	h := userlists.NewHandler(repo, idGen)
+	rec := doPost(h.Show, `{"listId":"l2"}`, &model.User{ID: "u1"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Equal(t, "l2", out["id"])
+	assert.Equal(t, []any{}, out["userIds"])
 }
 
 type failingCreateRepo struct {
