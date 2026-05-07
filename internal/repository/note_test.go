@@ -935,6 +935,146 @@ func TestNoteRepository_ListHomeTimeline_MutedChannelsRespectedWithPrecedence(t 
 		"follow + mute フィルタが OR で短絡されていない (SQL precedence バグのリグレッション)")
 }
 
+// TestNoteRepository_ListLocalTimeline_MutedUsersFilter verifies that
+// model.TimelineDBFilter.MutedUserIDs is applied at SQL level (#892),
+// excluding both notes authored by muted users AND renotes whose original
+// author is muted. heavy-mute viewer でも limit ぶん fill されることも
+// 同時に確認する (= post-fetch filter 時の UX regression 回避)。
+func TestNoteRepository_ListLocalTimeline_MutedUsersFilter(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	mutedAuthor := insertTestUser(t, "u_mu_m", "mumuted")
+	defer cleanupUser(t, mutedAuthor.ID)
+	okAuthor := insertTestUser(t, "u_mu_o", "muok")
+	defer cleanupUser(t, okAuthor.ID)
+	mutedRenoteSrc := insertTestUser(t, "u_mu_rs", "murenotesrc")
+	defer cleanupUser(t, mutedRenoteSrc.ID)
+
+	mkPlain := func(id, uid string) *model.Note {
+		text := "x"
+		return &model.Note{
+			ID: id, UserID: uid, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+	}
+
+	// muted author の note (除外されるべき)
+	muted1 := mkPlain("n_mu_m1", mutedAuthor.ID)
+	muted2 := mkPlain("n_mu_m2", mutedAuthor.ID)
+	require.NoError(t, repo.Create(muted1))
+	require.NoError(t, repo.Create(muted2))
+	defer cleanupNote(t, muted1.ID)
+	defer cleanupNote(t, muted2.ID)
+
+	// muted renote source (= ok author が muted user の note を renote。
+	// renoteUserId が muted なので除外されるべき)
+	renoteSrc := mkPlain("n_mu_src", mutedRenoteSrc.ID)
+	require.NoError(t, repo.Create(renoteSrc))
+	defer cleanupNote(t, renoteSrc.ID)
+	renote := &model.Note{
+		ID: "n_mu_renote", UserID: okAuthor.ID,
+		RenoteID: &renoteSrc.ID, RenoteUserID: &mutedRenoteSrc.ID,
+		Visibility: model.NoteVisibilityPublic,
+		Reactions:  datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, repo.Create(renote))
+	defer cleanupNote(t, renote.ID)
+
+	// non-muted note (= ok author の plain note、含まれるべき)
+	ok1 := mkPlain("n_mu_ok1", okAuthor.ID)
+	ok2 := mkPlain("n_mu_ok2", okAuthor.ID)
+	ok3 := mkPlain("n_mu_ok3", okAuthor.ID)
+	require.NoError(t, repo.Create(ok1))
+	require.NoError(t, repo.Create(ok2))
+	require.NoError(t, repo.Create(ok3))
+	defer cleanupNote(t, ok1.ID)
+	defer cleanupNote(t, ok2.ID)
+	defer cleanupNote(t, ok3.ID)
+
+	rows, err := repo.ListLocalTimeline(100, "", "", model.TimelineDBFilter{
+		MutedUserIDs: []string{mutedAuthor.ID, mutedRenoteSrc.ID},
+	})
+	require.NoError(t, err)
+
+	ids := idsOf(rows)
+	// muted author の note と muted renote source は除外
+	assert.NotContains(t, ids, muted1.ID)
+	assert.NotContains(t, ids, muted2.ID)
+	assert.NotContains(t, ids, renote.ID)
+	// renoteSrc 自体は muted author の plain note として除外される
+	assert.NotContains(t, ids, renoteSrc.ID)
+	// ok author の plain note 3 件が残る
+	assert.Contains(t, ids, ok1.ID)
+	assert.Contains(t, ids, ok2.ID)
+	assert.Contains(t, ids, ok3.ID)
+
+	// heavy-mute fill: limit=2 を要求した時、SQL push-down なら non-muted note
+	// が limit 件返ることを確認する (post-fetch filter だと最大 2 → muted 除外
+	// で 0 件になり得たが、SQL 段階で除外しているので必ず 2 件返る)。
+	rows, err = repo.ListLocalTimeline(2, "", "", model.TimelineDBFilter{
+		MutedUserIDs: []string{mutedAuthor.ID, mutedRenoteSrc.ID},
+	})
+	require.NoError(t, err)
+	assert.Len(t, rows, 2, "SQL push-down で limit ぶん non-muted note が fill されること (#892)")
+}
+
+// TestNoteRepository_ListHomeTimeline_MutedUsersWithFollowFilter は HomeTimeline
+// で MutedUserIDs と follow 制約が両立することを確認する (#892)。muted user は
+// follow していても home から除外されるべき、かつ MutedUserIDs の OR 節バグで
+// 非 follower の note が漏れない (= MutedChannel と同 SQL precedence ガード)。
+func TestNoteRepository_ListHomeTimeline_MutedUsersWithFollowFilter(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	viewer := insertTestUser(t, "u_mhfu_v", "mhfuviewer")
+	defer cleanupUser(t, viewer.ID)
+	followedMuted := insertTestUser(t, "u_mhfu_fm", "mhfufollowedmuted")
+	defer cleanupUser(t, followedMuted.ID)
+	followedOK := insertTestUser(t, "u_mhfu_fo", "mhfufollowedok")
+	defer cleanupUser(t, followedOK.ID)
+	stranger := insertTestUser(t, "u_mhfu_s", "mhfustranger")
+	defer cleanupUser(t, stranger.ID)
+
+	// viewer は followedMuted と followedOK を follow するが、followedMuted は
+	// mute 済み。stranger は未 follow なので home に含まれてはいけない。
+	require.NoError(t, testDB.Exec(
+		`INSERT INTO "following" (id, "followerId", "followeeId") VALUES (?, ?, ?)`,
+		"flw_mhfu_1", viewer.ID, followedMuted.ID,
+	).Error)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "flw_mhfu_1")
+	require.NoError(t, testDB.Exec(
+		`INSERT INTO "following" (id, "followerId", "followeeId") VALUES (?, ?, ?)`,
+		"flw_mhfu_2", viewer.ID, followedOK.ID,
+	).Error)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "flw_mhfu_2")
+
+	mk := func(id, uid string) *model.Note {
+		text := "hi"
+		return &model.Note{
+			ID: id, UserID: uid, Text: &text,
+			Visibility: model.NoteVisibilityPublic,
+			Reactions:  datatypes.JSON([]byte("{}")),
+		}
+	}
+	muted := mk("n_mhfu_m", followedMuted.ID)
+	ok := mk("n_mhfu_o", followedOK.ID)
+	leaked := mk("n_mhfu_s", stranger.ID)
+	require.NoError(t, repo.Create(muted))
+	require.NoError(t, repo.Create(ok))
+	require.NoError(t, repo.Create(leaked))
+	defer cleanupNote(t, muted.ID)
+	defer cleanupNote(t, ok.ID)
+	defer cleanupNote(t, leaked.ID)
+
+	rows, err := repo.ListHomeTimeline(viewer.ID, 100, "", "", model.TimelineDBFilter{
+		ViewerID:     viewer.ID,
+		MutedUserIDs: []string{followedMuted.ID},
+	})
+	require.NoError(t, err)
+
+	ids := idsOf(rows)
+	assert.ElementsMatch(t, []string{ok.ID}, ids,
+		"follow + mute フィルタが両立し、stranger が漏れず muted user も除外されること (#892)")
+}
+
 func TestNoteRepository_CountReplyTargets(t *testing.T) {
 	repo := NewNoteRepository(testDB)
 	author := insertTestUser(t, "u_crt_a", "crtA")
