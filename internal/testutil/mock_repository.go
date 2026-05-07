@@ -2962,6 +2962,10 @@ type MockFlashRepository struct {
 	Flashes   map[string]*model.Flash
 	CreateErr error
 	UpdateErr error
+	// LastUpdates は UpdateFields に最後に渡された fields map を capture
+	// する。caller が slice value を pq.StringArray 等で正しく wrap して
+	// いるかを test 側で assert するため (#896)。
+	LastUpdates map[string]any
 }
 
 // NewMockFlashRepository creates an empty MockFlashRepository.
@@ -2986,6 +2990,7 @@ func (m *MockFlashRepository) FindByID(id string) (*model.Flash, error) {
 }
 
 func (m *MockFlashRepository) UpdateFields(flashID string, fields map[string]any) error {
+	m.LastUpdates = fields
 	if m.UpdateErr != nil {
 		return m.UpdateErr
 	}
@@ -3300,6 +3305,10 @@ type MockAntennaRepository struct {
 	Antennas  map[string]*model.Antenna
 	CreateErr error
 	UpdateErr error
+	// LastUpdates は UpdateFields に最後に渡された fields map を capture
+	// する。caller が pq.StringArray 等で正しく wrap しているかを test 側で
+	// assert するため (#896 と同 pattern)。
+	LastUpdates map[string]any
 }
 
 // NewMockAntennaRepository creates an empty MockAntennaRepository.
@@ -3324,6 +3333,7 @@ func (m *MockAntennaRepository) FindByID(id string) (*model.Antenna, error) {
 }
 
 func (m *MockAntennaRepository) UpdateFields(antennaID string, fields map[string]any) error {
+	m.LastUpdates = fields
 	if m.UpdateErr != nil {
 		return m.UpdateErr
 	}
