@@ -1,0 +1,89 @@
+// Phase 4 PR-D: admin/avatar-decorations/* CRUD round-trip。
+//
+// 4 endpoint: list / create / update / delete。
+// 全 admin 権限要、root token を再利用する。
+
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { expect, test } from '@playwright/test';
+import { callApi } from '../../fixtures/api';
+import { resetRateLimit } from '../../fixtures/rate_limit';
+
+interface RootFixture {
+  id: string;
+  token: string;
+  username: string;
+}
+
+interface Decoration {
+  id: string;
+  name?: string;
+  description?: string;
+  url?: string;
+}
+
+test.describe('admin/avatar-decorations/* CRUD round-trip', () => {
+  let root: RootFixture;
+
+  test.beforeAll(() => {
+    resetRateLimit();
+    root = JSON.parse(readFileSync('.auth/root.json', 'utf-8'));
+  });
+
+  test('create → list で含まれる → update → delete round-trip', async ({ request }) => {
+    const name = `spec_deco_${randomUUID()}`;
+
+    // 1. create (両 backend ともに 200 + decoration object を返す。
+    //  create は INSERT で空 string[] が '{}' リテラルとして通るので
+    //  update と異なり drift にならない、#931 参照)
+    const createResp = await callApi(request, 'admin/avatar-decorations/create', {
+      i: root.token,
+      name,
+      description: 'phase4 spec',
+      url: 'https://example.invalid/deco.png',
+      roleIdsThatCanBeUsedThisDecoration: [],
+    });
+    expect(createResp.status()).toBe(200);
+
+    // 2. list で含まれる
+    const listResp = await callApi(request, 'admin/avatar-decorations/list', {
+      i: root.token,
+    });
+    expect(listResp.status()).toBe(200);
+    const list = (await listResp.json()) as Decoration[];
+    expect(Array.isArray(list)).toBe(true);
+    const found = list.find((d) => d.name === name);
+    expect(found, 'created decoration should appear in list').toBeDefined();
+    const decoId = found!.id;
+
+    // 3. update で description 変更
+    // roleIdsThatCanBeUsedThisDecoration: [] を送ると mk-go の GORM
+    // Updates(map) が空 string[] を NULL 化して制約違反になる drift
+    // (#896 / #900 と同 class、本 spec で発覚 → #931 として起票済)。
+    // spec scope では update に role 配列を含めない (= 既存値維持) ことで
+    // 両 backend で動かす。#931 fix 後に role 配列付きの strict 化を予定。
+    const updResp = await callApi(request, 'admin/avatar-decorations/update', {
+      i: root.token,
+      id: decoId,
+      name,
+      description: 'updated by spec',
+      url: 'https://example.invalid/deco.png',
+    });
+    expect(updResp.status()).toBe(204);
+
+    // 4. delete (両 backend ともに 204 No Content)
+    const delResp = await callApi(request, 'admin/avatar-decorations/delete', {
+      i: root.token,
+      id: decoId,
+    });
+    expect(delResp.status()).toBe(204);
+
+    // 5. list 再取得で消えている
+    const listAfter = await callApi(request, 'admin/avatar-decorations/list', {
+      i: root.token,
+    });
+    expect(listAfter.status()).toBe(200);
+    const listAfterBody = (await listAfter.json()) as Decoration[];
+    expect(listAfterBody.find((d) => d.id === decoId)).toBeFalsy();
+  });
+});
