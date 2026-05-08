@@ -278,9 +278,11 @@ func (a *AuthMiddleware) resolveUser(token string) (*model.User, error) {
 		return user, nil
 	}
 
-	// access tokenのhashで検索
+	// hash 列 (miauth: sha256(token)) と token 列 (raw, app/auth) を 1 query
+	// で OR 検索する。upstream Misskey TS の AuthenticateService と同 pattern
+	// (#910)。両 index がある前提で BitmapOr scan に乗る。
 	hash := sha256Hash(token)
-	accessToken, err := a.accessTokenRepo.FindByHash(hash)
+	accessToken, err := a.accessTokenRepo.FindByHashOrToken(hash, token)
 	if err != nil {
 		// not-found 系は cache に積まない: 失効後 30 秒間 stale を返さない
 		// ようにするのと、未知 token 連打への DDoS を rate limiter 側に任せる
