@@ -55,32 +55,44 @@ func cleanup() {
 
 func TestList_Success(t *testing.T) {
 	cleanup()
-	assert.Equal(t, http.StatusOK, doPost(newHandler().List, `{}`).Code)
+	assert.Equal(t, http.StatusOK, doPost(newHandler().List, `{"sort":"+mentionedUsers"}`).Code)
 }
 
 func TestList_WithData(t *testing.T) {
 	cleanup()
 	testDB.Create(&model.Hashtag{ID: "ht1", Name: "golang", MentionedUsersCount: 5})
 	defer cleanup()
-	rec := doPost(newHandler().List, `{"limit":10}`)
+	rec := doPost(newHandler().List, `{"limit":10,"sort":"+mentionedUsers"}`)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "golang")
 }
 
 func TestList_WithOffset(t *testing.T) {
-	assert.Equal(t, http.StatusOK, doPost(newHandler().List, `{"limit":5,"offset":1}`).Code)
+	assert.Equal(t, http.StatusOK, doPost(newHandler().List, `{"limit":5,"offset":1,"sort":"+mentionedUsers"}`).Code)
 }
 
 func TestList_LimitCap(t *testing.T) {
-	assert.Equal(t, http.StatusOK, doPost(newHandler().List, `{"limit":999}`).Code)
+	assert.Equal(t, http.StatusOK, doPost(newHandler().List, `{"limit":999,"sort":"+mentionedUsers"}`).Code)
 }
 
 func TestList_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, doPost(newHandler().List, `invalid`).Code)
 }
 
+// TestList_SortRequired: upstream Misskey TS は paramDef で sort を required
+// にしている。mk-go も同 shape に揃え、sort 抜きは 400 で弾く (#925)。
+func TestList_SortRequired(t *testing.T) {
+	assert.Equal(t, http.StatusBadRequest, doPost(newHandler().List, `{}`).Code)
+}
+
+// TestList_SortEnum: upstream paramDef は sort を 12 値の enum 限定にしている。
+// mk-go も同 enum に絞り、未定義 sort 値で 400 を返す (#925 review nit)。
+func TestList_SortEnum(t *testing.T) {
+	assert.Equal(t, http.StatusBadRequest, doPost(newHandler().List, `{"sort":"bogus"}`).Code)
+}
+
 func TestList_DBError(t *testing.T) {
-	assert.Equal(t, http.StatusInternalServerError, doPost(brokenHandler().List, `{}`).Code)
+	assert.Equal(t, http.StatusInternalServerError, doPost(brokenHandler().List, `{"sort":"+mentionedUsers"}`).Code)
 }
 
 // --- Search ---
@@ -113,8 +125,11 @@ func TestShow_Found(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "rustlang")
 }
 
-func TestShow_NotFound(t *testing.T) {
-	assert.Equal(t, http.StatusNotFound, doPost(newHandler().Show, `{"tag":"ghost"}`).Code)
+// TestShow_BadRequestForUnknownTag: upstream Misskey TS は ApiError 既定動作
+// で 400 + NO_SUCH_HASHTAG body を返す (#925)。404 ではなく 400 に揃える。
+// HTTP semantics 的には 404 が自然だが drop-in 互換を優先する。
+func TestShow_BadRequestForUnknownTag(t *testing.T) {
+	assert.Equal(t, http.StatusBadRequest, doPost(newHandler().Show, `{"tag":"ghost"}`).Code)
 }
 
 func TestShow_InvalidParam(t *testing.T) {
@@ -249,9 +264,21 @@ func TestTrend_VisibilityFilterExcludesPrivate(t *testing.T) {
 // --- Users ---
 
 func TestUsers_Success(t *testing.T) {
-	assert.Equal(t, http.StatusOK, doPost(newHandler().Users, `{"tag":"test"}`).Code)
+	assert.Equal(t, http.StatusOK, doPost(newHandler().Users, `{"tag":"test","sort":"+follower"}`).Code)
 }
 
 func TestUsers_InvalidParam(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, doPost(newHandler().Users, `{}`).Code)
+}
+
+// TestUsers_SortRequired: upstream Misskey TS は paramDef で sort も
+// required にしている。tag だけだと 400 (#925)。
+func TestUsers_SortRequired(t *testing.T) {
+	assert.Equal(t, http.StatusBadRequest, doPost(newHandler().Users, `{"tag":"test"}`).Code)
+}
+
+// TestUsers_SortEnum: upstream paramDef は sort を 6 値の enum 限定。
+// 未定義 sort で 400 を返すこと (#925 review nit)。
+func TestUsers_SortEnum(t *testing.T) {
+	assert.Equal(t, http.StatusBadRequest, doPost(newHandler().Users, `{"tag":"test","sort":"bogus"}`).Code)
 }

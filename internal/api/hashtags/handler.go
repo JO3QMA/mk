@@ -23,6 +23,16 @@ func NewHandler(db *gorm.DB) *Handler {
 	return &Handler{db: db}
 }
 
+// validListSorts は upstream Misskey TS hashtags/list paramDef enum と一致 (#925)。
+var validListSorts = map[string]struct{}{
+	"+mentionedUsers": {}, "-mentionedUsers": {},
+	"+mentionedLocalUsers": {}, "-mentionedLocalUsers": {},
+	"+mentionedRemoteUsers": {}, "-mentionedRemoteUsers": {},
+	"+attachedUsers": {}, "-attachedUsers": {},
+	"+attachedLocalUsers": {}, "-attachedLocalUsers": {},
+	"+attachedRemoteUsers": {}, "-attachedRemoteUsers": {},
+}
+
 // List handles POST /api/hashtags/list.
 func (h *Handler) List(c echo.Context) error {
 	var req struct {
@@ -30,8 +40,13 @@ func (h *Handler) List(c echo.Context) error {
 		Sort   string `json:"sort"`
 		Offset int    `json:"offset"`
 	}
-	if err := c.Bind(&req); err != nil {
+	if err := c.Bind(&req); err != nil || req.Sort == "" {
+		// upstream Misskey TS は paramDef で sort を required にしている (#925)。
+		// mk-go も同 shape に揃え、permissive な挙動を弾く。
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid parameters.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if _, ok := validListSorts[req.Sort]; !ok {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "sort must be one of upstream-defined enum.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	if req.Limit <= 0 {
 		req.Limit = 10
@@ -87,7 +102,11 @@ func (h *Handler) Show(c echo.Context) error {
 	}
 	var tag model.Hashtag
 	if err := h.db.Where("name = ?", req.Tag).First(&tag).Error; err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_HASHTAG", "No such hashtag.", "110ee688-193e-4a3a-9ecf-c167234e6f7d"))
+		// HTTP semantics 的には not-found = 404 が望ましいが、upstream
+		// Misskey TS は ApiError の既定動作で 400 を返している (#925)。
+		// drop-in 互換を優先して 400 + NO_SUCH_HASHTAG body に揃える。
+		// error id も upstream と同じ ...c167b2e6981e に統一。
+		return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_HASHTAG", "No such hashtag.", "110ee688-193e-4a3a-9ecf-c167b2e6981e"))
 	}
 	return c.JSON(http.StatusOK, packTag(&tag))
 }
@@ -243,14 +262,26 @@ func (h *Handler) Trend(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
+// validUsersSorts は upstream Misskey TS hashtags/users paramDef enum と一致 (#925)。
+var validUsersSorts = map[string]struct{}{
+	"+follower": {}, "-follower": {},
+	"+createdAt": {}, "-createdAt": {},
+	"+updatedAt": {}, "-updatedAt": {},
+}
+
 // Users handles POST /api/hashtags/users.
 func (h *Handler) Users(c echo.Context) error {
 	var req struct {
 		Tag   string `json:"tag"`
+		Sort  string `json:"sort"`
 		Limit int    `json:"limit"`
 	}
-	if err := c.Bind(&req); err != nil || req.Tag == "" {
-		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "tag is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	if err := c.Bind(&req); err != nil || req.Tag == "" || req.Sort == "" {
+		// upstream Misskey TS は paramDef で tag + sort を required にしている (#925)。
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "tag and sort are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
+	}
+	if _, ok := validUsersSorts[req.Sort]; !ok {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "sort must be one of upstream-defined enum.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// ハッシュタグを使ったユーザー一覧 (簡易版: 空配列)
 	return c.JSON(http.StatusOK, []any{})
