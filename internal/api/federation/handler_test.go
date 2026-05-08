@@ -137,11 +137,26 @@ func TestShowInstance_EmptyHost(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestShowInstance_NotFound: upstream Misskey TS と同じく未知 host は
+// 204 No Content (= null 相当) を返す。旧実装は 404 + error body だったが、
+// drop-in 互換のため 204 に揃えた (#915)。
 func TestShowInstance_NotFound(t *testing.T) {
 	h, _ := newHandler(t)
 	c, rec := newReq(t, `{"host":"missing.example"}`)
 	require.NoError(t, h.ShowInstance(c))
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, rec.Body.String(), "204 response should have empty body")
+}
+
+// TestShowInstance_DBError は #915 review fix の regression guard。
+// Service が raw DB error を返したら handler は 500 を返し、未知 host
+// (= 204) と同じ扱いにしないこと。観測性確保。
+func TestShowInstance_DBError(t *testing.T) {
+	h, repo := newHandler(t)
+	repo.FindByHostErr = errors.New("connection reset by peer")
+	c, rec := newReq(t, `{"host":"alpha.example"}`)
+	require.NoError(t, h.ShowInstance(c))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 // TestShowInstance_FederatingFlags verifies that the response includes the
