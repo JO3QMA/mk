@@ -384,6 +384,54 @@ func TestService_UpdateProfile_MutedWords(t *testing.T) {
 	assert.JSONEq(t, `["spoiler"]`, string(got.HardMutedWords))
 }
 
+// #956: profile fields (name/value 配列) の persist + 正規化。
+// upstream Misskey TS は trim + 空 entry 排除を行うので、mk-go も同挙動に
+// 揃える (= name または value どちらかが trim 後に空なら drop)。
+func TestService_UpdateProfile_Fields(t *testing.T) {
+	svc, repo, _, _ := newFullSvc(t)
+	repo.Users["u1"] = &model.User{ID: "u1", Username: "alice"}
+
+	in := []user.FieldItem{
+		{Name: "  blog  ", Value: " https://example.com  "},
+		{Name: "empty-value", Value: ""},
+		{Name: "", Value: "empty-name-only"},
+		{Name: "  whitespace-name  ", Value: "  v  "},
+		{Name: "x", Value: "y"},
+	}
+	_, err := svc.UpdateProfile("u1", user.UpdateInput{Fields: &in})
+	require.NoError(t, err)
+
+	got := repo.Profiles["u1"]
+	require.NotNil(t, got)
+	// 空 entry が drop され、name/value とも trim される。順序は維持。
+	assert.JSONEq(t,
+		`[{"name":"blog","value":"https://example.com"},{"name":"whitespace-name","value":"v"},{"name":"x","value":"y"}]`,
+		string(got.Fields),
+	)
+
+	// nil (= 省略) は不変。Fields=[{x,y}, ...] 状態で他 field のみ更新
+	// しても Fields が消えないことを pinpoint で verify する (= "Fields が
+	// nil なら touch しない" 性質)。Description ptr-to-ptr で更新する。
+	desc := "new description"
+	descPtr := &desc
+	_, err = svc.UpdateProfile("u1", user.UpdateInput{Description: &descPtr})
+	require.NoError(t, err)
+	got = repo.Profiles["u1"]
+	assert.JSONEq(t,
+		`[{"name":"blog","value":"https://example.com"},{"name":"whitespace-name","value":"v"},{"name":"x","value":"y"}]`,
+		string(got.Fields),
+	)
+	require.NotNil(t, got.Description)
+	assert.Equal(t, desc, *got.Description)
+
+	// 後続更新で空 slice を渡すと clear (= [] 書き込み)。
+	empty := []user.FieldItem{}
+	_, err = svc.UpdateProfile("u1", user.UpdateInput{Fields: &empty})
+	require.NoError(t, err)
+	got = repo.Profiles["u1"]
+	assert.JSONEq(t, `[]`, string(got.Fields))
+}
+
 // #467: avatarId に SET / CLEAR / 不明 ID / 他人ファイル / 非画像 MIME を
 // 与えたときの挙動を確認する。banner も同経路 (applyMediaUpdate を共有)
 // なので avatar 側で代表させる。
