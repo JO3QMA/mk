@@ -1,0 +1,195 @@
+package federation
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"sync"
+	"time"
+
+	"github.com/shiroha-a/mk/internal/safehttp"
+	"golang.org/x/sync/singleflight"
+)
+
+// RemoteUserStats represents counts fetched from a remote Misskey-compatible
+// instance via /api/users/show.
+type RemoteUserStats struct {
+	NotesCount     int
+	FollowersCount int
+	FollowingCount int
+}
+
+// remoteStatsTTL は positive cache 有効期間 (= remote が valid response を返した
+// 場合)。counter は数分単位で動くが、毎 request 取りに行くと remote 負荷が
+// 大きいので 1 時間で fold (#943)。
+const remoteStatsTTL = 1 * time.Hour
+
+// remoteStatsNegativeTTL は negative cache 有効期間 (= remote が 4xx / timeout /
+// malformed JSON を返した場合)。一時的な downtime / Mastodon のような互換性無し
+// instance を 1h 単位で負キャッシュすると stale 期間が長過ぎるため 5 分に短縮
+// (#943 review)。
+const remoteStatsNegativeTTL = 5 * time.Minute
+
+// remoteStatsTimeout は remote /api/users/show の単一 fetch timeout。
+const remoteStatsTimeout = 5 * time.Second
+
+// RemoteStatsFetcher fetches notes/followers/following counts from a remote
+// Misskey-compatible instance and caches the result.
+//
+// Misskey TS の users/show は自インスタンスで観測した範囲のみ集計するため、
+// remote user の counts が実体より小さく出る (#943)。本 fetcher は user の
+// origin instance の /api/users/show を叩いて公開 counts を取得し、上書き
+// 表示することで「リモートサーバー上の実値」を反映する mk-go 独自拡張。
+//
+// 失敗時は静かに nil を返す (= caller は local 観測値を fallback として使う)。
+// 同一 (host, username) への並行 fetch は singleflight で fold する。
+//
+// SSRF 対策として fetcher は safehttp の SSRF-safe transport を使い、host が
+// localhost / private IP / metadata service に解決される場合は接続前に
+// reject する (allowedPrivateNetworks で個別許可可)。
+type RemoteStatsFetcher struct {
+	client *http.Client
+	cache  sync.Map // key=host|username → cachedRemoteStats
+	group  singleflight.Group
+}
+
+type cachedRemoteStats struct {
+	stats   *RemoteUserStats
+	fetched time.Time
+	ttl     time.Duration
+}
+
+// NewRemoteStatsFetcher constructs a fetcher with a SSRF-safe HTTP transport
+// built from allowedPrivateNetworks (= config.AllowedPrivateNetworks 互換) と
+// optional safehttp.Option (e.g. WithProxy)。
+//
+// urlpreview / mediaproxy と同じく safehttp 経由で組み立てる pattern (#943
+// review SSRF guard)。
+func NewRemoteStatsFetcher(allowedPrivateNetworks []string, opts ...safehttp.Option) *RemoteStatsFetcher {
+	transport := safehttp.NewSSRFSafeTransport(allowedPrivateNetworks, opts...)
+	return &RemoteStatsFetcher{
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   remoteStatsTimeout,
+		},
+	}
+}
+
+// newRemoteStatsFetcherWithTransport はテスト専用 constructor。redirectTransport
+// 等で httptest server に向け直したい場合に使う。production では
+// NewRemoteStatsFetcher を使うこと。
+func newRemoteStatsFetcherWithTransport(rt http.RoundTripper) *RemoteStatsFetcher {
+	return &RemoteStatsFetcher{
+		client: &http.Client{
+			Transport: rt,
+			Timeout:   remoteStatsTimeout,
+		},
+	}
+}
+
+// Fetch returns cached stats if available and fresh, otherwise fetches from
+// the remote /api/users/show endpoint. Returns nil if the host or username is
+// empty / malformed, or if the remote call fails / returns malformed payload.
+func (f *RemoteStatsFetcher) Fetch(ctx context.Context, host, username string) *RemoteUserStats {
+	if f == nil || host == "" || username == "" {
+		return nil
+	}
+	if !isValidHost(host) {
+		// host に / ? # @ space などが混入した URL injection 攻撃を防ぐ
+		// (#943 review)。federation の webfinger 経由で sanitize されるはず
+		// だが、念のため二重 check。
+		return nil
+	}
+	key := host + "|" + username
+	if v, ok := f.cache.Load(key); ok {
+		if entry, ok := v.(cachedRemoteStats); ok && time.Since(entry.fetched) < entry.ttl {
+			return entry.stats
+		}
+	}
+	v, _, _ := f.group.Do(key, func() (any, error) {
+		stats := f.fetchRemote(ctx, host, username)
+		ttl := remoteStatsTTL
+		if stats == nil {
+			ttl = remoteStatsNegativeTTL
+		}
+		f.cache.Store(key, cachedRemoteStats{stats: stats, fetched: time.Now(), ttl: ttl})
+		return stats, nil
+	})
+	if stats, ok := v.(*RemoteUserStats); ok {
+		return stats
+	}
+	return nil
+}
+
+// isValidHost checks that host is a plain hostname (optionally with port) and
+// does not contain URL-meaningful characters. Reject `/`, `?`, `#`, `@`, ` `
+// 等が混入した host で URL を組むと別 path / 別 host が叩かれて SSRF / spoof
+// になるため、url.Parse 経由で host parse 結果が input と一致することを確認する。
+func isValidHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	parsed, err := url.Parse("https://" + host + "/")
+	if err != nil {
+		return false
+	}
+	// Host は parser が optional port 込みで保持。input host 全体が parser
+	// の Host と一致しない場合 (= path / query / userinfo が混入していた場合) は reject。
+	return parsed.Host == host && parsed.Path == "/"
+}
+
+// fetchRemote performs the actual HTTP POST to https://<host>/api/users/show.
+// Misskey 系 instance は username + host=null で local user lookup できる。
+// Mastodon 等 Misskey 互換でない instance は 4xx/404 を返すので nil を出す。
+func (f *RemoteStatsFetcher) fetchRemote(ctx context.Context, host, username string) *RemoteUserStats {
+	endpoint := fmt.Sprintf("https://%s/api/users/show", host)
+	body, _ := json.Marshal(map[string]any{
+		"username": username,
+		"host":     nil,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := f.client.Do(req)
+	if err != nil {
+		slog.Debug("remoteStats: fetch failed", "host", host, "username", username, "err", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	// 過大 response は driver / reverse proxy 側で 4xx を返す前提なので、ここは
+	// 念のため 1MB 程度で切る。Misskey UserDetailed の JSON は通常 5KB 未満。
+	limited := io.LimitReader(resp.Body, 1<<20)
+	var payload struct {
+		NotesCount     *int `json:"notesCount"`
+		FollowersCount *int `json:"followersCount"`
+		FollowingCount *int `json:"followingCount"`
+	}
+	if err := json.NewDecoder(limited).Decode(&payload); err != nil {
+		return nil
+	}
+	if payload.NotesCount == nil && payload.FollowersCount == nil && payload.FollowingCount == nil {
+		return nil
+	}
+	stats := &RemoteUserStats{}
+	if payload.NotesCount != nil {
+		stats.NotesCount = *payload.NotesCount
+	}
+	if payload.FollowersCount != nil {
+		stats.FollowersCount = *payload.FollowersCount
+	}
+	if payload.FollowingCount != nil {
+		stats.FollowingCount = *payload.FollowingCount
+	}
+	return stats
+}
