@@ -5,6 +5,8 @@
 // node の Sharp/Canvas 依存が増えるので、固定の minimal PNG を base64 で
 // 持つ方が deterministic + 軽量。
 
+import type { APIRequestContext } from '@playwright/test';
+
 // 1x1 transparent PNG, 67 bytes。base64 decode 結果も deterministic で
 // md5 (= file content hash) も常に同じになる = find-by-hash spec で
 // 検証 anchor として使える。
@@ -22,6 +24,40 @@ export interface DriveFile {
   name: string;
   type: string;
   size: number;
+}
+
+// uploadTinyPNG は test 用の 1x1 透過 PNG を /api/drive/files/create に
+// multipart で upload する helper。drive 系 spec が複数で同 pattern を
+// 抱えていたので集約 (#967 batch4 review)。
+// 失敗時はキャッチ側で test を fail させたいので、status と body を
+// そのまま返さず正常系で DriveFile を返し、異常系は throw する。
+export async function uploadTinyPNG(
+  request: APIRequestContext,
+  baseURL: string,
+  token: string,
+  name: string,
+): Promise<DriveFile> {
+  const resp = await request.post(`${baseURL}/api/drive/files/create`, {
+    ignoreHTTPSErrors: true,
+    multipart: {
+      i: token,
+      file: {
+        name,
+        mimeType: 'image/png',
+        buffer: tinyPNG,
+      },
+    },
+  });
+  if (resp.status() !== 200) {
+    throw new Error(
+      `drive/files/create failed: ${resp.status()} ${await resp.text()}`,
+    );
+  }
+  const body = (await resp.json()) as DriveFile;
+  if (!body.id) {
+    throw new Error(`drive/files/create returned no id: ${JSON.stringify(body)}`);
+  }
+  return body;
 }
 
 // CRC32 lookup table for ZIP fixture builder (#882). standard polynomial
