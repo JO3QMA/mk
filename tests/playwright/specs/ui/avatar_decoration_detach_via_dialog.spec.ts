@@ -74,27 +74,34 @@ test.describe('UI: /settings/avatar-decoration detach via dialog flow', () => {
       { timeout: 20_000 },
     );
 
-    // 4. 装着済 thumbnail (= 上部 attached list の最初の card) を click。
-    // attached card は openAttachedDecoration を bind しており、img を含む。
-    // 装着済の url 専用 img を持つ card を click することで XDialog が
-    // usingIndex != null mode で起動する。
+    // 4. 装着済 thumbnail (= 上部 attached list の card) を click。
+    // avatar-decoration.decoration.vue:7-9 の root は
+    // `<div :class="$style.root" @click="emit('click')">`。Vue の @click は
+    // addEventListener-based なので element.onclick property には現れない
+    // (= 旧 spec の `node.onclick` 判定は常に false で fallback img.click()
+    // に到達 → bubbling は通るが listener が走らない race の場面があり
+    // 90s timeout していた)。
+    //
+    // avatar-decoration.vue は **上部 = 装着済 (attached) / 下部 = 利用可能
+    // (available)** の 2 つの `[class*="decorations"]` grid を持ち、本 spec
+    // の setup では同じ decoration が両方に表示される。`querySelectorAll` は
+    // DOM 順を保証するので 0 番目 (= attached) container を strict に取り、
+    // 下部 available 側を誤って click してしまう risk を排除する。
+    // CSS module hash 差分は `[class*="..."]` で吸収。
     await page.evaluate((u) => {
-      const imgs = Array.from(document.querySelectorAll('img')) as HTMLImageElement[];
-      const targetImg = imgs.find((i) => i.src.includes(u));
-      if (!targetImg) return;
-      // img を含む clickable 親要素を探す。click handler は a / div / button
-      // のいずれかにある (avatar-decoration.vue:25-26 では @click bind の
-      // div)。
-      let node: HTMLElement | null = targetImg;
-      for (let depth = 0; depth < 6 && node; depth++) {
-        if (node.tagName === 'A' || node.tagName === 'BUTTON' || node.onclick) {
-          node.click();
-          return;
-        }
-        node = node.parentElement;
-      }
-      // fallback: img の最も近い parent を click (Vue listener が capture)
-      targetImg.click();
+      const containers = Array.from(
+        document.querySelectorAll('[class*="decorations"]'),
+      );
+      const attachedContainer = containers[0];
+      if (!attachedContainer) return;
+      const roots = Array.from(
+        attachedContainer.querySelectorAll('[class*="root"]'),
+      );
+      const target = roots.find((el) => {
+        const img = el.querySelector('img') as HTMLImageElement | null;
+        return img !== null && img.src.includes(u);
+      }) as HTMLElement | undefined;
+      target?.click();
     }, decorationUrl);
 
     // 5. XDialog の "Detach" button (ti-x + "Detach") hydrate を待つ。
