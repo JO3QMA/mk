@@ -53,12 +53,55 @@ test.describe('UI: /admin/announcements unarchive button flow', () => {
     });
     expect(archiveResp.status()).toBeLessThan(400);
 
-    // 2. /admin/announcements を開いて archived 込みの list を読む
+    // 2. /admin/announcements を開く。
+    // admin/announcements.vue:118 の MkSelect は **`initialValue: 'active'`**
+    // で active list を表示するため、archived 状態の announcement は
+    // default で list に出ない。MkSelect (= "Active" container) を click
+    // して "Archived" filter に切替えてから target を待つ必要がある。
     await uiSigninAsRoot(page, baseURL, root);
     await page.goto(`${baseURL}/admin/announcements`, {
       waitUntil: 'domcontentloaded',
     });
 
+    // 3. MkSelect container hydrate 待ち。MkSelect.vue:11 は tabindex="0" を
+    // 持つ div で current value text (= "Active") を含む構造で render する。
+    // attribute selector で MkSelect 候補に絞り込んでから text 一致を見る
+    // (page 上の別 div で textContent === 'Active' な要素との誤 hit を回避)。
+    await page.waitForFunction(
+      () => {
+        const els = Array.from(document.querySelectorAll('div[tabindex="0"]'));
+        return els.some((el) => (el.textContent ?? '').trim() === 'Active');
+      },
+      { timeout: 20_000 },
+    );
+
+    // 4. MkSelect は MkSelect.vue:15 で `@mousedown.prevent="show"` listener
+    // のため click event では popup が出ない。mousedown を dispatch する。
+    // (= MkNote footer button と同 pattern)
+    await page.evaluate(() => {
+      const els = Array.from(
+        document.querySelectorAll('div[tabindex="0"]'),
+      ) as HTMLDivElement[];
+      const target = els.find((el) => (el.textContent ?? '').trim() === 'Active');
+      target?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    });
+
+    // 5. popupMenu の "Archived" item を click。MkMenu の menu item は
+    // 標準 click で OK (MkMenu.vue:151 の @click.prevent)。
+    await page.waitForFunction(
+      () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        return btns.some((b) => (b.textContent ?? '').trim() === 'Archived');
+      },
+      { timeout: 10_000 },
+    );
+    await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button')) as HTMLButtonElement[];
+      const target = btns.find((b) => (b.textContent ?? '').trim() === 'Archived');
+      target?.click();
+    });
+
+    // 6. archived list が hydrate して target title が body に出るのを待つ
     await page.waitForFunction(
       (t) => document.body.textContent?.includes(t) ?? false,
       title,
