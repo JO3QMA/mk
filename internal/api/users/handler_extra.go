@@ -1,6 +1,8 @@
 package users
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
+	"gorm.io/gorm"
 )
 
 // SetAbuseRepo attaches the abuse report repository.
@@ -19,9 +22,18 @@ func (h *Handler) SetAbuseRepo(r repository.AbuseReportRepository) {
 }
 
 // Relation handles POST /api/users/relation.
-// ユーザー間の関係 (フォロー/ブロック/ミュート等) を返す。
+// upstream Misskey TS `users/relation.ts` (= getRelation in
+// server/api/common/getRelation.ts) と同 semantics で viewer と target の
+// follow / follow-request / block / mute / renote-mute の関係性を返す。
+//
+// 認証は router.go の `middleware.RequireAuth()` で前段強制されているため
+// production では viewer == nil は到達不可。下の `viewer == nil` branch は
+// defensive guard + 単体テスト用 (= handler を直接叩く test path)。
+//
+// repo が wired されていない (= legacy handler test) では該当 field を false
+// に保つので production runtime には影響しない (router で必ず wired される)。
 func (h *Handler) Relation(c echo.Context) error {
-	_ = middleware.GetUser(c) // 認証チェック
+	viewer := middleware.GetUser(c)
 	var req struct {
 		UserID string `json:"userId"`
 	}
@@ -29,7 +41,7 @@ func (h *Handler) Relation(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "userId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 
-	return c.JSON(http.StatusOK, map[string]any{
+	out := map[string]any{
 		"id":                             req.UserID,
 		"isFollowing":                    false,
 		"isFollowed":                     false,
@@ -39,7 +51,74 @@ func (h *Handler) Relation(c echo.Context) error {
 		"isBlocked":                      false,
 		"isMuted":                        false,
 		"isRenoteMuted":                  false,
-	})
+	}
+
+	if viewer == nil {
+		return c.JSON(http.StatusOK, out)
+	}
+
+	// FindByPair は (rec, err) で返す契約 (gorm.ErrRecordNotFound は relation
+	// 無し)。row 不在は default の false に倒すが、transient な DB error
+	// (timeout / connection 切断等) は運用 debug のため slog.Warn で残す
+	// (frontend には false で fallback、次の API call で正される程度の影響)。
+	warnRelErr := func(label string, err error) {
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			slog.Warn("users/relation lookup failed", "rel", label, "viewer", viewer.ID, "target", req.UserID, "err", err)
+		}
+	}
+
+	if h.followingRepo != nil {
+		if rec, err := h.followingRepo.FindByPair(viewer.ID, req.UserID); rec != nil {
+			out["isFollowing"] = true
+		} else {
+			warnRelErr("isFollowing", err)
+		}
+		if rec, err := h.followingRepo.FindByPair(req.UserID, viewer.ID); rec != nil {
+			out["isFollowed"] = true
+		} else {
+			warnRelErr("isFollowed", err)
+		}
+	}
+	if h.followRequestRepo != nil {
+		if rec, err := h.followRequestRepo.FindByPair(viewer.ID, req.UserID); rec != nil {
+			out["hasPendingFollowRequestFromYou"] = true
+		} else {
+			warnRelErr("hasPendingFollowRequestFromYou", err)
+		}
+		if rec, err := h.followRequestRepo.FindByPair(req.UserID, viewer.ID); rec != nil {
+			out["hasPendingFollowRequestToYou"] = true
+		} else {
+			warnRelErr("hasPendingFollowRequestToYou", err)
+		}
+	}
+	if h.blockingRepo != nil {
+		if rec, err := h.blockingRepo.FindByPair(viewer.ID, req.UserID); rec != nil {
+			out["isBlocking"] = true
+		} else {
+			warnRelErr("isBlocking", err)
+		}
+		if rec, err := h.blockingRepo.FindByPair(req.UserID, viewer.ID); rec != nil {
+			out["isBlocked"] = true
+		} else {
+			warnRelErr("isBlocked", err)
+		}
+	}
+	if h.mutingRepo != nil {
+		if rec, err := h.mutingRepo.FindByPair(viewer.ID, req.UserID); rec != nil {
+			out["isMuted"] = true
+		} else {
+			warnRelErr("isMuted", err)
+		}
+	}
+	if h.renoteMutingRepo != nil {
+		if rec, err := h.renoteMutingRepo.FindByPair(viewer.ID, req.UserID); rec != nil {
+			out["isRenoteMuted"] = true
+		} else {
+			warnRelErr("isRenoteMuted", err)
+		}
+	}
+
+	return c.JSON(http.StatusOK, out)
 }
 
 // ReportAbuse handles POST /api/users/report-abuse.
