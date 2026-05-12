@@ -178,6 +178,14 @@ func (h *Hook) notifyVisibleToTarget(n *model.Note, targetID string) bool {
 		}
 		return false
 	default:
+		// 未知 visibility は安全側に倒す (= notify しない) が、silent drop だと
+		// misconfig や将来の visibility 追加忘れの debug が困難になるため warn
+		// で観測可能にする (= fail-closed + observable)。
+		slog.Warn("notification: unknown note visibility, dropping notification",
+			"visibility", string(n.Visibility),
+			"noteId", n.ID,
+			"targetId", targetID,
+		)
 		return false
 	}
 }
