@@ -238,6 +238,9 @@ func (p *Processor) Process(body []byte) error {
 	var act genericActivity
 	_ = json.Unmarshal(body, &act)
 	act.raw = body
+	// upstream Misskey #17340: activity.actor が string IRI でなく embedded
+	// {"id": "..."} object のケースを救済する (triage #999)。
+	act.normalizeActor(body)
 	if act.Actor == "" {
 		return errors.New("activity missing actor")
 	}
@@ -423,6 +426,8 @@ func (p *Processor) handleUndo(act genericActivity) error {
 	if err := json.Unmarshal(act.Object, &inner); err != nil {
 		return fmt.Errorf("invalid undo object: %w", err)
 	}
+	// inner.actor が embedded object のケースも救済する (#999 / upstream #17340)。
+	inner.normalizeActor(act.Object)
 	switch strings.ToLower(inner.Type) {
 	case "follow":
 		return p.handleUndoFollow(act, inner)
@@ -561,6 +566,8 @@ func (p *Processor) handleAccept(act genericActivity) error {
 		// objectが文字列（Follow IDのURI）の場合もあるが、現状はnilで許容
 		return nil
 	}
+	// inner.actor が embedded object のケースも救済する (#999 / upstream #17340)。
+	inner.normalizeActor(act.Object)
 	if !strings.EqualFold(inner.Type, "follow") {
 		return nil
 	}
@@ -830,11 +837,25 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 
 // handleDelete removes a remote note (or actor) referenced by a Delete activity.
 func (p *Processor) handleDelete(act genericActivity) error {
-	author, err := p.resolver.ResolveActor(act.Actor)
+	targetURI, err := readObjectString(act.Object)
 	if err != nil {
 		return err
 	}
-	targetURI, err := readObjectString(act.Object)
+	// upstream Misskey #17294 (= 2026.5.0 fix / triage #1001): object が Actor
+	// (self-delete または object.type が Actor 系) で、その actor がローカルに
+	// 存在しないなら無視する。これをやらないと ResolveActor が remote fetch を
+	// 試みて 404 で失敗 → queue retry に乗り続ける挙動になる (= "存在しない
+	// actor の delete を受け取り続けて queue が膨れる" 既存 bug)。
+	if isActorDelete(act.Actor, targetURI, act.Object) {
+		if _, ferr := p.userRepo.FindByURI(targetURI); ferr != nil {
+			// gorm の ErrRecordNotFound は明示 import せず、user が見つからない
+			// 場合は ferr != nil で代表させる (他の DB error も "ignore して
+			// retry を避ける" 方が retry 蓄積よりマシ)。
+			return nil
+		}
+		// 存在する actor の delete は従来通り resolve に進む。
+	}
+	author, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
 		return err
 	}
@@ -854,6 +875,22 @@ func (p *Processor) handleDelete(act genericActivity) error {
 		return p.noteDeleteSvc.Delete(author, note.ID)
 	}
 	return p.noteRepo.Delete(note)
+}
+
+// isActorDelete reports whether the given Delete activity targets an actor.
+// Heuristics: (a) actor URI と object URI が一致するなら self-delete、
+// (b) object が embedded 形式で type が Actor 系 (Person / Service / Application
+// / Group / Organization) なら actor delete とみなす。
+// upstream Misskey の isActor() / getApId() の組合せに相当する判定。
+func isActorDelete(actorURI, targetURI string, object json.RawMessage) bool {
+	if actorURI != "" && actorURI == targetURI {
+		return true
+	}
+	switch strings.ToLower(peekObjectType(object)) {
+	case "person", "service", "application", "group", "organization":
+		return true
+	}
+	return false
 }
 
 // handleUpdate refreshes a remote actor's stored profile fields, or applies
@@ -944,6 +981,8 @@ func (p *Processor) handleReject(act genericActivity) error {
 	if err := json.Unmarshal(act.Object, &inner); err != nil {
 		return fmt.Errorf("invalid reject object: %w", err)
 	}
+	// inner.actor が embedded object のケースも救済する (#999 / upstream #17340)。
+	inner.normalizeActor(act.Object)
 	if !strings.EqualFold(inner.Type, "follow") {
 		return ErrUnsupportedActivity
 	}
@@ -1196,6 +1235,29 @@ func (p *Processor) handleRemove(act genericActivity) error {
 	}
 	_ = p.pinningRepo.Delete(pin)
 	return nil
+}
+
+// normalizeActor populates act.Actor when JSON tag-driven Unmarshal could not
+// pull a plain string (= upstream Misskey #17340 fix; activity.actor may be
+// either a string IRI or an embedded {"id": "..."} object). Pass the raw bytes
+// that were Unmarshaled into act. No-op when Actor is already populated.
+//
+// 同 normalization は inner activity (Undo / Accept / Reject の object) にも
+// 適用する必要があるため、handler 側でも inner.normalizeActor(act.Object) を
+// 呼ぶ運用にする。
+func (act *genericActivity) normalizeActor(raw json.RawMessage) {
+	if act.Actor != "" {
+		return
+	}
+	var probe struct {
+		Actor json.RawMessage `json:"actor"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe.Actor) == 0 {
+		return
+	}
+	if id, err := readObjectString(probe.Actor); err == nil {
+		act.Actor = id
+	}
 }
 
 // readObjectString reads an activity Object field that is either a plain

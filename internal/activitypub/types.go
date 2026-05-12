@@ -2,7 +2,48 @@
 // rendering local model entities into AP-compatible JSON-LD documents.
 package activitypub
 
-import "slices"
+import (
+	"encoding/json"
+	"slices"
+)
+
+// APStringList accepts JSON values that may be either a single string or a
+// []string, and exposes them uniformly as []string. ActivityPub spec で
+// 同一 field を string / array 両方の形で送ってくる実装がいる (例: alsoKnownAs
+// は upstream Misskey #17275 で array/string 両対応化済)。受信側は両形式を
+// 受け、JSON 送出時は []string と同じ array shape で emit する。
+type APStringList []string
+
+// UnmarshalJSON decodes either a JSON array of strings or a single string.
+// null / 空 input は nil slice として解釈する。
+func (l *APStringList) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*l = nil
+		return nil
+	}
+	// 先頭の whitespace を skip し、最初の non-space 文字が '[' なら array、
+	// それ以外なら single string として fall back。
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '[':
+			var arr []string
+			if err := json.Unmarshal(data, &arr); err != nil {
+				return err
+			}
+			*l = arr
+			return nil
+		}
+		break
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	*l = []string{s}
+	return nil
+}
 
 // ContextURL is the standard ActivityStreams 2.0 JSON-LD context.
 const ContextURL = "https://www.w3.org/ns/activitystreams"
@@ -94,9 +135,9 @@ type Person struct {
 	// MisskeyCanChat は CherryPick の chat 連合 capability flag (#692)。
 	// 受信側 instance が DM を受け付けるか (false なら拒絶) を表す boolean。
 	// pointer で持つことで「未指定 (= 旧実装 / 互換) → 許可」を区別する。
-	MisskeyCanChat *bool    `json:"_misskey_canChat,omitempty"`
-	MovedTo        string   `json:"movedTo,omitempty"`
-	AlsoKnownAs    []string `json:"alsoKnownAs,omitempty"`
+	MisskeyCanChat *bool        `json:"_misskey_canChat,omitempty"`
+	MovedTo        string       `json:"movedTo,omitempty"`
+	AlsoKnownAs    APStringList `json:"alsoKnownAs,omitempty"`
 }
 
 // Note represents a note object (microblog post).

@@ -552,7 +552,7 @@ func TestRenderer_RenderPerson_BannerAndMovedTo(t *testing.T) {
 	require.NotNil(t, p.Image)
 	assert.Equal(t, banner, p.Image.URL)
 	assert.Equal(t, movedTo, p.MovedTo)
-	assert.Equal(t, []string{"https://other.example/users/alice", "https://third.example/users/a"}, p.AlsoKnownAs)
+	assert.Equal(t, APStringList{"https://other.example/users/alice", "https://third.example/users/a"}, p.AlsoKnownAs)
 	assert.Equal(t, featured, p.Featured)
 }
 

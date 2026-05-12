@@ -440,6 +440,55 @@ func TestProcess_DeleteBadObject(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// upstream Misskey #17294 (= 2026.5.0 fix / triage #1001): 存在しない actor の
+// Delete activity は ignore する。actor URI と object URI が一致する self-delete
+// shape でローカル DB に同 URI の user が居ない場合、ResolveActor を呼ばずに
+// nil を返して queue retry に乗らないようにする。
+func TestProcess_DeleteActor_UnknownActorSkipped(t *testing.T) {
+	// fetcher を空文字列にすることで、もし ResolveActor が呼ばれてしまった場合は
+	// 失敗する設定にする。期待動作は「ResolveActor を一切呼ばずに nil を返す」。
+	env := newFullProcessor(t, "")
+	body := []byte(`{
+		"type": "Delete",
+		"actor": "https://gone.example/users/ghost",
+		"object": "https://gone.example/users/ghost"
+	}`)
+	// 既存実装は ResolveActor 失敗で error を返していたが、本 fix で nil 返す。
+	require.NoError(t, env.processor.Process(body))
+}
+
+// 既知 actor の self-delete は ResolveActor 後の (author.URI == targetURI) check
+// で no-op になる従来 path を覆う。新 fix の影響で前段で早期 return しないこと
+// (= actor が居る場合は通常の delete 処理に進むこと) を実証する。
+func TestProcess_DeleteActor_KnownActorSelfDeleteStillNoop(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	aliceURI := "https://remote.example/users/alice"
+	env.userRepo.Users["alice"] = &model.User{ID: "alice", Username: "alice", URI: &aliceURI}
+	body := []byte(`{
+		"type": "Delete",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/users/alice"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+}
+
+// upstream Misskey #17340 (= 2026.5.0 fix / triage #999): activity.actor は
+// 文字列 IRI でも embedded object でも受け入れる。Mastodon 系等から actor
+// field が `{"id": "..."}` 形式で来た場合に actor missing で reject しないこと。
+func TestProcess_ActorEmbeddedObject_NormalizedAndProcessed(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	bobURI := "https://example.com/users/bob"
+	env.userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+	body := []byte(`{
+		"type": "Follow",
+		"actor": {"id": "https://remote.example/users/alice", "type": "Person"},
+		"object": "https://example.com/users/bob"
+	}`)
+	// normalizeActor が走り、Follow が正しく処理される (= actor missing で
+	// errors.New("activity missing actor") にならない) ことを確認。
+	require.NoError(t, env.processor.Process(body))
+}
+
 // noteDeleteSvc が nil の Processor では noteRepo.Delete が直接呼ばれる
 func TestProcess_DeleteWithoutDeleteSvc(t *testing.T) {
 	p, repo, _, noteRepo := newProcessor(t, aliceActor)
