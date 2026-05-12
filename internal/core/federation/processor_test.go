@@ -889,6 +889,31 @@ func TestProcess_AcceptFollow(t *testing.T) {
 	require.NoError(t, p.Process(acceptBody))
 }
 
+// upstream Misskey #17340 (triage #999) の actor normalization は inner
+// activity (Accept / Reject / Undo の object 内 activity) にも適用する設計。
+// inner.actor が {"id": "..."} embedded object 形式で送られてきた場合に、
+// inner.normalizeActor(act.Object) 経由で string ID に展開され、後段の
+// readActorString(inner) で follower URI が抽出できることを実証する。
+// TestProcess_AcceptFollow と対になる "inner side" の coverage。
+func TestProcess_AcceptFollow_InnerActorEmbeddedObject(t *testing.T) {
+	p, repo, _, _ := newProcessor(t, aliceActor)
+	repo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+
+	acceptBody := []byte(`{
+		"type": "Accept",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"type": "Follow",
+			"actor": {"id": "https://example.com/users/bob", "type": "Person"},
+			"object": "https://remote.example/users/alice"
+		}
+	}`)
+	// FollowRequest が存在しなくても nil 返却 (= TestProcess_AcceptFollow と同じ
+	// 挙動)。重要なのは inner.actor の embedded object が原因で missing actor
+	// error を吐かないこと。
+	require.NoError(t, p.Process(acceptBody))
+}
+
 func TestProcess_AcceptNonFollow(t *testing.T) {
 	p, _, _, _ := newProcessor(t, aliceActor)
 	// inner objectがFollowでない場合は無視

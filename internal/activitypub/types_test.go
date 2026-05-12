@@ -178,6 +178,41 @@ func TestAPStringList_UnmarshalJSON(t *testing.T) {
 	}
 }
 
+// APStringList が送信側でも array shape を維持することを実証する
+// (commit message で「JSON 送出時は []string と同じ array shape で emit する」と
+// 表明したコントラクトの test)。受信時 single string が re-export で
+// spec 準拠の array に正規化されることもセットで確認する。
+func TestAPStringList_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		in   APStringList
+		want string
+	}{
+		{"two", APStringList{"a", "b"}, `["a","b"]`},
+		{"single", APStringList{"x"}, `["x"]`},
+		{"empty", APStringList{}, `[]`},
+		{"nil", nil, `null`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.in)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, string(b))
+		})
+	}
+}
+
+// single string で Unmarshal → Marshal すると array に正規化される roundtrip。
+// 受信時の互換性 + 送信時の spec 厳守を 1 ケースで束ねて検証する。
+func TestAPStringList_SingleStringNormalizedToArrayOnReexport(t *testing.T) {
+	var l APStringList
+	err := json.Unmarshal([]byte(`"https://other.example/users/a"`), &l)
+	assert.NoError(t, err)
+	out, err := json.Marshal(l)
+	assert.NoError(t, err)
+	assert.Equal(t, `["https://other.example/users/a"]`, string(out))
+}
+
 // Person.AlsoKnownAs を Mastodon 互換の array 形式 / Friendica 等の single
 // string 形式どちらでも JSON Unmarshal が成功し、[]string として等価な値を
 // 取れることを実 Person Unmarshal で end-to-end 検証する。
