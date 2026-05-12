@@ -635,6 +635,16 @@ func (p *Processor) handleCreate(act genericActivity) error {
 		}
 	}
 	note, err := p.resolver.IngestNote(act.Object)
+	if errors.Is(err, corenote.ErrContainsTooManyMentions) {
+		// upstream Misskey #17167 (= 2026.5.0 fix / triage #1004): role policy
+		// 由来の "note contains too many mentions" は永続的に解決しない error な
+		// ので queue retry に乗せず ack して drop する。upstream は同種 error を
+		// IdentifiableError('9f466dab-...') で switch する patch だが、mk-go は
+		// sentinel error の errors.Is で同等の non-retry 化を行う。
+		slog.Info("federation: dropping inbound note exceeding mentionLimit",
+			"actor", act.Actor, "limit", corenote.DefaultMentionLimit)
+		return nil
+	}
 	if err != nil {
 		return err
 	}

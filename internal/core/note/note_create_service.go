@@ -866,12 +866,16 @@ func (s *CreateService) checkMentionLimit(text *string) error {
 	return nil
 }
 
+// DefaultMentionLimit mirrors role.DefaultPolicies().mentionLimit. corenote から
+// 直接 role.DefaultPolicies() を import すると循環依存になるため、同期を保つ
+// 意図で本家TSの現行既定値 (20) を const として直書きしている。federation 経路
+// (Resolver.IngestNote) も同じ const を参照することで policy を一元化。
+const DefaultMentionLimit = 20
+
 // defaultMentionLimit returns the baseline mentionLimit from role.DefaultPolicies.
 // 本家TSではrole per-userのmerge値を使うが、Go側は現状default値でチェック。
 func defaultMentionLimit() int {
-	// role.DefaultPolicies() を直接 import すると循環依存になるため、
-	// 同期を保つ意図で本家TSの現行既定値 (20) をここに直書きする。
-	return 20
+	return DefaultMentionLimit
 }
 
 // checkFileIDs verifies all provided fileIds exist and belong to the user.

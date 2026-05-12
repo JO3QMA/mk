@@ -3569,3 +3569,89 @@ func TestResolver_KeysMapConcurrentAccessIsRaceFree(t *testing.T) {
 	wg.Wait()
 	// 検証ポイントは race detector が黙ること。
 }
+
+// upstream Misskey #17167 (= 2026.5.0 fix / triage #1004): mentionLimit を
+// 超える inbound Note は ErrContainsTooManyMentions を返して保存せず、caller
+// (processor.handleCreate) が non-retry skip 化する。21 件の local user URI を
+// tag 配列に詰めて ExtractLocalUserID 経由で resolveMentionedUserIDs が
+// 全件 ID を返すよう仕込み、limit 超え (= corenote.DefaultMentionLimit) を発火させる。
+func TestIngestNote_MentionLimitExceededReturnsSentinel(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	// 21 件 = limit (20) + 1 の local user URI を tag に並べる。Mock urls の
+	// UserURI prefix は "https://example.com/users/" なので ExtractLocalUserID
+	// が "u1".."u21" を返す。
+	var tagJSON string
+	for i := 1; i <= corenote.DefaultMentionLimit+1; i++ {
+		if i > 1 {
+			tagJSON += ","
+		}
+		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + itoa(i) + `"}`
+	}
+	body := []byte(`{
+		"id": "https://remote.example/notes/over",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "x",
+		"to": ["https://www.w3.org/ns/activitystreams#Public"],
+		"tag": [` + tagJSON + `]
+	}`)
+	_, err := r.IngestNote(body)
+	require.ErrorIs(t, err, corenote.ErrContainsTooManyMentions)
+	// 未保存であることも確認 (= queue retry 経由で再試行されても結果は同じ)。
+	_, lookupErr := noteRepo.FindByURI("https://remote.example/notes/over")
+	require.Error(t, lookupErr, "limit exceed note should NOT be persisted")
+}
+
+// 境界条件 (= limit ぴったりの 20 件) は受理される。off-by-one 検出。
+func TestIngestNote_MentionLimitBoundaryAccepted(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	r := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+
+	var tagJSON string
+	for i := 1; i <= corenote.DefaultMentionLimit; i++ {
+		if i > 1 {
+			tagJSON += ","
+		}
+		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + itoa(i) + `"}`
+	}
+	body := []byte(`{
+		"id": "https://remote.example/notes/boundary",
+		"type": "Note",
+		"attributedTo": "https://remote.example/users/alice",
+		"content": "x",
+		"to": ["https://www.w3.org/ns/activitystreams#Public"],
+		"tag": [` + tagJSON + `]
+	}`)
+	note, err := r.IngestNote(body)
+	require.NoError(t, err)
+	require.NotNil(t, note)
+	assert.Len(t, note.Mentions, corenote.DefaultMentionLimit)
+}
+
+// itoa は test ローカルの小さい int→string ユーティリティ。
+// strconv 依存を 1 行で済ませるための inline helper。
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var buf [4]byte
+	n := 0
+	for i > 0 {
+		buf[n] = byte('0' + i%10)
+		i /= 10
+		n++
+	}
+	out := make([]byte, n)
+	for k := 0; k < n; k++ {
+		out[k] = buf[n-1-k]
+	}
+	return string(out)
+}

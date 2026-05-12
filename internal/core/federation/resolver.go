@@ -724,6 +724,16 @@ func (r *Resolver) IngestNote(body []byte) (*model.Note, error) {
 	}
 	tagMentions := r.resolveMentionedUserIDs(extractMentionTags(apNote.Tag))
 	note.Mentions = mergeMentionIDs(textMentions, tagMentions)
+	// upstream Misskey #17167 (= 2026.5.0 fix / triage #1004): mentionLimit を
+	// 超える note は無効と扱い、保存せずに ErrContainsTooManyMentions を返す。
+	// caller (processor.handleCreate) が当該 sentinel を catch して queue retry
+	// 経路から除外することで、罠の inbox job が永続蓄積するのを防ぐ。
+	// limit 値は corenote.DefaultMentionLimit (= 20) を参照し、local create
+	// path (NoteCreateService.checkMentionLimit) と同じ policy を federation
+	// 受信側にも適用する。
+	if corenote.DefaultMentionLimit > 0 && len(note.Mentions) > corenote.DefaultMentionLimit {
+		return nil, corenote.ErrContainsTooManyMentions
+	}
 	// specified visibility では AP `to` 配列が宛先 actor URI 列。CanView の
 	// VisibleUserIDs チェック (core/note/visibility.go) で受信者が note を
 	// 参照できるよう、ここで ID へ解決して埋める (#397)。

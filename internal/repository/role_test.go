@@ -227,3 +227,50 @@ func TestRoleAssignmentRepository_ExpiredExcluded(t *testing.T) {
 	// cleanup
 	testDB.Exec(`DELETE FROM "role_assignment" WHERE id = ?`, a.ID)
 }
+
+// upstream Misskey #17334 (= 2026.5.0 fix / triage #1007): admin role を複数
+// 持つ user の ID が重複して返る bug の regression guard。mk-go は `id IN
+// (SELECT ra."userId" ...)` の SQL semantics で自動 dedup する設計のため
+// upstream の Set 経由 dedup と等価。本 test は user に 2 つの admin role を
+// assign し、ListUsers(State="admin") が当該 user を 1 行だけ返すことを確認する。
+func TestUserRepository_ListUsers_AdminFilterDedupsMultipleRoles(t *testing.T) {
+	roleRepo := NewRoleRepository(testDB)
+	assignRepo := NewRoleAssignmentRepository(testDB)
+	userRepo := NewUserRepository(testDB)
+
+	now := time.Now()
+	role1 := &model.Role{
+		ID: "role_admin_dedup_1", UpdatedAt: now, LastUsedAt: now, Name: "AdminA",
+		Target: model.RoleTargetManual, Policies: datatypes.JSON([]byte("{}")),
+		CondFormula: datatypes.JSON([]byte("{}")), IsAdministrator: true,
+	}
+	role2 := &model.Role{
+		ID: "role_admin_dedup_2", UpdatedAt: now, LastUsedAt: now, Name: "AdminB",
+		Target: model.RoleTargetManual, Policies: datatypes.JSON([]byte("{}")),
+		CondFormula: datatypes.JSON([]byte("{}")), IsAdministrator: true,
+	}
+	require.NoError(t, roleRepo.Create(role1))
+	require.NoError(t, roleRepo.Create(role2))
+	defer cleanupRole(t, role1.ID)
+	defer cleanupRole(t, role2.ID)
+
+	createTestUser(t, "admin_dedup_u1")
+	// 同一 user に 2 つの admin role を assign (upstream bug の再現条件)
+	require.NoError(t, assignRepo.Create(&model.RoleAssignment{
+		ID: "ra_dedup_1", UserID: "admin_dedup_u1", RoleID: role1.ID,
+	}))
+	require.NoError(t, assignRepo.Create(&model.RoleAssignment{
+		ID: "ra_dedup_2", UserID: "admin_dedup_u1", RoleID: role2.ID,
+	}))
+
+	// State="admin" の filter で当該 user が 1 度だけ返ることを確認
+	users, err := userRepo.ListUsers(model.UserListFilter{Limit: 100, State: "admin", Sort: "+createdAt"})
+	require.NoError(t, err)
+	count := 0
+	for _, u := range users {
+		if u.ID == "admin_dedup_u1" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "user with multiple admin roles should appear exactly once (= SQL IN subquery dedup)")
+}

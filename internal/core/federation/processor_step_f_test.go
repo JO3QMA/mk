@@ -440,6 +440,58 @@ func TestProcess_DeleteBadObject(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// upstream Misskey #17167 (= 2026.5.0 fix / triage #1004): mentionLimit を
+// 超える inbound Create は Resolver.IngestNote で ErrContainsTooManyMentions
+// に転換され、handleCreate がそれを catch して nil 返却 (= queue retry 経路に
+// 乗らず ack drop) する。triage doc の "role validation error の retry 防止"
+// 要件を mk-go アーキで等価実装したことの end-to-end 証明。
+func TestProcess_CreateNote_MentionLimitExceededIsDropped(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	var tagJSON string
+	for i := 1; i <= 21; i++ { // 21 = DefaultMentionLimit (20) + 1
+		if i > 1 {
+			tagJSON += ","
+		}
+		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + ftoa(i) + `"}`
+	}
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://remote.example/notes/over",
+			"type": "Note",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "x",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"],
+			"tag": [` + tagJSON + `]
+		}
+	}`)
+	// 上限超え note は ack されるが drop される (queue は retry しない)。
+	require.NoError(t, env.processor.Process(body))
+	// note も DB に入っていないこと
+	_, err := env.noteRepo.FindByURI("https://remote.example/notes/over")
+	require.Error(t, err)
+}
+
+// processor test 内のローカル int→string helper (resolver_test の itoa と独立)。
+func ftoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var buf [4]byte
+	n := 0
+	for i > 0 {
+		buf[n] = byte('0' + i%10)
+		i /= 10
+		n++
+	}
+	out := make([]byte, n)
+	for k := 0; k < n; k++ {
+		out[k] = buf[n-1-k]
+	}
+	return string(out)
+}
+
 // upstream Misskey #17294 (= 2026.5.0 fix / triage #1001): 存在しない actor の
 // Delete activity は ignore する。actor URI と object URI が一致する self-delete
 // shape でローカル DB に同 URI の user が居ない場合、ResolveActor を呼ばずに
