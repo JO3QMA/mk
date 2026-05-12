@@ -692,3 +692,22 @@ func TestService_HasUnreadOfTypes_AfterMarkAllAsRead(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "readMarker以降は該当typeがなくfalse")
 }
+
+// upstream Misskey #17358 (= 2026.5.1 fix) は ULID 環境下で notification id の
+// `additional` 部 (80-bit) をそのまま Redis Stream sequence (uint64) に渡して
+// XADD が失敗し続け、通知が ~10s 遅延する bug を修正したが、mk-go の toXAddID
+// は ID parse 経路を踏まず引数 time.Time から `<ms>-*` を直接生成するため
+// 構造的に overflow しない。regression guard として far-future な time でも
+// "<digits>-*" 形式に収まることを確認する
+// (= triage #1011 / upstream #17358 close)。
+func TestToXAddID_NoOverflowFarFuture(t *testing.T) {
+	// uint64 (= max ~5.85e8 years in epoch ms) の遥か手前の年だが
+	// 64-bit ms カウンタ自体が overflow しないことを十分担保できる。
+	far := time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)
+	s := toXAddID("ignored-id", far)
+	assert.Regexp(t, `^\d+-\*$`, s,
+		"toXAddID must emit `<ms>-*` form, never panic on overflow")
+	// epoch ms が正の uint64 範囲に収まることも明示
+	expected := far.UnixMilli()
+	require.Greater(t, expected, int64(0))
+}

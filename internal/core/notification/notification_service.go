@@ -627,6 +627,12 @@ func (s *Service) Flush(ctx context.Context, userID string) error {
 // Redis Streamsは "ms-seq" 形式を期待する。idGenが生成するIDからのタイム
 // スタンプ部分を使い、シーケンスは0固定で十分(MAXLENで管理されるため
 // 競合はリトライ不要)。
+//
+// upstream Misskey #17358 (= 2026.5.1 fix) は ULID 環境下で notification id の
+// `additional` 部 (80-bit) をそのまま Redis Stream sequence (uint64) に渡して
+// XADD が失敗し続け、通知が ~10s 遅延する bug を修正したが、mk-go では引数
+// `time.Time` から ms を直接生成しており ID parse 経路を一切踏まないため
+// overflow は構造的に発生しない (= triage #1011 / upstream #17358 close)。
 func toXAddID(_ string, t time.Time) string {
 	return fmt.Sprintf("%d-*", t.UnixMilli())
 }

@@ -784,7 +784,12 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	// announce 自身に id があれば URI として保存し、重複検出にも使う
+	// announce 自身に id があれば URI として保存し、重複検出にも使う。
+	// upstream Misskey #17356 (= 2026.5.1 fix) は同 activity の重複処理 race を
+	// Redis 分散 lock で防ぐが、mk-go は single-instance 前提で DB unique 制約 +
+	// 本 FindByURI 経由の dedup によって race を防いでいる。multi-instance 構成
+	// (mk-go pod 複数台 load balance) を採用する場合は別途 Redis lock 化を検討
+	// (= triage #1009 / upstream #17356 close)。
 	if act.ID != "" {
 		if _, err := p.noteRepo.FindByURI(act.ID); err == nil {
 			return nil
