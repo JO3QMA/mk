@@ -765,3 +765,60 @@ func TestUpdateFields_RepoError(t *testing.T) {
 	_, err := svc.UpdateFields("r1", map[string]any{"name": "New"})
 	assert.Error(t, err)
 }
+
+// upstream Misskey #17121 (= 2026.5.1 fix / triage #1012): HasRolePolicy は
+// channels/create 等の requiredRolePolicy gate で使う policy check。default
+// policies + role override の merge を見て、root / admin / policy true の
+// いずれかなら true を返す。
+func TestHasRolePolicy(t *testing.T) {
+	t.Run("default_canCreateChannel_true_for_plain_user", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		// 何も role 設定なし → DefaultPolicies の canCreateChannel=true がそのまま
+		assert.True(t, svc.HasRolePolicy("alice", "canCreateChannel"))
+	})
+
+	t.Run("default_canHideAds_false_for_plain_user", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		// DefaultPolicies の canHideAds=false がそのまま deny される
+		assert.False(t, svc.HasRolePolicy("alice", "canHideAds"))
+	})
+
+	t.Run("root_bypasses_policy_false", func(t *testing.T) {
+		svc, _, _, metaRepo := newTestService(t)
+		rootID := "root1"
+		metaRepo.Meta = &model.Meta{ID: "x", RootUserID: &rootID}
+		// canHideAds は default false だが root は無条件で true
+		assert.True(t, svc.HasRolePolicy("root1", "canHideAds"))
+	})
+
+	t.Run("admin_role_bypasses_policy_false", func(t *testing.T) {
+		svc, roleRepo, assignRepo, _ := newTestService(t)
+		roleRepo.Roles["r1"] = &model.Role{ID: "r1", Name: "Admin", IsAdministrator: true}
+		assignRepo.Assignments["alice:r1"] = &model.RoleAssignment{
+			ID: "a1", UserID: "alice", RoleID: "r1",
+		}
+		// admin role assignment → policy 値に関係なく true
+		assert.True(t, svc.HasRolePolicy("alice", "canHideAds"))
+	})
+
+	t.Run("role_override_can_deny_canCreateChannel", func(t *testing.T) {
+		svc, roleRepo, assignRepo, _ := newTestService(t)
+		// canCreateChannel=false を override する role を作成
+		roleRepo.Roles["r_no_channel"] = &model.Role{
+			ID:       "r_no_channel",
+			Name:     "NoChannel",
+			Policies: datatypes.JSON([]byte(`{"canCreateChannel": {"useDefault": false, "priority": 0, "value": false}}`)),
+		}
+		assignRepo.Assignments["bob:r_no_channel"] = &model.RoleAssignment{
+			ID: "a2", UserID: "bob", RoleID: "r_no_channel",
+		}
+		assert.False(t, svc.HasRolePolicy("bob", "canCreateChannel"),
+			"role override で canCreateChannel=false → deny")
+	})
+
+	t.Run("unknown_policy_key_denies", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		// 未知 key は fail-closed
+		assert.False(t, svc.HasRolePolicy("alice", "thisDoesNotExist"))
+	})
+}
