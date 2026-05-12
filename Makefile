@@ -19,7 +19,7 @@ GOFLAGS=-trimpath
 # バージョン情報。MisskeyVersion は /api/meta の version フィールド
 # (Misskey TS 互換クライアント向け) で使われる。drop-in 互換のため固定値。
 MKGO_VERSION ?= 0.9.0
-MISSKEY_VERSION ?= 2026.3.2
+MISSKEY_VERSION ?= 2026.5.1
 LDFLAGS=-s -w \
 	-X github.com/shiroha-a/mk/internal/config.MkGoVersion=$(MKGO_VERSION) \
 	-X github.com/shiroha-a/mk/internal/config.MisskeyVersion=$(MISSKEY_VERSION)
@@ -185,7 +185,7 @@ e2e-submodule-init:
 
 # 本家フロントエンドを Docker 内でビルドする。数分〜10 分程度かかる。
 # 成果物は third_party/misskey/packages/frontend/... 配下に出力される。
-# パッチは submodule (shiroha-a/misskey-ts 2026.3.2-fix) に直接コミット済み。
+# パッチは submodule (shiroha-a/misskey-ts、tag 2026.5.1-mk.0) に直接コミット済み。
 e2e-frontend-build:
 	docker run --rm -v $(PWD):$(E2E_WORKDIR) -w $(E2E_WORKDIR)/third_party/misskey \
 		$(E2E_NODE_IMAGE) \

@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/core/moderationlog"
 	"github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/signup"
@@ -840,7 +841,7 @@ func (h *Handler) AdminMeta(c echo.Context) error {
 	resp := map[string]any{
 		// Basic
 		"maintainerName": m.MaintainerName, "maintainerEmail": m.MaintainerEmail,
-		"version": "2026.3.2", "uri": "http://localhost:3000",
+		"version": config.MisskeyVersion, "uri": "http://localhost:3000",
 		"name": m.Name, "shortName": m.ShortName, "description": m.Description,
 		"langs": m.Langs, "pinnedUsers": m.PinnedUsers,
 		"hiddenTags": m.HiddenTags, "blockedHosts": m.BlockedHosts,
