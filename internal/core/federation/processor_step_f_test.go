@@ -2,6 +2,7 @@ package federation_test
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
@@ -452,7 +453,7 @@ func TestProcess_CreateNote_MentionLimitExceededIsDropped(t *testing.T) {
 		if i > 1 {
 			tagJSON += ","
 		}
-		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + ftoa(i) + `"}`
+		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + strconv.Itoa(i) + `"}`
 	}
 	body := []byte(`{
 		"type": "Create",
@@ -471,25 +472,6 @@ func TestProcess_CreateNote_MentionLimitExceededIsDropped(t *testing.T) {
 	// note も DB に入っていないこと
 	_, err := env.noteRepo.FindByURI("https://remote.example/notes/over")
 	require.Error(t, err)
-}
-
-// processor test 内のローカル int→string helper (resolver_test の itoa と独立)。
-func ftoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var buf [4]byte
-	n := 0
-	for i > 0 {
-		buf[n] = byte('0' + i%10)
-		i /= 10
-		n++
-	}
-	out := make([]byte, n)
-	for k := 0; k < n; k++ {
-		out[k] = buf[n-1-k]
-	}
-	return string(out)
 }
 
 // upstream Misskey #17294 (= 2026.5.0 fix / triage #1001): 存在しない actor の

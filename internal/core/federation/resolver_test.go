@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -3590,7 +3591,7 @@ func TestIngestNote_MentionLimitExceededReturnsSentinel(t *testing.T) {
 		if i > 1 {
 			tagJSON += ","
 		}
-		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + itoa(i) + `"}`
+		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + strconv.Itoa(i) + `"}`
 	}
 	body := []byte(`{
 		"id": "https://remote.example/notes/over",
@@ -3620,7 +3621,7 @@ func TestIngestNote_MentionLimitBoundaryAccepted(t *testing.T) {
 		if i > 1 {
 			tagJSON += ","
 		}
-		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + itoa(i) + `"}`
+		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + strconv.Itoa(i) + `"}`
 	}
 	body := []byte(`{
 		"id": "https://remote.example/notes/boundary",
@@ -3634,24 +3635,4 @@ func TestIngestNote_MentionLimitBoundaryAccepted(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, note)
 	assert.Len(t, note.Mentions, corenote.DefaultMentionLimit)
-}
-
-// itoa は test ローカルの小さい int→string ユーティリティ。
-// strconv 依存を 1 行で済ませるための inline helper。
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var buf [4]byte
-	n := 0
-	for i > 0 {
-		buf[n] = byte('0' + i%10)
-		i /= 10
-		n++
-	}
-	out := make([]byte, n)
-	for k := 0; k < n; k++ {
-		out[k] = buf[n-1-k]
-	}
-	return string(out)
 }
