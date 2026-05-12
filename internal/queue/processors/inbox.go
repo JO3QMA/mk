@@ -133,6 +133,12 @@ func (p *InboxProcessor) Handle(_ context.Context, t driver.Task) error {
 			return nil
 		}
 		if p.isBlocked(actor) {
+			// upstream Misskey #17336 (= 2026.5.0 fix) は NoteCreateService 深部で
+			// 出る "Instance is blocked" IdentifiableError を error handler で捕まえて
+			// retry を防ぐ修正だが、mk-go は verify-in-worker 設計 (#565) でここに
+			// signature verify 直後に block check を入れているため、blocked host の
+			// activity は body parse / NoteCreate の段にすら届かず、retry にも乗らない。
+			// よって upstream の追加 case 分岐は mk-go では不要 (= triage #1003 close)。
 			return nil
 		}
 		if actor != nil && actor.Host != nil {

@@ -378,6 +378,13 @@ func (r *userRepository) ListUsers(filter model.UserListFilter) ([]*model.User, 
 			roleCond = `(r."isAdministrator" = true OR r."isModerator" = true)`
 			includeRoot = true
 		}
+		// upstream Misskey #17334 (= 2026.5.0 fix / triage #1007): RoleService.
+		// getAdministratorIds で「複数 admin role を持つ user の ID が重複する」bug。
+		// mk-go では admin user 解決を method ベースの map+slice ではなく、本 SQL
+		// の `id IN (SELECT ra."userId" ...)` 構造で実装しているため、PostgreSQL の
+		// IN subquery semantics で自動的に dedup される (= 内部行が複数あっても
+		// 外側 id は 1 度しか match しない)。よって upstream の Set 経由 dedup と
+		// 等価な挙動が SQL レベルで保証されている。
 		idCond := `id IN (
 			SELECT ra."userId" FROM role_assignment ra
 			JOIN role r ON ra."roleId" = r.id

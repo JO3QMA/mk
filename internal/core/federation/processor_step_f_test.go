@@ -2,7 +2,9 @@ package federation_test
 
 import (
 	"errors"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
@@ -325,6 +327,114 @@ func TestProcess_AnnounceBadObject(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// upstream Misskey #17308 (= 2026.5.0 fix / triage #1002): relay actor からの
+// Announce は renote として保存せず、target を fanoutHook 経由で stream publish
+// する。RelayActorChecker が true を返すケースで renote 件数が増えず、かつ
+// fanoutHook が呼ばれることを実証する。
+//
+// stub の relayActorChecker と fanoutHook を inject して挙動を確認。
+type stubRelayActorChecker struct{ relayActorURI string }
+
+func (s *stubRelayActorChecker) IsRelayActor(u *model.User) bool {
+	if u == nil || u.URI == nil {
+		return false
+	}
+	return *u.URI == s.relayActorURI
+}
+
+// recordingFanoutHook は publishRelayDeliveredNote が safeGoFedHook 経由で
+// async に call することに対応するため channel ベースで完了を待てる stub。
+type recordingFanoutCall struct {
+	noteID string
+	author string
+}
+
+type recordingFanoutHook struct {
+	calls chan recordingFanoutCall
+}
+
+func newRecordingFanoutHook() *recordingFanoutHook {
+	return &recordingFanoutHook{calls: make(chan recordingFanoutCall, 16)}
+}
+
+func (h *recordingFanoutHook) OnNoteCreated(note *model.Note, author *model.User) {
+	authorID := ""
+	if author != nil {
+		authorID = author.ID
+	}
+	noteID := ""
+	if note != nil {
+		noteID = note.ID
+	}
+	h.calls <- recordingFanoutCall{noteID: noteID, author: authorID}
+}
+
+func TestProcess_AnnounceFromRelay_PublishesTargetWithoutRenote(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	// announcer alice を relay actor として扱う
+	checker := &stubRelayActorChecker{relayActorURI: "https://remote.example/users/alice"}
+	env.processor.SetRelayActorChecker(checker)
+	// fanoutHook を仕込んで呼び出しを記録 (= safeGoFedHook で async に呼ばれる
+	// ので channel 受信で待ち合わせる)
+	hook := newRecordingFanoutHook()
+	env.processor.SetFanoutHook(hook)
+	// target note (= 原投稿) と原投稿者 bob をローカル DB に
+	env.noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic,
+	}
+	env.userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/announces/relay-1",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+
+	// renote は作られないこと
+	var renotes int
+	for _, n := range env.noteRepo.Notes {
+		if n.RenoteID != nil && *n.RenoteID == "n1" {
+			renotes++
+		}
+	}
+	assert.Equal(t, 0, renotes, "relay 由来 Announce は renote を作らない")
+
+	// fanoutHook が target (= n1) を author=bob で publish した
+	select {
+	case call := <-hook.calls:
+		assert.Equal(t, "n1", call.noteID, "publish 対象は target note")
+		assert.Equal(t, "bob", call.author, "author は relay actor でなく原投稿者")
+	case <-time.After(2 * time.Second):
+		t.Fatal("fanoutHook was not called within timeout")
+	}
+}
+
+// RelayActorChecker 未設定 (= 旧挙動) では announce は従来通り renote を作る。
+// 既存 TestProcess_AnnounceHappyPath と同等だが「checker 未配線でも regress
+// しないこと」を明示する regression guard。
+func TestProcess_AnnounceWithoutRelayChecker_StillCreatesRenote(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	// SetRelayActorChecker を呼ばない (= 旧挙動 / nil-checker fallback)
+	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/announces/no-checker",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+
+	var renotes int
+	for _, n := range env.noteRepo.Notes {
+		if n.RenoteID != nil && *n.RenoteID == "n1" {
+			renotes++
+		}
+	}
+	assert.Equal(t, 1, renotes, "checker 未設定なら従来 path で renote 1 件作成")
+}
+
 func TestProcess_AnnounceIncrementsRenoteCount(t *testing.T) {
 	env := newFullProcessor(t, aliceActor)
 	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
@@ -438,6 +548,88 @@ func TestProcess_DeleteBadObject(t *testing.T) {
 	}`)
 	err := env.processor.Process(body)
 	assert.Error(t, err)
+}
+
+// upstream Misskey #17167 (= 2026.5.0 fix / triage #1004): mentionLimit を
+// 超える inbound Create は Resolver.IngestNote で ErrContainsTooManyMentions
+// に転換され、handleCreate がそれを catch して nil 返却 (= queue retry 経路に
+// 乗らず ack drop) する。triage doc の "role validation error の retry 防止"
+// 要件を mk-go アーキで等価実装したことの end-to-end 証明。
+func TestProcess_CreateNote_MentionLimitExceededIsDropped(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	var tagJSON string
+	for i := 1; i <= 21; i++ { // 21 = DefaultMentionLimit (20) + 1
+		if i > 1 {
+			tagJSON += ","
+		}
+		tagJSON += `{"type": "Mention", "href": "https://example.com/users/u` + strconv.Itoa(i) + `"}`
+	}
+	body := []byte(`{
+		"type": "Create",
+		"actor": "https://remote.example/users/alice",
+		"object": {
+			"id": "https://remote.example/notes/over",
+			"type": "Note",
+			"attributedTo": "https://remote.example/users/alice",
+			"content": "x",
+			"to": ["https://www.w3.org/ns/activitystreams#Public"],
+			"tag": [` + tagJSON + `]
+		}
+	}`)
+	// 上限超え note は ack されるが drop される (queue は retry しない)。
+	require.NoError(t, env.processor.Process(body))
+	// note も DB に入っていないこと
+	_, err := env.noteRepo.FindByURI("https://remote.example/notes/over")
+	require.Error(t, err)
+}
+
+// upstream Misskey #17294 (= 2026.5.0 fix / triage #1001): 存在しない actor の
+// Delete activity は ignore する。actor URI と object URI が一致する self-delete
+// shape でローカル DB に同 URI の user が居ない場合、ResolveActor を呼ばずに
+// nil を返して queue retry に乗らないようにする。
+func TestProcess_DeleteActor_UnknownActorSkipped(t *testing.T) {
+	// fetcher を空文字列にすることで、もし ResolveActor が呼ばれてしまった場合は
+	// 失敗する設定にする。期待動作は「ResolveActor を一切呼ばずに nil を返す」。
+	env := newFullProcessor(t, "")
+	body := []byte(`{
+		"type": "Delete",
+		"actor": "https://gone.example/users/ghost",
+		"object": "https://gone.example/users/ghost"
+	}`)
+	// 既存実装は ResolveActor 失敗で error を返していたが、本 fix で nil 返す。
+	require.NoError(t, env.processor.Process(body))
+}
+
+// 既知 actor の self-delete は ResolveActor 後の (author.URI == targetURI) check
+// で no-op になる従来 path を覆う。新 fix の影響で前段で早期 return しないこと
+// (= actor が居る場合は通常の delete 処理に進むこと) を実証する。
+func TestProcess_DeleteActor_KnownActorSelfDeleteStillNoop(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	aliceURI := "https://remote.example/users/alice"
+	env.userRepo.Users["alice"] = &model.User{ID: "alice", Username: "alice", URI: &aliceURI}
+	body := []byte(`{
+		"type": "Delete",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://remote.example/users/alice"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+}
+
+// upstream Misskey #17340 (= 2026.5.0 fix / triage #999): activity.actor は
+// 文字列 IRI でも embedded object でも受け入れる。Mastodon 系等から actor
+// field が `{"id": "..."}` 形式で来た場合に actor missing で reject しないこと。
+func TestProcess_ActorEmbeddedObject_NormalizedAndProcessed(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	bobURI := "https://example.com/users/bob"
+	env.userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bob", URI: &bobURI}
+	body := []byte(`{
+		"type": "Follow",
+		"actor": {"id": "https://remote.example/users/alice", "type": "Person"},
+		"object": "https://example.com/users/bob"
+	}`)
+	// normalizeActor が走り、Follow が正しく処理される (= actor missing で
+	// errors.New("activity missing actor") にならない) ことを確認。
+	require.NoError(t, env.processor.Process(body))
 }
 
 // noteDeleteSvc が nil の Processor では noteRepo.Delete が直接呼ばれる

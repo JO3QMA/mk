@@ -187,6 +187,57 @@ func TestAvatarDecorationsCreate_MissingName(t *testing.T) {
 		doPost(h.AvatarDecorationsCreate, `{"url":"https://i"}`, adminUser).Code)
 }
 
+// upstream Misskey #17034 (= 2026.5.0): avatar_decoration に category 列を
+// 追加し、create / update / list / get-avatar-decorations の各 API で round-trip
+// する。create で category 指定 → 戻り値 + DB row に反映、update で別 string
+// への更新 → DB row 更新、create 時の category 省略 → null 永続化、を確認。
+// 加えて update で `"category": null` を送った時は no-update (= upstream の
+// `ps.category === undefined` と同 semantics) になることも seal する。
+func TestAvatarDecorationsCategory_RoundTrip(t *testing.T) {
+	h, repo := setupAvatarDecorationHandler(t)
+
+	// 1) Create with category
+	createBody := `{"name":"deco","description":"d","url":"https://i",` +
+		`"roleIdsThatCanBeUsedThisDecoration":[],"category":"holiday"}`
+	rec := doPost(h.AvatarDecorationsCreate, createBody, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var created model.AvatarDecoration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.NotNil(t, created.Category, "create response should include category")
+	assert.Equal(t, "holiday", *created.Category)
+	require.NotNil(t, repo.Decorations[created.ID].Category, "DB row should persist category")
+	assert.Equal(t, "holiday", *repo.Decorations[created.ID].Category)
+
+	// 2) Update category to a different string
+	rec = doPost(h.AvatarDecorationsUpdate,
+		`{"id":"`+created.ID+`","category":"event"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, repo.Decorations[created.ID].Category)
+	assert.Equal(t, "event", *repo.Decorations[created.ID].Category)
+
+	// 3) Update with `"category": null` → no-update (= 現状の holiday → event
+	// と進んだ後の `event` がそのまま保持される)。Go の json.Unmarshal は JSON
+	// null を *string の nil として埋めるため、handler 側の `if req.Category
+	// != nil` 分岐に入らず変更されない。`clear` したい場合は明示的に
+	// "category": "" を送る運用 (= upstream `ps.category === undefined` と
+	// 同じ振る舞い)。
+	rec = doPost(h.AvatarDecorationsUpdate,
+		`{"id":"`+created.ID+`","category":null}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, repo.Decorations[created.ID].Category, "null update should NOT clear category")
+	assert.Equal(t, "event", *repo.Decorations[created.ID].Category, "category remains event after null update")
+
+	// 4) Create without category → DB row has Category=nil
+	rec = doPost(h.AvatarDecorationsCreate,
+		`{"name":"plain","description":"","url":"https://i","roleIdsThatCanBeUsedThisDecoration":[]}`,
+		adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var plain model.AvatarDecoration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &plain))
+	assert.Nil(t, plain.Category, "create without category → null in response")
+	assert.Nil(t, repo.Decorations[plain.ID].Category, "DB row should have null category")
+}
+
 func TestAvatarDecorationsList_WithRepo(t *testing.T) {
 	h, _ := setupAvatarDecorationHandler(t,
 		&model.AvatarDecoration{ID: "d1", Name: "a"},

@@ -212,6 +212,13 @@ const twoFAKeyNameMaxLen = 30
 // する。upstream は逆順 (token → password) だが、片方だけ正しい状態の検出可否は
 // 対称なので情報リーク的に等価。`requireWebAuthn` を共有する都合で password 先に
 // 揃えている。
+//
+// upstream Misskey #17354 (= 2026.5.1 / triage #1013): 同 endpoint は upstream
+// 2026.5.1 でも refactor (passkey library 更新 / response schema 簡略化) で
+// 残っており削除されていない。triage 当時 `git show --stat` の純減 line 数を
+// 削除と誤読したが、実際は file は保持。mk-go は WebAuthn を go-webauthn lib で
+// 実装しており upstream の @simplewebauthn lib 更新は無関係なので、本 handler
+// は upstream と独立に維持する。
 func (h *Handler) TwoFARegisterKey(c echo.Context) error {
 	var req struct {
 		Password string `json:"password"`

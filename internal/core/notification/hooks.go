@@ -83,6 +83,16 @@ func (h *Hook) SetNoteUnreadRepo(r repository.NoteUnreadRepository) {
 
 // OnNoteCreated is called by note.CreateService after persisting a new note.
 // Reply/Renote/Mention の通知を非同期に作成する。
+//
+// upstream Misskey #17350 (= 2026.5.0 review fix): NotificationManager.queue を
+// array から Map<userID, entry> に変更し add() 時の重複検出を O(N) → O(1) に
+// する内部 perf 最適化が入ったが、mk-go では同等の重複検出は既に
+// resolveMentionIDs 側で seen map による dedup として実装済 (#103 line 153)。
+// 本 OnNoteCreated は reply / renote / mention の 3 種別をそれぞれ独立した
+// notifyLocalUser 呼び出しで処理する設計のため、upstream の Map 化が想定する
+// 「同一 target に複数 reason が積まれる」シナリオは構造的に発生しない (=
+// reply target と mention が重なる場合は 132 行の continue で skip 済)。
+// よって upstream perf 最適化を mk-go に持ち込む必要はない。
 func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
 	if n == nil || author == nil {
 		return
@@ -99,8 +109,17 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 	// ユーザー) もここで捕捉できる。
 	h.recordNoteUnreads(n, author, mentionedIDs)
 
+	// upstream Misskey #17335 (= 2026.5.0 fix / triage #1006) + #17363
+	// (= 2026.5.1 fix / triage #1010): 通知を生成する前に note の visibility を
+	// 見て target を絞る。specified 可視性 note では visibleUserIds 外の user に
+	// 通知が飛ぶと情報漏洩になる (= mention 通知から本文の URL が辿れる)。
+	// public / home / followers は filter 無し (= upstream の followers ケースが
+	// #17363 で null = no filter に揃った)。default (= 不明 visibility) は
+	// 通知 fan-out 自体を停止して安全側に倒す。
+
 	// reply: 親ノートの投稿者がローカルユーザーなら通知
-	if replyTarget != nil && replyTarget.UserID != author.ID {
+	if replyTarget != nil && replyTarget.UserID != author.ID &&
+		h.notifyVisibleToTarget(n, replyTarget.UserID) {
 		h.notifyLocalUser(ctx, replyTarget.UserID, CreateInput{
 			NotifieeID:     replyTarget.UserID,
 			NotifierID:     author.ID,
@@ -111,7 +130,8 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 	}
 
 	// renote / quote: 対象ノートの投稿者へ通知
-	if renoteTarget != nil && renoteTarget.UserID != author.ID {
+	if renoteTarget != nil && renoteTarget.UserID != author.ID &&
+		h.notifyVisibleToTarget(n, renoteTarget.UserID) {
 		t := TypeRenote
 		if isQuote(n) {
 			t = TypeQuote
@@ -131,6 +151,9 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 		if replyTarget != nil && replyTarget.UserID == mentionedID {
 			continue
 		}
+		if !h.notifyVisibleToTarget(n, mentionedID) {
+			continue
+		}
 		h.notifyLocalUser(ctx, mentionedID, CreateInput{
 			NotifieeID:     mentionedID,
 			NotifierID:     author.ID,
@@ -138,6 +161,42 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 			NoteID:         n.ID,
 			NoteVisibility: string(n.Visibility),
 		})
+	}
+}
+
+// notifyVisibleToTarget reports whether `targetID` should receive a notification
+// about note `n`, based on its visibility (upstream #17335 / triage #1006 +
+// upstream #17363 / triage #1010)。
+//
+//   - public / home / followers / 空: 全 target に通知 (followers は upstream
+//     #17363 で null = no filter に揃った)
+//   - specified: visibleUserIds に含まれる target だけ
+//   - 未知 visibility: 通知しない (= 安全側 fallback、broken state での誤通知防止)
+//
+// 注: VisibleUserIDs 比較は線形探索だが、specified note の visibleUserIds 配列
+// は通常 10 件以下なので map 化のコスト (= 各通知呼び出しで毎回 map 構築) より
+// 安い。
+func (h *Hook) notifyVisibleToTarget(n *model.Note, targetID string) bool {
+	switch n.Visibility {
+	case "", model.NoteVisibilityPublic, model.NoteVisibilityHome, model.NoteVisibilityFollowers:
+		return true
+	case model.NoteVisibilitySpecified:
+		for _, id := range n.VisibleUserIDs {
+			if id == targetID {
+				return true
+			}
+		}
+		return false
+	default:
+		// 未知 visibility は安全側に倒す (= notify しない) が、silent drop だと
+		// misconfig や将来の visibility 追加忘れの debug が困難になるため warn
+		// で観測可能にする (= fail-closed + observable)。
+		slog.Warn("notification: unknown note visibility, dropping notification",
+			"visibility", string(n.Visibility),
+			"noteId", n.ID,
+			"targetId", targetID,
+		)
+		return false
 	}
 }
 

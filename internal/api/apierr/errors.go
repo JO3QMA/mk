@@ -37,6 +37,11 @@ const (
 	UUIDNoSuchUser   = "4362f8dc-731f-4ad8-a694-be5a88922a24"
 	UUIDAccessDenied = "1fb7cb09-d46a-4fff-b8df-057708cce513"
 
+	// UUIDRolePermissionDenied は upstream `ApiCallService.ts` で requiredRolePolicy
+	// 違反時に投げられる ROLE_PERMISSION_DENIED の UUID (upstream #17121 / triage
+	// #1012 経由で初導入)。channels/create 等の policy-gated endpoint が共通で使う。
+	UUIDRolePermissionDenied = "7f86f06f-7e15-4057-8561-f4b6d4ac755a"
+
 	// UUIDNoSuchEmoji は upstream `admin/emoji/update` の `noSuchEmoji` UUID
 	// (third_party/misskey/.../endpoints/admin/emoji/update.ts:24)。mk-go の
 	// 旧実装は `684b7e7e-...` という typo'd 値を返していた regression を
@@ -165,6 +170,16 @@ func NoSuchNoteDraft() map[string]any {
 // AccessDenied returns a 403 ACCESS_DENIED error response.
 func AccessDenied() map[string]any {
 	return Error("ACCESS_DENIED", "Access denied.", UUIDAccessDenied)
+}
+
+// RolePermissionDenied returns a 403 ROLE_PERMISSION_DENIED error response.
+// upstream `ApiCallService.ts` の requiredRolePolicy 違反時と同 shape
+// (message: "You are not assigned to a required role.", id: 7f86f06f-...)。
+// policy-gated endpoint (channels/create 等) で共通で使う。
+func RolePermissionDenied() map[string]any {
+	return Error("ROLE_PERMISSION_DENIED",
+		"You are not assigned to a required role.",
+		UUIDRolePermissionDenied)
 }
 
 // NoSuchRenoteTarget returns a 404 NO_SUCH_RENOTE_TARGET error response.

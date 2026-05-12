@@ -22,6 +22,15 @@ var (
 	ErrNotAssigned = errors.New("role not assigned")
 )
 
+// Policy key constants. requiredRolePolicy gate 経路 (HasRolePolicy / 各 endpoint
+// での policy 文字列参照) で typo を防ぐため定数化する。新規 policy-gated
+// endpoint を追加する際はここに対応 const を生やしてから call site で使う。
+const (
+	// PolicyCanCreateChannel gates /api/channels/create (upstream Misskey
+	// #17121 / triage #1012)。
+	PolicyCanCreateChannel = "canCreateChannel"
+)
+
 // roleCacheTTL は GetUserRoles キャッシュの有効期限。Misskey TS 同等の
 // admin 操作 (admin/roles/* 経路) は頻度が低いので、5 分に揃えて
 // IsAdministrator / IsModerator / GetUserPolicies の DB 負荷を消す
@@ -207,6 +216,29 @@ func (s *Service) IsModerator(userID string) bool {
 		}
 	}
 	return false
+}
+
+// HasRolePolicy reports whether `userID` is allowed to perform an action gated
+// by `policyKey`. upstream `ApiCallService.ts` の requiredRolePolicy check と
+// 等価な判定で、以下のいずれかなら true:
+//
+//  1. root user (= meta.rootUserId == userID or user.isRoot)
+//  2. admin role assignment あり (IsAdministrator が内部で root も含む)
+//  3. merged policies[policyKey] が bool true
+//
+// 未知 policyKey や非 bool 値が来ると false (= deny) に倒す。policy 配線忘れ
+// による over-permissive な事故を避ける fail-closed 設計。
+func (s *Service) HasRolePolicy(userID, policyKey string) bool {
+	if s.IsAdministrator(userID) {
+		return true
+	}
+	policies := s.GetUserPolicies(userID)
+	v, ok := policies[policyKey]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
 }
 
 // GetUserPolicies computes merged policies for a user based on assigned roles.
@@ -401,29 +433,33 @@ func DefaultPolicies() map[string]any {
 		"canSearchUsers":             true,
 		"canUseTranslator":           true,
 		"canHideAds":                 false,
-		"driveCapacityMb":            100,
-		"maxFileSizeMb":              30,
-		"alwaysMarkNsfw":             false,
-		"canUpdateBioMedia":          true,
-		"pinLimit":                   5,
-		"antennaLimit":               5,
-		"wordMuteLimit":              200,
-		"webhookLimit":               3,
-		"clipLimit":                  10,
-		"noteEachClipsLimit":         200,
-		"userListLimit":              10,
-		"userEachUserListsLimit":     50,
-		"rateLimitFactor":            1,
-		"avatarDecorationLimit":      1,
-		"canImportAntennas":          false,
-		"canImportBlocking":          false,
-		"canImportFollowing":         false,
-		"canImportMuting":            false,
-		"canImportUserLists":         false,
-		"chatAvailability":           "available",
-		"uploadableFileTypes":        []string{"text/*", "application/json", "image/*", "video/*", "audio/*"},
-		"noteDraftLimit":             10,
-		"scheduledNoteLimit":         1,
-		"watermarkAvailable":         true,
+		// upstream Misskey #17121 (= 2026.5.1 fix / triage #1012): channel 作成
+		// 権限の role policy。default true (= 全員許可)、admin が role 経由で
+		// 個別 user を false に絞れる。`/api/channels/create` で gate される。
+		PolicyCanCreateChannel:   true,
+		"driveCapacityMb":        100,
+		"maxFileSizeMb":          30,
+		"alwaysMarkNsfw":         false,
+		"canUpdateBioMedia":      true,
+		"pinLimit":               5,
+		"antennaLimit":           5,
+		"wordMuteLimit":          200,
+		"webhookLimit":           3,
+		"clipLimit":              10,
+		"noteEachClipsLimit":     200,
+		"userListLimit":          10,
+		"userEachUserListsLimit": 50,
+		"rateLimitFactor":        1,
+		"avatarDecorationLimit":  1,
+		"canImportAntennas":      false,
+		"canImportBlocking":      false,
+		"canImportFollowing":     false,
+		"canImportMuting":        false,
+		"canImportUserLists":     false,
+		"chatAvailability":       "available",
+		"uploadableFileTypes":    []string{"text/*", "application/json", "image/*", "video/*", "audio/*"},
+		"noteDraftLimit":         10,
+		"scheduledNoteLimit":     1,
+		"watermarkAvailable":     true,
 	}
 }

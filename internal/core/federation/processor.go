@@ -39,6 +39,17 @@ type RelayStatusMarker interface {
 	MarkRejected(ctx context.Context, id string) error
 }
 
+// RelayActorChecker reports whether a given remote user is one of the locally
+// registered relays. Used by handleAnnounce to detect relay-delivered Announce
+// activities (upstream Misskey #17308 / triage #1002) so they get published to
+// timeline streams as direct notes rather than as renotes.
+//
+// 実装は core/relay.Service。同 service は RelayStatusMarker と
+// RelayActorChecker 両方を満たすが、用途が独立しているので interface も分離。
+type RelayActorChecker interface {
+	IsRelayActor(actor *model.User) bool
+}
+
 // Processor dispatches inbound activities to the right handler.
 type Processor struct {
 	resolver         *Resolver
@@ -68,6 +79,10 @@ type Processor struct {
 
 	// Relay follow-accept / -reject hook. nil 時は relay 特化処理をスキップ。
 	relayMarker RelayStatusMarker
+
+	// Relay actor 判定 hook (#1002 / upstream #17308)。nil 時は全 Announce が
+	// 従来通り renote として処理される。
+	relayActorChecker RelayActorChecker
 
 	// Chat federation (CherryPick互換)
 	chatService ChatMessageReceiver
@@ -238,6 +253,9 @@ func (p *Processor) Process(body []byte) error {
 	var act genericActivity
 	_ = json.Unmarshal(body, &act)
 	act.raw = body
+	// upstream Misskey #17340: activity.actor が string IRI でなく embedded
+	// {"id": "..."} object のケースを救済する (triage #999)。
+	act.normalizeActor(body)
 	if act.Actor == "" {
 		return errors.New("activity missing actor")
 	}
@@ -316,6 +334,14 @@ func (p *Processor) SetPinningRepo(repo repository.UserNotePiningRepository, idG
 // the corresponding relay row to accepted / rejected.
 func (p *Processor) SetRelayMarker(m RelayStatusMarker) {
 	p.relayMarker = m
+}
+
+// SetRelayActorChecker wires a RelayActorChecker so handleAnnounce can detect
+// relay-delivered Announce activities and publish target notes to timeline
+// streams directly instead of wrapping them in a renote (upstream #17308 /
+// triage #1002).
+func (p *Processor) SetRelayActorChecker(c RelayActorChecker) {
+	p.relayActorChecker = c
 }
 
 // SetChatService wires a ChatMessageReceiver for inbound Misskey:ChatMessage
@@ -423,6 +449,8 @@ func (p *Processor) handleUndo(act genericActivity) error {
 	if err := json.Unmarshal(act.Object, &inner); err != nil {
 		return fmt.Errorf("invalid undo object: %w", err)
 	}
+	// inner.actor が embedded object のケースも救済する (#999 / upstream #17340)。
+	inner.normalizeActor(act.Object)
 	switch strings.ToLower(inner.Type) {
 	case "follow":
 		return p.handleUndoFollow(act, inner)
@@ -561,6 +589,8 @@ func (p *Processor) handleAccept(act genericActivity) error {
 		// objectが文字列（Follow IDのURI）の場合もあるが、現状はnilで許容
 		return nil
 	}
+	// inner.actor が embedded object のケースも救済する (#999 / upstream #17340)。
+	inner.normalizeActor(act.Object)
 	if !strings.EqualFold(inner.Type, "follow") {
 		return nil
 	}
@@ -628,6 +658,16 @@ func (p *Processor) handleCreate(act genericActivity) error {
 		}
 	}
 	note, err := p.resolver.IngestNote(act.Object)
+	if errors.Is(err, corenote.ErrContainsTooManyMentions) {
+		// upstream Misskey #17167 (= 2026.5.0 fix / triage #1004): role policy
+		// 由来の "note contains too many mentions" は永続的に解決しない error な
+		// ので queue retry に乗せず ack して drop する。upstream は同種 error を
+		// IdentifiableError('9f466dab-...') で switch する patch だが、mk-go は
+		// sentinel error の errors.Is で同等の non-retry 化を行う。
+		slog.Info("federation: dropping inbound note exceeding mentionLimit",
+			"actor", act.Actor, "limit", corenote.DefaultMentionLimit)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -784,7 +824,21 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 	if err != nil {
 		return err
 	}
-	// announce 自身に id があれば URI として保存し、重複検出にも使う
+	// upstream Misskey #17308 (= 2026.5.0 fix / triage #1002): relay 由来の
+	// Announce は renote として保存せず、target note 自体を timeline stream に
+	// publish する。renote 表示にしてしまうと「relay actor がリノートした」と
+	// いう偽装表示になり、原投稿者からの直接配送と区別がつかなくなるため。
+	// announcer.Inbox / SharedInbox が registered relay の Inbox と一致した
+	// 場合のみ relay 由来と判定。
+	if p.relayActorChecker != nil && p.relayActorChecker.IsRelayActor(announcer) {
+		return p.publishRelayDeliveredNote(target, targetURI, act.Actor)
+	}
+	// announce 自身に id があれば URI として保存し、重複検出にも使う。
+	// upstream Misskey #17356 (= 2026.5.1 fix) は同 activity の重複処理 race を
+	// Redis 分散 lock で防ぐが、mk-go は single-instance 前提で DB unique 制約 +
+	// 本 FindByURI 経由の dedup によって race を防いでいる。multi-instance 構成
+	// (mk-go pod 複数台 load balance) を採用する場合は別途 Redis lock 化を検討
+	// (= triage #1009 / upstream #17356 close)。
 	if act.ID != "" {
 		if _, err := p.noteRepo.FindByURI(act.ID); err == nil {
 			return nil
@@ -823,13 +877,63 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 	return nil
 }
 
+// publishRelayDeliveredNote handles a relay-delivered Announce (= no renote
+// creation, just publish the target note to timeline streams). 仕様詳細は
+// handleAnnounce 内の relay-delivered コメント参照 (upstream #17308 / triage
+// #1002)。
+//
+// target の author を最も信頼できる relation 経由で解決する: まず
+// hydrateNoteForFanout で User relation を pre-load し、それが空なら
+// userRepo.FindByID(target.UserID) に fallback する。author が解決できない
+// 場合 (= target.UserID も無い等の broken state) は fanoutHook を呼ばずに
+// 戻る (safe degrade)。
+//
+// renoteCount は increment しない (= target は新規 renote 対象ではない)、
+// notificationHook も呼ばない (= 原投稿者には relay 経由配送の通知を出さない、
+// 上流 / 他 instance から直接届く Create で通知済みの可能性が高いため二重通知
+// 回避)。
+func (p *Processor) publishRelayDeliveredNote(target *model.Note, targetURI, relayActor string) error {
+	hydrated := hydrateNoteForFanout(p.noteRepo, target)
+	author := hydrated.User
+	if author == nil && p.userRepo != nil && target.UserID != "" {
+		if u, err := p.userRepo.FindByID(target.UserID); err == nil {
+			author = u
+		}
+	}
+	if author == nil {
+		slog.Warn("federation: relay-delivered note has no resolvable author, skipping fanout",
+			"relay", relayActor, "noteURI", targetURI, "userId", target.UserID)
+		return nil
+	}
+	if p.fanoutHook != nil {
+		safeGoFedHook(func() { p.fanoutHook.OnNoteCreated(hydrated, author) })
+	}
+	slog.Debug("federation: relay-delivered note published",
+		"relay", relayActor, "noteURI", targetURI, "authorId", author.ID)
+	return nil
+}
+
 // handleDelete removes a remote note (or actor) referenced by a Delete activity.
 func (p *Processor) handleDelete(act genericActivity) error {
-	author, err := p.resolver.ResolveActor(act.Actor)
+	targetURI, err := readObjectString(act.Object)
 	if err != nil {
 		return err
 	}
-	targetURI, err := readObjectString(act.Object)
+	// upstream Misskey #17294 (= 2026.5.0 fix / triage #1001): object が Actor
+	// (self-delete または object.type が Actor 系) で、その actor がローカルに
+	// 存在しないなら無視する。これをやらないと ResolveActor が remote fetch を
+	// 試みて 404 で失敗 → queue retry に乗り続ける挙動になる (= "存在しない
+	// actor の delete を受け取り続けて queue が膨れる" 既存 bug)。
+	if isActorDelete(act.Actor, targetURI, act.Object) {
+		if _, ferr := p.userRepo.FindByURI(targetURI); ferr != nil {
+			// gorm の ErrRecordNotFound は明示 import せず、user が見つからない
+			// 場合は ferr != nil で代表させる (他の DB error も "ignore して
+			// retry を避ける" 方が retry 蓄積よりマシ)。
+			return nil
+		}
+		// 存在する actor の delete は従来通り resolve に進む。
+	}
+	author, err := p.resolver.ResolveActor(act.Actor)
 	if err != nil {
 		return err
 	}
@@ -849,6 +953,22 @@ func (p *Processor) handleDelete(act genericActivity) error {
 		return p.noteDeleteSvc.Delete(author, note.ID)
 	}
 	return p.noteRepo.Delete(note)
+}
+
+// isActorDelete reports whether the given Delete activity targets an actor.
+// Heuristics: (a) actor URI と object URI が一致するなら self-delete、
+// (b) object が embedded 形式で type が Actor 系 (Person / Service / Application
+// / Group / Organization) なら actor delete とみなす。
+// upstream Misskey の isActor() / getApId() の組合せに相当する判定。
+func isActorDelete(actorURI, targetURI string, object json.RawMessage) bool {
+	if actorURI != "" && actorURI == targetURI {
+		return true
+	}
+	switch strings.ToLower(peekObjectType(object)) {
+	case "person", "service", "application", "group", "organization":
+		return true
+	}
+	return false
 }
 
 // handleUpdate refreshes a remote actor's stored profile fields, or applies
@@ -939,6 +1059,8 @@ func (p *Processor) handleReject(act genericActivity) error {
 	if err := json.Unmarshal(act.Object, &inner); err != nil {
 		return fmt.Errorf("invalid reject object: %w", err)
 	}
+	// inner.actor が embedded object のケースも救済する (#999 / upstream #17340)。
+	inner.normalizeActor(act.Object)
 	if !strings.EqualFold(inner.Type, "follow") {
 		return ErrUnsupportedActivity
 	}
@@ -1191,6 +1313,29 @@ func (p *Processor) handleRemove(act genericActivity) error {
 	}
 	_ = p.pinningRepo.Delete(pin)
 	return nil
+}
+
+// normalizeActor populates act.Actor when JSON tag-driven Unmarshal could not
+// pull a plain string (= upstream Misskey #17340 fix; activity.actor may be
+// either a string IRI or an embedded {"id": "..."} object). Pass the raw bytes
+// that were Unmarshaled into act. No-op when Actor is already populated.
+//
+// 同 normalization は inner activity (Undo / Accept / Reject の object) にも
+// 適用する必要があるため、handler 側でも inner.normalizeActor(act.Object) を
+// 呼ぶ運用にする。
+func (act *genericActivity) normalizeActor(raw json.RawMessage) {
+	if act.Actor != "" {
+		return
+	}
+	var probe struct {
+		Actor json.RawMessage `json:"actor"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe.Actor) == 0 {
+		return
+	}
+	if id, err := readObjectString(probe.Actor); err == nil {
+		act.Actor = id
+	}
 }
 
 // readObjectString reads an activity Object field that is either a plain

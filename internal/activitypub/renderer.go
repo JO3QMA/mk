@@ -253,7 +253,7 @@ func (r *Renderer) RenderPerson(u *model.User, profile *model.UserProfile, publi
 		p.MovedTo = *u.MovedToURI
 	}
 	if u.AlsoKnownAs != nil && *u.AlsoKnownAs != "" {
-		p.AlsoKnownAs = strings.Split(*u.AlsoKnownAs, ",")
+		p.AlsoKnownAs = APStringList(strings.Split(*u.AlsoKnownAs, ","))
 	}
 	if u.Featured != nil && *u.Featured != "" {
 		p.Featured = *u.Featured

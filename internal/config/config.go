@@ -19,8 +19,8 @@ var MkGoVersion = "0.9.0"
 
 // MisskeyVersion is the compatible Misskey version. Override at build time via:
 //
-//	go build -ldflags "-X github.com/shiroha-a/mk/internal/config.MisskeyVersion=2026.3.2"
-var MisskeyVersion = "2026.3.2"
+//	go build -ldflags "-X github.com/shiroha-a/mk/internal/config.MisskeyVersion=2026.5.1"
+var MisskeyVersion = "2026.5.1"
 
 // RedisOptions represents Redis connection configuration.
 type RedisOptions struct {

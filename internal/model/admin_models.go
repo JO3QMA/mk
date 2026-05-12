@@ -53,6 +53,9 @@ type AvatarDecoration struct {
 	Name        string         `gorm:"column:name;type:varchar(256);not null" json:"name"`
 	Description string         `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
 	RoleIDs     pq.StringArray `gorm:"column:roleIdsThatCanBeUsedThisDecoration;type:varchar(128)[];default:'{}'" json:"roleIdsThatCanBeUsedThisDecoration"`
+	// Category は upstream Misskey #17034 (= 2026.5.0) で導入された分類用 field。
+	// nullable で、管理画面の avatar decoration グルーピングに使う。
+	Category *string `gorm:"column:category;type:varchar(128)" json:"category"`
 }
 
 func (AvatarDecoration) TableName() string { return "avatar_decoration" }

@@ -22,6 +22,8 @@ func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
 		Description string   `json:"description"`
 		URL         string   `json:"url"`
 		RoleIDs     []string `json:"roleIdsThatCanBeUsedThisDecoration"`
+		// Category は upstream Misskey #17034 (= 2026.5.0) で追加。nullable。
+		Category *string `json:"category"`
 	}
 	if err := c.Bind(&req); err != nil || req.Name == "" || req.URL == "" {
 		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
@@ -32,6 +34,7 @@ func (h *Handler) AvatarDecorationsCreate(c echo.Context) error {
 		Description: req.Description,
 		URL:         req.URL,
 		RoleIDs:     req.RoleIDs,
+		Category:    req.Category,
 	}
 	if err := h.avatarDecoRepo.Create(d); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.InternalError())
@@ -91,6 +94,10 @@ func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
 		Description *string   `json:"description"`
 		URL         *string   `json:"url"`
 		RoleIDs     *[]string `json:"roleIdsThatCanBeUsedThisDecoration"`
+		// Category は upstream Misskey #17034 (= 2026.5.0)。nullable。
+		// `*string` で「未指定 / null = 変更なし、value = set」とする (=
+		// upstream 側も `ps.category` を直接渡す semantics に揃える)。
+		Category *string `json:"category"`
 	}
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
@@ -113,6 +120,11 @@ func (h *Handler) AvatarDecorationsUpdate(c echo.Context) error {
 		// pq.StringArray でラップしないと GORM Updates(map) が空 string[] を
 		// NULL 化して NOT NULL 制約違反になる (#931、#896 / #900 / #901 と同 class)。
 		fields["roleIdsThatCanBeUsedThisDecoration"] = pq.StringArray(*req.RoleIDs)
+	}
+	if req.Category != nil {
+		// nil = 未指定 (no update)、value = set。upstream の category 扱いと
+		// 同 semantics。clear には別途 "category": "" (empty string) を送る運用。
+		fields["category"] = *req.Category
 	}
 	if err := h.avatarDecoRepo.UpdateFields(req.ID, fields); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.InternalError())

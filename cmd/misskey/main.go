@@ -36,7 +36,7 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
-	slog.Info("starting Misskey (Go)", "version", "2026.3.2")
+	slog.Info("starting Misskey (Go)", "version", config.MisskeyVersion, "mkGoVersion", config.MkGoVersion)
 
 	// 設定ファイルの読み込み
 	cfg, err := config.Load(*configPath)

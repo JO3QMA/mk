@@ -41,6 +41,12 @@ func JSONAccessDenied(c echo.Context) error {
 	return c.JSON(http.StatusForbidden, AccessDenied())
 }
 
+// JSONRolePermissionDenied writes a 403 ROLE_PERMISSION_DENIED response.
+// 詳細は RolePermissionDenied 関数の doc を参照。
+func JSONRolePermissionDenied(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, RolePermissionDenied())
+}
+
 // JSONNoSuchRenoteTarget writes a 404 NO_SUCH_RENOTE_TARGET response to the client.
 func JSONNoSuchRenoteTarget(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, NoSuchRenoteTarget())

@@ -149,3 +149,93 @@ func TestIsBotActorType(t *testing.T) {
 		})
 	}
 }
+
+// upstream Misskey #17275 (= 2026.5.0 fix / triage #1000): alsoKnownAs を
+// array でも single string でも受け入れる。Mastodon 等が array で送ってくる
+// 一方 Friendica など一部実装は single string で送ってくるため、両方を
+// 受信できる必要がある。送信側は常に array (= []string と同じ shape) で emit。
+func TestAPStringList_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want APStringList
+	}{
+		{"empty_input", ``, nil},
+		{"null_value", `null`, nil},
+		{"array_form", `["a","b"]`, APStringList{"a", "b"}},
+		{"empty_array", `[]`, APStringList{}},
+		{"single_string", `"https://other.example/users/alice"`, APStringList{"https://other.example/users/alice"}},
+		{"leading_whitespace_array", "  \n\t[\"x\"]", APStringList{"x"}},
+		{"leading_whitespace_string", "  \"y\"", APStringList{"y"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got APStringList
+			err := got.UnmarshalJSON([]byte(tc.in))
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// APStringList が送信側でも array shape を維持することを実証する
+// (commit message で「JSON 送出時は []string と同じ array shape で emit する」と
+// 表明したコントラクトの test)。受信時 single string が re-export で
+// spec 準拠の array に正規化されることもセットで確認する。
+func TestAPStringList_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		in   APStringList
+		want string
+	}{
+		{"two", APStringList{"a", "b"}, `["a","b"]`},
+		{"single", APStringList{"x"}, `["x"]`},
+		{"empty", APStringList{}, `[]`},
+		{"nil", nil, `null`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.in)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, string(b))
+		})
+	}
+}
+
+// single string で Unmarshal → Marshal すると array に正規化される roundtrip。
+// 受信時の互換性 + 送信時の spec 厳守を 1 ケースで束ねて検証する。
+func TestAPStringList_SingleStringNormalizedToArrayOnReexport(t *testing.T) {
+	var l APStringList
+	err := json.Unmarshal([]byte(`"https://other.example/users/a"`), &l)
+	assert.NoError(t, err)
+	out, err := json.Marshal(l)
+	assert.NoError(t, err)
+	assert.Equal(t, `["https://other.example/users/a"]`, string(out))
+}
+
+// Person.AlsoKnownAs を Mastodon 互換の array 形式 / Friendica 等の single
+// string 形式どちらでも JSON Unmarshal が成功し、[]string として等価な値を
+// 取れることを実 Person Unmarshal で end-to-end 検証する。
+func TestPerson_AlsoKnownAs_BothForms(t *testing.T) {
+	t.Run("array_form", func(t *testing.T) {
+		body := []byte(`{"id":"https://example.test/users/alice","alsoKnownAs":["https://old.example/users/a","https://older.example/users/a"]}`)
+		var p Person
+		err := json.Unmarshal(body, &p)
+		assert.NoError(t, err)
+		assert.Equal(t, APStringList{"https://old.example/users/a", "https://older.example/users/a"}, p.AlsoKnownAs)
+	})
+	t.Run("single_string_form", func(t *testing.T) {
+		body := []byte(`{"id":"https://example.test/users/alice","alsoKnownAs":"https://old.example/users/a"}`)
+		var p Person
+		err := json.Unmarshal(body, &p)
+		assert.NoError(t, err)
+		assert.Equal(t, APStringList{"https://old.example/users/a"}, p.AlsoKnownAs)
+	})
+	t.Run("absent_field", func(t *testing.T) {
+		body := []byte(`{"id":"https://example.test/users/alice"}`)
+		var p Person
+		err := json.Unmarshal(body, &p)
+		assert.NoError(t, err)
+		assert.Nil(t, p.AlsoKnownAs)
+	})
+}

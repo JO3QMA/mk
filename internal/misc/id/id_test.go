@@ -133,6 +133,52 @@ func TestULID_MonotonicStress(t *testing.T) {
 	}
 }
 
+// upstream Misskey #17310 (= 2026.5.0 fix) は自前 parser が一般 base32 を使って
+// いて Crockford 専用の W/X/Y/Z (値 24-31) を誤って parse する bug を修正したが、
+// mk-go は oklog/ulid/v2 に委譲しており仕様準拠の Crockford parser を持つため
+// 同 bug は構造的に発生しない。regression guard として W/X/Y/Z を含む ULID を
+// 直接 parse して timestamp が抽出できることを確認する
+// (= triage #1005 / upstream #17310 close)。
+func TestULID_CrockfordWXYZ(t *testing.T) {
+	g, _ := NewGenerator("ulid")
+	tests := []struct {
+		name string
+		id   string
+	}{
+		// W/X/Y/Z を randomness 部 (= 後半 16 char) に含む 26 文字 ULID。
+		// timestamp 部は適当な値で良い (Crockford 0-9A-HJKMNP-TV-Z)。
+		{"contains_W", "01HZWWWWWWWWWWWWWWWWWWWWWW"},
+		{"contains_X", "01HZXXXXXXXXXXXXXXXXXXXXXX"},
+		{"contains_Y", "01HZYYYYYYYYYYYYYYYYYYYYYY"},
+		{"contains_Z", "01HZZZZZZZZZZZZZZZZZZZZZZZ"},
+		// 全 boundary 値が混在するケース
+		{"mixed_high_chars", "01HGWXYZWXYZWXYZWXYZWXYZWX"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := g.ParseTime(tc.id)
+			require.NoError(t, err, "Crockford W/X/Y/Z must parse without error (upstream #17310 regression)")
+		})
+	}
+
+	// 決定値 check: 既知 timestamp で gen が encode した ULID の randomness 部を
+	// W/X/Y/Z で書き換えて parse 結果が元 timestamp と一致することを確認する。
+	// timestamp を保ったまま W/X/Y/Z (Crockford 値 24-31) が含まれても誤った
+	// shift / mask が起きていないことを実証する。
+	t.Run("roundtrip_with_high_chars", func(t *testing.T) {
+		known := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+		template := g.Generate(known)
+		require.Len(t, template, 26)
+		// 最初 10 char (= timestamp) は gen の output をそのまま使い、後半
+		// 16 char (= randomness) を W/X/Y/Z 混在に置換。
+		crafted := template[:10] + "WXYZWXYZWXYZWXYZ"
+		parsed, err := g.ParseTime(crafted)
+		require.NoError(t, err)
+		assert.WithinDuration(t, known, parsed, time.Millisecond,
+			"timestamp must roundtrip exactly when randomness contains W/X/Y/Z")
+	})
+}
+
 func TestParseTime_InvalidInput(t *testing.T) {
 	methods := []string{"aid", "aidx", "meid", "objectid", "ulid"}
 	for _, m := range methods {

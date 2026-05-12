@@ -1543,6 +1543,7 @@ func (s *Server) setupRoutes() {
 	channelsHandler.SetFavoriteRepo(channelFavoriteRepo)
 	channelsHandler.SetMutingRepo(channelMutingRepo)
 	channelsHandler.SetFollowingRepo(channelFollowingRepo)
+	channelsHandler.SetRoleChecker(roleService)
 	api.POST("/channels/create", channelsHandler.Create, middleware.RequireAuth())
 	api.POST("/channels/show", channelsHandler.Show)
 	api.POST("/channels/update", channelsHandler.Update, middleware.RequireAuth())
@@ -1736,6 +1737,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db), idGen)
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
 	federationProcessor.SetRelayMarker(relaySvc)
+	federationProcessor.SetRelayActorChecker(relaySvc)
 	federationProcessor.SetChatService(chatService)
 	federationProcessor.SetFanoutHook(timelineFanoutHook)
 	federationProcessor.SetNotificationHook(notificationHook)
@@ -2210,6 +2212,9 @@ func (s *Server) setupRoutes() {
 				"description":                        d.Description,
 				"url":                                d.URL,
 				"roleIdsThatCanBeUsedThisDecoration": d.RoleIDs,
+				// upstream Misskey #17034 (= 2026.5.0) で追加された category field
+				// もここで返す。nullable なので null のままも許容。
+				"category": d.Category,
 			})
 		}
 		return c.JSON(http.StatusOK, out)

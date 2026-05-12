@@ -71,6 +71,17 @@ func TestAccessDenied(t *testing.T) {
 	assert.Equal(t, UUIDAccessDenied, errObj["id"])
 }
 
+// upstream #17121 (= 2026.5.1 fix / triage #1012): channels/create 等の
+// requiredRolePolicy 違反時に返す code/id 形式が upstream ApiCallService と
+// 一致することを seal。
+func TestRolePermissionDenied(t *testing.T) {
+	result := RolePermissionDenied()
+	errObj := result["error"].(map[string]any)
+	assert.Equal(t, "ROLE_PERMISSION_DENIED", errObj["code"])
+	assert.Equal(t, UUIDRolePermissionDenied, errObj["id"])
+	assert.Equal(t, "You are not assigned to a required role.", errObj["message"])
+}
+
 func TestNoSuchRenoteTarget(t *testing.T) {
 	result := NoSuchRenoteTarget()
 	errObj := result["error"].(map[string]any)

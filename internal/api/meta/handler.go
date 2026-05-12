@@ -145,9 +145,10 @@ func (h *Handler) Meta(c echo.Context) error {
 		},
 	}
 
-	// noteSearchableScope: Meilisearch 設定に準拠。本家 (MetaEntityService.ts:135)
-	// では `meilisearch.scope !== 'local'` の場合のみ "global" を返す。
-	resp["noteSearchableScope"] = NoteSearchableScope(h.config.Meilisearch)
+	// noteSearchableScope: 検索 backend (fulltextSearch.provider) と meilisearch.scope
+	// に基づき "local"/"global" を返す (upstream #17341 / 2026.5.0)。詳細は
+	// NoteSearchableScope 関数の doc 参照。
+	resp["noteSearchableScope"] = NoteSearchableScope(h.config.FulltextSearch, h.config.Meilisearch)
 
 	// detail=false: TS MetaLite互換。管理者/内部向けフィールド (features, policies,
 	// clientOptions, proxyAccountName, sentryForFrontend, noteSearchableScope,
@@ -249,17 +250,26 @@ func PolicyBool(policies map[string]any, key string) bool {
 }
 
 // NoteSearchableScope derives the "local"/"global" search scope flag from
-// the Meilisearch configuration. Behavior mirrors upstream
-// MetaEntityService.ts:135 — only return "global" when Meilisearch is wired
-// and its scope override is anything other than "local".
-func NoteSearchableScope(m *config.MeilisearchOptions) string {
-	if m == nil {
-		return "local"
+// the search provider configuration.
+//
+// upstream Misskey #17341 (= 2026.5.0 fix / triage #1008): "local" を返すのは
+// fulltextSearch.provider が "meilisearch" かつ meilisearch.scope が "local"
+// のときだけで、それ以外は全て "global"。旧 upstream 実装は meilisearch block
+// の有無だけ見ていたため、provider が sqlLike / none でも meilisearch.scope
+// 設定が誤って反映される bug があった。本関数は新 upstream semantics に合わせる。
+//
+// mk-go 視点: 旧実装は default "local" を返していたが、これは sqlLike fallback
+// でも remote note を検索できる挙動と矛盾していた (UI が local 検索 only と
+// 解釈してしまう)。upstream 修正と同じく default "global" にすることで
+// sqlLike / none の実挙動とも整合する。
+func NoteSearchableScope(fts *config.FulltextSearchOptions, m *config.MeilisearchOptions) string {
+	if fts == nil || fts.Provider != "meilisearch" {
+		return "global"
 	}
-	if m.Scope == "" || m.Scope == "local" {
-		return "local"
+	if m == nil || m.Scope != "local" {
+		return "global"
 	}
-	return "global"
+	return "local"
 }
 
 // serializeActiveAds fetches currently-active ads via adRepo and projects
