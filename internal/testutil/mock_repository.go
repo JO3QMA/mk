@@ -6013,6 +6013,15 @@ func (m *MockAvatarDecorationRepository) UpdateFields(id string, fields map[stri
 			if ts, ok := v.(time.Time); ok {
 				d.UpdatedAt = &ts
 			}
+		case "category":
+			// upstream Misskey #17034 で導入された nullable field。
+			// production は handler 側で *string を deref して string を渡す。
+			if s, ok := v.(string); ok {
+				cat := s
+				d.Category = &cat
+			} else if v == nil {
+				d.Category = nil
+			}
 		}
 	}
 	return nil

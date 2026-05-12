@@ -2212,6 +2212,9 @@ func (s *Server) setupRoutes() {
 				"description":                        d.Description,
 				"url":                                d.URL,
 				"roleIdsThatCanBeUsedThisDecoration": d.RoleIDs,
+				// upstream Misskey #17034 (= 2026.5.0) で追加された category field
+				// もここで返す。nullable なので null のままも許容。
+				"category": d.Category,
 			})
 		}
 		return c.JSON(http.StatusOK, out)

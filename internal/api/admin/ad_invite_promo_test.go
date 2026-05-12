@@ -187,6 +187,44 @@ func TestAvatarDecorationsCreate_MissingName(t *testing.T) {
 		doPost(h.AvatarDecorationsCreate, `{"url":"https://i"}`, adminUser).Code)
 }
 
+// upstream Misskey #17034 (= 2026.5.0): avatar_decoration に category 列を
+// 追加し、create / update / list / get-avatar-decorations の各 API で round-trip
+// する。create で category 指定 → 戻り値 + DB row に反映、update で別 category
+// に更新 → DB row 更新、update で **null clear (Category = **nil 形式)** も
+// 機能することを確認。
+func TestAvatarDecorationsCategory_RoundTrip(t *testing.T) {
+	h, repo := setupAvatarDecorationHandler(t)
+
+	// 1) Create with category
+	createBody := `{"name":"deco","description":"d","url":"https://i",` +
+		`"roleIdsThatCanBeUsedThisDecoration":[],"category":"holiday"}`
+	rec := doPost(h.AvatarDecorationsCreate, createBody, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var created model.AvatarDecoration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.NotNil(t, created.Category, "create response should include category")
+	assert.Equal(t, "holiday", *created.Category)
+	require.NotNil(t, repo.Decorations[created.ID].Category, "DB row should persist category")
+	assert.Equal(t, "holiday", *repo.Decorations[created.ID].Category)
+
+	// 2) Update category to a different string
+	rec = doPost(h.AvatarDecorationsUpdate,
+		`{"id":"`+created.ID+`","category":"event"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, repo.Decorations[created.ID].Category)
+	assert.Equal(t, "event", *repo.Decorations[created.ID].Category)
+
+	// 3) Create without category → DB row has Category=nil
+	rec = doPost(h.AvatarDecorationsCreate,
+		`{"name":"plain","description":"","url":"https://i","roleIdsThatCanBeUsedThisDecoration":[]}`,
+		adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var plain model.AvatarDecoration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &plain))
+	assert.Nil(t, plain.Category, "create without category → null in response")
+	assert.Nil(t, repo.Decorations[plain.ID].Category, "DB row should have null category")
+}
+
 func TestAvatarDecorationsList_WithRepo(t *testing.T) {
 	h, _ := setupAvatarDecorationHandler(t,
 		&model.AvatarDecoration{ID: "d1", Name: "a"},
