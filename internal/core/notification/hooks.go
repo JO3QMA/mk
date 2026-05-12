@@ -99,8 +99,17 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 	// ユーザー) もここで捕捉できる。
 	h.recordNoteUnreads(n, author, mentionedIDs)
 
+	// upstream Misskey #17335 (= 2026.5.0 fix / triage #1006) + #17363
+	// (= 2026.5.1 fix / triage #1010): 通知を生成する前に note の visibility を
+	// 見て target を絞る。specified 可視性 note では visibleUserIds 外の user に
+	// 通知が飛ぶと情報漏洩になる (= mention 通知から本文の URL が辿れる)。
+	// public / home / followers は filter 無し (= upstream の followers ケースが
+	// #17363 で null = no filter に揃った)。default (= 不明 visibility) は
+	// 通知 fan-out 自体を停止して安全側に倒す。
+
 	// reply: 親ノートの投稿者がローカルユーザーなら通知
-	if replyTarget != nil && replyTarget.UserID != author.ID {
+	if replyTarget != nil && replyTarget.UserID != author.ID &&
+		h.notifyVisibleToTarget(n, replyTarget.UserID) {
 		h.notifyLocalUser(ctx, replyTarget.UserID, CreateInput{
 			NotifieeID:     replyTarget.UserID,
 			NotifierID:     author.ID,
@@ -111,7 +120,8 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 	}
 
 	// renote / quote: 対象ノートの投稿者へ通知
-	if renoteTarget != nil && renoteTarget.UserID != author.ID {
+	if renoteTarget != nil && renoteTarget.UserID != author.ID &&
+		h.notifyVisibleToTarget(n, renoteTarget.UserID) {
 		t := TypeRenote
 		if isQuote(n) {
 			t = TypeQuote
@@ -131,6 +141,9 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 		if replyTarget != nil && replyTarget.UserID == mentionedID {
 			continue
 		}
+		if !h.notifyVisibleToTarget(n, mentionedID) {
+			continue
+		}
 		h.notifyLocalUser(ctx, mentionedID, CreateInput{
 			NotifieeID:     mentionedID,
 			NotifierID:     author.ID,
@@ -138,6 +151,34 @@ func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, ren
 			NoteID:         n.ID,
 			NoteVisibility: string(n.Visibility),
 		})
+	}
+}
+
+// notifyVisibleToTarget reports whether `targetID` should receive a notification
+// about note `n`, based on its visibility (upstream #17335 / triage #1006 +
+// upstream #17363 / triage #1010)。
+//
+//   - public / home / followers / 空: 全 target に通知 (followers は upstream
+//     #17363 で null = no filter に揃った)
+//   - specified: visibleUserIds に含まれる target だけ
+//   - 未知 visibility: 通知しない (= 安全側 fallback、broken state での誤通知防止)
+//
+// 注: VisibleUserIDs 比較は線形探索だが、specified note の visibleUserIds 配列
+// は通常 10 件以下なので map 化のコスト (= 各通知呼び出しで毎回 map 構築) より
+// 安い。
+func (h *Hook) notifyVisibleToTarget(n *model.Note, targetID string) bool {
+	switch n.Visibility {
+	case "", model.NoteVisibilityPublic, model.NoteVisibilityHome, model.NoteVisibilityFollowers:
+		return true
+	case model.NoteVisibilitySpecified:
+		for _, id := range n.VisibleUserIDs {
+			if id == targetID {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
 }
 

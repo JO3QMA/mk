@@ -624,3 +624,159 @@ func TestHook_WebPushSkippedWhenCreateFails(t *testing.T) {
 	h.OnFollowed("bob", "alice")
 	assert.Empty(t, pub.calls, "push must not fire when Create fails")
 }
+
+// upstream Misskey #17335 (= 2026.5.0 fix / triage #1006) + #17363 (= 2026.5.1
+// fix / triage #1010): specified 可視性 note は visibleUserIds に含まれない
+// target に通知を送らない (情報漏洩防止)。public / home / followers は filter
+// なし (followers は upstream #17363 で null = no filter に揃った)。
+func TestHook_OnNoteCreated_VisibilityFiltersMentions(t *testing.T) {
+	tests := []struct {
+		name        string
+		visibility  model.NoteVisibility
+		visible     []string
+		mentioned   []string
+		wantNotifyA bool // alice
+		wantNotifyC bool // charlie
+	}{
+		{
+			name:        "public_notifies_all",
+			visibility:  model.NoteVisibilityPublic,
+			visible:     nil,
+			mentioned:   []string{"alice", "charlie"},
+			wantNotifyA: true,
+			wantNotifyC: true,
+		},
+		{
+			name:        "home_notifies_all",
+			visibility:  model.NoteVisibilityHome,
+			visible:     nil,
+			mentioned:   []string{"alice", "charlie"},
+			wantNotifyA: true,
+			wantNotifyC: true,
+		},
+		{
+			name:        "followers_notifies_all_per_17363",
+			visibility:  model.NoteVisibilityFollowers,
+			visible:     nil,
+			mentioned:   []string{"alice", "charlie"},
+			wantNotifyA: true,
+			wantNotifyC: true,
+		},
+		{
+			name:        "specified_only_visible_targets",
+			visibility:  model.NoteVisibilitySpecified,
+			visible:     []string{"alice"}, // charlie は visibleUserIds 外
+			mentioned:   []string{"alice", "charlie"},
+			wantNotifyA: true,
+			wantNotifyC: false,
+		},
+		{
+			name:        "specified_empty_visible_drops_all",
+			visibility:  model.NoteVisibilitySpecified,
+			visible:     nil,
+			mentioned:   []string{"alice", "charlie"},
+			wantNotifyA: false,
+			wantNotifyC: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, svc, repo := newTestHook(t)
+			addLocalUser(repo, "alice", "alice")
+			addLocalUser(repo, "charlie", "charlie")
+			addLocalUser(repo, "bob", "bob")
+
+			note := &model.Note{
+				ID:             "n_" + tc.name,
+				UserID:         "bob",
+				Visibility:     tc.visibility,
+				VisibleUserIDs: pq.StringArray(tc.visible),
+				Mentions:       pq.StringArray(tc.mentioned),
+			}
+			h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, nil)
+
+			outA, _ := svc.List(context.Background(), "alice", 10)
+			outC, _ := svc.List(context.Background(), "charlie", 10)
+			if tc.wantNotifyA {
+				require.Len(t, outA, 1, "alice should receive mention notification")
+				assert.Equal(t, TypeMention, outA[0].Type)
+			} else {
+				assert.Empty(t, outA, "alice should NOT receive notification")
+			}
+			if tc.wantNotifyC {
+				require.Len(t, outC, 1, "charlie should receive mention notification")
+				assert.Equal(t, TypeMention, outC[0].Type)
+			} else {
+				assert.Empty(t, outC, "charlie should NOT receive notification")
+			}
+		})
+	}
+}
+
+// reply / renote 通知も visibility filter の対象になる (= upstream
+// NotificationManager の queue 全体に filter がかかるため)。specified note で
+// reply target が visibleUserIds 外なら reply 通知も発火しないことを seal。
+func TestHook_OnNoteCreated_VisibilityFiltersReplyAndRenote(t *testing.T) {
+	t.Run("specified_reply_target_outside_visible_skipped", func(t *testing.T) {
+		h, svc, repo := newTestHook(t)
+		addLocalUser(repo, "alice", "alice")
+		addLocalUser(repo, "bob", "bob")
+		// 親 note は alice の note。reply は specified visibility だが
+		// visibleUserIds に alice を含まない (= 異常 / 攻撃シナリオ)。
+		parent := &model.Note{ID: "n_parent", UserID: "alice"}
+		note := &model.Note{
+			ID:             "n_reply",
+			UserID:         "bob",
+			Visibility:     model.NoteVisibilitySpecified,
+			VisibleUserIDs: pq.StringArray{"someone_else"},
+		}
+		h.OnNoteCreated(note, &model.User{ID: "bob"}, parent, nil)
+		out, _ := svc.List(context.Background(), "alice", 10)
+		assert.Empty(t, out, "reply target が visibleUserIds 外なら通知しない")
+	})
+
+	t.Run("specified_renote_target_outside_visible_skipped", func(t *testing.T) {
+		h, svc, repo := newTestHook(t)
+		addLocalUser(repo, "alice", "alice")
+		addLocalUser(repo, "bob", "bob")
+		target := "n_target"
+		original := &model.Note{ID: target, UserID: "alice"}
+		note := &model.Note{
+			ID:             "n_renote",
+			UserID:         "bob",
+			RenoteID:       &target,
+			Visibility:     model.NoteVisibilitySpecified,
+			VisibleUserIDs: pq.StringArray{"someone_else"},
+		}
+		h.OnNoteCreated(note, &model.User{ID: "bob"}, nil, original)
+		out, _ := svc.List(context.Background(), "alice", 10)
+		assert.Empty(t, out, "renote target が visibleUserIds 外なら通知しない")
+	})
+}
+
+// notifyVisibleToTarget の各 visibility case を直接 unit test。
+func TestHook_NotifyVisibleToTarget(t *testing.T) {
+	h, _, _ := newTestHook(t)
+	tests := []struct {
+		name       string
+		visibility model.NoteVisibility
+		visible    []string
+		target     string
+		want       bool
+	}{
+		{"empty_visibility_allows_all", "", nil, "alice", true},
+		{"public_allows_all", model.NoteVisibilityPublic, nil, "alice", true},
+		{"home_allows_all", model.NoteVisibilityHome, nil, "alice", true},
+		{"followers_allows_all_per_17363", model.NoteVisibilityFollowers, nil, "alice", true},
+		{"specified_allows_if_in_list", model.NoteVisibilitySpecified, []string{"alice", "bob"}, "alice", true},
+		{"specified_blocks_if_not_in_list", model.NoteVisibilitySpecified, []string{"bob"}, "alice", false},
+		{"specified_empty_list_blocks_all", model.NoteVisibilitySpecified, nil, "alice", false},
+		{"unknown_visibility_blocks", "weird", nil, "alice", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &model.Note{Visibility: tc.visibility, VisibleUserIDs: pq.StringArray(tc.visible)}
+			assert.Equal(t, tc.want, h.notifyVisibleToTarget(n, tc.target))
+		})
+	}
+}
