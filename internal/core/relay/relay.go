@@ -234,6 +234,41 @@ func (s *Service) sendUndoFollow(ctx context.Context, rel *model.Relay) error {
 
 // acceptedCached returns the cached list of accepted relays, refreshing
 // from the DB when the cache is stale or empty.
+// IsRelayActor reports whether the given remote user matches one of the
+// accepted registered relays. Used by federation/processor.handleAnnounce
+// (upstream Misskey #17308 / triage #1002) to detect relay-delivered Announce
+// activities and avoid wrapping them in a local renote.
+//
+// 比較は actor.Inbox / actor.SharedInbox を accepted 状態の relay.Inbox と
+// 突き合わせる (upstream `isRelayActor` 互換)。nil user / inbox 不在 / cache
+// 取得失敗の場合は false を返す (= relay 由来ではない扱い、従来の renote path
+// に流す)。
+func (s *Service) IsRelayActor(actor *model.User) bool {
+	if actor == nil {
+		return false
+	}
+	if actor.Inbox == nil && actor.SharedInbox == nil {
+		return false
+	}
+	relays, err := s.acceptedCached()
+	if err != nil {
+		slog.Warn("relay: failed to fetch accepted relays for IsRelayActor", "err", err)
+		return false
+	}
+	for _, r := range relays {
+		if r.Inbox == "" {
+			continue
+		}
+		if actor.Inbox != nil && r.Inbox == *actor.Inbox {
+			return true
+		}
+		if actor.SharedInbox != nil && r.Inbox == *actor.SharedInbox {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) acceptedCached() ([]*model.Relay, error) {
 	s.cacheMu.RLock()
 	if s.cacheRelays != nil && s.clock().Sub(s.cacheLoaded) < s.cacheMaxAge {

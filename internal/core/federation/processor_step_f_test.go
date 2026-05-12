@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
@@ -324,6 +325,114 @@ func TestProcess_AnnounceBadObject(t *testing.T) {
 	}`)
 	err := env.processor.Process(body)
 	assert.Error(t, err)
+}
+
+// upstream Misskey #17308 (= 2026.5.0 fix / triage #1002): relay actor からの
+// Announce は renote として保存せず、target を fanoutHook 経由で stream publish
+// する。RelayActorChecker が true を返すケースで renote 件数が増えず、かつ
+// fanoutHook が呼ばれることを実証する。
+//
+// stub の relayActorChecker と fanoutHook を inject して挙動を確認。
+type stubRelayActorChecker struct{ relayActorURI string }
+
+func (s *stubRelayActorChecker) IsRelayActor(u *model.User) bool {
+	if u == nil || u.URI == nil {
+		return false
+	}
+	return *u.URI == s.relayActorURI
+}
+
+// recordingFanoutHook は publishRelayDeliveredNote が safeGoFedHook 経由で
+// async に call することに対応するため channel ベースで完了を待てる stub。
+type recordingFanoutCall struct {
+	noteID string
+	author string
+}
+
+type recordingFanoutHook struct {
+	calls chan recordingFanoutCall
+}
+
+func newRecordingFanoutHook() *recordingFanoutHook {
+	return &recordingFanoutHook{calls: make(chan recordingFanoutCall, 16)}
+}
+
+func (h *recordingFanoutHook) OnNoteCreated(note *model.Note, author *model.User) {
+	authorID := ""
+	if author != nil {
+		authorID = author.ID
+	}
+	noteID := ""
+	if note != nil {
+		noteID = note.ID
+	}
+	h.calls <- recordingFanoutCall{noteID: noteID, author: authorID}
+}
+
+func TestProcess_AnnounceFromRelay_PublishesTargetWithoutRenote(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	// announcer alice を relay actor として扱う
+	checker := &stubRelayActorChecker{relayActorURI: "https://remote.example/users/alice"}
+	env.processor.SetRelayActorChecker(checker)
+	// fanoutHook を仕込んで呼び出しを記録 (= safeGoFedHook で async に呼ばれる
+	// ので channel 受信で待ち合わせる)
+	hook := newRecordingFanoutHook()
+	env.processor.SetFanoutHook(hook)
+	// target note (= 原投稿) と原投稿者 bob をローカル DB に
+	env.noteRepo.Notes["n1"] = &model.Note{
+		ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic,
+	}
+	env.userRepo.Users["bob"] = &model.User{ID: "bob", Username: "bob"}
+
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/announces/relay-1",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+
+	// renote は作られないこと
+	var renotes int
+	for _, n := range env.noteRepo.Notes {
+		if n.RenoteID != nil && *n.RenoteID == "n1" {
+			renotes++
+		}
+	}
+	assert.Equal(t, 0, renotes, "relay 由来 Announce は renote を作らない")
+
+	// fanoutHook が target (= n1) を author=bob で publish した
+	select {
+	case call := <-hook.calls:
+		assert.Equal(t, "n1", call.noteID, "publish 対象は target note")
+		assert.Equal(t, "bob", call.author, "author は relay actor でなく原投稿者")
+	case <-time.After(2 * time.Second):
+		t.Fatal("fanoutHook was not called within timeout")
+	}
+}
+
+// RelayActorChecker 未設定 (= 旧挙動) では announce は従来通り renote を作る。
+// 既存 TestProcess_AnnounceHappyPath と同等だが「checker 未配線でも regress
+// しないこと」を明示する regression guard。
+func TestProcess_AnnounceWithoutRelayChecker_StillCreatesRenote(t *testing.T) {
+	env := newFullProcessor(t, aliceActor)
+	// SetRelayActorChecker を呼ばない (= 旧挙動 / nil-checker fallback)
+	env.noteRepo.Notes["n1"] = &model.Note{ID: "n1", UserID: "bob", Visibility: model.NoteVisibilityPublic}
+	body := []byte(`{
+		"type": "Announce",
+		"id": "https://remote.example/announces/no-checker",
+		"actor": "https://remote.example/users/alice",
+		"object": "https://example.com/notes/n1"
+	}`)
+	require.NoError(t, env.processor.Process(body))
+
+	var renotes int
+	for _, n := range env.noteRepo.Notes {
+		if n.RenoteID != nil && *n.RenoteID == "n1" {
+			renotes++
+		}
+	}
+	assert.Equal(t, 1, renotes, "checker 未設定なら従来 path で renote 1 件作成")
 }
 
 func TestProcess_AnnounceIncrementsRenoteCount(t *testing.T) {

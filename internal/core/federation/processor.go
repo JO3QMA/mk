@@ -39,6 +39,17 @@ type RelayStatusMarker interface {
 	MarkRejected(ctx context.Context, id string) error
 }
 
+// RelayActorChecker reports whether a given remote user is one of the locally
+// registered relays. Used by handleAnnounce to detect relay-delivered Announce
+// activities (upstream Misskey #17308 / triage #1002) so they get published to
+// timeline streams as direct notes rather than as renotes.
+//
+// 実装は core/relay.Service。同 service は RelayStatusMarker と
+// RelayActorChecker 両方を満たすが、用途が独立しているので interface も分離。
+type RelayActorChecker interface {
+	IsRelayActor(actor *model.User) bool
+}
+
 // Processor dispatches inbound activities to the right handler.
 type Processor struct {
 	resolver         *Resolver
@@ -68,6 +79,10 @@ type Processor struct {
 
 	// Relay follow-accept / -reject hook. nil 時は relay 特化処理をスキップ。
 	relayMarker RelayStatusMarker
+
+	// Relay actor 判定 hook (#1002 / upstream #17308)。nil 時は全 Announce が
+	// 従来通り renote として処理される。
+	relayActorChecker RelayActorChecker
 
 	// Chat federation (CherryPick互換)
 	chatService ChatMessageReceiver
@@ -319,6 +334,14 @@ func (p *Processor) SetPinningRepo(repo repository.UserNotePiningRepository, idG
 // the corresponding relay row to accepted / rejected.
 func (p *Processor) SetRelayMarker(m RelayStatusMarker) {
 	p.relayMarker = m
+}
+
+// SetRelayActorChecker wires a RelayActorChecker so handleAnnounce can detect
+// relay-delivered Announce activities and publish target notes to timeline
+// streams directly instead of wrapping them in a renote (upstream #17308 /
+// triage #1002).
+func (p *Processor) SetRelayActorChecker(c RelayActorChecker) {
+	p.relayActorChecker = c
 }
 
 // SetChatService wires a ChatMessageReceiver for inbound Misskey:ChatMessage
@@ -801,6 +824,15 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 	if err != nil {
 		return err
 	}
+	// upstream Misskey #17308 (= 2026.5.0 fix / triage #1002): relay 由来の
+	// Announce は renote として保存せず、target note 自体を timeline stream に
+	// publish する。renote 表示にしてしまうと「relay actor がリノートした」と
+	// いう偽装表示になり、原投稿者からの直接配送と区別がつかなくなるため。
+	// announcer.Inbox / SharedInbox が registered relay の Inbox と一致した
+	// 場合のみ relay 由来と判定。
+	if p.relayActorChecker != nil && p.relayActorChecker.IsRelayActor(announcer) {
+		return p.publishRelayDeliveredNote(target, targetURI, act.Actor)
+	}
 	// announce 自身に id があれば URI として保存し、重複検出にも使う。
 	// upstream Misskey #17356 (= 2026.5.1 fix) は同 activity の重複処理 race を
 	// Redis 分散 lock で防ぐが、mk-go は single-instance 前提で DB unique 制約 +
@@ -842,6 +874,42 @@ func (p *Processor) handleAnnounce(act genericActivity) error {
 		// しないので nil を渡す。
 		p.notificationHook.OnNoteCreated(hydrated, announcer, nil, target)
 	}
+	return nil
+}
+
+// publishRelayDeliveredNote handles a relay-delivered Announce (= no renote
+// creation, just publish the target note to timeline streams). 仕様詳細は
+// handleAnnounce 内の relay-delivered コメント参照 (upstream #17308 / triage
+// #1002)。
+//
+// target の author を最も信頼できる relation 経由で解決する: まず
+// hydrateNoteForFanout で User relation を pre-load し、それが空なら
+// userRepo.FindByID(target.UserID) に fallback する。author が解決できない
+// 場合 (= target.UserID も無い等の broken state) は fanoutHook を呼ばずに
+// 戻る (safe degrade)。
+//
+// renoteCount は increment しない (= target は新規 renote 対象ではない)、
+// notificationHook も呼ばない (= 原投稿者には relay 経由配送の通知を出さない、
+// 上流 / 他 instance から直接届く Create で通知済みの可能性が高いため二重通知
+// 回避)。
+func (p *Processor) publishRelayDeliveredNote(target *model.Note, targetURI, relayActor string) error {
+	hydrated := hydrateNoteForFanout(p.noteRepo, target)
+	author := hydrated.User
+	if author == nil && p.userRepo != nil && target.UserID != "" {
+		if u, err := p.userRepo.FindByID(target.UserID); err == nil {
+			author = u
+		}
+	}
+	if author == nil {
+		slog.Warn("federation: relay-delivered note has no resolvable author, skipping fanout",
+			"relay", relayActor, "noteURI", targetURI, "userId", target.UserID)
+		return nil
+	}
+	if p.fanoutHook != nil {
+		safeGoFedHook(func() { p.fanoutHook.OnNoteCreated(hydrated, author) })
+	}
+	slog.Debug("federation: relay-delivered note published",
+		"relay", relayActor, "noteURI", targetURI, "authorId", author.ID)
 	return nil
 }
 

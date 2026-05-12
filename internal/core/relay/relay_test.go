@@ -305,3 +305,39 @@ func TestRemove_RepoDeleteErrorBubbles(t *testing.T) {
 	err = svc.Remove(context.Background(), rel.ID)
 	assert.Error(t, err)
 }
+
+// upstream Misskey #17308 (= 2026.5.0 fix / triage #1002): relay 由来の Announce
+// を検出するため Service に IsRelayActor を追加。actor.Inbox / SharedInbox が
+// 登録済み (status=accepted) relay の Inbox と一致したら true。
+func TestIsRelayActor(t *testing.T) {
+	svc, repo, _, _ := newService(t)
+	relayInbox := "https://relay.example/inbox"
+	// accepted な relay を登録 (= cache 経由で IsRelayActor の判定対象に入る)
+	repo.Create(&model.Relay{ID: "r1", Inbox: relayInbox, Status: relay.StatusAccepted})
+
+	t.Run("nil_actor", func(t *testing.T) {
+		assert.False(t, svc.IsRelayActor(nil))
+	})
+
+	t.Run("actor_without_inbox", func(t *testing.T) {
+		assert.False(t, svc.IsRelayActor(&model.User{ID: "u1"}))
+	})
+
+	t.Run("actor_inbox_does_not_match", func(t *testing.T) {
+		other := "https://other.example/inbox"
+		assert.False(t, svc.IsRelayActor(&model.User{ID: "u2", Inbox: &other}))
+	})
+
+	t.Run("actor_inbox_matches", func(t *testing.T) {
+		inbox := relayInbox
+		assert.True(t, svc.IsRelayActor(&model.User{ID: "u3", Inbox: &inbox}),
+			"actor.Inbox が登録済み relay の Inbox と一致 → true")
+	})
+
+	t.Run("actor_shared_inbox_matches", func(t *testing.T) {
+		other := "https://relay.example/users/relay/inbox"
+		shared := relayInbox
+		assert.True(t, svc.IsRelayActor(&model.User{ID: "u4", Inbox: &other, SharedInbox: &shared}),
+			"actor.SharedInbox が登録済み relay の Inbox と一致 → true")
+	})
+}

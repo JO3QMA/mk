@@ -1736,6 +1736,7 @@ func (s *Server) setupRoutes() {
 	federationProcessor.SetAbuseReportRepo(repository.NewAbuseReportRepository(s.db), idGen)
 	federationProcessor.SetPinningRepo(piningRepo, idGen)
 	federationProcessor.SetRelayMarker(relaySvc)
+	federationProcessor.SetRelayActorChecker(relaySvc)
 	federationProcessor.SetChatService(chatService)
 	federationProcessor.SetFanoutHook(timelineFanoutHook)
 	federationProcessor.SetNotificationHook(notificationHook)
