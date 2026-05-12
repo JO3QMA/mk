@@ -189,9 +189,10 @@ func TestAvatarDecorationsCreate_MissingName(t *testing.T) {
 
 // upstream Misskey #17034 (= 2026.5.0): avatar_decoration に category 列を
 // 追加し、create / update / list / get-avatar-decorations の各 API で round-trip
-// する。create で category 指定 → 戻り値 + DB row に反映、update で別 category
-// に更新 → DB row 更新、update で **null clear (Category = **nil 形式)** も
-// 機能することを確認。
+// する。create で category 指定 → 戻り値 + DB row に反映、update で別 string
+// への更新 → DB row 更新、create 時の category 省略 → null 永続化、を確認。
+// 加えて update で `"category": null` を送った時は no-update (= upstream の
+// `ps.category === undefined` と同 semantics) になることも seal する。
 func TestAvatarDecorationsCategory_RoundTrip(t *testing.T) {
 	h, repo := setupAvatarDecorationHandler(t)
 
@@ -214,7 +215,19 @@ func TestAvatarDecorationsCategory_RoundTrip(t *testing.T) {
 	require.NotNil(t, repo.Decorations[created.ID].Category)
 	assert.Equal(t, "event", *repo.Decorations[created.ID].Category)
 
-	// 3) Create without category → DB row has Category=nil
+	// 3) Update with `"category": null` → no-update (= 現状の holiday → event
+	// と進んだ後の `event` がそのまま保持される)。Go の json.Unmarshal は JSON
+	// null を *string の nil として埋めるため、handler 側の `if req.Category
+	// != nil` 分岐に入らず変更されない。`clear` したい場合は明示的に
+	// "category": "" を送る運用 (= upstream `ps.category === undefined` と
+	// 同じ振る舞い)。
+	rec = doPost(h.AvatarDecorationsUpdate,
+		`{"id":"`+created.ID+`","category":null}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, repo.Decorations[created.ID].Category, "null update should NOT clear category")
+	assert.Equal(t, "event", *repo.Decorations[created.ID].Category, "category remains event after null update")
+
+	// 4) Create without category → DB row has Category=nil
 	rec = doPost(h.AvatarDecorationsCreate,
 		`{"name":"plain","description":"","url":"https://i","roleIdsThatCanBeUsedThisDecoration":[]}`,
 		adminUser)
