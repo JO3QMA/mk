@@ -178,7 +178,7 @@ func buildMetaJSON(cfg *config.Config, m *model.Meta, proxyAccountResolver meta.
 		"providesTarball":              cfg.PublishTarballInsteadOfProvideRepositoryUrl,
 		"maxFileSize":                  cfg.MaxFileSize,
 		"proxyAccountName":             resolveProxyAccountNameForSSR(proxyAccountResolver),
-		"noteSearchableScope":          meta.NoteSearchableScope(cfg.Meilisearch),
+		"noteSearchableScope":          meta.NoteSearchableScope(cfg.FulltextSearch, cfg.Meilisearch),
 		"enableMcaptcha":               m.EnableMcaptcha,
 		"mcaptchaSiteKey":              m.McaptchaSiteKey,
 		"mcaptchaInstanceUrl":          m.McaptchaInstanceURL,

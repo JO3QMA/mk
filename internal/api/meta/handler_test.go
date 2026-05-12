@@ -389,12 +389,66 @@ func TestMeta_FeaturesTimelineFlags(t *testing.T) {
 	assert.Equal(t, true, features["globalTimeline"], "gtlAvailable default is true")
 }
 
-// TestMeta_NoteSearchableScope_DefaultLocal covers the fallback path where
-// Meilisearch is not configured: scope must default to "local".
-func TestMeta_NoteSearchableScope_DefaultLocal(t *testing.T) {
+// upstream Misskey #17341 (= 2026.5.0 fix / triage #1008): noteSearchableScope は
+// "local" を返すのが fulltextSearch.provider="meilisearch" かつ meilisearch.scope=
+// "local" のときだけ、それ以外は全て "global"。旧 mk-go は default "local" を
+// 返していたが、upstream 修正に合わせて default "global" に揃える。
+//
+// TestMeta_NoteSearchableScope_DefaultGlobal covers the fallback path where
+// no search config exists: scope defaults to "global".
+func TestMeta_NoteSearchableScope_DefaultGlobal(t *testing.T) {
 	h, metaRepo := newTestHandler()
 	metaRepo.Meta = &model.Meta{ID: "x"}
-	// config.Meilisearch is nil in newTestHandler().
+	// config.FulltextSearch / config.Meilisearch are nil in newTestHandler().
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "global", resp["noteSearchableScope"])
+}
+
+// fulltextSearch.provider が "sqlLike" (= meilisearch を使っていない) のとき、
+// meilisearch.scope="local" が誤って反映されないこと (= upstream #17341 bug 本体)。
+func TestMeta_NoteSearchableScope_SqlLikeIgnoresMeilisearchScope(t *testing.T) {
+	cfg := &config.Config{
+		Version:        "2026.5.1",
+		URL:            "https://misskey.example.com",
+		FulltextSearch: &config.FulltextSearchOptions{Provider: "sqlLike"},
+		Meilisearch:    &config.MeilisearchOptions{Host: "ms", Port: "7700", Scope: "local"},
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	h := NewHandler(cfg, metaRepo)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	require.NoError(t, h.Meta(c))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "global", resp["noteSearchableScope"],
+		"sqlLike provider 時は meilisearch.scope を無視して global を返す (upstream #17341)")
+}
+
+// fulltextSearch.provider="meilisearch" + meilisearch.scope="local" → "local"。
+// 唯一の "local" 返却ケース。
+func TestMeta_NoteSearchableScope_MeilisearchLocal(t *testing.T) {
+	cfg := &config.Config{
+		Version:        "2026.5.1",
+		URL:            "https://misskey.example.com",
+		FulltextSearch: &config.FulltextSearchOptions{Provider: "meilisearch"},
+		Meilisearch:    &config.MeilisearchOptions{Host: "ms", Port: "7700", Scope: "local"},
+	}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x"}
+	h := NewHandler(cfg, metaRepo)
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
@@ -407,14 +461,14 @@ func TestMeta_NoteSearchableScope_DefaultLocal(t *testing.T) {
 	assert.Equal(t, "local", resp["noteSearchableScope"])
 }
 
-// TestMeta_NoteSearchableScope_Global covers the Meilisearch-wired path where
-// scope is anything other than "local" (e.g. "global") — the response must
-// switch to "global".
-func TestMeta_NoteSearchableScope_Global(t *testing.T) {
+// fulltextSearch.provider="meilisearch" + meilisearch.scope="global" → "global"。
+// meilisearch でも明示的に global scope を選んでいるケース。
+func TestMeta_NoteSearchableScope_MeilisearchGlobal(t *testing.T) {
 	cfg := &config.Config{
-		Version:     "2026.3.2",
-		URL:         "https://misskey.example.com",
-		Meilisearch: &config.MeilisearchOptions{Host: "ms", Port: "7700", Scope: "global"},
+		Version:        "2026.5.1",
+		URL:            "https://misskey.example.com",
+		FulltextSearch: &config.FulltextSearchOptions{Provider: "meilisearch"},
+		Meilisearch:    &config.MeilisearchOptions{Host: "ms", Port: "7700", Scope: "global"},
 	}
 	metaRepo := testutil.NewMockMetaRepository()
 	metaRepo.Meta = &model.Meta{ID: "x"}
@@ -429,29 +483,6 @@ func TestMeta_NoteSearchableScope_Global(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "global", resp["noteSearchableScope"])
-}
-
-// TestMeta_NoteSearchableScope_MeilisearchLocal ensures that an explicit
-// Meilisearch scope of "local" still produces "local" (config-present path).
-func TestMeta_NoteSearchableScope_MeilisearchLocal(t *testing.T) {
-	cfg := &config.Config{
-		Version:     "2026.3.2",
-		URL:         "https://misskey.example.com",
-		Meilisearch: &config.MeilisearchOptions{Host: "ms", Port: "7700", Scope: "local"},
-	}
-	metaRepo := testutil.NewMockMetaRepository()
-	metaRepo.Meta = &model.Meta{ID: "x"}
-	h := NewHandler(cfg, metaRepo)
-
-	e := echo.New()
-	req := httptest.NewRequest(http.MethodPost, "/api/meta", nil)
-	rec := httptest.NewRecorder()
-	c := e.NewContext(req, rec)
-	require.NoError(t, h.Meta(c))
-
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "local", resp["noteSearchableScope"])
 }
 
 func TestPolicyBool(t *testing.T) {
