@@ -160,6 +160,23 @@ func TestULID_CrockfordWXYZ(t *testing.T) {
 			require.NoError(t, err, "Crockford W/X/Y/Z must parse without error (upstream #17310 regression)")
 		})
 	}
+
+	// 決定値 check: 既知 timestamp で gen が encode した ULID の randomness 部を
+	// W/X/Y/Z で書き換えて parse 結果が元 timestamp と一致することを確認する。
+	// timestamp を保ったまま W/X/Y/Z (Crockford 値 24-31) が含まれても誤った
+	// shift / mask が起きていないことを実証する。
+	t.Run("roundtrip_with_high_chars", func(t *testing.T) {
+		known := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+		template := g.Generate(known)
+		require.Len(t, template, 26)
+		// 最初 10 char (= timestamp) は gen の output をそのまま使い、後半
+		// 16 char (= randomness) を W/X/Y/Z 混在に置換。
+		crafted := template[:10] + "WXYZWXYZWXYZWXYZ"
+		parsed, err := g.ParseTime(crafted)
+		require.NoError(t, err)
+		assert.WithinDuration(t, known, parsed, time.Millisecond,
+			"timestamp must roundtrip exactly when randomness contains W/X/Y/Z")
+	})
 }
 
 func TestParseTime_InvalidInput(t *testing.T) {

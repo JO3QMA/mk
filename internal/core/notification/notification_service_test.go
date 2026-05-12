@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -707,7 +709,13 @@ func TestToXAddID_NoOverflowFarFuture(t *testing.T) {
 	s := toXAddID("ignored-id", far)
 	assert.Regexp(t, `^\d+-\*$`, s,
 		"toXAddID must emit `<ms>-*` form, never panic on overflow")
-	// epoch ms が正の uint64 範囲に収まることも明示
-	expected := far.UnixMilli()
-	require.Greater(t, expected, int64(0))
+	// 数字部が truncate されず epoch ms と一致することを assert する
+	// (upstream の bug は parse 経由で下位 64bit truncate されるパターンだった
+	// ため、format check だけでは silent value drift を検出できない)。
+	parts := strings.Split(s, "-")
+	require.Len(t, parts, 2)
+	gotMs, err := strconv.ParseInt(parts[0], 10, 64)
+	require.NoError(t, err)
+	require.Equal(t, far.UnixMilli(), gotMs,
+		"toXAddID's ms must equal time.Time.UnixMilli (no truncation)")
 }
