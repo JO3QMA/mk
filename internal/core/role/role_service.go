@@ -22,6 +22,15 @@ var (
 	ErrNotAssigned = errors.New("role not assigned")
 )
 
+// Policy key constants. requiredRolePolicy gate 経路 (HasRolePolicy / 各 endpoint
+// での policy 文字列参照) で typo を防ぐため定数化する。新規 policy-gated
+// endpoint を追加する際はここに対応 const を生やしてから call site で使う。
+const (
+	// PolicyCanCreateChannel gates /api/channels/create (upstream Misskey
+	// #17121 / triage #1012)。
+	PolicyCanCreateChannel = "canCreateChannel"
+)
+
 // roleCacheTTL は GetUserRoles キャッシュの有効期限。Misskey TS 同等の
 // admin 操作 (admin/roles/* 経路) は頻度が低いので、5 分に揃えて
 // IsAdministrator / IsModerator / GetUserPolicies の DB 負荷を消す
@@ -427,7 +436,7 @@ func DefaultPolicies() map[string]any {
 		// upstream Misskey #17121 (= 2026.5.1 fix / triage #1012): channel 作成
 		// 権限の role policy。default true (= 全員許可)、admin が role 経由で
 		// 個別 user を false に絞れる。`/api/channels/create` で gate される。
-		"canCreateChannel":       true,
+		PolicyCanCreateChannel:   true,
 		"driveCapacityMb":        100,
 		"maxFileSizeMb":          30,
 		"alwaysMarkNsfw":         false,

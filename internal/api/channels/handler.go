@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	corechannel "github.com/shiroha-a/mk/internal/core/channel"
 	"github.com/shiroha-a/mk/internal/core/notesfilter"
+	corerole "github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
@@ -36,9 +37,9 @@ type Handler struct {
 }
 
 // RolePolicyChecker reports whether a user has a given role policy enabled.
-// 実装は core/role.Service。policy gate を必要とする他 endpoint も同 interface
-// を共有できるよう channels package で local 定義する (= package 間結合を増やさず
-// に narrow contract を維持)。
+// 実装は core/role.Service。channels package で local 定義しておき、他 endpoint
+// が同種 gate を必要としたら共有先 (例: server/middleware) に昇格させる方針。
+// 現状は narrow contract を維持して cross-package 結合を増やさない。
 type RolePolicyChecker interface {
 	HasRolePolicy(userID, policyKey string) bool
 }
@@ -154,7 +155,7 @@ func (h *Handler) Create(c echo.Context) error {
 	// role policy で channel 作成を gate する。default true なので role assign
 	// 無しの user は通過、admin が個別 user 用の role で false を設定すると拒否。
 	// roleChecker 未配線時は skip (= 旧挙動、移行期の test 互換)。
-	if h.roleChecker != nil && !h.roleChecker.HasRolePolicy(user.ID, "canCreateChannel") {
+	if h.roleChecker != nil && !h.roleChecker.HasRolePolicy(user.ID, corerole.PolicyCanCreateChannel) {
 		return apierr.JSONRolePermissionDenied(c)
 	}
 	var req CreateRequest
