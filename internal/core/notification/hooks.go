@@ -83,6 +83,16 @@ func (h *Hook) SetNoteUnreadRepo(r repository.NoteUnreadRepository) {
 
 // OnNoteCreated is called by note.CreateService after persisting a new note.
 // Reply/Renote/Mention の通知を非同期に作成する。
+//
+// upstream Misskey #17350 (= 2026.5.0 review fix): NotificationManager.queue を
+// array から Map<userID, entry> に変更し add() 時の重複検出を O(N) → O(1) に
+// する内部 perf 最適化が入ったが、mk-go では同等の重複検出は既に
+// resolveMentionIDs 側で seen map による dedup として実装済 (#103 line 153)。
+// 本 OnNoteCreated は reply / renote / mention の 3 種別をそれぞれ独立した
+// notifyLocalUser 呼び出しで処理する設計のため、upstream の Map 化が想定する
+// 「同一 target に複数 reason が積まれる」シナリオは構造的に発生しない (=
+// reply target と mention が重なる場合は 132 行の continue で skip 済)。
+// よって upstream perf 最適化を mk-go に持ち込む必要はない。
 func (h *Hook) OnNoteCreated(n *model.Note, author *model.User, replyTarget, renoteTarget *model.Note) {
 	if n == nil || author == nil {
 		return
