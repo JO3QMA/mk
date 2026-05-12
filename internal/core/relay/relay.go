@@ -234,6 +234,36 @@ func (s *Service) sendUndoFollow(ctx context.Context, rel *model.Relay) error {
 
 // acceptedCached returns the cached list of accepted relays, refreshing
 // from the DB when the cache is stale or empty.
+func (s *Service) acceptedCached() ([]*model.Relay, error) {
+	s.cacheMu.RLock()
+	if s.cacheRelays != nil && s.clock().Sub(s.cacheLoaded) < s.cacheMaxAge {
+		out := s.cacheRelays
+		s.cacheMu.RUnlock()
+		return out, nil
+	}
+	s.cacheMu.RUnlock()
+
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	// 再チェック (他の goroutine が先に埋めたかも)
+	if s.cacheRelays != nil && s.clock().Sub(s.cacheLoaded) < s.cacheMaxAge {
+		return s.cacheRelays, nil
+	}
+	fresh, err := s.repo.ListByStatus(StatusAccepted)
+	if err != nil {
+		return nil, err
+	}
+	s.cacheRelays = fresh
+	s.cacheLoaded = s.clock()
+	return fresh, nil
+}
+
+func (s *Service) invalidateCache() {
+	s.cacheMu.Lock()
+	s.cacheRelays = nil
+	s.cacheMu.Unlock()
+}
+
 // IsRelayActor reports whether the given remote user matches one of the
 // accepted registered relays. Used by federation/processor.handleAnnounce
 // (upstream Misskey #17308 / triage #1002) to detect relay-delivered Announce
@@ -267,34 +297,4 @@ func (s *Service) IsRelayActor(actor *model.User) bool {
 		}
 	}
 	return false
-}
-
-func (s *Service) acceptedCached() ([]*model.Relay, error) {
-	s.cacheMu.RLock()
-	if s.cacheRelays != nil && s.clock().Sub(s.cacheLoaded) < s.cacheMaxAge {
-		out := s.cacheRelays
-		s.cacheMu.RUnlock()
-		return out, nil
-	}
-	s.cacheMu.RUnlock()
-
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	// 再チェック (他の goroutine が先に埋めたかも)
-	if s.cacheRelays != nil && s.clock().Sub(s.cacheLoaded) < s.cacheMaxAge {
-		return s.cacheRelays, nil
-	}
-	fresh, err := s.repo.ListByStatus(StatusAccepted)
-	if err != nil {
-		return nil, err
-	}
-	s.cacheRelays = fresh
-	s.cacheLoaded = s.clock()
-	return fresh, nil
-}
-
-func (s *Service) invalidateCache() {
-	s.cacheMu.Lock()
-	s.cacheRelays = nil
-	s.cacheMu.Unlock()
 }
