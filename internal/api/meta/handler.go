@@ -145,8 +145,9 @@ func (h *Handler) Meta(c echo.Context) error {
 		},
 	}
 
-	// noteSearchableScope: Meilisearch 設定に準拠。本家 (MetaEntityService.ts:135)
-	// では `meilisearch.scope !== 'local'` の場合のみ "global" を返す。
+	// noteSearchableScope: 検索 backend (fulltextSearch.provider) と meilisearch.scope
+	// に基づき "local"/"global" を返す (upstream #17341 / 2026.5.0)。詳細は
+	// NoteSearchableScope 関数の doc 参照。
 	resp["noteSearchableScope"] = NoteSearchableScope(h.config.FulltextSearch, h.config.Meilisearch)
 
 	// detail=false: TS MetaLite互換。管理者/内部向けフィールド (features, policies,
