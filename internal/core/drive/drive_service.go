@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -45,6 +46,17 @@ var (
 	// their own drive file. Handler translates this into the drive-specific
 	// RESTRICTED_BY_ROLE response (UUID 7f59dccb-...) (#1028).
 	ErrCannotUnmarkSensitive = errors.New("cannot unmark sensitive while alwaysMarkNsfw policy is active")
+	// ErrMaxFileSizeExceeded is returned when the uploaded file size exceeds
+	// the user's `maxFileSizeMb` role policy (#1029 PR-2). Handler maps this
+	// to upstream's `MAX_FILE_SIZE_EXCEEDED` 400 response.
+	ErrMaxFileSizeExceeded = errors.New("max file size exceeded")
+	// ErrNoFreeSpace is returned when the user's current drive usage plus the
+	// new file size exceeds `driveCapacityMb` (#1029 PR-2). Handler maps this
+	// to upstream's `NO_FREE_SPACE` 400 response. remote user の場合 upstream
+	// は `expireOldFile` で古い file を退去させて capacity を確保するが、
+	// mk-go では LRU 退去ロジックが未実装のため remote user は本 gate を
+	// skip して従来どおり受け入れる (cleanup logic は future work)。
+	ErrNoFreeSpace = errors.New("no free space")
 )
 
 // StreamingPublisher receives drive file life-cycle events so that
@@ -217,6 +229,33 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (*model.DriveFile,
 			if v, ok := policies["alwaysMarkNsfw"].(bool); ok && v {
 				rolePolicyForceSensitive = true
 				in.IsSensitive = true
+			}
+		}
+		// maxFileSizeMb / driveCapacityMb gate (#1029 PR-2)。upstream Misskey TS
+		// `DriveService.addFile` は **local user のみ** local capacity / size を
+		// 強制し、remote user は expireOldFile で逃げ道を作る。mk-go には
+		// expireOldFile 相当の LRU 退去がまだ無いので remote は skip する
+		// (= 受け入れて drive_file 行は作成、cleanup は future work)。
+		if in.User.IsLocal() && policies != nil {
+			if mb, ok := policies["maxFileSizeMb"].(int); ok && mb > 0 {
+				maxBytes := int64(mb) * 1024 * 1024
+				if int64(len(info.Body)) > maxBytes {
+					return nil, ErrMaxFileSizeExceeded
+				}
+			}
+			if mb, ok := policies["driveCapacityMb"].(int); ok && mb > 0 {
+				capBytes := int64(mb) * 1024 * 1024
+				// UsageByUser の DB error を握り潰すと usage=0 として gate を
+				// pass してしまい driveCapacityMb 制限が事実上効かなくなる。
+				// production の transient DB error 時に黙って upload を許可する
+				// のは避けたいので明示的に internal error として伝播する。
+				usage, err := s.fileRepo.UsageByUser(in.User.ID)
+				if err != nil {
+					return nil, fmt.Errorf("calc drive usage: %w", err)
+				}
+				if usage+int64(len(info.Body)) > capBytes {
+					return nil, ErrNoFreeSpace
+				}
 			}
 		}
 	}

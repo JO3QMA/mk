@@ -142,3 +142,111 @@ func TestRegistrationTicketRepository_FindByIDForUpdateTx_NotFound(t *testing.T)
 	})
 	assert.Error(t, err)
 }
+
+// CountByCreatorSince は creatorID + id > sinceID の組み合わせで rolling
+// window count を返す (#1029 PR-2 で invite/create + invite/limit が使う)。
+func TestRegistrationTicketRepository_CountByCreatorSince(t *testing.T) {
+	repo := NewRegistrationTicketRepository(testDB)
+	cleanupInvite(t, "rt_cc_1", "rt_cc_2", "rt_cc_3", "rt_cc_other")
+	defer cleanupInvite(t, "rt_cc_1", "rt_cc_2", "rt_cc_3", "rt_cc_other")
+	u := insertTestUser(t, "rt_cc_u", "rtccu")
+	defer cleanupUser(t, u.ID)
+	other := insertTestUser(t, "rt_cc_o", "rtcco")
+	defer cleanupUser(t, other.ID)
+
+	// creatorID と id (時刻 prefix) で window を切る。アルファベット順比較で
+	// id > sinceID を満たすので rt_cc_2 / rt_cc_3 のみ count される。
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_cc_1", Code: "ccc-1", CreatedByID: &u.ID}))
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_cc_2", Code: "ccc-2", CreatedByID: &u.ID}))
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_cc_3", Code: "ccc-3", CreatedByID: &u.ID}))
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_cc_other", Code: "ccc-other", CreatedByID: &other.ID}))
+
+	count, err := repo.CountByCreatorSince(u.ID, "rt_cc_1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), count)
+
+	// 他 creator は count されない
+	count, err = repo.CountByCreatorSince(u.ID, "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), count)
+
+	count, err = repo.CountByCreatorSince(other.ID, "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count)
+}
+
+// cancelled context で error 経路を通すことで coverage を担保する。
+func TestRegistrationTicketRepository_CountByCreatorSince_Error(t *testing.T) {
+	repo := NewRegistrationTicketRepository(cancelledDB(t))
+	_, err := repo.CountByCreatorSince("any", "")
+	assert.Error(t, err)
+}
+
+// FindByID は invite/delete の access check で使う。
+func TestRegistrationTicketRepository_FindByID(t *testing.T) {
+	repo := NewRegistrationTicketRepository(testDB)
+	cleanupInvite(t, "rt_fid")
+	defer cleanupInvite(t, "rt_fid")
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_fid", Code: "fid-code"}))
+
+	got, err := repo.FindByID("rt_fid")
+	require.NoError(t, err)
+	assert.Equal(t, "rt_fid", got.ID)
+
+	_, err = repo.FindByID("missing")
+	assert.Error(t, err)
+}
+
+func TestRegistrationTicketRepository_FindByID_DBError(t *testing.T) {
+	repo := NewRegistrationTicketRepository(cancelledDB(t))
+	_, err := repo.FindByID("any")
+	assert.Error(t, err)
+}
+
+// ListByCreator は invite/list で「自分の発行 invite」を絞り込む。
+func TestRegistrationTicketRepository_ListByCreator(t *testing.T) {
+	repo := NewRegistrationTicketRepository(testDB)
+	cleanupInvite(t, "rt_lc_1", "rt_lc_2", "rt_lc_o")
+	defer cleanupInvite(t, "rt_lc_1", "rt_lc_2", "rt_lc_o")
+	u := insertTestUser(t, "rt_lc_u", "rtlcu")
+	defer cleanupUser(t, u.ID)
+	other := insertTestUser(t, "rt_lc_o", "rtlco")
+	defer cleanupUser(t, other.ID)
+
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_lc_1", Code: "lc-1", CreatedByID: &u.ID}))
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_lc_2", Code: "lc-2", CreatedByID: &u.ID}))
+	require.NoError(t, repo.Create(&model.RegistrationTicket{ID: "rt_lc_o", Code: "lc-o", CreatedByID: &other.ID}))
+
+	// 自 user のみ取得 + DESC sort
+	rows, err := repo.ListByCreator(u.ID, "", "", 50)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "rt_lc_2", rows[0].ID, "id DESC: 大きい方が先")
+	assert.Equal(t, "rt_lc_1", rows[1].ID)
+
+	// since cursor: rt_lc_1 より大きい id のみ → rt_lc_2 のみ
+	rows, err = repo.ListByCreator(u.ID, "rt_lc_1", "", 50)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "rt_lc_2", rows[0].ID)
+
+	// until cursor: rt_lc_2 より小さい id のみ → rt_lc_1 のみ
+	rows, err = repo.ListByCreator(u.ID, "", "rt_lc_2", 50)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "rt_lc_1", rows[0].ID)
+
+	// limit clamp (0 -> 30, > 100 -> 100)
+	rows, err = repo.ListByCreator(u.ID, "", "", 0)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+	rows, err = repo.ListByCreator(u.ID, "", "", 9999)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+}
+
+func TestRegistrationTicketRepository_ListByCreator_DBError(t *testing.T) {
+	repo := NewRegistrationTicketRepository(cancelledDB(t))
+	_, err := repo.ListByCreator("any", "", "", 10)
+	assert.Error(t, err)
+}

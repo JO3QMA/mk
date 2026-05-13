@@ -48,6 +48,21 @@ type RegistrationTicketRepository interface {
 	// `now` is passed by callers so tests can supply a deterministic clock
 	// when evaluating the `expired` filter.
 	List(filter string, limit, offset int, now time.Time) ([]*model.RegistrationTicket, error)
+	// CountByCreatorSince returns the number of tickets created by creatorID
+	// whose ID compares strictly greater than sinceID. Used by
+	// invite/create + invite/limit endpoints to enforce the
+	// inviteLimit + inviteLimitCycle role policy (#1029 PR-2). aidx 型 ID
+	// は時刻 prefix を持つので id 比較で「特定時刻以降に作成された」レコード
+	// を絞り込める (upstream は typeorm `MoreThan(idService.gen(time))` で
+	// 同じセマンティクスを実現している)。
+	CountByCreatorSince(creatorID, sinceID string) (int64, error)
+	// FindByID returns the ticket with the given primary key, or
+	// gorm.ErrRecordNotFound when no row matches.
+	FindByID(id string) (*model.RegistrationTicket, error)
+	// ListByCreator returns tickets owned by creatorID, paginated by id
+	// cursor (sinceID < id < untilID, empty cursors disable each bound).
+	// Used by invite/list (= 自分が発行した invite の一覧)。
+	ListByCreator(creatorID, sinceID, untilID string, limit int) ([]*model.RegistrationTicket, error)
 	Delete(id string) error
 }
 
@@ -115,6 +130,53 @@ func (r *registrationTicketRepository) List(filter string, limit, offset int, no
 	}
 	var rows []*model.RegistrationTicket
 	if err := q.Order(`"id" DESC`).Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// CountByCreatorSince counts tickets created by creatorID with id > sinceID.
+func (r *registrationTicketRepository) CountByCreatorSince(creatorID, sinceID string) (int64, error) {
+	var count int64
+	if err := r.db.Model(&model.RegistrationTicket{}).
+		Where(`"createdById" = ? AND "id" > ?`, creatorID, sinceID).
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// FindByID returns the ticket by primary key.
+func (r *registrationTicketRepository) FindByID(id string) (*model.RegistrationTicket, error) {
+	var ticket model.RegistrationTicket
+	if err := r.db.Where(`"id" = ?`, id).First(&ticket).Error; err != nil {
+		return nil, err
+	}
+	return &ticket, nil
+}
+
+// ListByCreator returns the invites owned by creatorID with id cursor
+// pagination, limited to limit rows. limit <= 0 falls back to 30, > 100 is
+// clamped to 100 (= upstream paramDef.limit のデフォルトと max)。
+func (r *registrationTicketRepository) ListByCreator(creatorID, sinceID, untilID string, limit int) ([]*model.RegistrationTicket, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q := r.db.Model(&model.RegistrationTicket{}).
+		Where(`"createdById" = ?`, creatorID).
+		Order(`"id" DESC`).
+		Limit(limit)
+	if sinceID != "" {
+		q = q.Where(`"id" > ?`, sinceID)
+	}
+	if untilID != "" {
+		q = q.Where(`"id" < ?`, untilID)
+	}
+	var rows []*model.RegistrationTicket
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
