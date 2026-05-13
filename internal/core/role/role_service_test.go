@@ -1,6 +1,7 @@
 package role_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -908,6 +909,165 @@ func TestGetUserRoles_EmptyUserIDDoesNotCache(t *testing.T) {
 	assert.Empty(t, roles)
 	assert.Equal(t, 0, assignRepo.listByUserCalls,
 		"empty userID must not hit the repo at all")
+}
+
+// --- #1030: roleRepo.List() の TTL cache ---
+
+type countingRoleRepo struct {
+	*testutil.MockRoleRepository
+	listCalls int
+}
+
+func (c *countingRoleRepo) List() ([]*model.Role, error) {
+	c.listCalls++
+	return c.MockRoleRepository.List()
+}
+
+func newServiceWithCountingRoleRepo(t *testing.T) (*role.Service, *countingRoleRepo, *testutil.MockRoleAssignmentRepository) {
+	t.Helper()
+	mockRoleRepo := testutil.NewMockRoleRepository()
+	roleRepo := &countingRoleRepo{MockRoleRepository: mockRoleRepo}
+	assignRepo := testutil.NewMockRoleAssignmentRepository(mockRoleRepo)
+	metaRepo := testutil.NewMockMetaRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := role.NewService(roleRepo, assignRepo, metaRepo, idGen)
+	return svc, roleRepo, assignRepo
+}
+
+// evaluateConditionalRoles 経由で複数 user が連続して GetUserRoles を呼んでも、
+// roleRepo.List() は cache hit で 1 回しか発火しないことを保証する (#1030)。
+// userRoleCache は user 単位なので別 user の cache miss でも fire するが、
+// rolesListCache は global なので「1 回呼んだら 5 min 共有」になる。
+func TestListRolesCached_HitsRepoOnceAcrossUsers(t *testing.T) {
+	svc, roleRepo, _ := newServiceWithCountingRoleRepo(t)
+	// conditional role を 1 件用意して evaluateConditionalRoles 経路を起動
+	roleRepo.Roles["r-bot"] = &model.Role{
+		ID:          "r-bot",
+		Target:      model.RoleTargetConditional,
+		CondFormula: datatypes.JSON([]byte(`{"type":"isBot"}`)),
+	}
+	userRepo := testutil.NewMockUserRepository()
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "u1", IsBot: true}))
+	require.NoError(t, userRepo.Create(&model.User{ID: "u2", Username: "u2", IsBot: false}))
+	svc.SetUserRepo(userRepo)
+
+	// 別 user の連続呼び出しで user-level cache は別 entry を持つが、roleRepo
+	// 側は global TTL cache に乗るので呼び出し回数は 1 回のままになる。
+	_, _ = svc.GetUserRoles("u1")
+	_, _ = svc.GetUserRoles("u2")
+	_, _ = svc.GetUserRoles("u1")
+	assert.Equal(t, 1, roleRepo.listCalls,
+		"rolesListCache は global なので user 跨ぎでも 1 回しか repo を叩かない")
+}
+
+// Create で role list cache が invalidate されることを担保。
+func TestCreate_InvalidatesRoleListCache(t *testing.T) {
+	svc, roleRepo, _ := newServiceWithCountingRoleRepo(t)
+	roleRepo.Roles["r-bot"] = &model.Role{
+		ID:          "r-bot",
+		Target:      model.RoleTargetConditional,
+		CondFormula: datatypes.JSON([]byte(`{"type":"isBot"}`)),
+	}
+	userRepo := testutil.NewMockUserRepository()
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "u1", IsBot: true}))
+	svc.SetUserRepo(userRepo)
+
+	// warm cache
+	_, _ = svc.GetUserRoles("u1")
+	assert.Equal(t, 1, roleRepo.listCalls)
+
+	// 新規 role を作ると role list cache が flush される
+	_, err := svc.Create("NewRole", "desc", role.CreateOptions{})
+	require.NoError(t, err)
+
+	// 同 user の userRoleCache はまだ live なので GetUserRoles 自体は repo を
+	// 叩かないが、cache を bust するため別 user で確認する。
+	require.NoError(t, userRepo.Create(&model.User{ID: "u2", Username: "u2", IsBot: true}))
+	_, _ = svc.GetUserRoles("u2")
+	assert.Equal(t, 2, roleRepo.listCalls,
+		"Create で role list cache が invalidate されて、次回 evaluation で repo を再 fetch")
+}
+
+// UpdateFields で role list cache が invalidate されることを担保。
+func TestUpdateFields_InvalidatesRoleListCache(t *testing.T) {
+	svc, roleRepo, _ := newServiceWithCountingRoleRepo(t)
+	roleRepo.Roles["r-bot"] = &model.Role{
+		ID:          "r-bot",
+		Target:      model.RoleTargetConditional,
+		CondFormula: datatypes.JSON([]byte(`{"type":"isBot"}`)),
+	}
+	roleRepo.Roles["r2"] = &model.Role{ID: "r2", Name: "Other"}
+	userRepo := testutil.NewMockUserRepository()
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "u1", IsBot: true}))
+	require.NoError(t, userRepo.Create(&model.User{ID: "u2", Username: "u2", IsBot: true}))
+	svc.SetUserRepo(userRepo)
+
+	_, _ = svc.GetUserRoles("u1")
+	assert.Equal(t, 1, roleRepo.listCalls)
+
+	// 別 role の condFormula を変更しても全 role list cache は flush される
+	_, err := svc.UpdateFields("r2", map[string]any{"name": "Updated"})
+	require.NoError(t, err)
+
+	_, _ = svc.GetUserRoles("u2") // 別 user で確認
+	assert.Equal(t, 2, roleRepo.listCalls)
+}
+
+// 並行 cache miss でも roleRepo.List() は single-flight 相当で 1 回しか
+// 発火しないことを担保する (#1035 review: RWMutex 化に伴う double-check
+// pattern の regression guard、-race で並行性も検証する)。
+func TestListRolesCached_ConcurrentMissSingleFlight(t *testing.T) {
+	svc, roleRepo, _ := newServiceWithCountingRoleRepo(t)
+	roleRepo.Roles["r-bot"] = &model.Role{
+		ID:          "r-bot",
+		Target:      model.RoleTargetConditional,
+		CondFormula: datatypes.JSON([]byte(`{"type":"isBot"}`)),
+	}
+	userRepo := testutil.NewMockUserRepository()
+	// 複数 user を作って evaluateConditionalRoles を並行に起動できるようにする
+	for i := 0; i < 20; i++ {
+		uid := "u" + string(rune('a'+i))
+		require.NoError(t, userRepo.Create(&model.User{ID: uid, Username: uid, IsBot: true}))
+	}
+	svc.SetUserRepo(userRepo)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		uid := "u" + string(rune('a'+i))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = svc.GetUserRoles(uid)
+		}()
+	}
+	wg.Wait()
+	// 全 20 goroutine が cache miss から開始しても、double-check pattern で
+	// roleRepo.List() は 1 回しか呼ばれない (= single-flight 相当)。
+	assert.Equal(t, 1, roleRepo.listCalls,
+		"concurrent cache miss should de-dup to single roleRepo.List() call")
+}
+
+// Delete (= InvalidateAllRoleCaches 経由) で role list cache も flush される。
+func TestDelete_InvalidatesRoleListCache(t *testing.T) {
+	svc, roleRepo, _ := newServiceWithCountingRoleRepo(t)
+	roleRepo.Roles["r-bot"] = &model.Role{
+		ID:          "r-bot",
+		Target:      model.RoleTargetConditional,
+		CondFormula: datatypes.JSON([]byte(`{"type":"isBot"}`)),
+	}
+	roleRepo.Roles["r2"] = &model.Role{ID: "r2", Name: "Trial"}
+	userRepo := testutil.NewMockUserRepository()
+	require.NoError(t, userRepo.Create(&model.User{ID: "u1", Username: "u1", IsBot: true}))
+	require.NoError(t, userRepo.Create(&model.User{ID: "u2", Username: "u2", IsBot: true}))
+	svc.SetUserRepo(userRepo)
+
+	_, _ = svc.GetUserRoles("u1")
+	assert.Equal(t, 1, roleRepo.listCalls)
+
+	require.NoError(t, svc.Delete("r2"))
+
+	_, _ = svc.GetUserRoles("u2")
+	assert.Equal(t, 2, roleRepo.listCalls)
 }
 
 // 失敗した Assign / Unassign は invalidate しない (DB 状態が変わらないため)。
