@@ -88,6 +88,99 @@ func TestCreateService_DefaultVisibility(t *testing.T) {
 	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility)
 }
 
+// #1024: canPublicNote=false の user の public note は home に降格する
+// (upstream Misskey TS NoteCreateService と同 silencing 挙動)。channel
+// 内の note は降格対象外。
+type silencingStub struct{ silenced bool }
+
+func (s *silencingStub) IsSilenced(_ string) bool { return s.silenced }
+
+func TestCreateService_SilencedPublicNoteDemotedToHome(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	svc.SetSilencingProvider(&silencingStub{silenced: true})
+
+	user := &model.User{ID: "user1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{
+		User: user, Text: &text, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityHome, created.Visibility,
+		"silenced user の public note は home に降格")
+}
+
+func TestCreateService_NonSilencedPublicNoteUnchanged(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	svc.SetSilencingProvider(&silencingStub{silenced: false})
+
+	user := &model.User{ID: "user1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{
+		User: user, Text: &text, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility,
+		"非 silenced user は public のまま")
+}
+
+func TestCreateService_SilencedHomeNoteUnchanged(t *testing.T) {
+	// 既に home / followers / specified の note は降格対象外 (= base 維持)。
+	svc, _, _ := newCreateService(t)
+	svc.SetSilencingProvider(&silencingStub{silenced: true})
+
+	user := &model.User{ID: "user1"}
+	text := "hello"
+	created, err := svc.Create(note.CreateInput{
+		User: user, Text: &text, Visibility: model.NoteVisibilityHome,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityHome, created.Visibility)
+}
+
+// channel 内の public note は channel 機構が露出範囲を管理するので silencing
+// 対象外 (upstream NoteCreateService.ts も同 logic)。channelHook stub で
+// channel 存在チェックを通過させて、降格されずに public のまま保存される
+// ことを確認する。
+type stubChannelHook struct{ exists bool }
+
+func (h *stubChannelHook) EnsureChannelExists(_ string) error {
+	if !h.exists {
+		return note.ErrChannelNotFound
+	}
+	return nil
+}
+
+func (h *stubChannelHook) OnNotePosted(_, _, _ string) {}
+
+func TestCreateService_SilencedChannelNoteNotDemoted(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	svc.SetSilencingProvider(&silencingStub{silenced: true})
+	svc.SetChannelHook(&stubChannelHook{exists: true})
+
+	user := &model.User{ID: "user1"}
+	text := "hello"
+	channelID := "ch1"
+	created, err := svc.Create(note.CreateInput{
+		User: user, Text: &text, Visibility: model.NoteVisibilityPublic,
+		ChannelID: &channelID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility,
+		"silenced user でも channel post は降格しない (channel 機構が露出管理)")
+}
+
+func TestCreateService_SilencingProviderNilSkipped(t *testing.T) {
+	// silencingProvider 未配線時は降格 logic が動かない (= 旧挙動互換)。
+	svc, _, _ := newCreateService(t)
+	user := &model.User{ID: "user1"}
+	text := "hi"
+	created, err := svc.Create(note.CreateInput{
+		User: user, Text: &text, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility)
+}
+
 func TestCreateService_RequiresContent(t *testing.T) {
 	svc, _, _ := newCreateService(t)
 
