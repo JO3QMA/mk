@@ -800,6 +800,30 @@ func backupCodesStock(profile *model.UserProfile) string {
 	return "partial"
 }
 
+// countMuteWords returns the total number of entries in a muted-words
+// payload, flattening AND-groups. mirrors upstream Misskey TS i/update.ts
+// `checkMuteWordCount`: 各 entry が string なら 1、array なら array.length
+// を加算する (#1029)。raw が nil / 空なら 0。
+func countMuteWords(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var arr []any
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return 0
+	}
+	length := 0
+	for _, item := range arr {
+		switch v := item.(type) {
+		case string:
+			length++
+		case []any:
+			length += len(v)
+		}
+	}
+	return length
+}
+
 // normalizeMutedWords validates and normalizes the mutedWords / hardMutedWords
 // payload from i/update. Returns (raw, ok, err): ok=false means "field not
 // present in request" (caller should leave the column unchanged); err != nil
@@ -927,14 +951,42 @@ func (h *Handler) Update(c echo.Context) error {
 	// `[]` (= 2 byte の空配列) はクリア要求として通す。validation は配列形式
 	// であることだけ。upstream paramDef も内側構造は `array of (string |
 	// string[])` で、要素 0 個も許容する。
+	// wordMuteLimit role policy gate (#1029)。upstream
+	// `checkMuteWordCount(mutedWords, policies.wordMuteLimit)` と同 logic。
+	// mutedWords / hardMutedWords 両方が指定された request で同 policy を 2 度
+	// lookup しないよう、helper closure で memoize する (canUpdateBioMedia と
+	// 同 pattern, upstream の `policies ??= await ...` と等価)。
+	var (
+		wordMuteLimitChecked bool
+		wordMuteLimitValue   int
+		wordMuteLimitOk      bool
+	)
+	wordMuteLimit := func() (int, bool) {
+		if !wordMuteLimitChecked {
+			wordMuteLimitChecked = true
+			if h.roleProvider != nil {
+				if v, ok := h.roleProvider.GetUserPolicies(me.ID)["wordMuteLimit"].(int); ok && v >= 0 {
+					wordMuteLimitValue = v
+					wordMuteLimitOk = true
+				}
+			}
+		}
+		return wordMuteLimitValue, wordMuteLimitOk
+	}
 	if mw, ok, err := normalizeMutedWords(req.MutedWords); err != nil {
 		return apierr.JSONInvalidParam(c)
 	} else if ok {
+		if limit, lok := wordMuteLimit(); lok && countMuteWords(mw) > limit {
+			return apierr.JSONTooManyMutedWords(c)
+		}
 		in.MutedWords = &mw
 	}
 	if mw, ok, err := normalizeMutedWords(req.HardMutedWords); err != nil {
 		return apierr.JSONInvalidParam(c)
 	} else if ok {
+		if limit, lok := wordMuteLimit(); lok && countMuteWords(mw) > limit {
+			return apierr.JSONTooManyMutedWords(c)
+		}
 		in.HardMutedWords = &mw
 	}
 	// upstream Misskey TS i/update.ts: avatarId / bannerId が non-null 文字列で
