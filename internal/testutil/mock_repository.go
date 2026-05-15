@@ -4053,6 +4053,18 @@ func (m *MockUserKeypairExtraRepository) Upsert(k *model.UserKeypairExtra) error
 	return nil
 }
 
+// InsertIfAbsent inserts only when no entry exists for the userId. Returns
+// (inserted, nil) where inserted=true if a new row was inserted, false if a
+// row already existed (= ON CONFLICT DO NOTHING semantic of the production
+// repository).
+func (m *MockUserKeypairExtraRepository) InsertIfAbsent(k *model.UserKeypairExtra) (bool, error) {
+	if _, exists := m.Keypairs[k.UserID]; exists {
+		return false, nil
+	}
+	m.Keypairs[k.UserID] = k
+	return true, nil
+}
+
 func (m *MockUserKeypairExtraRepository) FindByUserID(userID string) (*model.UserKeypairExtra, error) {
 	k, ok := m.Keypairs[userID]
 	if !ok {

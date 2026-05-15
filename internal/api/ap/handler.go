@@ -17,6 +17,7 @@ import (
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
+	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 )
 
@@ -42,6 +43,10 @@ type Handler struct {
 	remoteFetcher    RemoteFetcher
 	remoteResolver   RemoteResolver
 	nonAPFallback    echo.HandlerFunc
+	// backfillGroup collapses parallel lazy-backfill 経路の Generate +
+	// InsertIfAbsent を同 user ID で 1 回に集約する。多 goroutine が
+	// 同時に backfill しても entropy / CPU を浪費しない (#1081 review #1)。
+	backfillGroup singleflight.Group
 }
 
 // SetRemote attaches remote AP fetcher and resolver.
@@ -98,27 +103,98 @@ func (h *Handler) SetKeypairExtraRepo(r repository.UserKeypairExtraRepository) {
 }
 
 // lookupEd25519PublicKey returns the Ed25519 public key for the local user
-// when keypairExtraRepo is wired AND an Ed25519 row exists. It returns nil on
-// any of: repo unwired / row missing / PEM parse failure (fail-soft to RSA
-// only — drop-in 互換維持)。
+// when keypairExtraRepo is wired. P1 マイグレーション前から存在する旧 user
+// には user_keypair_extra に行が無いため、ErrRecordNotFound のときに lazy
+// backfill (鍵生成 + InsertIfAbsent + 再 lookup) を行って actor JSON に
+// assertionMethod を expose する (#1072)。生成失敗 / PEM parse 失敗のいずれも
+// nil を返して RSA only にフォールバックする。
 //
-// "row missing" は P5 backfill 前の通常状態なので silently skip するが、
-// それ以外の DB error / PEM parse error は診断のため warn log を出す。これが
-// 無いと一時的 PostgreSQL 障害で全 user の actor JSON から Ed25519 が消える
-// silent degradation が発生したとき気付けない。
+// 並列 actor JSON 生成で同 user に対して複数 goroutine が backfill を
+// 開始しても、InsertIfAbsent (ON CONFLICT DO NOTHING) で 最初に書かれた
+// 行が残り、後続は再 lookup で既存行を取得する → race-safe。
+//
+// DB error (= ErrRecordNotFound 以外) と PEM parse error は診断のため
+// slog.Warn を出す。
 func (h *Handler) lookupEd25519PublicKey(userID string) ed25519.PublicKey {
 	if h.keypairExtraRepo == nil {
 		return nil
 	}
 	row, err := h.keypairExtraRepo.FindByUserID(userID)
-	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			slog.Warn("ed25519 keypair lookup failed",
-				"userID", userID, "error", err)
-		}
+	if err == nil {
+		return h.parseEd25519PublicKeyOrLog(userID, row.Ed25519PublicKey)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		slog.Warn("ed25519 keypair lookup failed",
+			"userID", userID, "error", err)
 		return nil
 	}
-	pub, err := activitypub.ParseEd25519PublicKeyPEM(row.Ed25519PublicKey)
+	// 行なし → P5 lazy backfill 経路
+	return h.backfillEd25519PublicKey(userID)
+}
+
+// backfillEd25519PublicKey generates a fresh Ed25519 keypair for a local user
+// that pre-dates the P1 migration, persists it via InsertIfAbsent (race-safe),
+// and returns the public key for the renderer. Any failure path returns nil
+// → RSA only fallback。
+//
+// 同 userID への並行 backfill は singleflight で 1 回に集約され、Generate +
+// InsertIfAbsent + 再 lookup を多 goroutine が個別に走らせる無駄を抑える
+// (#1081 review #1)。InsertIfAbsent の戻り値 inserted で「自分が書いた」
+// 「他が先に書いた」を区別し、inserted=true なら自身が生成した PEM を
+// そのまま返して再 FindByUserID を skip (= 1 query 削減 #1081 review #2)。
+func (h *Handler) backfillEd25519PublicKey(userID string) ed25519.PublicKey {
+	val, _, _ := h.backfillGroup.Do(userID, func() (any, error) {
+		// 失敗時に typed-nil の ed25519.PublicKey を返すと caller 側で
+		// `val == nil` が false になる (interface comparison の罠)。明示的に
+		// untyped nil を return して check が正しく short-circuit するように
+		// する。
+		if pub := h.runEd25519Backfill(userID); pub != nil {
+			return pub, nil
+		}
+		return nil, nil
+	})
+	if val == nil {
+		return nil
+	}
+	return val.(ed25519.PublicKey)
+}
+
+func (h *Handler) runEd25519Backfill(userID string) ed25519.PublicKey {
+	privPEM, pubPEM, err := activitypub.GenerateEd25519Keypair()
+	if err != nil {
+		slog.Warn("ed25519 backfill keypair generate failed",
+			"userID", userID, "error", err)
+		return nil
+	}
+	inserted, err := h.keypairExtraRepo.InsertIfAbsent(&model.UserKeypairExtra{
+		UserID:            userID,
+		Ed25519PublicKey:  pubPEM,
+		Ed25519PrivateKey: privPEM,
+	})
+	if err != nil {
+		slog.Warn("ed25519 backfill insert failed",
+			"userID", userID, "error", err)
+		return nil
+	}
+	if inserted {
+		// 自身が書いた行 → 生成済 PEM をそのまま返す (1 query 削減)
+		return h.parseEd25519PublicKeyOrLog(userID, pubPEM)
+	}
+	// 並列 race (= singleflight 期間外の重複 backfill) で別 goroutine が
+	// 先に書いた → 再 lookup で永続化された別公開鍵を取得
+	row, err := h.keypairExtraRepo.FindByUserID(userID)
+	if err != nil {
+		slog.Warn("ed25519 backfill re-lookup failed",
+			"userID", userID, "error", err)
+		return nil
+	}
+	return h.parseEd25519PublicKeyOrLog(userID, row.Ed25519PublicKey)
+}
+
+// parseEd25519PublicKeyOrLog parses an Ed25519 PEM and logs on failure.
+// Shared by lookup / backfill paths.
+func (h *Handler) parseEd25519PublicKeyOrLog(userID, pemStr string) ed25519.PublicKey {
+	pub, err := activitypub.ParseEd25519PublicKeyPEM(pemStr)
 	if err != nil {
 		slog.Warn("ed25519 PEM parse failed",
 			"userID", userID, "error", err)
