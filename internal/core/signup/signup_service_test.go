@@ -260,6 +260,45 @@ func TestSignup_KeypairCreateError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestSignup_WithKeypairExtraRepo(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	keypairRepo := testutil.NewMockUserKeypairRepository()
+	keypairExtraRepo := testutil.NewMockUserKeypairExtraRepository()
+	svc.SetKeypairRepo(keypairRepo)
+	svc.SetKeypairExtraRepo(keypairExtraRepo)
+
+	result, err := svc.Signup("alice", "pass", false)
+	require.NoError(t, err)
+
+	// Ed25519 鍵が併発行されている
+	kx, ok := keypairExtraRepo.Keypairs[result.User.ID]
+	require.True(t, ok)
+	assert.NotEmpty(t, kx.Ed25519PublicKey)
+	assert.NotEmpty(t, kx.Ed25519PrivateKey)
+}
+
+// failingUpsertKeypairExtraRepo は Upsert だけ意図的に失敗させる test double。
+// FindByUserID / Delete は呼ばれない想定だが、将来 helper が existence check で
+// 呼んでも誤動作しないよう ErrNotFound / 成功を返す defense-in-depth な挙動にする。
+type failingUpsertKeypairExtraRepo struct{}
+
+func (f *failingUpsertKeypairExtraRepo) Upsert(_ *model.UserKeypairExtra) error {
+	return assert.AnError
+}
+func (f *failingUpsertKeypairExtraRepo) FindByUserID(_ string) (*model.UserKeypairExtra, error) {
+	return nil, testutil.ErrNotFound
+}
+func (f *failingUpsertKeypairExtraRepo) Delete(_ string) error { return nil }
+
+func TestSignup_KeypairExtraUpsertError(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	svc.SetKeypairRepo(testutil.NewMockUserKeypairRepository())
+	svc.SetKeypairExtraRepo(&failingUpsertKeypairExtraRepo{})
+
+	_, err := svc.Signup("alice", "pass", false)
+	assert.Error(t, err)
+}
+
 // --- Pending signup (#595) ---
 
 // CreatePending 経路でも 73 byte 以上 password は ErrPasswordTooLong (#1075)。
@@ -404,6 +443,38 @@ func TestPromotePending_WithKeypair(t *testing.T) {
 	require.NoError(t, err)
 	_, ok := keypairRepo.Keypairs[result.User.ID]
 	assert.True(t, ok, "keypair must be created during PromotePending")
+}
+
+func TestPromotePending_WithKeypairExtra(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+	svc.SetKeypairRepo(testutil.NewMockUserKeypairRepository())
+	keypairExtraRepo := testutil.NewMockUserKeypairExtraRepository()
+	svc.SetKeypairExtraRepo(keypairExtraRepo)
+
+	row, err := svc.CreatePending("kpxuser", "kpx@example.com", "pw", nil)
+	require.NoError(t, err)
+
+	result, err := svc.PromotePending(row.Code)
+	require.NoError(t, err)
+	kx, ok := keypairExtraRepo.Keypairs[result.User.ID]
+	require.True(t, ok, "ed25519 keypair must be created during PromotePending")
+	assert.Contains(t, kx.Ed25519PublicKey, "PUBLIC KEY")
+}
+
+func TestPromotePending_KeypairExtraUpsertError(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	svc.SetUserPendingRepo(pendingRepo)
+	svc.SetKeypairRepo(testutil.NewMockUserKeypairRepository())
+	svc.SetKeypairExtraRepo(&failingUpsertKeypairExtraRepo{})
+
+	row, err := svc.CreatePending("kpxerr", "kpxerr@example.com", "pw", nil)
+	require.NoError(t, err)
+
+	_, err = svc.PromotePending(row.Code)
+	assert.Error(t, err)
 }
 
 func TestPromotePending_WebhookHookFires(t *testing.T) {

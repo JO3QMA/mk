@@ -89,11 +89,12 @@ type WebhookHook interface {
 
 // Service handles user registration.
 type Service struct {
-	userRepo    repository.UserRepository
-	metaRepo    repository.MetaRepository
-	keypairRepo repository.UserKeypairRepository
-	pendingRepo repository.UserPendingRepository
-	ticketRepo  repository.RegistrationTicketRepository
+	userRepo         repository.UserRepository
+	metaRepo         repository.MetaRepository
+	keypairRepo      repository.UserKeypairRepository
+	keypairExtraRepo repository.UserKeypairExtraRepository
+	pendingRepo      repository.UserPendingRepository
+	ticketRepo       repository.RegistrationTicketRepository
 	// db は PromotePending を transaction 化して partial failure rollback と
 	// invitation ticket の SELECT FOR UPDATE ロックを実現する用途。未設定 (nil)
 	// なら従来の repo-based 非 tx パスにフォールバックする (mock テスト用)。
@@ -136,10 +137,69 @@ func (s *Service) SetKeypairRepo(r repository.UserKeypairRepository) {
 	s.keypairRepo = r
 }
 
+// SetKeypairExtraRepo wires the user keypair extra repository. When set,
+// Signup will also generate an Ed25519 keypair alongside the RSA one and
+// store it in user_keypair_extra so the actor JSON can publish it via
+// assertionMethod[] (FEP-521a Multikey). Optional: 未配線でも RSA only で動く
+// (= upstream Misskey TS と完全に同じ挙動)。
+func (s *Service) SetKeypairExtraRepo(r repository.UserKeypairExtraRepository) {
+	s.keypairExtraRepo = r
+}
+
 // SetWebhookHook attaches a WebhookHook invoked after user creation so that
 // system webhooks subscribed to `userCreated` can fire.
 func (s *Service) SetWebhookHook(h WebhookHook) {
 	s.webhookHook = h
+}
+
+// txInserter abstracts `tx.Create(value).Error` so the tx-create error wrap
+// path of maybeCreateEd25519Keypair can be unit-tested without spinning up a
+// real PostgreSQL transaction. `*gorm.DB` satisfies this interface natively.
+//
+// PromotePending tx 経路の tx error path は idGen が毎回新規 ULID を返す関係で
+// integration test での FK / PK violation 再現が困難なため、最小の interface
+// 抽出だけで unit test 可能な形に切り出している (#1075 follow-up)。
+type txInserter interface {
+	Create(value any) *gorm.DB
+}
+
+// maybeCreateEd25519Keypair generates and stores an Ed25519 keypair for the
+// given user when keypairExtraRepo is wired. tx が non-nil なら同 tx 内で
+// INSERT し、nil なら repository の Upsert を使う。keypairExtraRepo 未配線
+// (= mock テスト or 未対応 deployment) の場合は何もせず nil を返す。
+//
+// systemaccount.completeFromOrphan と error wrap 形式を揃え、log で発生個所が
+// 追えるようにする。
+//
+// IMPORTANT: tx には untyped nil (= `nil` literal) または有効な `*gorm.DB` を
+// 渡すこと。typed nil の `*gorm.DB` を渡すと interface comparison で not-nil
+// 扱いになり (`var tx *gorm.DB = nil; var i txInserter = tx; i != nil` が true)、
+// `tx.Create(...)` で nil deref panic になる。現 callsite (Signup /
+// promotePendingNoTx は literal nil、promotePendingTx は Begin 直後の valid tx)
+// はこれを満たすので問題ないが、新規 callsite を追加する際の罠。
+func (s *Service) maybeCreateEd25519Keypair(tx txInserter, userID string) error {
+	if s.keypairExtraRepo == nil {
+		return nil
+	}
+	privPEM, pubPEM, err := activitypub.GenerateEd25519Keypair()
+	if err != nil {
+		return fmt.Errorf("signup: generate ed25519 keypair: %w", err)
+	}
+	row := &model.UserKeypairExtra{
+		UserID:            userID,
+		Ed25519PublicKey:  pubPEM,
+		Ed25519PrivateKey: privPEM,
+	}
+	if tx != nil {
+		if err := tx.Create(row).Error; err != nil {
+			return fmt.Errorf("signup: create ed25519 keypair (tx): %w", err)
+		}
+		return nil
+	}
+	if err := s.keypairExtraRepo.Upsert(row); err != nil {
+		return fmt.Errorf("signup: create ed25519 keypair: %w", err)
+	}
+	return nil
 }
 
 // SignupResult holds the created user and their native token.
@@ -238,6 +298,10 @@ func (s *Service) Signup(username, password string, isInitialSetup bool) (*Signu
 		}); err != nil {
 			return nil, err
 		}
+	}
+	// Ed25519 keypair (FEP-521a Multikey 用)。keypairExtraRepo wire 時のみ。
+	if err := s.maybeCreateEd25519Keypair(nil, userID); err != nil {
+		return nil, err
 	}
 
 	// 初回セットアップの場合は rootUserId を設定
@@ -444,6 +508,10 @@ func (s *Service) promotePendingTx(pending *model.UserPending) (*SignupResult, e
 				return err
 			}
 		}
+		// Ed25519 keypair も同 tx 内で発行 (#1067 / #1068)
+		if err := s.maybeCreateEd25519Keypair(tx, userID); err != nil {
+			return err
+		}
 
 		// pending row 削除
 		if err := tx.Where("id = ?", pending.ID).Delete(&model.UserPending{}).Error; err != nil {
@@ -532,6 +600,9 @@ func (s *Service) promotePendingNoTx(pending *model.UserPending) (*SignupResult,
 		}); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.maybeCreateEd25519Keypair(nil, userID); err != nil {
+		return nil, err
 	}
 	_ = s.pendingRepo.Delete(pending.ID)
 
