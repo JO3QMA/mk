@@ -8,7 +8,10 @@
 #   4. mk-go overlay で app-a を mk-go ビルドに置き換えて起動
 #   5. mk-A の healthy 待ち
 #   6. test_swap_verify.py で state preserved + 新規 federation 動作を確認
-#   7. cleanup
+#   7. mk-A backend を停止して TS-A に戻す (#1082 SHOULD shape)
+#   8. TS-A 起動 healthy 待ち + nginx-a restart
+#   9. test_swap_roundtrip_verify.py で TS 戻し後の連合継続を確認
+#  10. cleanup
 #
 # pytest セッションを跨いで docker compose を切り替える必要があるため、
 # orchestration を bash で外側に置く。test runner コンテナ内に docker CLI を
@@ -58,7 +61,10 @@ echo "===> stage 3: stop TS-A backend (DB-A / Redis-A keep state)"
 docker compose -f "$BASE" stop app-a
 
 echo "===> stage 4: bring up mk-go overlay on instance A"
-docker compose -f "$BASE" -f "$OVERLAY" up -d --build app-a
+# --force-recreate で旧 TS-A image の停止 container を確実に破棄し、新規
+# mk-A container として起動する。image label 一致時に compose が container
+# を reuse して image が更新されない曖昧さを回避 (#1085 review #1)。
+docker compose -f "$BASE" -f "$OVERLAY" up -d --build --force-recreate app-a
 
 echo "===> stage 5: wait for mk-A healthy"
 deadline=$(($(date +%s) + 180))
@@ -87,5 +93,40 @@ docker compose -f "$BASE" -f "$OVERLAY" restart nginx-a
 
 echo "===> stage 6: verify state preserved on mk-A"
 docker compose -f "$BASE" -f "$OVERLAY" --profile test run --rm test-runner pytest test_swap_verify.py -v
+
+echo "===> stage 7: stop mk-A backend (roundtrip 戻し前準備)"
+docker compose -f "$BASE" -f "$OVERLAY" stop app-a
+
+echo "===> stage 8: bring up TS-A backend (overlay 解除で TS に戻す)"
+# overlay を指定せず base のみで up することで、app-a が TS-A の image に戻る。
+# --force-recreate で停止中の mk-A container を確実に破棄し、新規 TS-A
+# container を起動する (#1085 review #1)。
+docker compose -f "$BASE" up -d --force-recreate app-a
+
+echo "===> stage 8b: wait for TS-A healthy"
+deadline=$(($(date +%s) + 180))
+while :; do
+  state=$(docker compose -f "$BASE" ps --format json | python3 -c "
+import sys, json
+ls=[json.loads(l) for l in sys.stdin if l.strip()]
+ms=[s for s in ls if s.get('Service')=='app-a']
+print(ms[0].get('Health') if ms else 'missing')
+")
+  if [ "$state" = "healthy" ]; then
+    break
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "FAIL: TS-A (roundtrip) did not become healthy within 180s"
+    docker compose -f "$BASE" logs app-a | tail -50
+    exit 1
+  fi
+  sleep 3
+done
+
+echo "===> stage 8c: restart nginx-a so the upstream re-resolves to TS-A"
+docker compose -f "$BASE" restart nginx-a
+
+echo "===> stage 9: verify federation continuity after TS roundtrip (#1082)"
+docker compose -f "$BASE" --profile test run --rm test-runner pytest test_swap_roundtrip_verify.py -v
 
 echo "===> all stages PASS"
