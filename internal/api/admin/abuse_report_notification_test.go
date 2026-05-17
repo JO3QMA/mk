@@ -126,12 +126,57 @@ func TestRecipientUpdate_PartialFields(t *testing.T) {
 		},
 	)
 
+	// method='webhook' に切り替えるなら systemWebhookId も同 payload に含める
+	// 必要がある (upstream correlation check と同 semantics、PR #1108 で追加)。
 	rec := doPost(h.AbuseReportNotificationRecipientUpdate,
-		`{"id":"r1","name":"new","method":"webhook","isActive":false}`, adminUser)
+		`{"id":"r1","name":"new","method":"webhook","systemWebhookId":"w1","isActive":false}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "new", repo.Recipients["r1"].Name)
 	assert.Equal(t, "webhook", repo.Recipients["r1"].Method)
 	assert.False(t, repo.Recipients["r1"].IsActive)
+}
+
+// PR #1108: method 変更時の correlation check が動作することの regression guard。
+// method='webhook' なのに systemWebhookId 未指定 → 400 (silent drift 防止)。
+func TestRecipientUpdate_MethodWithoutCounterpartReturns400(t *testing.T) {
+	h, _ := setupAbuseRecipientHandler(t,
+		&model.AbuseReportNotificationRecipient{
+			ID: "r1", Name: "old", Method: "email", IsActive: true,
+			// 既存 row に SystemWebhookID は無い
+		},
+	)
+	rec := doPost(h.AbuseReportNotificationRecipientUpdate,
+		`{"id":"r1","method":"webhook"}`, adminUser)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "CORRELATION_CHECK_WEBHOOK")
+}
+
+// upstream enum: ['email', 'webhook'] 以外の値は 400 reject。
+func TestRecipientUpdate_InvalidMethodReturns400(t *testing.T) {
+	h, _ := setupAbuseRecipientHandler(t,
+		&model.AbuseReportNotificationRecipient{
+			ID: "r1", Name: "old", Method: "email", IsActive: true,
+		},
+	)
+	rec := doPost(h.AbuseReportNotificationRecipientUpdate,
+		`{"id":"r1","method":"sms"}`, adminUser)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// PR #1108 sweep follow-up: 不存在 ID + 不完全 method payload は
+// **404 NotFound** が返る (correlation_check の 400 が先に発火しない)。
+// エラー優先順位を「不存在 → 入力不正」の順に統一する regression guard。
+// 旧版は before 取得失敗を捨てて correlation_check に進んでいたため、
+// admin UI / CLI が ID typo を 400 として誤って受け取っていた edge case。
+func TestRecipientUpdate_NotFoundTakesPrecedenceOverCorrelationCheck(t *testing.T) {
+	h, _ := setupAbuseRecipientHandler(t) // recipient 0 件で開始
+	// method=webhook + systemWebhookId 未指定 = 普段なら correlation_check で
+	// 400 になるが、ID が存在しないので 404 が先に返る。
+	rec := doPost(h.AbuseReportNotificationRecipientUpdate,
+		`{"id":"ghost","method":"webhook"}`, adminUser)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	// correlation_check のメッセージは含まれていないこと
+	assert.NotContains(t, rec.Body.String(), "CORRELATION_CHECK_WEBHOOK")
 }
 
 func TestRecipientUpdate_NotFound(t *testing.T) {

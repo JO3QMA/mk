@@ -118,6 +118,13 @@ func (h *Handler) AbuseReportNotificationRecipientShow(c echo.Context) error {
 }
 
 // AbuseReportNotificationRecipientUpdate handles POST /api/admin/abuse-report/notification-recipient/update.
+//
+// upstream paramDef は method を `enum: ['email', 'webhook']` で制約し、
+// method='email' なら userId 必須、'webhook' なら systemWebhookId 必須の
+// correlation check を持つ (#1108 sweep)。旧 mk-go は Update で method を
+// 素通し + correlation check を一切しておらず、admin が無効な method に
+// silent 書き換えできた。本 fix で Create と同等の enum / correlation
+// validation を追加。
 func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
 	if h.recipientRepo == nil {
 		return c.NoContent(http.StatusNoContent)
@@ -133,12 +140,46 @@ func (h *Handler) AbuseReportNotificationRecipientUpdate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.InvalidParam("Invalid parameters."))
 	}
-	before, _ := h.recipientRepo.FindByID(req.ID)
+	// 不存在 ID は早期に 404 で報告する。旧版は before の取得失敗 (= 不存在)
+	// を捨てて後続の Update(GORM) に頼っていたが、enum / correlation check が
+	// 入った後 (#1108) は「不存在 ID + 不完全 method payload」のケースで
+	// correlation_check の 400 が先に発火して NotFound が永遠に返らない
+	// edge case が生まれていた。エラー優先順位を「不存在 → 入力不正」の順
+	// に揃えて、admin UI / CLI が ID typo を確実に 404 として受け取れる
+	// ようにする (sweep follow-up)。
+	before, err := h.recipientRepo.FindByID(req.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, apierr.NotFound())
+	}
 	fields := map[string]any{}
 	if req.Name != nil {
 		fields["name"] = *req.Name
 	}
 	if req.Method != nil {
+		// upstream enum: ['email', 'webhook']。silent fallback せず 400 reject
+		// (PR #1102 RolesUpdate.target と同方針)。
+		if *req.Method != "email" && *req.Method != "webhook" {
+			return c.JSON(http.StatusBadRequest, apierr.InvalidParam("method must be 'email' or 'webhook'."))
+		}
+		// correlation check (upstream update.ts と同じ regex 関連 error code)。
+		// 後段の UserID / SystemWebhookID で上書きされる可能性があるので、
+		// 「最終的に保存される method に対する counterpart 値」をここで
+		// 検査する必要がある。method 単体 update でも payload に id しか
+		// 来ない場合は既存 row の counterpart を見て判定する。
+		userID := req.UserID
+		sysWHID := req.SystemWebhookID
+		if userID == nil && before != nil {
+			userID = before.UserID
+		}
+		if sysWHID == nil && before != nil {
+			sysWHID = before.SystemWebhookID
+		}
+		if *req.Method == "email" && (userID == nil || *userID == "") {
+			return c.JSON(http.StatusBadRequest, apierr.Error("CORRELATION_CHECK_EMAIL", "If \"method\" is email, \"userId\" must be set.", "348bb8ae-575a-6fe9-4327-5811999def8f"))
+		}
+		if *req.Method == "webhook" && (sysWHID == nil || *sysWHID == "") {
+			return c.JSON(http.StatusBadRequest, apierr.Error("CORRELATION_CHECK_WEBHOOK", "If \"method\" is webhook, \"systemWebhookId\" must be set.", "b0c15051-de2d-29ef-260c-9585cddd701a"))
+		}
 		fields["method"] = *req.Method
 	}
 	if req.IsActive != nil {
