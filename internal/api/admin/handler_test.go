@@ -1746,6 +1746,124 @@ func TestAbuseReports_InvalidOrigin_Rejected(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// PR for #1116 regression guard: response に aidx ID から派生した
+// createdAt が ISO 8601 形式で含まれる。frontend MkAbuseReport.vue が
+// <MkTime :time="report.createdAt"/> を直接読むため、注入が漏れると
+// 「日時の解析が失敗しました。」表示になる。
+//
+// aidx ParseTime は stateless (= ID 先頭 8 文字を decode するだけ) なので
+// test 側で生成した generator と handler 内 generator が別物でも parse 可。
+func TestAbuseReports_InjectsCreatedAtFromAidx(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	gen, err := id.NewGenerator("aidx")
+	require.NoError(t, err)
+	aidxID := gen.Generate(time.Now())
+	abuseRepo.Reports[aidxID] = &model.AbuseUserReport{ID: aidxID}
+	h.SetAbuseRepo(abuseRepo)
+
+	rec := doPost(h.AbuseReports, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	// createdAt field が存在し ISO 8601 (= "2006-01-02T15:04:05.000Z")
+	// 形式に parse 可能であること。
+	ca, ok := resp[0]["createdAt"].(string)
+	require.True(t, ok, "createdAt must be a string, got %T", resp[0]["createdAt"])
+	_, perr := time.Parse("2006-01-02T15:04:05.000Z", ca)
+	assert.NoError(t, perr, "createdAt must parse as Misskey-standard ISO 8601: %q", ca)
+}
+
+// PR for #1116: aidx 形式でない legacy ID (= 古い report 移行データ等) で
+// は createdAt 派生を skip して omitempty で field 省略する。panic せず
+// 他 report の表示は維持される (= defensive、ShowModerationLogs と同方針)。
+func TestAbuseReports_NonAidxID_OmitsCreatedAt(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	// "legacy_xyz" は aidx 形式ではないので ParseTime が失敗する。
+	abuseRepo.Reports["legacy_xyz"] = &model.AbuseUserReport{ID: "legacy_xyz"}
+	h.SetAbuseRepo(abuseRepo)
+
+	rec := doPost(h.AbuseReports, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	// omitempty で field 自体が消える (= frontend MkTime が undefined を
+	// 受けて no-render 経路に入る、「Invalid Date」回避)。
+	_, has := resp[0]["createdAt"]
+	assert.False(t, has, "non-aidx ID should omit createdAt entirely (omitempty)")
+}
+
+// PR for #1116: GORM Preload で nested に bind される *User
+// (TargetUser / Reporter / Assignee) も packedAbuseReport の embedded
+// inline で正しく JSON 出力されることを確認する。frontend MkAbuseReport.vue
+// は `report.targetUser.avatarUrl` / `report.reporter.username` 等を直接
+// 描画するため、embedded marshalling 経路で nested object が落ちると
+// アバター / 名前等が一斉に表示されなくなる。
+func TestAbuseReports_EmbeddedFieldsPreserved_NestedUsers(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	abuseRepo.Reports["r1"] = &model.AbuseUserReport{
+		ID:           "r1",
+		TargetUserID: "u_t",
+		ReporterID:   "u_r",
+		TargetUser:   &model.User{ID: "u_t", Username: "victim"},
+		Reporter:     &model.User{ID: "u_r", Username: "accuser"},
+	}
+	h.SetAbuseRepo(abuseRepo)
+
+	rec := doPost(h.AbuseReports, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+
+	// targetUser / reporter が nested object として inline されること
+	tu, ok := resp[0]["targetUser"].(map[string]any)
+	require.True(t, ok, "targetUser must be a nested object, got %T", resp[0]["targetUser"])
+	assert.Equal(t, "u_t", tu["id"])
+	assert.Equal(t, "victim", tu["username"])
+
+	rep, ok := resp[0]["reporter"].(map[string]any)
+	require.True(t, ok, "reporter must be a nested object, got %T", resp[0]["reporter"])
+	assert.Equal(t, "u_r", rep["id"])
+	assert.Equal(t, "accuser", rep["username"])
+
+	// Assignee は未設定 (= nil) なので omitempty で消える
+	_, hasAssignee := resp[0]["assignee"]
+	assert.False(t, hasAssignee, "nil Assignee should be omitted by omitempty")
+}
+
+// PR for #1116: existing fields (id / resolved / targetUser 等) が
+// packedAbuseReport の embedded inline で温存されることを確認する。
+// embedded struct を使った JSON marshalling regression guard。
+func TestAbuseReports_EmbeddedFieldsPreserved(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	abuseRepo := testutil.NewMockAbuseReportRepository()
+	abuseRepo.Reports["r1"] = &model.AbuseUserReport{
+		ID:           "r1",
+		TargetUserID: "u_target",
+		ReporterID:   "u_reporter",
+		Resolved:     true,
+		Comment:      "spam content",
+	}
+	h.SetAbuseRepo(abuseRepo)
+
+	rec := doPost(h.AbuseReports, `{}`, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	r := resp[0]
+	assert.Equal(t, "r1", r["id"])
+	assert.Equal(t, "u_target", r["targetUserId"])
+	assert.Equal(t, "u_reporter", r["reporterId"])
+	assert.Equal(t, true, r["resolved"])
+	assert.Equal(t, "spam content", r["comment"])
+}
+
 // reporterOrigin='local' は reporterHost IS NULL のみを通す。
 // handler レイヤでは mock repo にフィルタ責務を委ねるので、ここでは
 // handler の origin field 受け渡しと repo 側の filter 連動を確認する。
