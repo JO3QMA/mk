@@ -234,6 +234,39 @@ func TestTwoFARegisterKey_TOTPSuccess(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "challenge")
 }
 
+// Cross-endpoint replay regression guard: signin で消費した TOTP コードを
+// TwoFARegisterKey で再利用しようとすると 403 INVALID_TOKEN で refuse される。
+// router.go で signin と /api/i に同一 guard インスタンスを inject している
+// ことが前提 (PR #1100)。本 test は guard を直接 MarkUsed して signin 消費
+// を模擬し、shared-guard 経由の cross-endpoint protection を assert する。
+func TestTwoFARegisterKey_TOTPReplayFromSignin_Blocked(t *testing.T) {
+	h, repo, _ := newWebAuthnHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	secret := enableTwoFactorWithTOTP(t, repo, "u1")
+
+	// test-unique KeyPrefix で他テスト / -count=N の汚染を回避。
+	guard := &twofactor.RedisReplayGuard{
+		Client:    iTestRedis.Client,
+		KeyPrefix: "test:" + t.Name(),
+	}
+	h.SetTOTPReplayGuard(guard)
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+
+	// signin で TOTP を消費したことを模擬: guard を直接叩いて (u1, code) を
+	// used にする。signin handler の ValidateWithReplay と同じ key shape。
+	ok, err := guard.MarkUsed(t.Context(), "u1", code)
+	require.NoError(t, err)
+	require.True(t, ok, "first MarkUsed should set the slot")
+
+	// 同じ TOTP コードを TwoFARegisterKey に送る → refuse されるべき。
+	rec := postExtra(h.TwoFARegisterKey, `{"password":"pass","token":"`+code+`"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code,
+		"TOTP code consumed by signin must be refused by TwoFARegisterKey (cross-endpoint replay protection)")
+	assert.Contains(t, rec.Body.String(), "INVALID_TOKEN")
+}
+
 // --- TwoFAKeyDone ---
 
 func TestTwoFAKeyDone_MissingFields(t *testing.T) {
@@ -315,6 +348,50 @@ func TestTwoFARemoveKey_Success(t *testing.T) {
 	// 残り 0 件なので securityKeysAvailable=false にされる
 	assert.False(t, repo.Profiles["u1"].SecurityKeysAvailable)
 	assert.False(t, repo.Profiles["u1"].UsePasswordLessLogin)
+}
+
+// TOTP gate (upstream drop-in 互換): 2FA 有効ユーザが token 無しで
+// remove-key を呼ぶと 403 INVALID_TOKEN で refuse される。passkey 削除は
+// 2FA の物理 factor を抜く操作なので強い認証が必要。
+func TestTwoFARemoveKey_With2FA_RequiresToken(t *testing.T) {
+	h, repo, skRepo := newWebAuthnHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	enableTwoFactorWithBackupCodes(repo, "u1")
+	require.NoError(t, skRepo.Create(&model.UserSecurityKey{
+		ID: "key1", UserID: "u1", Name: "k", PublicKey: "pk",
+	}))
+	rec := postExtra(h.TwoFARemoveKey, `{"password":"pass","credentialId":"key1"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INVALID_TOKEN")
+}
+
+// 2FA 有効でも valid token (backup code) を渡せば key を削除できる。
+func TestTwoFARemoveKey_With2FA_AcceptsBackupCode(t *testing.T) {
+	h, repo, skRepo := newWebAuthnHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	enableTwoFactorWithBackupCodes(repo, "u1")
+	require.NoError(t, skRepo.Create(&model.UserSecurityKey{
+		ID: "key1", UserID: "u1", Name: "k", PublicKey: "pk",
+	}))
+	rec := postExtra(h.TwoFARemoveKey, `{"password":"pass","credentialId":"key1","token":"backup1"}`, user)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// upstream order regression guard: TwoFARemoveKey でも wrong-password +
+// wrong-token は upstream 順 (TOTP first) で INVALID_TOKEN を返す。
+// requireWebAuthn helper の呼び出し順序を入れ替えた回帰防止。
+func TestTwoFARemoveKey_With2FA_WrongPasswordAndToken_ReturnsTokenError(t *testing.T) {
+	h, repo, skRepo := newWebAuthnHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	enableTwoFactorWithBackupCodes(repo, "u1")
+	require.NoError(t, skRepo.Create(&model.UserSecurityKey{
+		ID: "key1", UserID: "u1", Name: "k", PublicKey: "pk",
+	}))
+	rec := postExtra(h.TwoFARemoveKey, `{"password":"wrong","credentialId":"key1","token":"wrong"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INVALID_TOKEN",
+		"TOTP gate must fire before password check (upstream Misskey TS order)")
+	assert.NotContains(t, rec.Body.String(), "INCORRECT_PASSWORD")
 }
 
 // --- TwoFAUpdateKey ---

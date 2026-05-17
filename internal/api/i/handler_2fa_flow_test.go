@@ -55,6 +55,42 @@ func TestTwoFARegister_NoProfile(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
+// TOTP gate (upstream drop-in 互換): 既に 2FA 有効な user が token 無しで
+// register (= secret 上書き再登録) を呼ぶと 403 INVALID_TOKEN で refuse される。
+func TestTwoFARegister_With2FA_RequiresToken(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	enableTwoFactorWithBackupCodes(repo, "u1")
+	rec := postExtra(h.TwoFARegister, `{"password":"pass"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INVALID_TOKEN")
+}
+
+// 2FA 有効でも valid token (backup code) を渡せば成功し新しい secret が発行される。
+func TestTwoFARegister_With2FA_AcceptsBackupCode(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	enableTwoFactorWithBackupCodes(repo, "u1")
+	rec := postExtra(h.TwoFARegister, `{"password":"pass","token":"backup1"}`, user)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.NotNil(t, repo.Profiles["u1"].TwoFactorTempSecret)
+}
+
+// upstream order regression guard: wrong-password + wrong-token を同時送信
+// したとき、upstream Misskey TS は TOTP gate を先に評価して INVALID_TOKEN
+// (authentication failed) を返す。mk-go も同じ shape にしないと frontend の
+// error UI 分岐 (TOTP 再入力 vs password 再入力) が崩れる。
+func TestTwoFARegister_With2FA_WrongPasswordAndToken_ReturnsTokenError(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	enableTwoFactorWithBackupCodes(repo, "u1")
+	rec := postExtra(h.TwoFARegister, `{"password":"wrong","token":"wrong"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INVALID_TOKEN",
+		"TOTP gate must fire before password check (upstream Misskey TS order)")
+	assert.NotContains(t, rec.Body.String(), "INCORRECT_PASSWORD")
+}
+
 func TestTwoFADone_Success(t *testing.T) {
 	h, repo := newExtraHandler(t)
 	user := setupUserWithPassword(repo, "u1", "pass")
@@ -170,13 +206,47 @@ func TestTwoFAUnregister_Success(t *testing.T) {
 	secret := "JBSWY3DPEHPK3PXP"
 	repo.Profiles["u1"].TwoFactorSecret = &secret
 	repo.Profiles["u1"].TwoFactorEnabled = true
+	h.SetTOTPReplayGuard(newReplayGuard(t))
 
-	rec := postExtra(h.TwoFAUnregister, `{"password":"pass"}`, user)
+	// upstream 互換: 2FA 有効中の unregister は TOTP token も要求される。
+	token, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+	rec := postExtra(h.TwoFAUnregister, `{"password":"pass","token":"`+token+`"}`, user)
 	require.Equal(t, http.StatusNoContent, rec.Code)
 
 	profile := repo.Profiles["u1"]
 	assert.False(t, profile.TwoFactorEnabled)
 	assert.Nil(t, profile.TwoFactorSecret)
+}
+
+// TestTwoFAUnregister_MissingTOTP_With2FAEnabled guards the new TOTP gate:
+// 2FA 有効ユーザが token 無しで unregister を呼ぶと 403 で refuse されること。
+func TestTwoFAUnregister_MissingTOTP_With2FAEnabled(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	secret := "JBSWY3DPEHPK3PXP"
+	repo.Profiles["u1"].TwoFactorSecret = &secret
+	repo.Profiles["u1"].TwoFactorEnabled = true
+
+	rec := postExtra(h.TwoFAUnregister, `{"password":"pass"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INVALID_TOKEN")
+}
+
+// upstream order regression guard (see TestTwoFARegister_With2FA_WrongPassword
+// AndToken_ReturnsTokenError)。unregister 経路でも同様。
+func TestTwoFAUnregister_With2FA_WrongPasswordAndToken_ReturnsTokenError(t *testing.T) {
+	h, repo := newExtraHandler(t)
+	user := setupUserWithPassword(repo, "u1", "pass")
+	secret := "JBSWY3DPEHPK3PXP"
+	repo.Profiles["u1"].TwoFactorSecret = &secret
+	repo.Profiles["u1"].TwoFactorEnabled = true
+
+	rec := postExtra(h.TwoFAUnregister, `{"password":"wrong","token":"wrong"}`, user)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "INVALID_TOKEN",
+		"TOTP gate must fire before password check (upstream Misskey TS order)")
+	assert.NotContains(t, rec.Body.String(), "INCORRECT_PASSWORD")
 }
 
 func TestTwoFAUnregister_WrongPassword(t *testing.T) {
