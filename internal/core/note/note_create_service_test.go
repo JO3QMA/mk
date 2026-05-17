@@ -1147,6 +1147,146 @@ func TestCreateService_ContainsProhibitedWords(t *testing.T) {
 	assert.ErrorIs(t, err, note.ErrContainsProhibitedWords)
 }
 
+// meta.sensitiveWords にマッチする text を持つ public note は home に降格する
+// (upstream NoteCreateService と同 semantics、テストユーザー報告の症状)。
+func TestCreateService_SensitiveWordsDemotesPublicToHome(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: []string{"spoiler"}}
+	svc.SetMetaRepo(metaRepo)
+
+	text := "this contains a spoiler about the ending"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityHome, created.Visibility,
+		"public note matching sensitiveWords must be demoted to home")
+}
+
+// upstream parity: CW が non-nil なら text は評価されない (`cw ?? text`)。
+// CW を設定すれば text に sensitive word を仕込んでも降格されない、という
+// upstream の known な bypass 経路を mk-go も忠実に保存する。**security
+// 観点では穴だが、drop-in 互換のため意図的に upstream に揃える**。
+// mk-go-strict 化 (CW+text 両方 check) は別 PR で議論。
+func TestCreateService_SensitiveWordsCWShadowsText_UpstreamParity(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: []string{"spoiler"}}
+	svc.SetMetaRepo(metaRepo)
+
+	cw := "harmless cw"
+	text := "this body contains a spoiler"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, CW: &cw, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility,
+		"CW が non-nil の場合は text を評価しない (upstream NoteCreateService.ts:469 と同 `cw ?? text` semantics)")
+}
+
+// upstream parity: CW=&"" (空文字を明示) も "non-nil" 扱いで text は評価
+// されない (JS nullish coalescing は "" を non-nullish と扱う)。実用上は
+// admin が空 CW を送るケースはあまり無いが、edge-case を upstream と
+// 揃えるための regression guard。
+func TestCreateService_SensitiveWordsEmptyCWShadowsText_UpstreamParity(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: []string{"spoiler"}}
+	svc.SetMetaRepo(metaRepo)
+
+	empty := ""
+	text := "this body contains a spoiler"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, CW: &empty, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility,
+		"CW=&\"\" (non-nil 空文字) も text を shadow する (JS nullish coalescing)")
+}
+
+// CW フィールドも match 対象 (upstream は cw ?? text を見るので、CW が match
+// するだけでも降格)。
+func TestCreateService_SensitiveWordsMatchesCWAlone(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: []string{"nsfw"}}
+	svc.SetMetaRepo(metaRepo)
+
+	cw := "nsfw content warning"
+	text := "innocent body text"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, CW: &cw, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityHome, created.Visibility)
+}
+
+// upstream-compat regex フィルタが解釈されること。
+func TestCreateService_SensitiveWordsRegexFilter(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: []string{`/SPOIL.*/i`}}
+	svc.SetMetaRepo(metaRepo)
+
+	text := "this is a spoiler"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityHome, created.Visibility)
+}
+
+// 元 visibility が home / followers / specified のときは降格対象外
+// (upstream も `data.visibility === 'public'` でしか降格しない)。
+func TestCreateService_SensitiveWordsHomeNoteUnchanged(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: []string{"spoiler"}}
+	svc.SetMetaRepo(metaRepo)
+
+	text := "spoiler in home post"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, Visibility: model.NoteVisibilityHome,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityHome, created.Visibility,
+		"home note は元から home なので降格は no-op")
+}
+
+// channel 内の note は降格対象外 (channel が露出範囲を別管理するため
+// upstream NoteCreateService も同じく対象外)。
+func TestCreateService_SensitiveWordsChannelNoteNotDemoted(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: []string{"spoiler"}}
+	svc.SetMetaRepo(metaRepo)
+
+	channelID := "ch1"
+	text := "spoiler in channel post"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, Visibility: model.NoteVisibilityPublic, ChannelID: &channelID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility,
+		"channel 内 note は sensitiveWords でも降格しない")
+}
+
+// sensitiveWords が空 (旧 mk-go の挙動) なら通常通り public のまま。
+func TestCreateService_SensitiveWordsEmptyMetaUnchanged(t *testing.T) {
+	svc, _, _ := newCreateService(t)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "m1", SensitiveWords: nil}
+	svc.SetMetaRepo(metaRepo)
+
+	text := "regular content"
+	created, err := svc.Create(note.CreateInput{
+		User: &model.User{ID: "u1"}, Text: &text, Visibility: model.NoteVisibilityPublic,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.NoteVisibilityPublic, created.Visibility)
+}
+
 func TestCreateService_ContainsTooManyMentions(t *testing.T) {
 	svc, _, _ := newCreateService(t)
 	// 21 メンションで default limit (20) 超過

@@ -14,6 +14,7 @@ import (
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/hashtag"
 	"github.com/shiroha-a/mk/internal/misc/id"
+	"github.com/shiroha-a/mk/internal/misc/keyword"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
 )
@@ -348,6 +349,19 @@ func (s *CreateService) Create(in CreateInput) (*model.Note, error) {
 	// される request を mk-go で降格してしまう挙動差が出る (= 互換性破壊)。
 	if visibility == model.NoteVisibilityPublic && in.ChannelID == nil {
 		if s.silencingProvider != nil && s.silencingProvider.IsSilenced(in.User.ID) {
+			visibility = model.NoteVisibilityHome
+		}
+	}
+
+	// meta.sensitiveWords にマッチする text / CW を持つ public note は home に
+	// 降格する (upstream Misskey TS NoteCreateService.ts:467-471 と同一挙動)。
+	// channel 内は降格対象外 (上の silencing と同じ理由)。投稿は成功するが
+	// public timeline / federation broadcast から外れる effect で、admin が
+	// 設定したセンシティブワード設定が実機で効くようにする (drop-in regression
+	// fix)。upstream と同じく filter は `/regex/flags` または space 区切り AND
+	// match。
+	if visibility == model.NoteVisibilityPublic && in.ChannelID == nil {
+		if s.matchesSensitiveWords(in.Text, in.CW) {
 			visibility = model.NoteVisibilityHome
 		}
 	}
@@ -850,6 +864,58 @@ func sameChannel(a, b *string) bool {
 		return false
 	}
 	return *a == *b
+}
+
+// matchesSensitiveWords reports whether the note's CW or text contains any
+// word listed in meta.sensitiveWords. Used by Create to demote public note
+// visibility to home.
+//
+// upstream Misskey TS NoteCreateService.ts:469 はちょうど 1 field だけを
+// helper に渡す:
+//
+//	isKeyWordIncluded(data.cw ?? data.text ?? '', sensitiveWords)
+//
+// JS の nullish coalescing semantics に従い CW が non-nil なら CW のみ
+// (空文字も含めて) を見る = 「CW を設定すれば text の sensitive 検出を
+// bypass できる」upstream 仕様。mk-go も drop-in 互換のため同挙動を維持
+// する。CW + text 両方 check する mk-go-strict 化は **本 PR の scope 外**
+// (= 必要なら別 PR で mk-go independent hardening として議論)。
+//
+// metaRepo 未設定または sensitiveWords が空 → false (no match)。helper
+// errors (meta fetch 失敗) も fail-open で false: 反映漏れの方が「投稿が
+// 思わぬ form で blocked される」より影響軽微で、upstream も同タイミング
+// で throw しないので挙動も揃う。
+func (s *CreateService) matchesSensitiveWords(text, cw *string) bool {
+	if s.metaRepo == nil {
+		return false
+	}
+	meta, err := s.metaRepo.Fetch()
+	if err != nil || meta == nil || len(meta.SensitiveWords) == 0 {
+		return false
+	}
+	haystack := pickHaystackForSensitive(text, cw)
+	if haystack == "" {
+		return false
+	}
+	return keyword.IsKeyWordIncluded(haystack, []string(meta.SensitiveWords))
+}
+
+// pickHaystackForSensitive mirrors upstream's `data.cw ?? data.text ?? ”`:
+// CW が non-nil ならその値 (空文字を含む) を返し、CW が nil なら text、
+// 両方 nil なら空文字。
+//
+// JS の nullish coalescing と完全に揃える。例えば cw=&"" (admin が CW を
+// 明示的に空文字で送ったケース) では cw が "non-nil" 扱いされ、text は
+// 評価されない。upstream の known な bypass 経路を保存するための忠実な
+// 移植 (mk-go-strict 化は別議論)。
+func pickHaystackForSensitive(text, cw *string) string {
+	if cw != nil {
+		return *cw
+	}
+	if text != nil {
+		return *text
+	}
+	return ""
 }
 
 // checkProhibitedWords scans text + cw for any word listed in
