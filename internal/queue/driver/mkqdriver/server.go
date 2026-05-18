@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sort"
 	"sync"
@@ -14,19 +15,45 @@ import (
 	"github.com/shiroha-a/mk/internal/queue/driver"
 )
 
-// Server runs one mkq.Worker per pre-defined queue, dispatching jobs
-// to handlers registered via Handle(taskType, fn). The dispatch keys
-// off the framedPayload.Type field rather than mkq's BullMQ Job.name —
-// that field is not overridable by mkq's schedule API, so framing the
+// Server runs a per-queue worker pool, dispatching jobs to handlers
+// registered via Handle(taskType, fn). The dispatch keys off the
+// framedPayload.Type field rather than mkq's BullMQ Job.name — that
+// field is not overridable by mkq's schedule API, so framing the
 // payload is the only consistent way to recover the task type for
 // both ad-hoc and scheduled jobs.
 //
-// Locking model: s.mu protects s.started, s.handlers, and s.workers
-// during the registration / shutdown phases. After Start() returns,
-// the dispatch fast-path runs **without** taking s.mu — the handler
-// snapshot is captured at Start time and frozen for the lifetime of
-// the worker. Handle calls after Start panic, so the freeze is
-// maintained.
+// Pool architecture (#1124, per ADR §5.1): for each queue we hold a
+// `workerPool` containing N `mkq.Worker` instances, each constructed
+// with `WithConcurrency(1)`. Adding workers = scale-up; stopping
+// workers = scale-down. This sidesteps mkq's lack of a runtime Resize
+// API.
+//
+// Stop semantics: mkq.Worker.Stop **cancels** the in-flight job's
+// context (= ctx.Done fires for the handler) and waits for the worker
+// goroutine to exit cleanly. It does NOT wait for the in-flight job to
+// complete naturally. Cancelled jobs are not lost: BullMQ re-locks
+// them on next pickup so a different Worker (in the same or another
+// pool) will retry. This trade-off prevents scale-down from blocking
+// for minutes on slow remote inboxes.
+//
+// Locking model:
+//   - s.mu protects s.started, s.handlers, and the s.pools map (not
+//     individual pool state).
+//   - Each pool owns its own pool.mu for the workers slice. Resize
+//     takes pool.mu and HOLDS IT across Worker.Stop calls. Stop is
+//     fast (ms-order cancellation, not job completion) so this is
+//     acceptable; different queues use independent pool.mu so
+//     cross-queue Resize is parallel.
+//   - workerPool.shutdown flag (set under pool.mu in shutdownLocked)
+//     guards against the Resize-after-Shutdown race: once Shutdown
+//     marks a pool, subsequent Resize calls on that captured pool
+//     return ErrResizeAfterShutdown instead of spawning leaked
+//     Workers.
+//
+// After Start() returns, the dispatch fast-path runs **without** taking
+// s.mu — the handler snapshot is captured at Start time and frozen for
+// the lifetime of the server. Handle calls after Start panic, so the
+// freeze is maintained.
 type Server struct {
 	driver      *Driver
 	concurrency int
@@ -44,9 +71,40 @@ type Server struct {
 
 	mu       sync.Mutex
 	handlers map[string]driver.HandlerFunc
-	workers  []*mkq.Worker
+	pools    map[string]*workerPool
 	started  bool
 }
+
+// workerPool owns a slice of mkq.Worker instances for one queue. Each
+// Worker is started with WithConcurrency(1), so |workers| equals the
+// effective concurrency for the queue. Resize mutates the slice while
+// holding mu and issues Worker.Stop calls under the same mu (Stop is
+// ms-order cancellation, not job completion, so holding the lock is
+// acceptable).
+//
+// shutdown is set true under mu by shutdownLocked. Once set, all
+// subsequent resizeLocked calls return ErrResizeAfterShutdown so a
+// caller that captured the pool pointer before Server.Shutdown ran
+// cannot spawn leaked Workers on a pool that is no longer owned by
+// any Server.
+type workerPool struct {
+	queue   *mkq.Queue[framedPayload]
+	handler mkq.Handler[framedPayload]
+	// optsBase is the WorkerOption slice common to every Worker in this
+	// pool (rate limit, job metrics, etc.). WithConcurrency(1) is added
+	// per-worker in Resize, not here.
+	optsBase []mkq.WorkerOption
+
+	mu       sync.Mutex
+	workers  []*mkq.Worker
+	shutdown bool
+}
+
+// ErrResizeAfterShutdown is returned by Resize when the pool's owning
+// Server has already shut down. Callers (auto-scale controller) should
+// treat this as "stop trying to scale, the server is gone" — same
+// semantics as driver.ErrResizeNotSupported on asynq.
+var ErrResizeAfterShutdown = errors.New("mkqdriver: pool already shut down")
 
 // Handle registers a handler for the given task type. Must be called
 // before Start; calls after Start panic. The dispatch fast-path
@@ -61,33 +119,22 @@ func (s *Server) Handle(taskType string, h driver.HandlerFunc) {
 	s.handlers[taskType] = h
 }
 
-// Start spawns one mkq.Worker per pre-defined queue. Returns once the
-// worker goroutines are up.
+// Start initialises one workerPool per pre-defined queue and fills it
+// with the configured initial concurrency. Returns once all per-queue
+// pools are populated.
 //
-// Failure mode: if a later mkq.Process fails, the workers spawned so
-// far are stopped before bubbling up. Stop is invoked **without**
-// holding s.mu so the in-flight job draining is not blocked — see
-// Shutdown for the same pattern.
-//
-// Concurrency: the lock is released before mkq.Process is called for
-// the first queue, so dispatch goroutines spawned by Process do not
-// queue up behind the Start loop. This addresses the brief
-// dispatch-blocking that occurred when the lock was held across all
-// 5 queue creations.
+// Failure mode: if any per-queue spawn fails partway, every Worker
+// started so far is stopped before bubbling the error up. Stop is
+// invoked **without** holding s.mu so the in-flight job draining is not
+// blocked.
 func (s *Server) Start() error {
 	s.mu.Lock()
 	if s.started {
 		s.mu.Unlock()
 		return errors.New("mkqdriver: Start called twice")
 	}
-	// Snapshot the handlers map and mark started under the lock; the
-	// closure passed to mkq.Process closes over the snapshot rather
-	// than s, so the dispatch fast-path needs no synchronisation.
 	handlersSnapshot := maps.Clone(s.handlers)
 	if handlersSnapshot == nil {
-		// Clone of empty/nil map → nil; treat the same as empty so
-		// the dispatch closure's lookup branch returns the
-		// no-handler error consistently.
 		handlersSnapshot = map[string]driver.HandlerFunc{}
 	}
 	s.started = true
@@ -104,70 +151,202 @@ func (s *Server) Start() error {
 	}
 	sort.Strings(names)
 
-	started := make([]*mkq.Worker, 0, len(names))
+	pools := make(map[string]*workerPool, len(names))
 	for _, name := range names {
-		q := s.driver.queues[name]
 		concurrency := s.concurrency
 		if v, ok := s.perQueueConcurrent[name]; ok && v > 0 {
 			concurrency = v
 		}
-		opts := []mkq.WorkerOption{mkq.WithConcurrency(concurrency)}
+		var optsBase []mkq.WorkerOption
 		if rl, ok := s.perQueueRate[name]; ok && rl > 0 {
-			// mkq.WithRateLimit(max, duration) は BullMQ Worker の
-			// limiter:{max,duration} に対応。tasks/sec を直接渡せば
-			// 1 秒バケットで token-bucket されるので mk-go config の
-			// `<queue>JobPerSec` 意味そのまま。
-			opts = append(opts, mkq.WithRateLimit(rl, time.Second))
+			// mkq.WithRateLimit は per-Worker に適用される。Pool 内で N
+			// Worker いるなら合計 rate は rl × N に倍化するため、ADR §5.1
+			// trade-off の通り pool-of-Workers では rate limit が単一
+			// Worker 時と一致しない。#1126 queue-bench で挙動を検証予定。
+			optsBase = append(optsBase, mkq.WithRateLimit(rl, time.Second))
+			if concurrency > 1 {
+				// operator が rate limit を「合計 N jobs/sec」と認識する誤読を
+				// 防ぐため、両方を非自明値に設定したケースで startup ログを出す。
+				// docs/configuration.md と #1124 PR 説明に同 trade-off を記載。
+				slog.Warn("mkqdriver: rate limit applies per-Worker; effective total rate = rl × concurrency",
+					"queue", name,
+					"rl", rl,
+					"concurrency", concurrency,
+					"effective_total_per_sec", rl*concurrency)
+			}
 		}
 		if s.maxMetricsPoints > 0 {
-			// BullMQ-compatible per-queue metrics opt-in。書き込み有効に
-			// すると finalize 時に Lua が `bull:<q>:metrics:*` を更新し、
-			// admin/job-queue のチャート (frontend が LRANGE する) や
-			// Misskey TS frontend の同 dashboard が使える。
-			opts = append(opts, mkq.WithJobMetrics(s.maxMetricsPoints))
+			// BullMQ-compatible per-queue metrics opt-in。
+			optsBase = append(optsBase, mkq.WithJobMetrics(s.maxMetricsPoints))
 		}
-		w, err := mkq.Process(q, dispatch, opts...)
-		if err != nil {
-			stopWorkers(started)
+
+		pool := &workerPool{
+			queue:    s.driver.queues[name],
+			handler:  dispatch,
+			optsBase: optsBase,
+		}
+		// `*Locked` 名 method の convention で pool.mu を保持。新規構築直後の
+		// pool で外部参照は無いため race は無いが、convention 一貫性のため。
+		pool.mu.Lock()
+		spawnErr := pool.resizeLocked(concurrency)
+		if spawnErr != nil {
+			pool.shutdownLocked()
+		}
+		pool.mu.Unlock()
+		if spawnErr != nil {
+			// partial 既存 pools を cleanup してから error 返却。
+			for _, p := range pools {
+				p.mu.Lock()
+				p.shutdownLocked()
+				p.mu.Unlock()
+			}
 			s.mu.Lock()
 			s.started = false
 			s.mu.Unlock()
-			return fmt.Errorf("mkqdriver: start worker for %q: %w", name, err)
+			return fmt.Errorf("mkqdriver: start workers for %q (after %d queues started successfully): %w",
+				name, len(pools), spawnErr)
 		}
-		started = append(started, w)
+		pools[name] = pool
 	}
 
 	s.mu.Lock()
-	s.workers = started
+	s.pools = pools
 	s.mu.Unlock()
 	return nil
 }
 
-// Shutdown stops every worker, waiting for in-flight jobs to finish.
-// Calls after the first are no-ops.
+// Shutdown stops every worker in every pool. Calls after the first are
+// no-ops. Pools are shut down in parallel so the wall-clock latency is
+// max(per-pool shutdown time) rather than the sum.
 //
-// We snapshot the worker list under s.mu and release the lock before
-// invoking blocking w.Stop calls. dispatchHandler does NOT acquire
-// s.mu (snapshot-based dispatch), but Stop is blocking on in-flight
-// handlers and we want symmetric behaviour with Start's failure path.
+// Stop is fast (cancel + goroutine join, not job completion) so per
+// pool shutdown is ms-order; the parallelism is mostly insurance
+// against pathological cases (many queues × many Workers each).
 func (s *Server) Shutdown() {
 	s.mu.Lock()
-	toStop := s.workers
-	s.workers = nil
+	toShutdown := s.pools
+	s.pools = nil
 	s.started = false
 	s.mu.Unlock()
-	stopWorkers(toStop)
+
+	var wg sync.WaitGroup
+	for _, p := range toShutdown {
+		wg.Add(1)
+		go func(p *workerPool) {
+			defer wg.Done()
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			p.shutdownLocked()
+		}(p)
+	}
+	wg.Wait()
 }
 
-// stopWorkers calls Stop on each worker sequentially with a
-// background context. Must be called WITHOUT holding s.mu — Stop is
-// blocking on in-flight handlers and we never want the lock held
-// across that wait.
+// Resize changes the worker count for qname at runtime. Implements the
+// Driver.Resize contract (see driver.Driver interface). Concurrent
+// Resize calls on the same qname serialise via the pool's internal
+// mutex; calls on different qnames proceed in parallel.
 //
-// in-flight ジョブが暴走したら mkq 側の lockDuration で自動回収する。
-func stopWorkers(workers []*mkq.Worker) {
-	for _, w := range workers {
-		_ = w.Stop(context.Background())
+// n == 0 is allowed and means "stop all workers for this queue" (= the
+// queue is paused). n < 0 returns an error. There is no hard upper
+// bound — the auto-scale controller (#1125) enforces maxWorkers
+// upstream.
+func (s *Server) Resize(qname string, n int) error {
+	if n < 0 {
+		return fmt.Errorf("mkqdriver: Resize: n must be >= 0, got %d", n)
+	}
+	s.mu.Lock()
+	pool, ok := s.pools[qname]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("mkqdriver: Resize: unknown queue %q", qname)
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return pool.resizeLocked(n)
+}
+
+// workerCount reports the current number of Worker instances for qname,
+// or 0 if no pool exists (Server not started, queue unknown). Called by
+// Driver.WorkerCount.
+func (s *Server) workerCount(qname string) int {
+	s.mu.Lock()
+	pool, ok := s.pools[qname]
+	s.mu.Unlock()
+	if !ok {
+		return 0
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return len(pool.workers)
+}
+
+// resizeLocked is the workerPool's internal resize implementation.
+// Caller must hold pool.mu. On scale-up, new Workers are spawned via
+// mkq.Process. On scale-down, the trailing surplus Workers are removed
+// from the slice and stopped sequentially (Stop = cancel in-flight,
+// not wait for completion — see Server type doc).
+//
+// Post-Shutdown guard: returns ErrResizeAfterShutdown if shutdownLocked
+// has already run on this pool. Prevents the captured-pool race where
+// Resize spawns Workers on a pool no longer owned by any Server.
+func (p *workerPool) resizeLocked(n int) error {
+	if p.shutdown {
+		return ErrResizeAfterShutdown
+	}
+	current := len(p.workers)
+	switch {
+	case n == current:
+		return nil
+	case n > current:
+		// scale-up: 不足分の Worker を新規 spawn
+		needed := n - current
+		spawned := make([]*mkq.Worker, 0, needed)
+		for i := 0; i < needed; i++ {
+			opts := append([]mkq.WorkerOption{mkq.WithConcurrency(1)}, p.optsBase...)
+			w, err := mkq.Process(p.queue, p.handler, opts...)
+			if err != nil {
+				// 既に spawn した Worker は停止して回復
+				for _, sw := range spawned {
+					stopWorker(sw)
+				}
+				return fmt.Errorf("mkqdriver: spawn worker: %w", err)
+			}
+			spawned = append(spawned, w)
+		}
+		p.workers = append(p.workers, spawned...)
+		return nil
+	default: // n < current
+		// scale-down: 末尾から (current - n) 個を Stop。Worker 単位の
+		// cancel 経路 (mkq.Worker.Stop は in-flight job の ctx を即
+		// キャンセル、ms オーダーで return)。
+		toStop := p.workers[n:]
+		p.workers = p.workers[:n]
+		for _, w := range toStop {
+			stopWorker(w)
+		}
+		return nil
+	}
+}
+
+// shutdownLocked stops every Worker in the pool and marks the pool as
+// shut down (= subsequent Resize calls return ErrResizeAfterShutdown).
+// Caller must hold pool.mu. Used by Server.Shutdown.
+func (p *workerPool) shutdownLocked() {
+	p.shutdown = true
+	for _, w := range p.workers {
+		stopWorker(w)
+	}
+	p.workers = nil
+}
+
+// stopWorker wraps mkq.Worker.Stop with structured error logging. Stop
+// failures here are non-fatal (the goroutine still exits via runCancel)
+// but operators should be alerted via logs because frequent failures
+// usually indicate Redis connectivity issues that need investigation.
+func stopWorker(w *mkq.Worker) {
+	if err := w.Stop(context.Background()); err != nil {
+		slog.Warn("mkqdriver: worker stop error", "err", err)
 	}
 }
 
