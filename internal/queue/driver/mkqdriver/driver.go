@@ -235,6 +235,34 @@ func (d *Driver) Scheduler() driver.Scheduler {
 	return d.dSched
 }
 
+// WorkerCount returns the per-queue worker pool size. Before Server() is
+// called the Server has not been constructed and we return 0 (matches the
+// driver.Driver contract for unstarted drivers). After construction,
+// per-queue overrides (`QueueConcurrency`) take precedence over the
+// default `concurrency` derived from `cfg.Concurrency / len(queues)`.
+//
+// Auto-scale (#1120 tracker) will mutate the underlying pool size at
+// runtime via a future Resize API (#1124); until then this returns the
+// static config value.
+//
+// 注 (#1124 配線時の synchronization 課題): 現状 d.dServer.perQueueConcurrent /
+// d.dServer.concurrency は起動後 immutable で、Driver の d.mu だけで安全に読める。
+// Resize 配線後はこれらの field を runtime に変更するため、(a) Server 側に独自
+// mutex を入れて WorkerCount が必ず Server 経由で読む形に変更する、もしくは
+// (b) Server.workerCount(qname) メソッドを生やして本関数からは delegate する、
+// のどちらかが必要。現状のままだと torn read / stale read リスクあり。
+func (d *Driver) WorkerCount(qname string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.dServer == nil {
+		return 0
+	}
+	if v, ok := d.dServer.perQueueConcurrent[qname]; ok && v > 0 {
+		return v
+	}
+	return d.dServer.concurrency
+}
+
 // Close stops the worker (if started) and releases the underlying
 // *mkq.Client. Idempotent: subsequent calls are no-ops, matching the
 // asynq driver's contract and tolerating double-close from layered

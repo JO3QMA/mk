@@ -772,6 +772,15 @@ func (s *Server) setupRoutes() {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// Prometheus metrics: enableMetrics=true のときだけ公開する。
+	// 認証は付かない (Prometheus 慣例) ので、operator は nginx / LB ACL で
+	// access 制限する想定。詳細は docs/design/auto-scale-job-workers.md §6.1。
+	if s.config.EnableMetrics {
+		if err := wireMetricsEndpoint(s.echo, s.queueDriver); err != nil {
+			slog.Error("server: failed to register queue metrics", "err", err)
+		}
+	}
+
 	// pprof: enablePprof=true のときだけ公開する。
 	// ランタイムプロファイリング用。本番では絶対に有効化してはならない。
 	if s.config.EnablePprof {
