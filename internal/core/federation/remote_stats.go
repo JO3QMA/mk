@@ -64,9 +64,10 @@ const remoteStatsCacheSize = 10000
 // TTL は per-entry で持ち、read 時に判定する (LRU library 自体は size
 // eviction のみで TTL を扱わない)。
 type RemoteStatsFetcher struct {
-	client *http.Client
-	cache  *lru.Cache[string, cachedRemoteStats]
-	group  singleflight.Group
+	client    *http.Client
+	cache     *lru.Cache[string, cachedRemoteStats]
+	group     singleflight.Group
+	userAgent string
 }
 
 type cachedRemoteStats struct {
@@ -79,14 +80,20 @@ type cachedRemoteStats struct {
 // built from allowedPrivateNetworks (= config.AllowedPrivateNetworks 互換) と
 // optional safehttp.Option (e.g. WithProxy)。
 //
+// userAgent は outbound request に set する User-Agent header 値で、通常は
+// `cfg.UserAgent` (= `mk-go/<ver> (<url>)` 形式) を渡す。空欄なら header は
+// 設定しない (= Go default の `Go-http-client/1.1` が送られる、test path)。
+//
 // urlpreview / mediaproxy と同じく safehttp 経由で組み立てる pattern (#943
 // review SSRF guard)。
-func NewRemoteStatsFetcher(allowedPrivateNetworks []string, opts ...safehttp.Option) *RemoteStatsFetcher {
+func NewRemoteStatsFetcher(allowedPrivateNetworks []string, userAgent string, opts ...safehttp.Option) *RemoteStatsFetcher {
 	transport := safehttp.NewSSRFSafeTransport(allowedPrivateNetworks, opts...)
-	return newFetcherWithClient(&http.Client{
+	f := newFetcherWithClient(&http.Client{
 		Transport: transport,
 		Timeout:   remoteStatsTimeout,
 	}, remoteStatsCacheSize)
+	f.userAgent = userAgent
+	return f
 }
 
 // newRemoteStatsFetcherWithTransport はテスト専用 constructor。redirectTransport
@@ -172,10 +179,34 @@ func isValidHost(host string) bool {
 	return parsed.Host == host && parsed.Path == "/"
 }
 
-// fetchRemote performs the actual HTTP POST to https://<host>/api/users/show.
-// Misskey 系 instance は username + host=null で local user lookup できる。
-// Mastodon 等 Misskey 互換でない instance は 4xx/404 を返すので nil を出す。
+// fetchRemote retrieves public stats for a remote user via a fallback chain:
+//  1. Misskey-compat: POST `/api/users/show` with `{username, host:null}`
+//  2. Mastodon-compat: GET `/api/v1/accounts/lookup?acct=<username>`
+//
+// 各経路は 4xx/404/parse-fail で nil を返し、次の fallback に進む。全経路
+// 失敗時は nil で local 観測値 fallback (#1154)。本 fetcher は mk-go 独自
+// 拡張 (#943) なので upstream Misskey TS に対応 endpoint なく、
+// Mastodon 系 instance (= Mastodon / Pleroma / Akkoma / Iceshrimp 等)
+// との相互運用は本 chain で確保する。
+//
+// 将来拡張: 3rd fallback として ActivityPub actor の `outbox.totalItems` /
+// `followers.totalItems` / `following.totalItems` を採用すれば、本 chain で
+// 拾えない fediverse 実装も覆える (= universal だが追加 3 round-trip 必要)。
+// 本 PR scope 外、需要が出たら別 issue で扱う。
 func (f *RemoteStatsFetcher) fetchRemote(ctx context.Context, host, username string) *RemoteUserStats {
+	if stats := f.fetchMisskey(ctx, host, username); stats != nil {
+		return stats
+	}
+	if stats := f.fetchMastodon(ctx, host, username); stats != nil {
+		return stats
+	}
+	return nil
+}
+
+// fetchMisskey calls the Misskey-compat `/api/users/show` endpoint.
+// `{username, host:null}` で origin instance のローカル user lookup を要求する
+// shape は upstream Misskey TS の paramDef と一致。
+func (f *RemoteStatsFetcher) fetchMisskey(ctx context.Context, host, username string) *RemoteUserStats {
 	endpoint := fmt.Sprintf("https://%s/api/users/show", host)
 	body, _ := json.Marshal(map[string]any{
 		"username": username,
@@ -187,17 +218,18 @@ func (f *RemoteStatsFetcher) fetchRemote(ctx context.Context, host, username str
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if f.userAgent != "" {
+		req.Header.Set("User-Agent", f.userAgent)
+	}
 	resp, err := f.client.Do(req)
 	if err != nil {
-		slog.Debug("remoteStats: fetch failed", "host", host, "username", username, "err", err)
+		slog.Debug("remoteStats: misskey fetch failed", "host", host, "username", username, "err", err)
 		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
-	// 過大 response は driver / reverse proxy 側で 4xx を返す前提なので、ここは
-	// 念のため 1MB 程度で切る。Misskey UserDetailed の JSON は通常 5KB 未満。
 	limited := io.LimitReader(resp.Body, 1<<20)
 	var payload struct {
 		NotesCount     *int `json:"notesCount"`
@@ -213,6 +245,59 @@ func (f *RemoteStatsFetcher) fetchRemote(ctx context.Context, host, username str
 	stats := &RemoteUserStats{}
 	if payload.NotesCount != nil {
 		stats.NotesCount = *payload.NotesCount
+	}
+	if payload.FollowersCount != nil {
+		stats.FollowersCount = *payload.FollowersCount
+	}
+	if payload.FollowingCount != nil {
+		stats.FollowingCount = *payload.FollowingCount
+	}
+	return stats
+}
+
+// fetchMastodon calls the Mastodon-compat `/api/v1/accounts/lookup` endpoint.
+// `?acct=<username>` で local account の数値統計を取得する (= 同一 host の
+// local user lookup なので host suffix 不要)。Pleroma / Akkoma / Iceshrimp
+// 等の Mastodon API 互換実装でも動作する (#1154)。
+//
+// response field mapping (Mastodon → mk-go):
+//   - statuses_count   → NotesCount
+//   - followers_count  → FollowersCount
+//   - following_count  → FollowingCount
+func (f *RemoteStatsFetcher) fetchMastodon(ctx context.Context, host, username string) *RemoteUserStats {
+	endpoint := fmt.Sprintf("https://%s/api/v1/accounts/lookup?acct=%s", host, url.QueryEscape(username))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Accept", "application/json")
+	if f.userAgent != "" {
+		req.Header.Set("User-Agent", f.userAgent)
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		slog.Debug("remoteStats: mastodon fetch failed", "host", host, "username", username, "err", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	limited := io.LimitReader(resp.Body, 1<<20)
+	var payload struct {
+		StatusesCount  *int `json:"statuses_count"`
+		FollowersCount *int `json:"followers_count"`
+		FollowingCount *int `json:"following_count"`
+	}
+	if err := json.NewDecoder(limited).Decode(&payload); err != nil {
+		return nil
+	}
+	if payload.StatusesCount == nil && payload.FollowersCount == nil && payload.FollowingCount == nil {
+		return nil
+	}
+	stats := &RemoteUserStats{}
+	if payload.StatusesCount != nil {
+		stats.NotesCount = *payload.StatusesCount
 	}
 	if payload.FollowersCount != nil {
 		stats.FollowersCount = *payload.FollowersCount
