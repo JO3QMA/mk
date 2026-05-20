@@ -11,6 +11,17 @@ type FollowingRepository interface {
 	Delete(f *model.Following) error
 	FindByPair(followerID, followeeID string) (*model.Following, error)
 	Exists(followerID, followeeID string) (bool, error)
+	// FilterFollowingsFromAnchor returns the subset of candidateIDs that
+	// anchorID follows (anchor → candidate direction, = rows where
+	// followerId=anchorID AND followeeId IN candidates). Used to batch-
+	// compute `isFollowing` across a user list (e.g. users/following /
+	// users/followers) without N+1 Exists round-trips (#1144).
+	FilterFollowingsFromAnchor(anchorID string, candidateIDs []string) ([]string, error)
+	// FilterFollowingsToAnchor returns the subset of candidateIDs that
+	// follow anchorID (candidate → anchor direction, = rows where
+	// followerId IN candidates AND followeeId=anchorID). Used to batch-
+	// compute `isFollowed` across a user list (#1144).
+	FilterFollowingsToAnchor(anchorID string, candidateIDs []string) ([]string, error)
 	ListFollowers(userID string, limit, offset int) ([]*model.Following, error)
 	ListFollowing(userID string, limit, offset int) ([]*model.Following, error)
 	// ListFollowersByHost returns Following rows whose followerHost matches
@@ -75,6 +86,32 @@ func (r *followingRepository) Exists(followerID, followeeID string) (bool, error
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (r *followingRepository) FilterFollowingsFromAnchor(anchorID string, candidateIDs []string) ([]string, error) {
+	if anchorID == "" || len(candidateIDs) == 0 {
+		return nil, nil
+	}
+	var ids []string
+	if err := r.db.Model(&model.Following{}).
+		Where(`"followerId" = ? AND "followeeId" IN ?`, anchorID, candidateIDs).
+		Pluck(`"followeeId"`, &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func (r *followingRepository) FilterFollowingsToAnchor(anchorID string, candidateIDs []string) ([]string, error) {
+	if anchorID == "" || len(candidateIDs) == 0 {
+		return nil, nil
+	}
+	var ids []string
+	if err := r.db.Model(&model.Following{}).
+		Where(`"followerId" IN ? AND "followeeId" = ?`, candidateIDs, anchorID).
+		Pluck(`"followerId"`, &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func (r *followingRepository) ListFollowers(userID string, limit, offset int) ([]*model.Following, error) {

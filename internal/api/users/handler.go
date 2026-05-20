@@ -594,14 +594,15 @@ func (h *Handler) listRelations(c echo.Context, followers bool) error {
 		return apierr.JSONNoSuchUser(c)
 	}
 
+	viewer := middleware.GetUser(c)
 	var (
 		rows []relationItem
 		err  error
 	)
 	if followers {
-		rows, err = h.collectFollowers(req)
+		rows, err = h.collectFollowers(req, viewer)
 	} else {
-		rows, err = h.collectFollowing(req)
+		rows, err = h.collectFollowing(req, viewer)
 	}
 	if err != nil {
 		return apierr.JSONInternalError(c)
@@ -619,20 +620,20 @@ type relationItem struct {
 	Followee   *entity.UserDetailed `json:"followee,omitempty"`
 }
 
-func (h *Handler) collectFollowers(req FollowersRequest) ([]relationItem, error) {
+func (h *Handler) collectFollowers(req FollowersRequest, viewer *model.User) ([]relationItem, error) {
 	rows, err := h.followingService.ListReceivedFollowing(req.UserID, req.Limit, req.Offset)
 	if err != nil {
 		return nil, err
 	}
-	return h.packRelationItems(rows, req, true), nil
+	return h.packRelationItems(rows, req, true, viewer), nil
 }
 
-func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error) {
+func (h *Handler) collectFollowing(req FollowersRequest, viewer *model.User) ([]relationItem, error) {
 	rows, err := h.followingService.ListSentFollowing(req.UserID, req.Limit, req.Offset)
 	if err != nil {
 		return nil, err
 	}
-	return h.packRelationItems(rows, req, false), nil
+	return h.packRelationItems(rows, req, false, viewer), nil
 }
 
 // packRelationItems builds the response slice for users/followers and
@@ -641,10 +642,18 @@ func (h *Handler) collectFollowing(req FollowersRequest) ([]relationItem, error)
 // ShowManyByIDs (#503) で 1 batch query にまとめ、map で O(1) 解決して
 // 旧 ShowByID per-row N+1 を解消する (#300 2-3)。instance は引き続き
 // batch 1 回で resolve する (#277)。
+//
+// viewer が non-nil なら follow relation flag (isFollowing / isFollowed) を
+// `FilterFollowing` / `FilterFollowedBy` の 2 batch query で埋める (#1144、
+// frontend MkUserInfo の `followsYou` ラベル + MkFollowButton の初期 state
+// が正しく描画されるのに必要)。viewer が自分自身を含む list 経路でも viewer
+// と list 内 user の id 一致時は relation lookup を skip する (= self-flag
+// は意味なし)。
 func (h *Handler) packRelationItems(
 	rows []*model.Following,
 	req FollowersRequest,
 	followers bool,
+	viewer *model.User,
 ) []relationItem {
 	filtered := make([]*model.Following, 0, len(rows))
 	idSet := make(map[string]struct{}, len(rows))
@@ -686,6 +695,17 @@ func (h *Handler) packRelationItems(
 	}
 	resolver := entity.NewInstanceResolver(h.instanceLookup(), remoteUsers...)
 
+	// viewer 視点の follow relation を 2 batch query で先に解決しておく
+	// (#1144)。viewer が nil (= unauthenticated) なら lookup skip して
+	// 全 user の flag を nil 維持 (upstream も me が nil の経路では
+	// UserDetailedNotMe の relation field を omit する)。
+	followingMap, followedMap := h.batchFollowRelations(viewer, bundleByID)
+	// pending follow request も同じく 2 batch query で解決 (#1144 #2)。
+	// MkFollowButton が `hasPendingFollowRequestFromYou` で表示分岐するため
+	// `isFollowing` だけだと「pending 中なのに Follow ボタン」が出る regression
+	// になる。upstream UserDetailedNotMe schema と整合させる。
+	pendingFromMap, pendingToMap := h.batchPendingRequestRelations(viewer, bundleByID)
+
 	out := make([]relationItem, 0, len(filtered))
 	for _, f := range filtered {
 		item := relationItem{ID: f.ID, FollowerID: f.FollowerID, FolloweeID: f.FolloweeID}
@@ -699,6 +719,16 @@ func (h *Handler) packRelationItems(
 			d := entity.PackUserDetailed(b.User, b.Profile, h.idGen)
 			resolver.FillUserLite(&d.UserLite)
 			h.populateUserEmojis(b.User, &d.UserLite)
+			if viewer != nil && viewer.ID != b.User.ID {
+				isFollowing := followingMap[b.User.ID]
+				isFollowed := followedMap[b.User.ID]
+				d.IsFollowing = &isFollowing
+				d.IsFollowed = &isFollowed
+				pendingFrom := pendingFromMap[b.User.ID]
+				pendingTo := pendingToMap[b.User.ID]
+				d.HasPendingFollowRequestFromYou = &pendingFrom
+				d.HasPendingFollowRequestToYou = &pendingTo
+			}
 			if followers {
 				item.Follower = &d
 			} else {
@@ -708,6 +738,78 @@ func (h *Handler) packRelationItems(
 		out = append(out, item)
 	}
 	return out
+}
+
+// batchFollowRelations resolves viewer's follow relations against the
+// candidate user set in 2 batch queries (followingRepo.FilterFollowings
+// FromAnchor / ToAnchor). Returns nil maps if viewer or repo is nil so
+// callers can skip safely.
+func (h *Handler) batchFollowRelations(viewer *model.User, bundleByID map[string]*user.UserWithProfile) (map[string]bool, map[string]bool) {
+	if viewer == nil || h.followingRepo == nil || len(bundleByID) == 0 {
+		return nil, nil
+	}
+	candidates := buildRelationCandidates(viewer, bundleByID)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	followingMap := make(map[string]bool, len(candidates))
+	followedMap := make(map[string]bool, len(candidates))
+	if ids, err := h.followingRepo.FilterFollowingsFromAnchor(viewer.ID, candidates); err == nil {
+		for _, id := range ids {
+			followingMap[id] = true
+		}
+	}
+	if ids, err := h.followingRepo.FilterFollowingsToAnchor(viewer.ID, candidates); err == nil {
+		for _, id := range ids {
+			followedMap[id] = true
+		}
+	}
+	return followingMap, followedMap
+}
+
+// batchPendingRequestRelations resolves viewer's pending follow_request
+// relations across the candidate user set in 2 batch queries
+// (followRequestRepo.FilterPendingFromAnchor / ToAnchor). Returns nil maps
+// if viewer or repo is nil so callers can skip safely.
+//
+// `hasPendingFollowRequestFromYou` / `hasPendingFollowRequestToYou` を
+// list 経路で埋めないと frontend MkFollowButton が「pending 中なのに
+// `Follow` ボタン」を表示する drift になる (#1144 #2)。
+func (h *Handler) batchPendingRequestRelations(viewer *model.User, bundleByID map[string]*user.UserWithProfile) (map[string]bool, map[string]bool) {
+	if viewer == nil || h.followRequestRepo == nil || len(bundleByID) == 0 {
+		return nil, nil
+	}
+	candidates := buildRelationCandidates(viewer, bundleByID)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	fromMap := make(map[string]bool, len(candidates))
+	toMap := make(map[string]bool, len(candidates))
+	if ids, err := h.followRequestRepo.FilterPendingFromAnchor(viewer.ID, candidates); err == nil {
+		for _, id := range ids {
+			fromMap[id] = true
+		}
+	}
+	if ids, err := h.followRequestRepo.FilterPendingToAnchor(viewer.ID, candidates); err == nil {
+		for _, id := range ids {
+			toMap[id] = true
+		}
+	}
+	return fromMap, toMap
+}
+
+// buildRelationCandidates returns the candidate user IDs for viewer-relative
+// batch relation lookups, excluding viewer's own id (= self-flag has no
+// meaning, matches upstream `UserDetailedNotMe` semantics).
+func buildRelationCandidates(viewer *model.User, bundleByID map[string]*user.UserWithProfile) []string {
+	candidates := make([]string, 0, len(bundleByID))
+	for id := range bundleByID {
+		if id == viewer.ID {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	return candidates
 }
 
 // fillPinned populates PinnedNoteIDs / PinnedNotes / PinnedPageID / PinnedPage
