@@ -436,18 +436,25 @@ func (r *Resolver) resolveActorOnce(uri string) (*model.User, error) {
 
 // extractRemoteDescription returns the actor's bio mapped to
 // UserProfile.Description. upstream `ApPersonService` の logic と同じく
-// `_misskey_summary` (MFM そのまま) を優先し、なければ AP `summary` (HTML
-// or plain text) を採用する。upstream は htmlToMfm で MFM 変換してから保存
-// するが、mk-go には未実装なので生 HTML をそのまま保存する (= frontend
-// 側で render される、見た目は upstream と完全互換ではないが Empty 化は
-// 回避される。HTML→MFM 変換は将来の別 issue で扱う)。
-// varchar(2048) 制約を rune 単位で respect し、空は nil で表す。
+// `_misskey_summary` (MFM そのまま) を優先し、なければ AP `summary`
+// (HTML、Mastodon 系は `<p>...</p>` で wrap して送ってくる) を `mfm.FromHTML`
+// で MFM 変換してから保存する。生 HTML を保存すると frontend MFM render が
+// `<p>` を escape してリテラル表示する drop-in regression を起こすため
+// (#1140 で発覚)。varchar(2048) 制約を rune 単位で respect し、空は nil で表す。
+//
+// 注: truncation 順序は upstream と意図的に差をつけている。upstream は
+// HTML 段階で truncate (mid-tag 切断の risk) してから htmlToMfm、本実装は
+// FromHTML で MFM に縮約してから truncate する。後者の方が content 効率
+// が良く、mid-tag 切断による壊れ HTML を parser に渡す経路が無い。
 func extractRemoteDescription(actor *activitypub.Person) *string {
 	var raw string
 	if actor.MisskeySummary != "" {
 		raw = actor.MisskeySummary
 	} else if actor.Summary != "" {
-		raw = actor.Summary
+		// AP summary は Mastodon / Pleroma 等が HTML で送ってくる仕様
+		// (`<p>...</p>` ラップが典型)。MFM render を期待する frontend に
+		// そのまま渡すと escape されてタグがリテラル表示される。
+		raw = mfm.FromHTML(actor.Summary)
 	}
 	if raw == "" {
 		return nil
