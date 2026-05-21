@@ -599,6 +599,10 @@ func (s *Server) setupRoutes() {
 	inboxProcessor.SetSignatureVerifier(federationResolver)
 	inboxProcessor.SetHostBlockChecker(instanceService)
 	inboxProcessor.SetInstanceTracker(instanceTouchBuffer)
+	// LD-Signature verifier (#1164 Phase D)。inbound activity body に signature
+	// field があれば RsaSignature2017 + 2026.5.4 hardening を実行する。signature
+	// 無し / verify pass の activity は素通し、verify fail は drop。
+	inboxProcessor.SetLDSignatureVerifier(corefederation.NewLDSignatureVerifier(publickeyRepo))
 	// chartHook は後段で SetChartHook 注入する (deliverProcessor と同じ pattern)。
 	s.queueServer.Handle(queue.TaskTypeInbox, inboxProcessor.Handle)
 
@@ -1791,6 +1795,9 @@ func (s *Server) setupRoutes() {
 	chatService.SetAPDelivery(userRepo, apRenderer, apURLs, deliverService)
 	// chatScope=followers/following/mutual 判定用に following repo を渡す (#692)。
 	chatService.SetFollowingRepo(followingRepo)
+	// chat/rooms/show の権限 gate で moderator bypass を効かせる
+	// (upstream 2026.5.4 hasPermissionToViewRoomInfo 互換、#1164 Phase C)。
+	chatService.SetModeratorChecker(roleService)
 	streamRegistry.Register("chatRoom", channels.NewChatRoomFactory(chatService).New)
 	streamRegistry.Register("chatUser", channels.NewChatUserFactory(chatService).New)
 	// Phase 9.7: federation processor / reversi handler に reversi 依存を注入。
@@ -1834,8 +1841,10 @@ func (s *Server) setupRoutes() {
 
 	// Following endpoints
 	followingHandler := following.NewHandler(followingService, userService)
+	followingHandler.SetIDGen(idGen)
 	api.POST("/following/create", followingHandler.Create, middleware.RequireAuth())
 	api.POST("/following/delete", followingHandler.Delete, middleware.RequireAuth())
+	api.POST("/following/list", followingHandler.List, middleware.RequireAuth())
 	api.POST("/following/requests/list", followingHandler.ListRequests, middleware.RequireAuth())
 	api.POST("/following/requests/accept", followingHandler.AcceptRequest, middleware.RequireAuth())
 	api.POST("/following/requests/reject", followingHandler.RejectRequest, middleware.RequireAuth())

@@ -4272,6 +4272,43 @@ func (m *MockFollowingRepository) ListFollowing(userID string, limit, offset int
 	return paginate(rows, limit, offset), nil
 }
 
+// ListFollowingForList mirrors repository.followingRepository.ListFollowingForList
+// (cursor + notification filter for /api/following/list)。
+func (m *MockFollowingRepository) ListFollowingForList(followerID, sinceID, untilID string, notification bool, limit int) ([]*model.Following, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows []*model.Following
+	for _, f := range m.Followings {
+		if f.FollowerID != followerID {
+			continue
+		}
+		if notification && f.Notify == nil {
+			continue
+		}
+		if sinceID != "" && f.ID <= sinceID {
+			continue
+		}
+		if untilID != "" && f.ID >= untilID {
+			continue
+		}
+		rows = append(rows, f)
+	}
+	// upstream paginationOrder と同じ: sinceID-only は ASC、それ以外は DESC
+	if sinceID != "" && untilID == "" {
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	} else {
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID > rows[j].ID })
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
 func (m *MockFollowingRepository) ListFollowersByHost(host string, limit, offset int) ([]*model.Following, error) {
 	var rows []*model.Following
 	for _, f := range m.Followings {
@@ -4359,6 +4396,13 @@ func applyFollowingFields(f *model.Following, fields map[string]any) {
 	for k, v := range fields {
 		switch k {
 		case "notify":
+			// upstream Misskey TS 2026.5.2 #17385: notify="none" は SQL NULL
+			// に変換されて DB に書かれる。caller (handler) で nil 化済みの
+			// 値が降ってくるので、ここでも nil を notify=nil として尊重する。
+			if v == nil {
+				f.Notify = nil
+				break
+			}
 			if s, ok := v.(string); ok {
 				f.Notify = &s
 			}
@@ -5694,6 +5738,24 @@ func (m *MockUserPublickeyRepository) FindByUserID(userID string) (*model.UserPu
 		return pk, nil
 	}
 	return nil, ErrNotFound
+}
+
+// FindByKeyID mirrors repository.userPublickeyRepository.FindByKeyID。
+// LD-Signature verify は signature.creator (= keyId) で lookup するため、
+// userID baseの map を線形 search する (= mock なのでコスト OK)。
+func (m *MockUserPublickeyRepository) FindByKeyID(keyID string) (*model.UserPublickey, error) {
+	for _, pk := range m.Keys {
+		if pk.KeyID == keyID {
+			return pk, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// Delete removes the public key for userID. interface 互換のため実装。
+func (m *MockUserPublickeyRepository) Delete(userID string) error {
+	delete(m.Keys, userID)
+	return nil
 }
 
 // MockChannelFavoriteRepository is a test double for repository.ChannelFavoriteRepository.
