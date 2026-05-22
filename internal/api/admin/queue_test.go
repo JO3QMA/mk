@@ -7,9 +7,52 @@ import (
 	"testing"
 
 	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
+	"github.com/shiroha-a/mk/internal/queue"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// deliverPayloadJSON returns a marshaled queue.DeliverPayload with the given
+// recipient inbox URL. Helper for *-delayed aggregation tests.
+func deliverPayloadJSON(t *testing.T, inbox string) []byte {
+	t.Helper()
+	b, err := json.Marshal(queue.DeliverPayload{Inbox: inbox})
+	require.NoError(t, err)
+	return b
+}
+
+// inboxPayloadJSON returns a marshaled queue.InboxPayload whose Headers
+// contain a minimal HTTP Signature header pointing at the given keyId URL.
+// 他の field (algorithm / headers / signature) は dummy で埋める ―
+// activitypub.ParseSignatureHeader はキー順序非依存で keyId だけ拾えれば成立。
+func inboxPayloadJSON(t *testing.T, keyID string) []byte {
+	t.Helper()
+	sig := `keyId="` + keyID + `",algorithm="rsa-sha256",headers="(request-target) date host",signature="abc"`
+	b, err := json.Marshal(queue.InboxPayload{
+		Body:    []byte(`{}`),
+		Headers: map[string]string{"Signature": sig},
+	})
+	require.NoError(t, err)
+	return b
+}
+
+// inboxPayloadNoSigJSON returns a marshaled InboxPayload with no signature
+// header — used to verify the aggregator silently skips it.
+func inboxPayloadNoSigJSON(t *testing.T) []byte {
+	t.Helper()
+	b, err := json.Marshal(queue.InboxPayload{Body: []byte(`{}`)})
+	require.NoError(t, err)
+	return b
+}
+
+// assertHostCount asserts that got[i] == [host, count]. JSON decode yields
+// numbers as float64, so this hides the conversion noise at call sites.
+func assertHostCount(t *testing.T, got [][]any, i int, host string, count int) {
+	t.Helper()
+	require.Greater(t, len(got), i, "got len=%d, want index %d", len(got), i)
+	assert.Equal(t, []any{host, float64(count)}, got[i],
+		"got[%d] should be [%q, %d]", i, host, count)
+}
 
 // stubQueueInspector is a test double for admin.QueueInspector that returns
 // configurable canned responses without touching Redis.
@@ -353,95 +396,181 @@ func TestQueueQueueStats_SingleQueueQuery(t *testing.T) {
 	assert.EqualValues(t, 1, counts["active"])
 }
 
-func TestQueueDeliverDelayed_CombinesScheduledAndRetry(t *testing.T) {
+// TestQueueDeliverDelayed_AggregatesByHost verifies the upstream Misskey TS
+// contract: [[host, count], ...] tuples sorted by count desc. Mixed
+// scheduled+retry tasks targeting the same host must be merged into one
+// bucket. Tasks whose payload cannot yield a host (invalid JSON / unparsable
+// URL / empty Inbox) must be skipped silently. (#1179)
+func TestQueueDeliverDelayed_AggregatesByHost(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	insp := &stubQueueInspector{
 		scheduled: map[string][]*apiadmin.QueueTaskSummary{
-			"deliver": {{ID: "s1"}},
+			"deliver": {
+				{ID: "s1", Payload: deliverPayloadJSON(t, "https://a.example/inbox")},
+				{ID: "s2", Payload: deliverPayloadJSON(t, "https://b.example/users/foo/inbox")},
+				{ID: "s3", Payload: deliverPayloadJSON(t, "https://a.example/users/x/inbox")},
+				// 不正 payload は skip
+				{ID: "bad1", Payload: []byte("not json")},
+				{ID: "bad2", Payload: deliverPayloadJSON(t, "::not a url::")},
+				{ID: "bad3", Payload: deliverPayloadJSON(t, "")},
+			},
 		},
 		retry: map[string][]*apiadmin.QueueTaskSummary{
-			"deliver": {{ID: "r1"}},
+			"deliver": {
+				{ID: "r1", Payload: deliverPayloadJSON(t, "https://b.example/inbox")},
+				{ID: "r2", Payload: deliverPayloadJSON(t, "https://c.example/inbox")},
+				{ID: "r3", Payload: deliverPayloadJSON(t, "https://a.example/u2/inbox")},
+			},
 		},
 	}
 	h.SetQueueInspector(insp)
 	rec := doPost(h.QueueDeliverDelayed, `{}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	assert.Len(t, rows, 2)
+
+	var got [][]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// a.example: 3 (s1+s3+r3), b.example: 2 (s2+r1), c.example: 1 (r2)
+	// count desc, tie 無し
+	require.Len(t, got, 3)
+	assertHostCount(t, got, 0, "a.example", 3)
+	assertHostCount(t, got, 1, "b.example", 2)
+	assertHostCount(t, got, 2, "c.example", 1)
 }
 
-// listDelayedTasks が scheduled と retry を結合する際に合計が limit を超え
-// ないことを確認する (regression guard)。
-func TestQueueDeliverDelayed_CappedAtLimit(t *testing.T) {
+// TestQueueDeliverDelayed_EmptyReturnsEmptyArray ensures the response is
+// `[]` (not `null`) when no tasks exist, so frontend.reduce() yields 0.
+func TestQueueDeliverDelayed_EmptyReturnsEmptyArray(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	scheduled := make([]*apiadmin.QueueTaskSummary, 0, 3)
-	for _, id := range []string{"s1", "s2", "s3"} {
-		scheduled = append(scheduled, &apiadmin.QueueTaskSummary{ID: id})
-	}
-	retry := make([]*apiadmin.QueueTaskSummary, 0, 3)
-	for _, id := range []string{"r1", "r2", "r3"} {
-		retry = append(retry, &apiadmin.QueueTaskSummary{ID: id})
-	}
-	insp := &stubQueueInspector{
-		scheduled: map[string][]*apiadmin.QueueTaskSummary{"deliver": scheduled},
-		retry:     map[string][]*apiadmin.QueueTaskSummary{"deliver": retry},
-	}
-	h.SetQueueInspector(insp)
-
-	rec := doPost(h.QueueDeliverDelayed, `{"limit":4}`, adminUser)
+	h.SetQueueInspector(&stubQueueInspector{})
+	rec := doPost(h.QueueDeliverDelayed, `{}`, adminUser)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	assert.Len(t, rows, 4, "combined output must not exceed requested limit")
-	// scheduled を先に詰めるので s1..s3 が最初の 3 件、続いて r1 が 4 件目
-	assert.Equal(t, "s1", rows[0]["id"])
-	assert.Equal(t, "r1", rows[3]["id"])
+	assert.Equal(t, "[]\n", rec.Body.String())
 }
 
-// listDelayedTasks が scheduled/retry 境界を越えて正しくページングできること
-// を確認する。旧実装では同じ req.Page を両リストに forward していたため、
-// scheduled でページが埋まると retry 側の早い項目が永久に見えなくなる bug が
-// あった (Devin #183 review)。
-func TestQueueDeliverDelayed_PagingCrossesBoundary(t *testing.T) {
+// TestQueueDeliverDelayed_NoInspectorReturnsEmpty: queueInspector が無い
+// (queue 機能無効構成) でも 200 + `[]` を返す。frontend が render crash しない
+// よう defensive に動く。
+func TestQueueDeliverDelayed_NoInspectorReturnsEmpty(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
-	scheduled := make([]*apiadmin.QueueTaskSummary, 0, 5)
-	for _, id := range []string{"s1", "s2", "s3", "s4", "s5"} {
-		scheduled = append(scheduled, &apiadmin.QueueTaskSummary{ID: id})
-	}
-	retry := make([]*apiadmin.QueueTaskSummary, 0, 3)
-	for _, id := range []string{"r1", "r2", "r3"} {
-		retry = append(retry, &apiadmin.QueueTaskSummary{ID: id})
-	}
+	rec := doPost(h.QueueDeliverDelayed, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]\n", rec.Body.String())
+}
+
+// TestQueueInboxDelayed_AggregatesByHostFromSignature verifies inbox tasks
+// resolve host via HTTP Signature header (keyId URL), matching upstream
+// Misskey TS の `new URL(job.data.signature.keyId).host`. (#1179)
+func TestQueueInboxDelayed_AggregatesByHostFromSignature(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
 	insp := &stubQueueInspector{
-		scheduled: map[string][]*apiadmin.QueueTaskSummary{"deliver": scheduled},
-		retry:     map[string][]*apiadmin.QueueTaskSummary{"deliver": retry},
+		scheduled: map[string][]*apiadmin.QueueTaskSummary{
+			"inbox": {
+				{ID: "s1", Payload: inboxPayloadJSON(t, "https://a.example/users/alice#main-key")},
+				{ID: "s2", Payload: inboxPayloadJSON(t, "https://a.example/users/bob#main-key")},
+				// signature 無 → skip
+				{ID: "noSig", Payload: inboxPayloadNoSigJSON(t)},
+				// 不正 JSON → skip
+				{ID: "bad", Payload: []byte("not json")},
+			},
+		},
+		retry: map[string][]*apiadmin.QueueTaskSummary{
+			"inbox": {
+				{ID: "r1", Payload: inboxPayloadJSON(t, "https://b.example/users/eve#main-key")},
+			},
+		},
 	}
 	h.SetQueueInspector(insp)
+	rec := doPost(h.QueueInboxDelayed, `{}`, adminUser)
+	assert.Equal(t, http.StatusOK, rec.Code)
 
-	// page 1 limit 3 → s1, s2, s3
-	rec := doPost(h.QueueDeliverDelayed, `{"limit":3,"page":1}`, adminUser)
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	require.Len(t, rows, 3)
-	assert.Equal(t, []any{"s1", "s2", "s3"}, []any{rows[0]["id"], rows[1]["id"], rows[2]["id"]})
+	var got [][]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// a.example: 2, b.example: 1
+	require.Len(t, got, 2)
+	assertHostCount(t, got, 0, "a.example", 2)
+	assertHostCount(t, got, 1, "b.example", 1)
+}
 
-	// page 2 limit 3 → s4, s5, r1 (境界をまたぐ)
-	rec = doPost(h.QueueDeliverDelayed, `{"limit":3,"page":2}`, adminUser)
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	require.Len(t, rows, 3)
-	assert.Equal(t, []any{"s4", "s5", "r1"}, []any{rows[0]["id"], rows[1]["id"], rows[2]["id"]})
+// pagedInspector is a QueueInspector stub that always returns full pages,
+// emulating an asynq inspector that has so many tasks the cursor never
+// reaches the end (or, worse, a misbehaving inspector that ignores empty
+// state). Used to verify the page cap defense in fetchAllDelayedTasks.
+//
+// 他の QueueInspector method は embedded stubQueueInspector の zero-value に
+// fall through する (空 map / 空 slice 返却)。cap test では fetchAllDelayedTasks
+// 経由の Scheduled/Retry list call しか走らないので問題なし。
+type pagedInspector struct {
+	stubQueueInspector
+	payload []byte
+	calls   int
+}
 
-	// page 3 limit 3 → r2, r3
-	rec = doPost(h.QueueDeliverDelayed, `{"limit":3,"page":3}`, adminUser)
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	require.Len(t, rows, 2)
-	assert.Equal(t, []any{"r2", "r3"}, []any{rows[0]["id"], rows[1]["id"]})
+func (p *pagedInspector) ListScheduledTasks(_ string, _, pageSize int) ([]*apiadmin.QueueTaskSummary, error) {
+	p.calls++
+	rows := make([]*apiadmin.QueueTaskSummary, 0, pageSize)
+	for i := 0; i < pageSize; i++ {
+		rows = append(rows, &apiadmin.QueueTaskSummary{Payload: p.payload})
+	}
+	return rows, nil
+}
 
-	// page 4 → 空
-	rec = doPost(h.QueueDeliverDelayed, `{"limit":3,"page":4}`, adminUser)
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
-	assert.Empty(t, rows)
+func (p *pagedInspector) ListRetryTasks(_ string, _, _ int) ([]*apiadmin.QueueTaskSummary, error) {
+	// retry list は常に空 = scheduled の cap だけを test 対象にする。
+	return nil, nil
+}
+
+// TestQueueDeliverDelayed_PageCapBoundsRunaway: inspector が常に full page を
+// 返してくる misbehavior / pathological case で、handler が無限ループせず
+// `delayedTasksMaxPages` で打ち切ることを担保する。defense-in-depth の
+// 動作 test (#1179 review #1 + #2)。
+func TestQueueDeliverDelayed_PageCapBoundsRunaway(t *testing.T) {
+	// 本物の cap (1000 pages) で test すると 100K item 走査で 1 unit test に
+	// しては重い。test 中だけ cap を小さくして cap の挙動だけを検証する。
+	// `pageCap` という名前で builtin `cap()` の shadow を避ける。
+	const pageCap = 3
+	prev := apiadmin.SetDelayedTasksMaxPages(pageCap)
+	t.Cleanup(func() { apiadmin.SetDelayedTasksMaxPages(prev) })
+
+	h, _, _, _ := newTestHandler(t)
+	insp := &pagedInspector{payload: deliverPayloadJSON(t, "https://always.example/inbox")}
+	h.SetQueueInspector(insp)
+
+	rec := doPost(h.QueueDeliverDelayed, `{}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got [][]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// 1 host × pageCap (3) × pageSize = 3 × DelayedTasksFetchPageSize 件で
+	// 打ち切られる。
+	require.Len(t, got, 1)
+	assertHostCount(t, got, 0, "always.example", pageCap*apiadmin.DelayedTasksFetchPageSize)
+	// inspector への ListScheduledTasks 呼び出しは cap 回数で打ち切られる。
+	assert.Equal(t, pageCap, insp.calls,
+		"page iteration must stop at delayedTasksMaxPages")
+}
+
+// TestQueueDeliverDelayed_StableSortOnTie: 同 count の host は host 名 asc で
+// 安定 sort される (frontend で順序が flicker しないように)。
+func TestQueueDeliverDelayed_StableSortOnTie(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	insp := &stubQueueInspector{
+		scheduled: map[string][]*apiadmin.QueueTaskSummary{
+			"deliver": {
+				{ID: "1", Payload: deliverPayloadJSON(t, "https://c.example/inbox")},
+				{ID: "2", Payload: deliverPayloadJSON(t, "https://a.example/inbox")},
+				{ID: "3", Payload: deliverPayloadJSON(t, "https://b.example/inbox")},
+			},
+		},
+	}
+	h.SetQueueInspector(insp)
+	rec := doPost(h.QueueDeliverDelayed, `{}`, adminUser)
+	var got [][]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got, 3)
+	// all count = 1, host 名 asc で並ぶ
+	assert.Equal(t, "a.example", got[0][0])
+	assert.Equal(t, "b.example", got[1][0])
+	assert.Equal(t, "c.example", got[2][0])
 }
 
 // QueueJobs は単一 queue でも limit を超えない件数しか返さないことを確認する。

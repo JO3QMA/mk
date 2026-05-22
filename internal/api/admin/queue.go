@@ -2,11 +2,15 @@ package admin
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/queue"
 )
@@ -30,61 +34,176 @@ func (h *Handler) QueueClear(c echo.Context) error {
 }
 
 // QueueDeliverDelayed handles POST /api/admin/queue/deliver-delayed.
-// Returns scheduled/retry tasks on the `deliver` queue.
+//
+// Response shape: `[[host, count], ...]` の tuple 配列 (count desc で sort)。
+// host は recipient inbox URL (`DeliverPayload.Inbox`) から抽出する。
+// upstream Misskey TS spec (`admin/queue/deliver-delayed.ts`) と互換。
+//
+// admin/control panel の "Errored Instances" panel は b[1] で count に
+// アクセスするので、object 配列 (旧 mk-go shape) では NaN 表示になる (#1179)。
 func (h *Handler) QueueDeliverDelayed(c echo.Context) error {
-	return h.listDelayedTasks(c, "deliver")
+	tasks := h.fetchAllDelayedTasks("deliver")
+	return c.JSON(http.StatusOK, aggregateByHost(tasks, deliverHostFromPayload))
 }
 
 // QueueInboxDelayed handles POST /api/admin/queue/inbox-delayed.
-// Returns scheduled/retry tasks on the `inbox` queue.
+//
+// Response shape: `[[host, count], ...]` の tuple 配列 (count desc で sort)。
+// host は HTTP Signature header の `keyId` (絶対 URL) から抽出する。
+// upstream Misskey TS は `new URL(job.data.signature.keyId).host` と
+// 同等の処理。mk-go の `InboxPayload.Host` は enqueue 時に未設定なので
+// signature header 経由でしか引けない (#1179)。
 func (h *Handler) QueueInboxDelayed(c echo.Context) error {
-	return h.listDelayedTasks(c, "inbox")
+	tasks := h.fetchAllDelayedTasks("inbox")
+	return c.JSON(http.StatusOK, aggregateByHost(tasks, inboxHostFromPayload))
 }
 
-// delayedTasksMaxFetch is the upper bound on how many of each of scheduled /
-// retry we pull from asynq to build the virtual delayed list. asynq pages
-// scheduled and retry independently so we cannot naively forward the user's
-// page number to both (retry items before the scheduled boundary would
-// disappear). We instead fetch the first asynq page (up to 100 items) of each,
-// merge scheduled-first, then slice by the user's (page, limit).
+// delayedTasksFetchPageSize は scheduled / retry を page 走査する際の 1 page
+// 当たり件数。100 は asynq inspector の page size 制限 (1〜) 内で妥当な大きさ。
+const delayedTasksFetchPageSize = 100
+
+// delayedTasksMaxPages は scheduled / retry それぞれの page 走査の上限。
+// = 100K tasks per state, 200K total。これは defense-in-depth の二重目的:
 //
-// 想定: admin/queue/*-delayed は通常 "stuck な配送" を目視で確認する用途で、
-// 合計 200 件を超えるケースは運用上ほぼ存在しない。深いページングが必要なら
-// /admin/queue/jobs を state=scheduled / state=retry で使う。
-const delayedTasksMaxFetch = 100
+//   - inspector が常に full page を返すような misbehavior 時の無限ループ防御
+//   - 連合先長期 down 等の pathological case で、admin panel が backend
+//     memory を食い潰さない soft cap
+//
+// 通常の運用では数千件で頭打ちになるはずなので、この上限を踏むのは異常状態。
+// 到達時は slog.Warn で diag を残し、収集できた分だけで集計を進める
+// (= panel に top hosts は出るので、admin はその情報を元に対処できる)。
+//
+// var にしているのは test seam: cap 防御の挙動を確認する test が小さい
+// cap を一時設定するため。production code から書き換えてはならない。
+var delayedTasksMaxPages = 1000
 
-func (h *Handler) listDelayedTasks(c echo.Context, queueName string) error {
+// fetchAllDelayedTasks fetches every scheduled+retry task for the queue by
+// iterating pages of size delayedTasksFetchPageSize until each list is
+// exhausted or delayedTasksMaxPages の上限に達するまで。結果は downstream の
+// host aggregation の union として返す。
+//
+// Misskey TS の BullMQ getJobs(['delayed']) は全件取得が前提なので、通常
+// page が空になるまで走査するが、defense-in-depth として上限を設けている
+// (`delayedTasksMaxPages` のコメント参照)。
+func (h *Handler) fetchAllDelayedTasks(queueName string) []*QueueTaskSummary {
 	if h.queueInspector == nil {
-		return c.JSON(http.StatusOK, []any{})
+		return nil
 	}
-	var req struct {
-		Limit int `json:"limit"`
-		Page  int `json:"page"`
+	var all []*QueueTaskSummary
+	for _, spec := range []struct {
+		state string
+		fetch func(string, int, int) ([]*QueueTaskSummary, error)
+	}{
+		{"scheduled", h.queueInspector.ListScheduledTasks},
+		{"retry", h.queueInspector.ListRetryTasks},
+	} {
+		for page := 1; page <= delayedTasksMaxPages; page++ {
+			rows, err := spec.fetch(queueName, page, delayedTasksFetchPageSize)
+			if err != nil || len(rows) == 0 {
+				break
+			}
+			all = append(all, rows...)
+			// partial page を取った時点で正常にデータ尽きと判断、warn せず
+			// 抜ける。full page が続いたまま cap に到達した時だけ warn する
+			// (= データがまだ残っている可能性が高い異常状態)。
+			if len(rows) < delayedTasksFetchPageSize {
+				break
+			}
+			if page == delayedTasksMaxPages {
+				slog.Warn("admin/queue/delayed: page cap reached, truncating aggregation",
+					"queue", queueName, "state", spec.state,
+					"maxPages", delayedTasksMaxPages,
+					"pageSize", delayedTasksFetchPageSize,
+					"collected", len(all))
+			}
+		}
 	}
-	_ = c.Bind(&req)
-	if req.Limit <= 0 || req.Limit > 100 {
-		req.Limit = 30
-	}
-	if req.Page < 1 {
-		req.Page = 1
-	}
+	return all
+}
 
-	scheduled, _ := h.queueInspector.ListScheduledTasks(queueName, 1, delayedTasksMaxFetch)
-	retry, _ := h.queueInspector.ListRetryTasks(queueName, 1, delayedTasksMaxFetch)
-	combined := make([]*QueueTaskSummary, 0, len(scheduled)+len(retry))
-	combined = append(combined, scheduled...)
-	combined = append(combined, retry...)
+// aggregateByHost reduces tasks to (host, count) tuples sorted by count
+// descending, then host ascending for stable output. hostFn は task 1 件から
+// host 文字列を抽出する関数で、空文字列を返した task は skip される
+// (= 不正 payload / 集計対象外を弾く)。
+//
+// 戻り値は []any でなく [][]any なので、frontend が `b[1]` でアクセスする
+// JSON tuple 表現 (`[["a", 1], ...]`) になる。
+func aggregateByHost(tasks []*QueueTaskSummary, hostFn func(*QueueTaskSummary) string) [][]any {
+	counts := make(map[string]int)
+	for _, t := range tasks {
+		host := hostFn(t)
+		if host == "" {
+			continue
+		}
+		counts[host]++
+	}
+	hosts := make([]string, 0, len(counts))
+	for h := range counts {
+		hosts = append(hosts, h)
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if counts[hosts[i]] != counts[hosts[j]] {
+			return counts[hosts[i]] > counts[hosts[j]]
+		}
+		return hosts[i] < hosts[j]
+	})
+	out := make([][]any, 0, len(hosts))
+	for _, h := range hosts {
+		out = append(out, []any{h, counts[h]})
+	}
+	return out
+}
 
-	offset := (req.Page - 1) * req.Limit
-	if offset >= len(combined) {
-		return c.JSON(http.StatusOK, []map[string]any{})
+// deliverHostFromPayload extracts the recipient host from a deliver queue
+// task. DeliverPayload.Inbox は recipient の AP inbox URL なので、その host
+// が即 federation 先 host になる。
+//
+// 注意: Go の `url.Parse` は JS の `new URL()` より permissive で、ほとんどの
+// malformed input に対して err=nil + Host="" の `*url.URL` を返す (err は
+// `::scheme::` 形式の壊れた scheme prefix 等、限定的な case でのみ返る)。
+// caller (`aggregateByHost`) は host == "" を skip するので、err 分岐と
+// 空 Host のどちらも同じ「集計から外す」挙動になり、両方 cover している。
+func deliverHostFromPayload(t *QueueTaskSummary) string {
+	if t == nil || len(t.Payload) == 0 {
+		return ""
 	}
-	end := min(offset+req.Limit, len(combined))
-	out := make([]map[string]any, 0, end-offset)
-	for _, t := range combined[offset:end] {
-		out = append(out, packTaskSummary(t))
+	var p queue.DeliverPayload
+	if err := json.Unmarshal(t.Payload, &p); err != nil {
+		return ""
 	}
-	return c.JSON(http.StatusOK, out)
+	u, err := url.Parse(p.Inbox)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// inboxHostFromPayload extracts the sender host from an inbox queue task.
+// InboxPayload.Host は enqueue 時に未設定 (api/inbox/handler.go) なので、
+// `Headers["Signature"]` から HTTP Signature の keyId URL を取って host を
+// 抽出する。これは upstream Misskey TS の
+// `new URL(job.data.signature.keyId).host` と一致する。
+func inboxHostFromPayload(t *QueueTaskSummary) string {
+	if t == nil || len(t.Payload) == 0 {
+		return ""
+	}
+	var p queue.InboxPayload
+	if err := json.Unmarshal(t.Payload, &p); err != nil {
+		return ""
+	}
+	sig := p.Headers["Signature"]
+	if sig == "" {
+		return ""
+	}
+	parsed, err := activitypub.ParseSignatureHeader(sig)
+	if err != nil || parsed == nil {
+		return ""
+	}
+	u, err := url.Parse(parsed.KeyID)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 // QueueJobs handles POST /api/admin/queue/jobs.
