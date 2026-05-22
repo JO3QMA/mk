@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
+	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/server/middleware"
 )
 
@@ -14,10 +15,16 @@ func (h *Handler) SigninHistory(c echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 	u := middleware.GetUser(c)
+	// この handler だけ SinceID / UntilID が `*string` で、他の cursor
+	// endpoint (= 多くが string) と shape が異なる。歴史的経緯で「未指定」と
+	// 「空文字明示」を区別する必要があった経路。`*string` を unwrap して
+	// 空文字 string に揃えてから id.NormalizeCursor に渡す 2-step。
 	var req struct {
-		Limit   *int    `json:"limit"`
-		SinceID *string `json:"sinceId"`
-		UntilID *string `json:"untilId"`
+		Limit     *int    `json:"limit"`
+		SinceID   *string `json:"sinceId"`
+		UntilID   *string `json:"untilId"`
+		SinceDate *int64  `json:"sinceDate"`
+		UntilDate *int64  `json:"untilDate"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "Invalid param.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
@@ -41,6 +48,9 @@ func (h *Handler) SigninHistory(c echo.Context) error {
 	if req.UntilID != nil {
 		untilID = *req.UntilID
 	}
+	// sinceDate / untilDate を aidx prefix に正規化 (#1166)。unwrap 後の
+	// string 値を渡す。
+	sinceID, untilID = id.NormalizeCursor(sinceID, untilID, req.SinceDate, req.UntilDate)
 
 	rows, err := h.signinRepo.ListByUserID(u.ID, limit, untilID, sinceID)
 	if err != nil {

@@ -209,8 +209,12 @@ func (h *Handler) List(c echo.Context) error {
 	if req.Limit > 100 {
 		req.Limit = 100
 	}
+	// sinceDate / untilDate (Unix ms) を aidx prefix に正規化して sinceID /
+	// untilID と同 SQL cursor で扱う (#1166)。sinceID が指定されている場合
+	// upstream 同様 sinceDate は無視される。
+	sinceID, untilID := id.NormalizeCursor(req.SinceID, req.UntilID, req.SinceDate, req.UntilDate)
 
-	rows, err := h.followingService.ListFollowingForList(me.ID, req.SinceID, req.UntilID, req.Notification, req.Limit)
+	rows, err := h.followingService.ListFollowingForList(me.ID, sinceID, untilID, req.Notification, req.Limit)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}
@@ -245,13 +249,17 @@ func (h *Handler) List(c echo.Context) error {
 func (h *Handler) ListRequests(c echo.Context) error {
 	me := middleware.GetUser(c)
 	var req struct {
-		Limit   int    `json:"limit"`
-		SinceID string `json:"sinceId"`
-		UntilID string `json:"untilId"`
+		Limit     int    `json:"limit"`
+		SinceID   string `json:"sinceId"`
+		UntilID   string `json:"untilId"`
+		SinceDate *int64 `json:"sinceDate"`
+		UntilDate *int64 `json:"untilDate"`
 	}
 	_ = c.Bind(&req)
+	// sinceDate / untilDate を aidx prefix に正規化 (#1166)。
+	sinceID, untilID := id.NormalizeCursor(req.SinceID, req.UntilID, req.SinceDate, req.UntilDate)
 
-	requests, err := h.followingService.ListReceivedRequests(me.ID, req.Limit, req.SinceID, req.UntilID)
+	requests, err := h.followingService.ListReceivedRequests(me.ID, req.Limit, sinceID, untilID)
 	if err != nil {
 		return apierr.JSONInternalError(c)
 	}

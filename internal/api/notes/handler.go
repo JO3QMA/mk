@@ -411,10 +411,12 @@ func (h *Handler) Delete(c echo.Context) error {
 
 // listRequest is the common pagination request shared by renotes/replies/children.
 type listRequest struct {
-	NoteID  string `json:"noteId"`
-	Limit   int    `json:"limit"`
-	SinceID string `json:"sinceId"`
-	UntilID string `json:"untilId"`
+	NoteID    string `json:"noteId"`
+	Limit     int    `json:"limit"`
+	SinceID   string `json:"sinceId"`
+	UntilID   string `json:"untilId"`
+	SinceDate *int64 `json:"sinceDate"`
+	UntilDate *int64 `json:"untilDate"`
 }
 
 func (r *listRequest) normalize() {
@@ -424,6 +426,9 @@ func (r *listRequest) normalize() {
 	if r.Limit > 100 {
 		r.Limit = 100
 	}
+	// sinceDate / untilDate を aidx prefix に正規化 (#1166)。serveList から
+	// 呼ばれて Renotes / Replies / Children の 3 handler で一括適用される。
+	r.SinceID, r.UntilID = id.NormalizeCursor(r.SinceID, r.UntilID, r.SinceDate, r.UntilDate)
 }
 
 // Renotes handles POST /api/notes/renotes.
@@ -498,14 +503,8 @@ func (h *Handler) Search(c echo.Context) error {
 		req.Limit = 100
 	}
 
-	untilID := req.UntilID
-	if untilID == "" && req.UntilDate != nil && h.idGen != nil {
-		untilID = h.idGen.Generate(time.UnixMilli(*req.UntilDate))
-	}
-	sinceID := req.SinceID
-	if sinceID == "" && req.SinceDate != nil && h.idGen != nil {
-		sinceID = h.idGen.Generate(time.UnixMilli(*req.SinceDate))
-	}
+	// sinceDate / untilDate を aidx prefix に正規化 (#1166)。
+	sinceID, untilID := id.NormalizeCursor(req.SinceID, req.UntilID, req.SinceDate, req.UntilDate)
 
 	viewer := middleware.GetUser(c)
 	notes, err := h.searchService.SearchNote(
