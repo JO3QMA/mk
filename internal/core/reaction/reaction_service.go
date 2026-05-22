@@ -243,6 +243,21 @@ func (s *Service) Create(user *model.User, noteID, rawReaction string) (string, 
 		Reaction: reaction,
 	}
 	if err := s.reactionRepo.Create(rec); err != nil {
+		// `FindByPair` 実行後の窓で並行 Create (= 別 inbox process / 別
+		// reaction 経路) が同 user×note を入れたとき、PG unique constraint
+		// で `ErrDuplicateReaction` を取る。AP の Like activity は
+		// idempotent に処理する (= 重複は silent ignore する) のが仕様
+		// なので、repository level の sentinel を service level の
+		// `ErrAlreadyReacted` に変換して caller (= handleLike / API
+		// handler) の既存 swallow path を使わせる (#1186)。
+		//
+		// 注意: mk-go 内で `reactionRepo.Create` を直接呼ぶ caller は
+		// 本 service.Create のみ (= 単一 chokepoint)。将来 service 経由
+		// しない直接 caller を増やす場合、その経路でも同等の sentinel
+		// 変換が必要 (= 直接呼ぶより service 経由に揃えるのが望ましい)。
+		if errors.Is(err, repository.ErrDuplicateReaction) {
+			return "", ErrAlreadyReacted
+		}
 		return "", err
 	}
 	_ = s.countWriter.Increment(target.ID, reaction, 1)
