@@ -227,6 +227,47 @@ func TestFanoutHook_ReplyToFollowerIsPushedRegardlessOfWithReplies(t *testing.T)
 	assert.Empty(t, out, "follower2 (= unrelated) should not receive reply when WithReplies=false")
 }
 
+// TestFanoutHook_MentionedFollowerEscapesReplyFilter guards #1195: 他人 A
+// → 他人 B reply で本文に follower C への mention が含まれているとき、
+// C は withReplies=false でも home TL に push される (= mk-go 独自 escape
+// hatch、upstream Misskey TS は持たない意図的 deviation)。
+//
+// scenario: author が follower1 / follower2 を持ち、follower1 / follower2
+// 共に withReplies=false。author が `replyTargetUser` 宛 reply を作り、
+// note.Mentions に follower1 を含める。
+//   - follower1 は mentioned → push (mention escape hatch)
+//   - follower2 は mentioned でも replyToMe でも selfThread でもない →
+//     既存 reply gate で drop
+func TestFanoutHook_MentionedFollowerEscapesReplyFilter(t *testing.T) {
+	h, fanout, following := newTestHook(t)
+	ctx := context.Background()
+	following.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "follower1", FolloweeID: "author", WithReplies: false}
+	following.Followings["f2"] = &model.Following{ID: "f2", FollowerID: "follower2", FolloweeID: "author", WithReplies: false}
+
+	noteID := idGen.Generate(time.Now())
+	replyID := "reply-target"
+	otherUser := "other-user"
+	n := &model.Note{
+		ID:          noteID,
+		UserID:      "author",
+		Visibility:  model.NoteVisibilityPublic,
+		ReplyID:     &replyID,
+		ReplyUserID: &otherUser, // 他人宛 reply
+		Mentions:    []string{"follower1"},
+	}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// follower1 は mention されているので withReplies=false でも push される
+	out, err := fanout.Get(ctx, HomeTimelineName("follower1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out, "mentioned follower1 should receive reply regardless of WithReplies")
+
+	// follower2 は mention されていないので default reply gate で drop
+	out, err = fanout.Get(ctx, HomeTimelineName("follower2"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out, "non-mentioned follower2 should NOT receive reply when WithReplies=false")
+}
+
 // TestFanoutHook_FollowersOnlyReply_DropsFollowersNotFollowingReplyTarget
 // guards #1152: reply 対象 note の `visibility=followers` の場合、reply
 // target を follow していない follower は drop される (= stream filter
@@ -308,6 +349,50 @@ func TestFanoutHook_FollowersOnlyReply_ReplyToFollowerEscapeHatch(t *testing.T) 
 	out, err := fanout.Get(ctx, HomeTimelineName("follower1"), "", "", 10)
 	require.NoError(t, err)
 	assert.Equal(t, []string{noteID}, out, "follower1 (= reply target 本人) は followers-only gate を escape")
+}
+
+// TestFanoutHook_MentionEscapeDoesNotBypassFollowersVisibilityGate guards
+// #1195 の scope boundary: mention escape hatch は basic withReplies gate のみ
+// を pass させ、followers-visibility privacy gate (= reply target を follow
+// していない follower への reply 本文露出防止) は引き続き drop する。stream
+// 側で同 scenario を `TestReplyShouldEmit_MentionEscapeDoesNotOverrideFollowersVisibility`
+// で pin 済み、fanout 側もここで同 symmetry を pin して privacy boundary が
+// 将来 escape に飲み込まれないようにする。
+//
+// scenario: A が `replyTargetUser` (visibility=followers) に reply、本文に
+// follower1 を mention。follower1 は author を withReplies=true で follow し
+// ているが replyTargetUser は follow していない。
+//   - mention されていても followers-visibility gate は通らないので drop。
+func TestFanoutHook_MentionEscapeDoesNotBypassFollowersVisibilityGate(t *testing.T) {
+	h, fanout, following := newTestHook(t)
+	ctx := context.Background()
+	following.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "follower1", FolloweeID: "author", WithReplies: true}
+	// follower1 は replyTargetUser を follow していない (= followers-only gate
+	// が effective)。
+
+	noteID := idGen.Generate(time.Now())
+	replyTargetID := "reply-target-note"
+	replyTargetUser := "replyTargetUser"
+	n := &model.Note{
+		ID:          noteID,
+		UserID:      "author",
+		Visibility:  model.NoteVisibilityPublic,
+		ReplyID:     &replyTargetID,
+		ReplyUserID: &replyTargetUser,
+		Mentions:    []string{"follower1"}, // mention されていても escape は basic gate のみ
+		Reply: &model.Note{
+			ID:         replyTargetID,
+			UserID:     replyTargetUser,
+			Visibility: model.NoteVisibilityFollowers,
+		},
+	}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// follower1 は mention されているが replyTargetUser を follow していない
+	// ので followers-visibility gate で drop される (privacy boundary 維持)。
+	out, err := fanout.Get(ctx, HomeTimelineName("follower1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out, "mentioned follower should still be dropped by followers-visibility gate (#1195 scope boundary)")
 }
 
 // 通常 note (reply 無し) は WithReplies 設定に関わらず全 follower に push される。

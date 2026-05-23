@@ -172,6 +172,67 @@ func TestReplyShouldEmit_HybridConnectParamWithRepliesPasses(t *testing.T) {
 	assert.True(t, replyShouldEmit(payload, "viewer", nil, true, replyGateHybrid))
 }
 
+// TestReplyShouldEmit_MentionedViewerEscapesReplyFilter guards #1195:
+// viewer が note.mentions に含まれている場合、3 default escape hatch に
+// 該当しなくても reply gate を pass する (mk-go 独自 escape、上流 TS は
+// この escape を意図的に持たない)。
+func TestReplyShouldEmit_MentionedViewerEscapesReplyFilter(t *testing.T) {
+	// 他人 → 他人 reply (isMe / replyToMe / selfThread どれも false) で、
+	// viewer が note.mentions に含まれる payload。
+	payload := []byte(`{"userId":"author","replyId":"p1","mentions":["viewer"],"reply":{"userId":"target","visibility":"public"}}`)
+
+	// snapshot 空 (= author を follow していても withReplies=false)。upstream TS
+	// 互換 path なら drop されるが、mention escape で home / hybrid / local
+	// すべての mode で pass する。
+	snap := map[string]bool{"author": false}
+	assert.True(t, replyShouldEmit(payload, "viewer", snap, false, replyGateHome),
+		"home: mentioned viewer should bypass reply gate")
+	assert.True(t, replyShouldEmit(payload, "viewer", snap, false, replyGateHybrid),
+		"hybrid: mentioned viewer should bypass reply gate")
+	assert.True(t, replyShouldEmit(payload, "viewer", snap, false, replyGateLocal),
+		"local: mentioned viewer should bypass reply gate")
+}
+
+// TestReplyShouldEmit_MentionEscapeRequiresAuthenticatedViewer: anonymous
+// viewer (= viewerID="") は note.mentions に空文字 ID が混入しても escape
+// しない (空文字 viewer に対する誤誘発防止)。全 reply gate mode で対称に
+// pin する: home は snapshot 経由の default drop、local/hybrid は anonymous
+// 早期 return での pass-through、いずれも mention escape が誤発火しないこと
+// を確認する。
+func TestReplyShouldEmit_MentionEscapeRequiresAuthenticatedViewer(t *testing.T) {
+	// mentions に "" が含まれる悪意ある / 破損 payload。
+	payload := []byte(`{"userId":"author","replyId":"p1","mentions":[""],"reply":{"userId":"target","visibility":"public"}}`)
+	snap := map[string]bool{"author": false}
+
+	// home: anonymous + snapshot 有りでも default drop path に乗る。mention
+	// escape は viewerID 空で発火しないので drop が維持される。
+	assert.False(t, replyShouldEmit(payload, "", snap, false, replyGateHome),
+		"home: anonymous viewer must not be escaped by empty-string mention")
+
+	// local / hybrid: anonymous は anyway pass-through (`viewerID == ""` の
+	// 早期 return)。mention escape の有無に関係なく true を返す挙動が、
+	// 空文字 mention の混入で乱れないことを pin。
+	assert.True(t, replyShouldEmit(payload, "", nil, false, replyGateLocal),
+		"local: anonymous viewer pass-through must not depend on mention escape")
+	assert.True(t, replyShouldEmit(payload, "", nil, false, replyGateHybrid),
+		"hybrid: anonymous viewer pass-through must not depend on mention escape")
+}
+
+// TestReplyShouldEmit_MentionEscapeRespectsFollowersVisibility: mention
+// escape は basic reply gate を pass させるが、followers-visibility 経路
+// 自体は別 gate なのでそちらの judgment は upstream 互換のまま (= mention
+// escape は basic gate 専用)。今後 followers-visibility にも mention
+// escape を広げるなら別 issue で扱う。
+func TestReplyShouldEmit_MentionEscapeDoesNotOverrideFollowersVisibility(t *testing.T) {
+	// followee.withReplies=true、reply.visibility=followers、viewer は
+	// target を follow していない & 自分宛でもない & mentions に含まれる。
+	// followers-visibility branch は mention を見ないので drop が保持される。
+	payload := []byte(`{"userId":"author","replyId":"p1","mentions":["viewer"],"reply":{"userId":"target","visibility":"followers"}}`)
+	snap := map[string]bool{"author": true} // followee.withReplies=true
+	assert.False(t, replyShouldEmit(payload, "viewer", snap, false, replyGateHome),
+		"followers-visibility branch should not be bypassed by mention escape (mk-go #1195 scope)")
+}
+
 func TestReplyShouldEmit_MissingReplyEmbedIsConservative(t *testing.T) {
 	// reply embed が無い場合 (= reply.userId 参照できない) は 3 escape hatch の
 	// うち isMe しか判定できない。conservative に drop して fanout / DB の

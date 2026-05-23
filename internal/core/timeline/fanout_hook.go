@@ -3,6 +3,7 @@ package timeline
 import (
 	"context"
 	"log/slog"
+	"slices"
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
@@ -274,7 +275,14 @@ func (h *FanoutHook) fanoutToFollowersAndStream(ctx context.Context, authorID st
 		}
 		for _, f := range rows {
 			isReplyToFollower := isReply && n.ReplyUserID != nil && *n.ReplyUserID == f.FollowerID
-			if isReply && !isSelfThread && !isReplyToFollower && !f.WithReplies {
+			// follower が note.mentions に含まれているなら withReplies=false の
+			// reply filter を escape する (mk-go 独自仕様 / 上流 TS は持たない
+			// escape hatch、#1195)。「他人 A → 他人 B reply」で本文に viewer
+			// (= follower) への mention が含まれているとき、author の意図とし
+			// て viewer に届けたいはずなので follower の withReplies 設定で隠
+			// さない。
+			isMentioned := isReply && slices.Contains(n.Mentions, f.FollowerID)
+			if isReply && !isSelfThread && !isReplyToFollower && !isMentioned && !f.WithReplies {
 				continue
 			}
 			// followers-only reply: reply target を follow していない follower
