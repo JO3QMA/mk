@@ -5694,6 +5694,23 @@ func (m *MockAuthSessionRepository) CreateAccessToken(token *model.AccessToken) 
 	return nil
 }
 
+func (m *MockAuthSessionRepository) FindAccessTokenBySession(session string) (*model.AccessToken, error) {
+	for _, t := range m.AccessTokens {
+		if t.Session != nil && *t.Session == session {
+			return t, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *MockAuthSessionRepository) MarkAccessTokenFetched(id string) (bool, error) {
+	if t, ok := m.AccessTokens[id]; ok && !t.Fetched {
+		t.Fetched = true
+		return true, nil
+	}
+	return false, nil
+}
+
 func (m *MockAuthSessionRepository) FindAppByID(id string) (*model.App, error) {
 	a, ok := m.Apps[id]
 	if !ok {

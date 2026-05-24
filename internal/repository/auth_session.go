@@ -21,6 +21,15 @@ type AuthSessionRepository interface {
 	// AccessToken operations for MiAuth
 	FindAccessTokenByAppAndUser(appID, userID string) (*model.AccessToken, error)
 	CreateAccessToken(token *model.AccessToken) error
+	// FindAccessTokenBySession looks up the access token created for a MiAuth
+	// session id (used by /miauth/:session/check to hand the token back to the
+	// 3rd-party client).
+	FindAccessTokenBySession(session string) (*model.AccessToken, error)
+	// MarkAccessTokenFetched atomically flips the one-time `fetched` flag from
+	// false to true and reports whether this call won the transition. Only the
+	// winner may hand the token to the client, so concurrent /check polls can
+	// never retrieve the same session token twice.
+	MarkAccessTokenFetched(id string) (bool, error)
 
 	// App lookup
 	FindAppByID(id string) (*model.App, error)
@@ -82,6 +91,27 @@ func (r *authSessionRepository) FindAccessTokenByAppAndUser(appID, userID string
 		return nil, err
 	}
 	return &token, nil
+}
+
+func (r *authSessionRepository) FindAccessTokenBySession(session string) (*model.AccessToken, error) {
+	var token model.AccessToken
+	if err := r.db.Where(`"session" = ?`, session).First(&token).Error; err != nil {
+		return nil, err
+	}
+	return &token, nil
+}
+
+func (r *authSessionRepository) MarkAccessTokenFetched(id string) (bool, error) {
+	// fetched=false の行だけを更新対象にすることで、並行する /check polling
+	// のうち false→true の遷移に勝った 1 リクエストだけが RowsAffected>0 を得る。
+	// これにより同一 session token が二重に払い出されることを防ぐ。
+	res := r.db.Model(&model.AccessToken{}).
+		Where(`"id" = ? AND "fetched" = false`, id).
+		Update("fetched", true)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 func (r *authSessionRepository) CreateAccessToken(token *model.AccessToken) error {
