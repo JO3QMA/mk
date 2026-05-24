@@ -33,6 +33,12 @@ var (
 	// ErrInvalidTarget is returned when neither toUserId nor toRoomId is
 	// provided to CreateMessage helpers.
 	ErrInvalidTarget = errors.New("chat target is required")
+	// ErrRoomOwnerMismatch is returned by EnsureRoomViaAP when a room with the
+	// requested ID already exists locally but is owned by a different user. It
+	// signals a permanent (non-retryable) condition: the federated room ID
+	// collides with an unrelated local room, so the inbound activity can never
+	// be applied. Callers should not retry.
+	ErrRoomOwnerMismatch = errors.New("chat room federation: room owner mismatch")
 )
 
 // StreamingPublisher is the Redis pub/sub dispatch interface the service uses
@@ -379,6 +385,78 @@ func (s *Service) FederateInvitation(roomID, inviteeID string) {
 	if err := s.deliverer.DeliverToUser(room.OwnerID, invitee, body); err != nil {
 		slog.Warn("chat: invitation federation: deliver failed", "roomID", roomID, "inviteeID", inviteeID, "err", err)
 	}
+}
+
+// EnsureRoomViaAP creates a local copy of a remote chat room (keyed by the
+// origin room ID) so inbound invitations and group messages can reference it.
+// Idempotent: an existing room with a matching owner is a no-op. If a room
+// with the same ID already exists but has a different owner, the call fails to
+// avoid attaching federated invitations to an unrelated local room (ID
+// collision / hijack guard). ownerUserID must be the resolved remote owner.
+func (s *Service) EnsureRoomViaAP(roomID, name, summary, ownerUserID string) error {
+	if roomID == "" || ownerUserID == "" {
+		return ErrInvalidTarget
+	}
+	if existing, err := s.repo.FindRoomByID(roomID); err == nil && existing != nil {
+		if existing.OwnerID != ownerUserID {
+			return fmt.Errorf("%w: room %s", ErrRoomOwnerMismatch, roomID)
+		}
+		return nil
+	}
+	return s.repo.CreateRoom(&model.ChatRoom{
+		ID: roomID, Name: name, Description: summary, OwnerID: ownerUserID,
+	})
+}
+
+// CreateInvitationViaAP records a pending chat room invitation for a local
+// user received from a remote room. Idempotent.
+func (s *Service) CreateInvitationViaAP(roomID, inviteeUserID string) error {
+	if roomID == "" || inviteeUserID == "" {
+		return ErrInvalidTarget
+	}
+	if _, err := s.repo.FindInvitation(inviteeUserID, roomID); err == nil {
+		return nil
+	}
+	return s.repo.CreateInvitation(&model.ChatRoomInvitation{
+		ID: s.idGen.Generate(time.Now()), UserID: inviteeUserID, RoomID: roomID,
+	})
+}
+
+// AddMemberViaAP records a chat room membership for a (typically remote) user
+// who accepted an invitation to our room. A pending invitation for the
+// user+room is required: this prevents a remote actor from pushing itself into
+// an arbitrary local room via a forged Accept. The invitation is consumed on
+// success. Idempotent when membership already exists.
+func (s *Service) AddMemberViaAP(roomID, userID string) error {
+	if roomID == "" || userID == "" {
+		return ErrInvalidTarget
+	}
+	inv, err := s.repo.FindInvitation(userID, roomID)
+	if err != nil || inv == nil {
+		// 招待が無い相手の Accept は無視する (なりすまし membership 防止)。
+		return nil
+	}
+	if _, err := s.repo.FindMembership(userID, roomID); err != nil {
+		if cerr := s.repo.CreateMembership(&model.ChatRoomMembership{
+			ID: s.idGen.Generate(time.Now()), UserID: userID, RoomID: roomID,
+		}); cerr != nil {
+			return cerr
+		}
+	}
+	_ = s.repo.DeleteInvitation(inv.ID)
+	return nil
+}
+
+// RemoveInvitationViaAP deletes a pending invitation when a remote invitee
+// rejects our room invitation. No-op when none exists.
+func (s *Service) RemoveInvitationViaAP(roomID, userID string) error {
+	if roomID == "" || userID == "" {
+		return ErrInvalidTarget
+	}
+	if inv, err := s.repo.FindInvitation(userID, roomID); err == nil && inv != nil {
+		return s.repo.DeleteInvitation(inv.ID)
+	}
+	return nil
 }
 
 // CreateMessageViaAP persists a chat message received via ActivityPub from a
