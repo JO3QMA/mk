@@ -100,7 +100,7 @@ func (h *Handler) List(c echo.Context) error {
 	var result []any
 	for _, r := range roles {
 		if r.IsPublic {
-			result = append(result, packRole(r))
+			result = append(result, h.packRole(r))
 		}
 	}
 	if result == nil {
@@ -121,7 +121,7 @@ func (h *Handler) Show(c echo.Context) error {
 	if err != nil || !r.IsPublic {
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_ROLE", "No such role.", "07dc7d34-c0d8-458b-9c04-4b18399b1f46"))
 	}
-	return c.JSON(http.StatusOK, packRole(r))
+	return c.JSON(http.StatusOK, h.packRole(r))
 }
 
 // Users handles POST /api/roles/users.
@@ -190,18 +190,38 @@ func (h *Handler) Notes(c echo.Context) error {
 	return c.JSON(http.StatusOK, out)
 }
 
-func packRole(r *model.Role) map[string]any {
+// packRole builds the misskey_dart RolesListResponse 互換 shape。createdAt /
+// updatedAt (非null String) / canEditMembersByModerator (非null bool) /
+// usersCount (非null num) を含めないと misskey_dart の RolesListResponse.fromJson
+// が cast で落ちる (#1249)。usersCount は mk-go が role member 数を集計していない
+// ため 0 固定 (best-effort、非crashing)。
+func (h *Handler) packRole(r *model.Role) map[string]any {
+	const tsFormat = "2006-01-02T15:04:05.000Z"
+	// createdAt は role ID (aidx) から復元する。misskey_dart は createdAt を
+	// DateTimeConverter で parse するため、空文字だと FormatException で落ちる。
+	// ID が aidx でない等で ParseTime に失敗した場合は updatedAt (非null) へ
+	// フォールバックし、常に有効な日付文字列を返す (#1249)。
+	createdAt := r.UpdatedAt.UTC().Format(tsFormat)
+	if h.idGen != nil {
+		if t, err := h.idGen.ParseTime(r.ID); err == nil {
+			createdAt = t.UTC().Format(tsFormat)
+		}
+	}
 	return map[string]any{
-		"id":              r.ID,
-		"name":            r.Name,
-		"color":           r.Color,
-		"iconUrl":         r.IconURL,
-		"description":     r.Description,
-		"isModerator":     r.IsModerator,
-		"isAdministrator": r.IsAdministrator,
-		"isPublic":        r.IsPublic,
-		"isExplorable":    r.IsExplorable,
-		"asBadge":         r.AsBadge,
-		"displayOrder":    r.DisplayOrder,
+		"id":                        r.ID,
+		"createdAt":                 createdAt,
+		"updatedAt":                 r.UpdatedAt.UTC().Format(tsFormat),
+		"name":                      r.Name,
+		"color":                     r.Color,
+		"iconUrl":                   r.IconURL,
+		"description":               r.Description,
+		"isModerator":               r.IsModerator,
+		"isAdministrator":           r.IsAdministrator,
+		"isPublic":                  r.IsPublic,
+		"isExplorable":              r.IsExplorable,
+		"asBadge":                   r.AsBadge,
+		"canEditMembersByModerator": r.CanEditMembersByModerator,
+		"displayOrder":              r.DisplayOrder,
+		"usersCount":                0,
 	}
 }
