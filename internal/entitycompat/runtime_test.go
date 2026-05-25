@@ -180,6 +180,49 @@ func notifFixture(typ notification.Type, withUser, withNote bool, extra map[stri
 	return entity.PackNotification(n, user, note, idGen, nil, nil)
 }
 
+// TestAnnouncementShapeL2 validates the actual PackAnnouncement map output
+// against the golden Announcement schema. Announcement is packed as
+// map[string]any (not a reflectable struct), so this is the L2 runtime check
+// for that map-based packer (#1224 history: createdAt non-null cast crash).
+func TestAnnouncementShapeL2(t *testing.T) {
+	golden, err := LoadGoldenSnapshot(filepath.Join("testdata", "golden_schemas.json"))
+	if err != nil {
+		t.Fatalf("load golden: %v", err)
+	}
+	schema, ok := golden["Announcement"]
+	if !ok || len(schema) == 0 {
+		t.Fatal("Announcement schema missing/empty in golden snapshot; run `go run ./tools/shapediff`")
+	}
+
+	idGen, _ := id.NewGenerator("aidx")
+	img := "https://example.com/a.png"
+	updated := time.Date(2026, 5, 26, 1, 0, 0, 0, time.UTC)
+	uid := "u_author"
+	cases := map[string]*model.Announcement{
+		// nullable 欄 (imageUrl/updatedAt) 未設定 -> null path。
+		"minimal": {
+			ID: idGen.Generate(time.Now()), Title: "maintenance", Text: "down",
+			Icon: "info", Display: "normal",
+		},
+		// nullable 欄に値あり -> 非null string pass-through path (scalarMismatch を
+		// 実際に効かせる) + forYou=true (UserID 設定)。
+		"populated": {
+			ID: idGen.Generate(time.Now()), Title: "t", Text: "x", Icon: "info",
+			Display: "banner", ImageURL: &img, UpdatedAt: &updated, UserID: &uid,
+			NeedConfirmationToRead: true, Silence: true,
+		},
+	}
+
+	for name, a := range cases {
+		out := entity.PackAnnouncement(a, idGen, true)
+		for _, f := range ValidateValue("Announcement", "Announcement", "Announcement", out, schema) {
+			if f.Sev == SevHigh || f.Sev == SevMed {
+				t.Errorf("[%s] Announcement shape drift: %s [%s]: %s", name, f.Field, f.Kind, f.Detail)
+			}
+		}
+	}
+}
+
 // TestNotificationShapeL2 validates actual PackNotification map output against
 // the golden Notification union — the map-based, discriminated-union surface
 // that the Layer 0 reflection gate cannot reach.
