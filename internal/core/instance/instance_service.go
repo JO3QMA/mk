@@ -161,7 +161,7 @@ func (s *Service) IsBlocked(host string) bool {
 	if err != nil {
 		return false
 	}
-	return hostMatchesAny(meta.BlockedHosts, host)
+	return HostMatchesAny(meta.BlockedHosts, host)
 }
 
 // IsSilenced reports whether the host matches an entry in meta.silencedHosts.
@@ -173,7 +173,37 @@ func (s *Service) IsSilenced(host string) bool {
 	if err != nil {
 		return false
 	}
-	return hostMatchesAny(meta.SilencedHosts, host)
+	return HostMatchesAny(meta.SilencedHosts, host)
+}
+
+// FederationHostSets bundles the host lists that drive the federation panel's
+// blocked / silenced / media-silenced state. 3 つとも同じ []string なので、
+// 位置引数で取り違えないよう named field の struct にまとめる。
+type FederationHostSets struct {
+	Blocked       []string
+	Silenced      []string
+	MediaSilenced []string
+}
+
+// FederationHostLists returns the blocked / silenced / media-silenced host
+// lists from meta. federation/instances ハンドラがフィルタ突合と、レスポンスの
+// isBlocked / isSilenced / isMediaSilenced 算出の双方で使うため、meta を 1 回
+// だけ読んで使い回す入口。
+//
+// IsBlocked / IsSilenced (inbox hot path) はベストエフォートで meta error を
+// 握り潰すが、こちらは admin endpoint 専用なので error をそのまま返す: meta が
+// 読めない状況は本家 TS でも 500 になり (metaService.fetch が throw)、空一覧を
+// 200 で返して「ブロックなし」と誤表示するより安全。
+func (s *Service) FederationHostLists() (FederationHostSets, error) {
+	meta, err := s.metaRepo.Fetch()
+	if err != nil {
+		return FederationHostSets{}, err
+	}
+	return FederationHostSets{
+		Blocked:       meta.BlockedHosts,
+		Silenced:      meta.SilencedHosts,
+		MediaSilenced: meta.MediaSilencedHosts,
+	}, nil
 }
 
 // IsAllowed reports whether the local instance is willing to federate with
@@ -207,14 +237,14 @@ func (s *Service) IsAllowed(host string) bool {
 	case "none":
 		return false
 	case "specified":
-		if !hostMatchesAny(meta.FederationHosts, host) {
+		if !HostMatchesAny(meta.FederationHosts, host) {
 			return false
 		}
 	}
-	return !hostMatchesAny(meta.BlockedHosts, host)
+	return !HostMatchesAny(meta.BlockedHosts, host)
 }
 
-// hostMatchesAny reports whether host (case-insensitive, Unicode-aware)
+// HostMatchesAny reports whether host (case-insensitive, Unicode-aware)
 // matches any of the given patterns under Misskey TS's suffix-match rule.
 // A pattern matches if host equals it, or host ends with `.<pattern>`
 // (i.e. host is a subdomain).
@@ -228,7 +258,7 @@ func (s *Service) IsAllowed(host string) bool {
 // ガードが既に効くので "." 単独が任意 host に誤マッチすることは無いが、
 // admin が誤って空エントリを混入させた場合に "全 host を allow / block" に
 // 化けない defensive guard を残す)。
-func hostMatchesAny(patterns []string, host string) bool {
+func HostMatchesAny(patterns []string, host string) bool {
 	if host == "" {
 		return false
 	}
