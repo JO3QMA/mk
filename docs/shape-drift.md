@@ -292,3 +292,47 @@ clampロジック自体(mk=clamp / Misskey=範囲外reject)は揃えない — m
 make limitspec-check  # gate をローカル実行
 make shapecheck-gen   # golden_limit_specs.json も再生成
 ```
+
+## Permission drift gate（アクセス制御）
+
+`TestPermissionDrift`は、mk-goのrouter middlewareがMisskeyの宣言する**アクセス要件より緩くない**ことを検証するセキュリティgate。
+
+Misskeyは各endpointのmetaで`requireAdmin`/`requireModerator`/`requireCredential`を宣言する(階層: public < auth < moderator < admin)。mk-goはrouterで`middleware.RequireAuth`/`RequireModerator`/`RequireAdmin`/`RequireRolePolicy`を適用する。`tools/permspec`がMisskey metaから`endpoint→level`のgolden(`golden_permissions.json`)を生成し、gateがrouterのmiddleware levelと突合する。
+
+### looser方向のみgate
+
+mk-goが**Misskeyより緩い**(= 権限昇格 / 認証欠落)ケースのみを失敗扱いにする:
+
+- mk public だが Misskey requireCredential → 匿名アクセス可(認証欠落)
+- mk moderator だが Misskey requireAdmin → moderatorがadmin専用に到達(権限昇格)
+
+逆に mk が**厳しい**(Misskey public を auth 要求、Misskey auth を RolePolicy 要求等)のは防御的強化として許容し、flagしない。router parseは複数行inline handler(`}, middleware.RequireAuth())`)も括弧バランスで登録全体を読み、閉じ行のmiddlewareを取りこぼさない。
+
+### gate新設時に検出・修正した実drift (10件)
+
+| 種別 | endpoint | 修正 |
+|---|---|---|
+| 権限昇格 (admin→moderator) | `admin/accounts/{delete,find-by-email}`, `admin/captcha/save`, `admin/{delete-account,delete-all-files-of-a-user,get-user-ips,show-moderation-logs}` | RequireModerator→**RequireAdmin** |
+| 認証欠落 (auth→public) | `notes/polls/recommendation`, `roles/list`, `roles/notes` | **RequireAuth** 追加 |
+
+### 運用
+
+```bash
+make perm-check       # gate をローカル実行
+make shapecheck-gen   # golden_permissions.json も再生成
+```
+
+## Secure drift gate（app token 制限）
+
+`TestSecureDrift`は、Misskeyの`secure: true` endpoint(password変更 / 2FA / data export-import / authorized-apps 等のaccount-security系、52件)が、mk-goで`middleware.RequireSecure`を適用していることを検証する。
+
+Misskeyの`secure`は「native session token のみ許可、第三者app/OAuth/MiAuth access token 不可」(ApiCallServiceの`isSecure = user != null && token == null`)。これが無いと、有効なaccess tokenを持つ第三者appがpassword変更や2FA解除を駆動できてしまう。
+
+mk-goは全認証がtoken経由(session無し)で、native token = `users.token`、app/MiAuthは別の`access_tokens`行。`RequireSecure`は`*user.Token == GetToken(c)`でnative判定し、一致しなければ403 ACCESS_DENIED(Misskey id `56f35758-...`)。`tools/securespec`が`secure: true` endpointのgolden(`golden_secure_endpoints.json`)を生成し、gateがrouter登録(複数行inline含む括弧バランスparse)に`RequireSecure`があるか突合する。
+
+### 運用
+
+```bash
+make perm-check       # permission + secure gate をローカル実行
+make shapecheck-gen   # golden_secure_endpoints.json も再生成
+```
