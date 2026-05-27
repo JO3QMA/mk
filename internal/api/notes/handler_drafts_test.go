@@ -384,7 +384,7 @@ func TestDraftsCreate_ScheduledAtRequired(t *testing.T) {
 	rec := postDraft(h.DraftsCreate, `{"text":"hi","isActuallyScheduled":true}`, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "SCHEDULED_AT_REQUIRED")
-	assert.Contains(t, rec.Body.String(), "94a89a43-3591-400a-9c17-dd166e71fdfa")
+	assert.Contains(t, rec.Body.String(), "15e28a55-e74c-4d65-89b7-8880cdaaa87d")
 }
 
 func TestDraftsCreate_ScheduledAtMustBeInFuture(t *testing.T) {
@@ -394,7 +394,7 @@ func TestDraftsCreate_ScheduledAtMustBeInFuture(t *testing.T) {
 	rec := postDraft(h.DraftsCreate, body, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "SCHEDULED_AT_MUST_BE_IN_FUTURE")
-	assert.Contains(t, rec.Body.String(), "b34d0c1b-996f-4e34-a428-c636d98df457")
+	assert.Contains(t, rec.Body.String(), "e4bed6c9-017e-4934-aed0-01c22cc60ec1")
 }
 
 func TestDraftsCreate_ScheduledNoteLimitExceeded(t *testing.T) {
@@ -408,7 +408,7 @@ func TestDraftsCreate_ScheduledNoteLimitExceeded(t *testing.T) {
 	rec := postDraft(h.DraftsCreate, body, &model.User{ID: "u1"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "TOO_MANY_SCHEDULED_NOTES")
-	assert.Contains(t, rec.Body.String(), "c3275f19-4558-4c59-83e1-4f684b5fab66")
+	assert.Contains(t, rec.Body.String(), "22ae69eb-09e3-4541-a850-773cfa45e693")
 }
 
 // isActuallyScheduled=false で scheduledAt が指定されても enqueue は走らない

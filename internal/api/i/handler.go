@@ -1099,7 +1099,7 @@ func (h *Handler) Update(c echo.Context) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, user.ErrUserNotFound):
-			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "4362f8dc-731f-4ad8-a694-be5a88922a24"))
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_USER", "No such user.", "fcd2eef9-a9b2-4c4f-8624-038099e90aa5"))
 		case errors.Is(err, user.ErrAvatarNotFound):
 			// upstream Misskey の NO_SUCH_AVATAR error UUID を流用 (frontend
 			// がコード固有の locale 表示をしているため一致が望ましい)。
@@ -1284,7 +1284,7 @@ func (h *Handler) Pin(c echo.Context) error {
 	if err := h.userService.PinNote(me.ID, req.NoteID); err != nil {
 		switch {
 		case errors.Is(err, user.ErrNoteNotFound):
-			return apierr.JSONNoSuchNote(c)
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "56734f8b-3928-431e-bf80-6ff87df40cb3"))
 		case errors.Is(err, user.ErrAlreadyPinned):
 			return c.JSON(http.StatusBadRequest, apierr.Error("ALREADY_PINNED", "That note has already been pinned.", "8b18c2b7-68fe-4edb-9892-c0cbaeb6c913"))
 		case errors.Is(err, user.ErrPinLimitExceeded):
@@ -1308,7 +1308,7 @@ func (h *Handler) Unpin(c echo.Context) error {
 
 	if err := h.userService.UnpinNote(me.ID, req.NoteID); err != nil {
 		if errors.Is(err, user.ErrPinNotFound) {
-			return apierr.JSONNoSuchNote(c)
+			return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_NOTE", "No such note.", "454170ce-9d63-4a43-9da1-ea10afe81e21"))
 		}
 		return apierr.JSONInternalError(c)
 	}

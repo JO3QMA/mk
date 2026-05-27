@@ -243,9 +243,9 @@ func (h *Handler) FilesCreate(c echo.Context) error {
 				"Cannot upload the file because it is an unallowed file type.",
 				"4becd248-7f2c-48c4-a9f0-75edc4f9a1ea"))
 		case errors.Is(err, coredrive.ErrMaxFileSizeExceeded):
-			return apierr.JSONMaxFileSizeExceeded(c)
+			return c.JSON(http.StatusBadRequest, apierr.Error("MAX_FILE_SIZE_EXCEEDED", "Max file size exceeded.", "b9d8c348-33f0-4673-b9a9-5d4da058977a"))
 		case errors.Is(err, coredrive.ErrNoFreeSpace):
-			return apierr.JSONNoFreeSpace(c)
+			return c.JSON(http.StatusBadRequest, apierr.Error("NO_FREE_SPACE", "No free space.", "d08dbc37-a6a9-463a-8c47-96c32ab5f064"))
 		}
 		return apierr.JSONInternalError(c)
 	}
@@ -491,7 +491,7 @@ func mapFileError(c echo.Context, err error) error {
 	case errors.Is(err, coredrive.ErrFileNotFound):
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FILE", "No such file.", "067bc436-2718-4795-b0fb-ecbe43949e31"))
 	case errors.Is(err, coredrive.ErrFolderNotFound):
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FOLDER", "No such folder.", "ea8fb7a5-af77-4a08-b608-c0218176cd73"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_FOLDER", "No such folder.", "1069098f-c281-440f-b085-f9932edbe091"))
 	case errors.Is(err, coredrive.ErrAccessDenied):
 		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Access denied.", "fe8d7103-0ea8-4ec3-814d-f8b401dc69e9"))
 	case errors.Is(err, coredrive.ErrCannotUnmarkSensitive):

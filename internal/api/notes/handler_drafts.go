@@ -74,13 +74,14 @@ func (h *Handler) DraftsCreate(c echo.Context) error {
 		// 互換の \`TOO_MANY_SCHEDULED_NOTES\` で reject し、frontend には
 		// 上限到達と同じ UX を返す (#1045 Phase 2-C)。
 		if h.scheduledNoteEnqueuer != nil && !h.scheduledNoteEnqueuer.SupportsScheduledNote() {
-			return apierr.JSONTooManyScheduledNotes(c)
+			return c.JSON(http.StatusBadRequest, apierr.Error("TOO_MANY_SCHEDULED_NOTES", "You cannot create scheduled notes any more.", "22ae69eb-09e3-4541-a850-773cfa45e693"))
 		}
 		if scheduledAt == nil {
-			return c.JSON(http.StatusBadRequest, apierr.ScheduledAtRequired())
+			// Misskey は SCHEDULED_AT_* に create / update で別 id を割り当てるため endpoint 固有 id を inline で返す
+			return c.JSON(http.StatusBadRequest, apierr.Error("SCHEDULED_AT_REQUIRED", "scheduledAt is required when isActuallyScheduled is true.", "15e28a55-e74c-4d65-89b7-8880cdaaa87d"))
 		}
 		if !scheduledAt.After(now) {
-			return c.JSON(http.StatusBadRequest, apierr.ScheduledAtMustBeInFuture())
+			return c.JSON(http.StatusBadRequest, apierr.Error("SCHEDULED_AT_MUST_BE_IN_FUTURE", "scheduledAt must be in the future.", "e4bed6c9-017e-4934-aed0-01c22cc60ec1"))
 		}
 	}
 	// noteDraftLimit role policy gate (#1029)。policyProvider は #1026 で
@@ -105,7 +106,7 @@ func (h *Handler) DraftsCreate(c echo.Context) error {
 					return apierr.JSONInternalError(c)
 				}
 				if count >= int64(limit) {
-					return apierr.JSONTooManyScheduledNotes(c)
+					return c.JSON(http.StatusBadRequest, apierr.Error("TOO_MANY_SCHEDULED_NOTES", "You cannot create scheduled notes any more.", "22ae69eb-09e3-4541-a850-773cfa45e693"))
 				}
 			}
 		}
@@ -194,13 +195,14 @@ func (h *Handler) DraftsUpdate(c echo.Context) error {
 		// 新しく schedule する / 既に scheduled だった draft の scheduledAt が
 		// 変わった場合は validation + capability check が必要。
 		if h.scheduledNoteEnqueuer != nil && !h.scheduledNoteEnqueuer.SupportsScheduledNote() {
-			return apierr.JSONTooManyScheduledNotes(c)
+			return c.JSON(http.StatusBadRequest, apierr.Error("TOO_MANY_SCHEDULED_NOTES", "You cannot create scheduled notes any more.", "02f5df79-08ae-4a33-8524-f1503c8f6212"))
 		}
 		if draft.ScheduledAt == nil {
-			return c.JSON(http.StatusBadRequest, apierr.ScheduledAtRequired())
+			// notes/drafts/update は create とは別の SCHEDULED_AT_* id を持つ
+			return c.JSON(http.StatusBadRequest, apierr.Error("SCHEDULED_AT_REQUIRED", "scheduledAt is required when isActuallyScheduled is true.", "fe9737d5-cc41-498c-af9d-149207307530"))
 		}
 		if !draft.ScheduledAt.After(now) {
-			return c.JSON(http.StatusBadRequest, apierr.ScheduledAtMustBeInFuture())
+			return c.JSON(http.StatusBadRequest, apierr.Error("SCHEDULED_AT_MUST_BE_IN_FUTURE", "scheduledAt must be in the future.", "ed1a6673-d0d1-4364-aaae-9bf3f139cbc5"))
 		}
 	}
 	_ = h.draftRepo.Update(draft)
