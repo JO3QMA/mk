@@ -218,7 +218,16 @@ func (h *Handler) Reactions(c echo.Context) error {
 	if h.noteReactionRepo == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	rows, err := h.noteReactionRepo.ListByUserID(req.UserID, req.UntilID, req.SinceID, req.Limit)
+	// upstream の generateVisibilityQuery(query, me) 相当を repo の SQL に push
+	// down する (moderator も含む全 viewer に適用)。viewer が閲覧できない note
+	// (followers/specified) の reaction を LIMIT 前に除外することで、post-filter
+	// 時に起きる「ページが limit 未満になりページネーションが途切れる」問題を
+	// 避ける。
+	viewerID := ""
+	if viewer != nil {
+		viewerID = viewer.ID
+	}
+	rows, err := h.noteReactionRepo.ListByUserID(req.UserID, viewerID, req.UntilID, req.SinceID, req.Limit)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
 	}

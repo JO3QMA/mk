@@ -327,6 +327,9 @@ func TestReactions_PublicReactions(t *testing.T) {
 		UserID:   "u_pub",
 		NoteID:   "n2",
 		Reaction: "❤",
+		// real repo は FK + Preload で note が必ず存在するので public note を seed
+		// する (visibility filter で除外されないことの確認も兼ねる)。
+		Note: &model.Note{ID: "n2", UserID: "u_author", Visibility: "public"},
 	}
 	rec := postExtra(h.Reactions, `{"userId":"u_pub"}`, &model.User{ID: "u_viewer"})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -360,7 +363,7 @@ type failingListByUserIDRepo struct {
 	*testutil.MockNoteReactionRepository
 }
 
-func (f *failingListByUserIDRepo) ListByUserID(_ string, _, _ string, _ int) ([]*model.NoteReaction, error) {
+func (f *failingListByUserIDRepo) ListByUserID(_, _, _, _ string, _ int) ([]*model.NoteReaction, error) {
 	return nil, assert.AnError
 }
 
@@ -565,4 +568,133 @@ func TestReactions_NonModeratorRemoteStillBlocked(t *testing.T) {
 	userRepo.Users["u_remote"] = &model.User{ID: "u_remote", Host: &host}
 	rec := postExtra(h.Reactions, `{"userId":"u_remote"}`, &model.User{ID: "u_other"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// seedVisibilityReactions は public note と followers-only note それぞれへの
+// reaction を target に seed する。visibility filter の検証用 helper。
+func seedVisibilityReactions(t *testing.T, rxRepo *testutil.MockNoteReactionRepository, targetID string) (publicRxID, followersRxID string) {
+	t.Helper()
+	idGen, _ := id.NewGenerator("aidx")
+	publicRxID = idGen.Generate(time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC))
+	followersRxID = idGen.Generate(time.Date(2026, 5, 10, 13, 0, 0, 0, time.UTC))
+	pubNoteID := idGen.Generate(time.Date(2026, 5, 10, 11, 0, 0, 0, time.UTC))
+	folNoteID := idGen.Generate(time.Date(2026, 5, 10, 11, 30, 0, 0, time.UTC))
+	pubText, folText := "public note", "followers only note"
+	rxRepo.Reactions[publicRxID] = &model.NoteReaction{
+		ID: publicRxID, UserID: targetID, NoteID: pubNoteID, Reaction: "👍",
+		User: &model.User{ID: targetID, Username: "target"},
+		Note: &model.Note{
+			ID: pubNoteID, UserID: "u_author", Text: &pubText,
+			Visibility: "public", User: &model.User{ID: "u_author", Username: "author"},
+		},
+	}
+	rxRepo.Reactions[followersRxID] = &model.NoteReaction{
+		ID: followersRxID, UserID: targetID, NoteID: folNoteID, Reaction: "❤",
+		User: &model.User{ID: targetID, Username: "target"},
+		Note: &model.Note{
+			ID: folNoteID, UserID: "u_author", Text: &folText,
+			Visibility: "followers", User: &model.User{ID: "u_author", Username: "author"},
+		},
+	}
+	return publicRxID, followersRxID
+}
+
+// upstream の generateVisibilityQuery(query, me) 相当: viewer が閲覧できない
+// note (followers-only で follower でない) の reaction は除外され、public note
+// の reaction のみ返る。mock の Following を設定しないので followers note は
+// 非 follower viewer 扱いで除外される。
+func TestReactions_FiltersInvisibleNotes(t *testing.T) {
+	h, userRepo, rxRepo := newReactionsHandler(t)
+	userRepo.Users["u_target"] = &model.User{ID: "u_target"}
+	userRepo.Profiles["u_target"] = &model.UserProfile{UserID: "u_target", PublicReactions: true}
+	publicRxID, followersRxID := seedVisibilityReactions(t, rxRepo, "u_target")
+
+	rec := postExtra(h.Reactions, `{"userId":"u_target","limit":150}`, &model.User{ID: "u_viewer"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var list []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Len(t, list, 1, "followers-only note reaction must be filtered out")
+	assert.Equal(t, publicRxID, list[0]["id"])
+	assert.NotEqual(t, followersRxID, list[0]["id"])
+}
+
+// follower viewer は followers-only note の reaction も閲覧できる
+// (mock の Following に viewer -> author を登録)。public とあわせ 2 件返る。
+func TestReactions_FollowerSeesFollowersOnlyNote(t *testing.T) {
+	h, userRepo, rxRepo := newReactionsHandler(t)
+	userRepo.Users["u_target"] = &model.User{ID: "u_target"}
+	userRepo.Profiles["u_target"] = &model.UserProfile{UserID: "u_target", PublicReactions: true}
+	seedVisibilityReactions(t, rxRepo, "u_target")
+	// u_follower が note author (u_author) を follow している。
+	rxRepo.Following = map[string][]string{"u_follower": {"u_author"}}
+
+	rec := postExtra(h.Reactions, `{"userId":"u_target","limit":150}`, &model.User{ID: "u_follower"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var list []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Len(t, list, 2, "follower must see both public and followers-only note reactions")
+}
+
+// specified note は visibleUserIds に含まれる viewer のみ閲覧でき、含まれない
+// viewer からは除外される (CanSeeNote の specified 分岐相当)。
+func TestReactions_SpecifiedNoteVisibility(t *testing.T) {
+	idGen, _ := id.NewGenerator("aidx")
+	rxID := idGen.Generate(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC))
+	noteID := idGen.Generate(time.Date(2026, 5, 11, 11, 0, 0, 0, time.UTC))
+	text := "specified note"
+	seed := func(rxRepo *testutil.MockNoteReactionRepository) {
+		rxRepo.Reactions[rxID] = &model.NoteReaction{
+			ID: rxID, UserID: "u_target", NoteID: noteID, Reaction: "👀",
+			User: &model.User{ID: "u_target", Username: "target"},
+			Note: &model.Note{
+				ID: noteID, UserID: "u_author", Text: &text,
+				Visibility: "specified", VisibleUserIDs: []string{"u_allowed"},
+				User: &model.User{ID: "u_author", Username: "author"},
+			},
+		}
+	}
+
+	// visibleUserIds に含まれる viewer は閲覧可。
+	h, userRepo, rxRepo := newReactionsHandler(t)
+	userRepo.Users["u_target"] = &model.User{ID: "u_target"}
+	userRepo.Profiles["u_target"] = &model.UserProfile{UserID: "u_target", PublicReactions: true}
+	seed(rxRepo)
+	rec := postExtra(h.Reactions, `{"userId":"u_target","limit":150}`, &model.User{ID: "u_allowed"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var allowed []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &allowed))
+	require.Len(t, allowed, 1, "viewer in visibleUserIds must see the specified note reaction")
+
+	// 含まれない viewer からは除外。
+	h2, userRepo2, rxRepo2 := newReactionsHandler(t)
+	userRepo2.Users["u_target"] = &model.User{ID: "u_target"}
+	userRepo2.Profiles["u_target"] = &model.UserProfile{UserID: "u_target", PublicReactions: true}
+	seed(rxRepo2)
+	rec2 := postExtra(h2.Reactions, `{"userId":"u_target","limit":150}`, &model.User{ID: "u_other"})
+	require.Equal(t, http.StatusOK, rec2.Code)
+	var other []map[string]any
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &other))
+	assert.Len(t, other, 0, "viewer not in visibleUserIds must not see the specified note reaction")
+}
+
+// moderator viewer でも visibility filter は適用される (upstream は
+// generateVisibilityQuery を moderator 含む全 viewer に無条件適用)。
+// moderator は remote / publicReactions gate を bypass するが、follower で
+// ない followers-only note の reaction は除外される。
+func TestReactions_ModeratorStillFiltersInvisibleNotes(t *testing.T) {
+	h, userRepo, rxRepo := newReactionsHandler(t)
+	h.SetModeratorChecker(stubModeratorChecker{modID: "u_mod"})
+	userRepo.Users["u_target"] = &model.User{ID: "u_target"}
+	userRepo.Profiles["u_target"] = &model.UserProfile{UserID: "u_target", PublicReactions: false}
+	publicRxID, _ := seedVisibilityReactions(t, rxRepo, "u_target")
+
+	rec := postExtra(h.Reactions, `{"userId":"u_target","limit":150}`, &model.User{ID: "u_mod"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var list []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Len(t, list, 1, "moderator must not see followers-only note reaction")
+	assert.Equal(t, publicRxID, list[0]["id"])
 }
