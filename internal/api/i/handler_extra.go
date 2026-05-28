@@ -5,13 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/api/pagination"
+	"github.com/shiroha-a/mk/internal/core/notification"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/misc/achievement"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -245,6 +248,11 @@ func (h *Handler) ClaimAchievement(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.Name == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "name is required.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
 	}
+	// upstream の paramDef `name: { enum: ACHIEVEMENT_TYPES }` と同じく未知の
+	// 実績名は弾く (bogus 実績の記録 / 通知汚染を防ぐ)。
+	if !achievement.IsValidType(req.Name) {
+		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "unknown achievement.", "ed1d7571-a3ac-4370-899c-0dbe5e230cc8"))
+	}
 
 	profile := h.userService.GetProfile(u.ID)
 	if profile == nil {
@@ -273,6 +281,19 @@ func (h *Handler) ClaimAchievement(c echo.Context) error {
 
 	if err := h.userService.UpdateProfileFields(u.ID, map[string]any{"achievements": string(data)}); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
+	}
+
+	// upstream AchievementService.create と同じく、新規解除時に achievementEarned
+	// 通知を作る (notifier 無し、解除した実績名を Extra["achievement"] に格納)。
+	// best-effort: 通知作成失敗で実績記録 (204) を巻き戻さない。
+	if h.achievementNotifier != nil {
+		if _, err := h.achievementNotifier.Create(c.Request().Context(), notification.CreateInput{
+			NotifieeID: u.ID,
+			Type:       notification.TypeAchievementEarned,
+			Extra:      map[string]any{"achievement": req.Name},
+		}); err != nil {
+			slog.Warn("claim-achievement: notification create failed", "user", u.ID, "achievement", req.Name, "err", err)
+		}
 	}
 
 	return c.NoContent(http.StatusNoContent)
