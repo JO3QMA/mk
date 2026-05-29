@@ -92,6 +92,13 @@ ENV MISSKEY_REPO_ASSETS_DIR=/app/repo-assets
 COPY --from=builder /app/third_party/misskey/packages/backend/node_modules/@misskey-dev/emoji-assets/built/twemoji /app/twemoji
 ENV MISSKEY_TWEMOJI_DIR=/app/twemoji
 
+# fluent-emoji PNG set。frontend が実績バッジ / notification icon を
+# /fluent-emoji/<hex>.png で参照する。twemoji と同じ @misskey-dev/emoji-assets
+# パッケージに含まれる (upstream 2026.5.2 #17381)。これが無いと実績バッジ等が
+# 404 になる (deploy/uds/Dockerfile.mkgo では焼き込み済みだが main は欠落していた)。
+COPY --from=builder /app/third_party/misskey/packages/backend/node_modules/@misskey-dev/emoji-assets/built/fluent-emoji /app/fluent-emoji
+ENV MISSKEY_FLUENT_EMOJI_DIR=/app/fluent-emoji
+
 # デフォルト設定ファイルをコピー (docker-compose でマウント上書き可能)。
 # `.config/docker.yml` は gitignored で operator-local なので、image に
 # 焼き込むのは `.example` 側 (placeholder 値を持つテンプレート)。
