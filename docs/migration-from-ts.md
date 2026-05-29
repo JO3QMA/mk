@@ -128,7 +128,10 @@ make e2e-frontend-build
 docker compose up -d --build
 ```
 
-mk-goがPostgreSQLおよびRedisと共に起動する。詳細は `docker-compose.yml` を参照。
+`docker-compose.yml` には one-shot の `migrate` サービスが含まれており、app 起動前に
+DB マイグレーションが自動適用される (空 DB でも、TS から swap した既存 DB でも冪等)。
+そのため上記の 2 ステップだけで mk-go が PostgreSQL および Redis と共に起動する。
+詳細は `docker-compose.yml` を参照。
 
 `make e2e-frontend-build` で生成した `third_party/misskey/built`(SPA の vite 成果物、約200MB)は、`docker-compose.yml` が bind-mount でコンテナに渡す（`MISSKEY_FRONTEND_DIR` 等で参照）。static-assets / twemoji / fluent-emoji / repo-assets は image に焼き込まれるためマウント不要。**この frontend ビルドを忘れると SPA の JS/CSS が 404 になりフロントエンドが表示されない**ので注意。
 

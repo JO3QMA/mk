@@ -8,6 +8,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # 新規構築では DB が空なので、app 起動前に migration の完走を待つ。
+      migrate:
+        condition: service_completed_successfully
     environment:
       # ビルド済みフロントエンド (SPA) の配信元。下の volumes で host の
       # `third_party/misskey/built` を /frontend に bind-mount し、ここを指す。
@@ -36,6 +39,24 @@ services:
       # .config/docker.yml して編集後にコメントを外す):
       # - ./.config/docker.yml:/app/.config/default.yml:ro
     restart: unless-stopped
+
+  # DB マイグレーションを適用する one-shot サービス。新規構築では DB が空のため、
+  # これが完走しないと app は `relation "meta" does not exist` 等で機能しない。
+  # app と同じ image を使い、entrypoint だけ /app/migrate に差し替える。
+  # golang-migrate は適用済み version を schema_migrations で管理するので、TS から
+  # swap した既存 DB に対しても追加テーブルのみを冪等に適用する (data loss なし)。
+  migrate:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/app/migrate"]
+    command: ["-config", ".config/default.yml", "-direction", "up"]
+    # app 側で設定ファイルを volume mount で上書きする場合は、migrate にも同じ
+    # mount を設定して同一の DB 接続先を参照させること。
+    # volumes:
+    #   - ./.config/docker.yml:/app/.config/default.yml:ro
+    restart: "no"
 
   db:
     image: postgres:16-alpine
