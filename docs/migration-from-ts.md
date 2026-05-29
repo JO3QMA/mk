@@ -120,10 +120,22 @@ docker compose stop web
 新しいインスタンスをDocker Composeで立ち上げる場合は以下で起動できる:
 
 ```bash
-docker compose up -d
+# 1. 起動前に必ずフロントエンドをビルドする (submodule + node_modules を取得し、
+#    third_party/misskey/built/ に SPA 成果物を生成する)。
+make e2e-frontend-build
+
+# 2. 起動 (初回は image build も走る)
+docker compose up -d --build
 ```
 
-mk-goがPostgreSQLおよびRedisと共に起動する。詳細は `docker-compose.yml` を参照。
+`docker-compose.yml` には one-shot の `migrate` サービスが含まれており、app 起動前に
+DB マイグレーションが自動適用される (空 DB でも、TS から swap した既存 DB でも冪等)。
+そのため上記の 2 ステップだけで mk-go が PostgreSQL および Redis と共に起動する。
+詳細は `docker-compose.yml` を参照。
+
+`make e2e-frontend-build` で生成した `third_party/misskey/built`(SPA の vite 成果物、約200MB)は、`docker-compose.yml` が bind-mount でコンテナに渡す（`MISSKEY_FRONTEND_DIR` 等で参照）。static-assets / twemoji / fluent-emoji / repo-assets は image に焼き込まれるためマウント不要。**この frontend ビルドを忘れると SPA の JS/CSS が 404 になりフロントエンドが表示されない**ので注意。
+
+> bare-metal 起動(バイナリを repo root から実行)の場合は、mk-go がデフォルトで `third_party/misskey/built/` 等の相対パスを参照するため環境変数の設定は不要。docker では WORKDIR が `/app` で相対パスが効かないため、上記の bind-mount + 環境変数で渡す。
 
 ### Docker container の UID
 
