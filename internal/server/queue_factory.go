@@ -95,6 +95,21 @@ func perQueueRatesFromConfig(cfg *config.Config) map[string]int {
 	return out
 }
 
+// defaultDeliverJobMaxAttempts / defaultInboxJobMaxAttempts are the total
+// number of tries (initial + retries) applied to the deliver / inbox queues
+// when the operator hasn't set `<queue>JobMaxAttempts`. They mirror Misskey
+// TS QueueService.ts (`deliverJobMaxAttempts ?? 12` / `inboxJobMaxAttempts
+// ?? 8`) so delivery to a temporarily-down remote retries instead of failing
+// on the first attempt.
+//
+// mkq の attempts=0 は「リトライ無し」であり、ここでデフォルトを当てないと
+// 落ちた配送先への retry-backoff (#1406) がそもそも発火しない。drop-in 互換の
+// ためにも TS と同じ既定値を使う (#1411)。
+const (
+	defaultDeliverJobMaxAttempts = 12
+	defaultInboxJobMaxAttempts   = 8
+)
+
 // defaultKeepFailed bounds the failed bucket retention applied to inbox /
 // deliver enqueue when operator が config で明示しない場合の安全側 default。
 // 1000 件あれば admin UI の Errored Instances panel (host aggregation で
@@ -130,8 +145,8 @@ const (
 // 経由で mkq native の per-fire option を上流仕様で drop するため本 PR では
 // 対象外 (mkq upstream 拡張後に follow-up)。
 func applyClientPolicies(c *queue.Client, cfg *config.Config) {
-	c.SetPolicy(queue.QueueName, buildPolicy(cfg.DeliverJobMaxAttempts, cfg.DeliverJobKeepFailed, cfg.DeliverJobKeepCompleted))
-	c.SetPolicy(queue.InboxQueueName, buildPolicy(cfg.InboxJobMaxAttempts, cfg.InboxJobKeepFailed, cfg.InboxJobKeepCompleted))
+	c.SetPolicy(queue.QueueName, buildPolicy(cfg.DeliverJobMaxAttempts, defaultDeliverJobMaxAttempts, cfg.DeliverJobKeepFailed, cfg.DeliverJobKeepCompleted))
+	c.SetPolicy(queue.InboxQueueName, buildPolicy(cfg.InboxJobMaxAttempts, defaultInboxJobMaxAttempts, cfg.InboxJobKeepFailed, cfg.InboxJobKeepCompleted))
 	// export / push / webhook 用の YAML key は意図的に増やさない (TS と
 	// 同じく一律の default を踏ませれば十分)。tuning 用 hook が必要に
 	// なったら deliver/inbox と同じ pattern で *KeepCompleted / *KeepFailed
@@ -145,23 +160,35 @@ func applyClientPolicies(c *queue.Client, cfg *config.Config) {
 // override exists for the queue. すべての retention default (KeepFailed /
 // KeepCompleted / KeepCompletedAge / KeepFailedAge) を含む。tuning hook
 // が無い queue (export / push / webhook) で applyClientPolicies が一律
-// 適用するために存在する。
+// 適用するために存在する。MaxAttempts は Policy.MaxAttempts を参照しない
+// queue 群なので default 0 (= 適用しない) を渡す。
 func defaultPolicy() queue.Policy {
-	return buildPolicy(nil, nil, nil)
+	return buildPolicy(nil, 0, nil, nil)
 }
 
 // buildPolicy assembles a queue.Policy from optional config pointers,
-// applying default retention values when the operator hasn't specified
-// them. MaxAttempts は未指定なら 0 = "driver default" のまま (= 既存挙動)。
+// applying default values when the operator hasn't specified them.
+//
+// MaxAttempts は KeepFailed / KeepCompleted と同じ 3 状態設計:
+//   - nil          → defaultMaxAttempts を適用 (Misskey TS の `?? N` 相当)
+//   - 明示 0        → 0 (operator opt-out = リトライ無し)
+//   - 明示 N (>0)   → N
+//
+// defaultMaxAttempts=0 を渡せば「未指定でも適用しない」(export/push/webhook 用)。
+// mkq の attempts=0 はリトライ無しのため、deliver/inbox では必ず非ゼロの
+// default を渡して落ちた配送先への retry-backoff を発火させる (#1411)。
 //
 // KeepFailed / KeepCompleted は nil で「default 適用」、明示 0 で「retention
 // 無し (operator opt-out)」、明示 N で「N 件まで保持」の 3 状態を表す。
 // Age 値 (KeepCompletedAge / KeepFailedAge) は operator が tuning する用途が
 // 薄いため YAML key を増やさず TS と同じ 7d 固定で適用する。
-func buildPolicy(maxAttempts *int, keepFailed *int, keepCompleted *int) queue.Policy {
+func buildPolicy(maxAttempts *int, defaultMaxAttempts int, keepFailed *int, keepCompleted *int) queue.Policy {
 	p := queue.Policy{}
-	if maxAttempts != nil && *maxAttempts > 0 {
+	if maxAttempts != nil {
+		// 明示値はそのまま尊重する (0 = operator opt-out)。
 		p.MaxAttempts = *maxAttempts
+	} else {
+		p.MaxAttempts = defaultMaxAttempts
 	}
 	if keepFailed != nil {
 		p.KeepFailed = *keepFailed

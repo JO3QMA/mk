@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix: 配送先が一時的にダウンしている場合に、deliver/inbox ジョブが設定省略時にリトライされない問題を修正 (既定の試行回数を Misskey 本家と同じ deliver=12 / inbox=8 に。従来の no-retry 挙動が必要な場合は `deliverJobMaxAttempts` / `inboxJobMaxAttempts` に 1 を指定)
+
 ## 0.9.2
 
 - Feat: グループチャットの連合に対応 (招待の送受信と Accept / Reject、ルームメッセージの送受信、退出の同期)

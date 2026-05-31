@@ -32,7 +32,12 @@ type Policy struct {
 	// MaxAttempts is the **total** number of tries (initial + retries)
 	// allowed for tasks on this queue, matching BullMQ's `attempts`
 	// option semantics — same shape as Misskey TS YAML
-	// `<queue>JobMaxAttempts`. Zero = "fall back to driver default".
+	// `<queue>JobMaxAttempts`.
+	//
+	// Zero は EnqueueDeliver / EnqueueInbox では「WithMaxRetry を付けない」
+	// = mkq の attempts=0 (= リトライ無し) を意味する。落ちた配送先への
+	// retry-backoff を発火させるため、deliver/inbox は server 側の
+	// buildPolicy が未指定時に TS 互換の default (12 / 8) を当てる (#1411)。
 	//
 	// 内部では asynq の MaxRetry (= retries on top of initial) に
 	// 変換するため EnqueueDeliver で N-1 を渡す。drop-in 互換維持の

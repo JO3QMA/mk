@@ -192,16 +192,58 @@ func TestApplyClientPolicies_OperatorOptOut(t *testing.T) {
 	assert.Equal(t, defaultKeepFailed, rec.lastOpts.KeepFailed)
 }
 
-// TestDefaultPolicy: defaultPolicy() helper が buildPolicy(nil, nil, nil)
-// と同値であることを assert (refactoring 後の equivalence pin)。
+// TestDefaultPolicy: defaultPolicy() helper が buildPolicy(nil, 0, nil, nil)
+// と同値であることを assert (refactoring 後の equivalence pin)。export/push/
+// webhook は MaxAttempts default を当てないので defaultMaxAttempts=0。
 func TestDefaultPolicy(t *testing.T) {
-	assert.Equal(t, buildPolicy(nil, nil, nil), defaultPolicy())
+	assert.Equal(t, buildPolicy(nil, 0, nil, nil), defaultPolicy())
+	// defaultPolicy は MaxAttempts を当てない (= 0)。
+	assert.Equal(t, 0, defaultPolicy().MaxAttempts)
 }
 
-// TestBuildPolicy validates the (maxAttempts, keepFailed, keepCompleted)
-// → Policy transform end-to-end: unset → defaults (= 1000 / 30 / 7d / 7d)、
-// 明示 0 → 0 (= operator opt-out, unlimited 蓄積)、明示 N → N。Age 値は
-// YAML key を持たないので常に固定 7d (#1184 / #1193)。
+// TestApplyClientPolicies_DeliverInboxDefaultAttempts: operator が
+// `<queue>JobMaxAttempts` を指定しなくても deliver=12 / inbox=8 が
+// Policy.MaxAttempts に入り、EnqueueDeliver/EnqueueInbox で WithMaxRetry
+// (N-1) が driver opts に伝搬することを pin (#1411)。MaxAttempts default が
+// 無いと mkq attempts=0 で落ちた配送先がリトライされない回帰の防止。
+func TestApplyClientPolicies_DeliverInboxDefaultAttempts(t *testing.T) {
+	rec := &recordingDriverClient{}
+	c := queue.NewClient(&stubDriver{client: rec})
+	defer func() { _ = c.Close() }()
+
+	applyClientPolicies(c, &config.Config{})
+
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)}))
+	// MaxAttempts=12 → WithMaxRetry(11) = 「初回 + 11 retry」。
+	assert.True(t, rec.lastOpts.MaxRetrySet, "deliver default attempts must propagate")
+	assert.Equal(t, defaultDeliverJobMaxAttempts-1, rec.lastOpts.MaxRetry)
+
+	require.NoError(t, c.EnqueueInbox(context.Background(), queue.InboxPayload{Body: []byte(`{}`)}))
+	assert.True(t, rec.lastOpts.MaxRetrySet, "inbox default attempts must propagate")
+	assert.Equal(t, defaultInboxJobMaxAttempts-1, rec.lastOpts.MaxRetry)
+}
+
+// TestApplyClientPolicies_OperatorAttemptsOptOut: operator が
+// deliverJobMaxAttempts=0 を明示すると opt-out (リトライ無し) として尊重され、
+// WithMaxRetry が付かない (= mkq attempts=0)。KeepFailed/KeepCompleted と同じ
+// 3 状態設計を MaxAttempts でも維持する (#1411)。
+func TestApplyClientPolicies_OperatorAttemptsOptOut(t *testing.T) {
+	rec := &recordingDriverClient{}
+	c := queue.NewClient(&stubDriver{client: rec})
+	defer func() { _ = c.Close() }()
+
+	applyClientPolicies(c, &config.Config{DeliverJobMaxAttempts: intp(0)})
+
+	require.NoError(t, c.EnqueueDeliver(queue.DeliverPayload{Inbox: "x", Body: []byte(`{}`)}))
+	assert.False(t, rec.lastOpts.MaxRetrySet, "explicit 0 must opt out of retries")
+	assert.Equal(t, 0, rec.lastOpts.MaxRetry)
+}
+
+// TestBuildPolicy validates the (maxAttempts, defaultMaxAttempts, keepFailed,
+// keepCompleted) → Policy transform end-to-end. MaxAttempts は 3 状態:
+// nil → defaultMaxAttempts、明示 0 → 0 (operator opt-out)、明示 N → N (#1411)。
+// retention は unset → defaults (= 1000 / 30 / 7d / 7d)、明示 0 → 0、明示 N → N。
+// Age 値は YAML key を持たないので常に固定 7d (#1184 / #1193)。
 func TestBuildPolicy(t *testing.T) {
 	defaultAges := struct {
 		completed time.Duration
@@ -211,15 +253,16 @@ func TestBuildPolicy(t *testing.T) {
 		failed:    defaultKeepFailedAge,
 	}
 	tests := []struct {
-		name          string
-		maxAttempts   *int
-		keepFailed    *int
-		keepCompleted *int
-		want          queue.Policy
+		name            string
+		maxAttempts     *int
+		defaultAttempts int
+		keepFailed      *int
+		keepCompleted   *int
+		want            queue.Policy
 	}{
 		{
-			"all unset",
-			nil, nil, nil,
+			"all unset, no attempts default",
+			nil, 0, nil, nil,
 			queue.Policy{
 				KeepFailed:       defaultKeepFailed,
 				KeepCompleted:    defaultKeepCompleted,
@@ -228,8 +271,19 @@ func TestBuildPolicy(t *testing.T) {
 			},
 		},
 		{
-			"only maxAttempts",
-			intp(8), nil, nil,
+			"unset attempts falls back to defaultMaxAttempts",
+			nil, 12, nil, nil,
+			queue.Policy{
+				MaxAttempts:      12,
+				KeepFailed:       defaultKeepFailed,
+				KeepCompleted:    defaultKeepCompleted,
+				KeepCompletedAge: defaultAges.completed,
+				KeepFailedAge:    defaultAges.failed,
+			},
+		},
+		{
+			"explicit attempts overrides defaultMaxAttempts",
+			intp(8), 12, nil, nil,
 			queue.Policy{
 				MaxAttempts:      8,
 				KeepFailed:       defaultKeepFailed,
@@ -239,8 +293,19 @@ func TestBuildPolicy(t *testing.T) {
 			},
 		},
 		{
+			"explicit attempts 0 opts out even with defaultMaxAttempts",
+			intp(0), 12, nil, nil,
+			queue.Policy{
+				MaxAttempts:      0,
+				KeepFailed:       defaultKeepFailed,
+				KeepCompleted:    defaultKeepCompleted,
+				KeepCompletedAge: defaultAges.completed,
+				KeepFailedAge:    defaultAges.failed,
+			},
+		},
+		{
 			"only keepFailed explicit 500",
-			nil, intp(500), nil,
+			nil, 0, intp(500), nil,
 			queue.Policy{
 				KeepFailed:       500,
 				KeepCompleted:    defaultKeepCompleted,
@@ -250,7 +315,7 @@ func TestBuildPolicy(t *testing.T) {
 		},
 		{
 			"only keepFailed explicit 0 (operator opt-out)",
-			nil, intp(0), nil,
+			nil, 0, intp(0), nil,
 			queue.Policy{
 				KeepFailed:       0,
 				KeepCompleted:    defaultKeepCompleted,
@@ -260,7 +325,7 @@ func TestBuildPolicy(t *testing.T) {
 		},
 		{
 			"only keepCompleted explicit 100",
-			nil, nil, intp(100),
+			nil, 0, nil, intp(100),
 			queue.Policy{
 				KeepFailed:       defaultKeepFailed,
 				KeepCompleted:    100,
@@ -270,7 +335,7 @@ func TestBuildPolicy(t *testing.T) {
 		},
 		{
 			"only keepCompleted explicit 0 (operator opt-out)",
-			nil, nil, intp(0),
+			nil, 0, nil, intp(0),
 			queue.Policy{
 				KeepFailed:       defaultKeepFailed,
 				KeepCompleted:    0,
@@ -280,7 +345,7 @@ func TestBuildPolicy(t *testing.T) {
 		},
 		{
 			"all explicit",
-			intp(4), intp(2000), intp(50),
+			intp(4), 12, intp(2000), intp(50),
 			queue.Policy{
 				MaxAttempts:      4,
 				KeepFailed:       2000,
@@ -289,25 +354,10 @@ func TestBuildPolicy(t *testing.T) {
 				KeepFailedAge:    defaultAges.failed,
 			},
 		},
-		// maxAttempts<=0 は driver default に倒す既存挙動を維持。
-		// `MaxAttempts: 0` は「Policy で上書きしない (= driver の default
-		// retry を使う)」を意味する zero-value。明示 0 を受け取っても
-		// Policy には流さないので 0 のまま残る。
-		{
-			"maxAttempts zero leaves driver default",
-			intp(0), intp(500), intp(15),
-			queue.Policy{
-				MaxAttempts:      0,
-				KeepFailed:       500,
-				KeepCompleted:    15,
-				KeepCompletedAge: defaultAges.completed,
-				KeepFailedAge:    defaultAges.failed,
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildPolicy(tt.maxAttempts, tt.keepFailed, tt.keepCompleted)
+			got := buildPolicy(tt.maxAttempts, tt.defaultAttempts, tt.keepFailed, tt.keepCompleted)
 			assert.Equal(t, tt.want, got)
 		})
 	}

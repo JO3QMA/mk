@@ -146,6 +146,8 @@ id: 'aidx'
 #deliverJobPerSec: 128
 #inboxJobPerSec: 32
 
+# Job attempts (total tries incl. the first). Defaults match Misskey:
+# deliver=12, inbox=8. Set to 1 to disable retries to a failing remote.
 #deliverJobMaxAttempts: 12
 #inboxJobMaxAttempts: 8
 
