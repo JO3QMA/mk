@@ -2444,6 +2444,10 @@ type MockInstanceRepository struct {
 	// the in-memory map state. Used to exercise non-NotFound DB error paths
 	// (#915 review: Service must surface raw err for observability).
 	FindByHostErr error
+	// FindCalls counts FindByHost invocations so tests can assert caching
+	// behaviour in callers (e.g. instance.ShouldSkipDelivery, #1407). Not
+	// goroutine-safe; tests asserting on it must drive the service serially.
+	FindCalls int
 }
 
 // NewMockInstanceRepository creates an empty MockInstanceRepository.
@@ -2460,6 +2464,7 @@ func (m *MockInstanceRepository) Create(i *model.Instance) error {
 }
 
 func (m *MockInstanceRepository) FindByHost(host string) (*model.Instance, error) {
+	m.FindCalls++
 	if m.FindByHostErr != nil {
 		return nil, m.FindByHostErr
 	}
