@@ -58,4 +58,22 @@ func TestService_ShouldSkipDelivery(t *testing.T) {
 		// allowlist に含まれる host は instance row が無ければ suspended でもないので false。
 		assert.False(t, svc.ShouldSkipDelivery("allowed.example"))
 	})
+
+	t.Run("meta fetch error falls back to suspensionState only (fail-open on block)", func(t *testing.T) {
+		// metaRepo.Meta == nil で Fetch が error を返す。block/federation 判定は
+		// 抜けるが suspensionState 判定は後段で効くことを確認する (#1406 review)。
+		svc, repo, metaRepo := newService(t)
+		metaRepo.Meta = nil
+
+		// 未登録 host は fail-open で配送される (skip しない)。
+		assert.False(t, svc.ShouldSkipDelivery("unknown.example"))
+
+		// meta 障害中でも suspensionState は DB 由来なので suspend は止まる。
+		repo.Instances["sus.example"] = &model.Instance{
+			ID:              "i3",
+			Host:            "sus.example",
+			SuspensionState: model.SuspensionStateManuallySuspended,
+		}
+		assert.True(t, svc.ShouldSkipDelivery("sus.example"))
+	})
 }

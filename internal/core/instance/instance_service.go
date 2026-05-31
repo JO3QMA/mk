@@ -4,6 +4,7 @@ package instance
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -270,6 +271,13 @@ func (s *Service) ShouldSkipDelivery(host string) bool {
 		if HostMatchesAny(meta.BlockedHosts, host) {
 			return true
 		}
+	} else {
+		// fail-open (IsBlocked / IsAllowed と同方針) だが、meta が読めない間は
+		// blockedHosts / federation mode の判定が丸ごと抜けて block 先へ配送し
+		// 得る。モデレーション制御の漏れなので運用で気付けるよう warn に残す。
+		// suspensionState (DB 列) の判定は後段で引き続き効く (#1406 review)。
+		slog.Warn("instance: ShouldSkipDelivery could not fetch meta; block/federation gate skipped this call",
+			"host", host, "error", err)
 	}
 	inst, err := s.repo.FindByHost(host)
 	if err != nil {

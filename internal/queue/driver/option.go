@@ -67,10 +67,12 @@ type EnqueueOptions struct {
 	MaxRetrySet bool
 
 	// BackoffType / BackoffDelay describe the retry backoff strategy.
-	// BackoffType is "" (driver default), "fixed", or "exponential";
-	// BackoffDelay is the base delay. mkq translates these to
-	// mkq.FixedBackoff / mkq.ExponentialBackoff. asynq ignores them and
-	// applies its own server-level exponential RetryDelayFunc.
+	// BackoffType is "" (driver default), "fixed", "exponential", or
+	// "custom"; BackoffDelay is the base delay (ignored for "custom").
+	// mkq translates these to mkq.FixedBackoff / mkq.ExponentialBackoff /
+	// mkq.CustomBackoff (the last defers delay computation to a worker-
+	// registered strategy). asynq ignores them and applies its own
+	// server-level exponential RetryDelayFunc.
 	//
 	// 未設定の mkq は backoff 無し (= 遅延0で即時 retry) になるため、落ちて
 	// いる配送先を連打し delayed bucket にも滞在しない。federation queue
