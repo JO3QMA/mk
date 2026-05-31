@@ -244,6 +244,26 @@ func (s *Service) IsAllowed(host string) bool {
 	return !HostMatchesAny(meta.BlockedHosts, host)
 }
 
+// ShouldSkipDelivery reports whether ActivityPub delivery to host must be
+// skipped because the remote instance is blocked, excluded by the federation
+// mode, or administratively suspended (suspensionState != none). 配送の
+// dispatch hot path から呼ばれる (#1404)。instance lookup の error は IsBlocked
+// / IsAllowed のベストエフォート方針に揃えて「skip しない」側に倒す (一時的な
+// DB error で連合が止まる drop-in 劣化を避ける)。
+func (s *Service) ShouldSkipDelivery(host string) bool {
+	if host == "" {
+		return false
+	}
+	if s.IsBlocked(host) || !s.IsAllowed(host) {
+		return true
+	}
+	inst, err := s.repo.FindByHost(host)
+	if err != nil {
+		return false
+	}
+	return inst.SuspensionState != "" && inst.SuspensionState != model.SuspensionStateNone
+}
+
 // HostMatchesAny reports whether host (case-insensitive, Unicode-aware)
 // matches any of the given patterns under Misskey TS's suffix-match rule.
 // A pattern matches if host equals it, or host ends with `.<pattern>`

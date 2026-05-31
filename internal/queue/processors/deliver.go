@@ -46,6 +46,15 @@ type SuspendedChecker interface {
 	IsSuspended(host string) bool
 }
 
+// DeliveryGate reports whether delivery to a host must be skipped because the
+// remote instance is administratively blocked or suspended. dispatch 時に
+// 呼ばれるため、suspend / block する前にキューへ積まれたジョブや retry-backoff
+// 中のジョブも止められる (= enqueue 時フィルタだけでは取りこぼす経路の
+// safety net、#1404)。実装は core/instance.Service。
+type DeliveryGate interface {
+	ShouldSkipDelivery(host string) bool
+}
+
 // DeliverProcessor handles ap:deliver tasks by posting the activity body to
 // the recipient inbox with an HTTP signature.
 type DeliverProcessor struct {
@@ -53,6 +62,7 @@ type DeliverProcessor struct {
 	responseHook     ResponseHook
 	chartHook        ChartHook
 	suspendedChecker SuspendedChecker
+	deliveryGate     DeliveryGate
 	// redis is used for the per-host Ed25519 degrade flag (#1067 / #1071).
 	// 未配線時は capability gate なしの楽観動作 (= payload に Ed25519 鍵が
 	// あれば必ず Ed25519 sign を試す) になるが、production では必須。
@@ -160,6 +170,13 @@ func (p *DeliverProcessor) SetSuspendedChecker(c SuspendedChecker) {
 	p.suspendedChecker = c
 }
 
+// SetDeliveryGate attaches a gate consulted at dispatch time to skip delivery
+// to blocked / suspended instances. 未配線なら従来どおりゲート無しで配送する
+// (#1404)。
+func (p *DeliverProcessor) SetDeliveryGate(g DeliveryGate) {
+	p.deliveryGate = g
+}
+
 // SetResponseHook attaches a ResponseHook used to update instance health flags.
 func (p *DeliverProcessor) SetResponseHook(h ResponseHook) {
 	p.responseHook = h
@@ -215,6 +232,13 @@ func (p *DeliverProcessor) Handle(_ context.Context, t driver.Task) error {
 
 	// deliverSuspendedSoftware: 対象インスタンスの software がリストに該当すればスキップ
 	host := hostFromInbox(payload.Inbox)
+	// suspend / block されたインスタンスへは配送しない。enqueue 時にもフィルタ
+	// しているが、ブロック前に積まれたジョブや retry-backoff 中のジョブは enqueue
+	// 時チェックを通り抜けるため、dispatch 時にも弾く (#1404)。
+	if p.deliveryGate != nil && host != "" && p.deliveryGate.ShouldSkipDelivery(host) {
+		slog.Info("ap deliver: skip (instance suspended or blocked)", "inbox", payload.Inbox)
+		return nil
+	}
 	if p.suspendedChecker != nil && host != "" && p.suspendedChecker.IsSuspended(host) {
 		slog.Info("ap deliver: skip (software suspended)", "inbox", payload.Inbox)
 		return nil
