@@ -65,6 +65,18 @@ type EnqueueOptions struct {
 	// the cleanRemoteNotes job that want zero retries must opt in
 	// explicitly.
 	MaxRetrySet bool
+
+	// BackoffType / BackoffDelay describe the retry backoff strategy.
+	// BackoffType is "" (driver default), "fixed", or "exponential";
+	// BackoffDelay is the base delay. mkq translates these to
+	// mkq.FixedBackoff / mkq.ExponentialBackoff. asynq ignores them and
+	// applies its own server-level exponential RetryDelayFunc.
+	//
+	// 未設定の mkq は backoff 無し (= 遅延0で即時 retry) になるため、落ちて
+	// いる配送先を連打し delayed bucket にも滞在しない。federation queue
+	// (deliver / inbox) は必ず設定して hammering を防ぐ (#1405)。
+	BackoffType  string
+	BackoffDelay time.Duration
 }
 
 // EnqueueOption mutates EnqueueOptions; pass via Client.Enqueue.
@@ -94,6 +106,30 @@ func WithUnique(ttl time.Duration) EnqueueOption {
 // WithProcessIn delays processing of the task by the given duration.
 func WithProcessIn(d time.Duration) EnqueueOption {
 	return func(o *EnqueueOptions) { o.ProcessIn = d }
+}
+
+// WithBackoff sets the retry backoff strategy. typ is "fixed" or
+// "exponential"; delay is the base delay. Without a backoff mkq retries
+// immediately, so federation queues must set one to avoid hammering
+// unreachable hosts (#1405). asynq ignores this and uses its own
+// server-level RetryDelayFunc.
+func WithBackoff(typ string, delay time.Duration) EnqueueOption {
+	return func(o *EnqueueOptions) {
+		o.BackoffType = typ
+		o.BackoffDelay = delay
+	}
+}
+
+// federationBackoffBaseDelay is the base delay of the exponential retry
+// backoff applied to deliver / inbox jobs: 1s, 2s, 4s, … This keeps failed
+// federation deliveries spread out and visible in the delayed bucket instead
+// of being retried immediately (#1405).
+const federationBackoffBaseDelay = time.Second
+
+// WithFederationBackoff applies the default exponential retry backoff used by
+// the deliver / inbox queues (#1405).
+func WithFederationBackoff() EnqueueOption {
+	return WithBackoff("exponential", federationBackoffBaseDelay)
 }
 
 // WithKeepFailed bounds the size of the failed bucket / ZSET for this

@@ -33,6 +33,18 @@ func toMkqAddOptions(o driver.EnqueueOptions, taskType string, payload []byte) [
 		// mkq の WithAttempts は合計 attempts なので +1 する。
 		out = append(out, mkq.WithAttempts(o.MaxRetry+1))
 	}
+	// retry backoff: 未設定 (BackoffType=="") なら mkq は backoff 無し
+	// (= 遅延0で即時 retry) になる。deliver / inbox は EnqueueDeliver /
+	// EnqueueInbox が exponential backoff を必ず付けて hammering を防ぐ
+	// (#1405)。
+	if o.BackoffType != "" && o.BackoffDelay > 0 {
+		switch o.BackoffType {
+		case "exponential":
+			out = append(out, mkq.WithBackoff(mkq.ExponentialBackoff(o.BackoffDelay)))
+		case "fixed":
+			out = append(out, mkq.WithBackoff(mkq.FixedBackoff(o.BackoffDelay)))
+		}
+	}
 	if o.UniqueTTL > 0 {
 		// asynq.Unique の key は (queue, type, payload) — queue / payload
 		// が違えば別ジョブとして許容される。mkq.WithUnique は明示 ID 必須
