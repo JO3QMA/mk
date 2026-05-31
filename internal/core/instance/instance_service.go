@@ -247,15 +247,29 @@ func (s *Service) IsAllowed(host string) bool {
 // ShouldSkipDelivery reports whether ActivityPub delivery to host must be
 // skipped because the remote instance is blocked, excluded by the federation
 // mode, or administratively suspended (suspensionState != none). 配送の
-// dispatch hot path から呼ばれる (#1404)。instance lookup の error は IsBlocked
-// / IsAllowed のベストエフォート方針に揃えて「skip しない」側に倒す (一時的な
+// dispatch hot path から呼ばれる (#1404)。
+//
+// meta は 1 回だけ Fetch する。IsBlocked + IsAllowed を別々に呼ぶと meta.Fetch
+// が 2 回走り blockedHosts も二重評価されるため、hot path 向けにここで判定を
+// インライン化した (#1406 review)。meta.Fetch / instance lookup の error は
+// IsBlocked / IsAllowed と同じく fail-open (= skip しない) に倒す (一時的な
 // DB error で連合が止まる drop-in 劣化を避ける)。
 func (s *Service) ShouldSkipDelivery(host string) bool {
 	if host == "" {
 		return false
 	}
-	if s.IsBlocked(host) || !s.IsAllowed(host) {
-		return true
+	if meta, err := s.metaRepo.Fetch(); err == nil {
+		switch meta.Federation {
+		case "none":
+			return true
+		case "specified":
+			if !HostMatchesAny(meta.FederationHosts, host) {
+				return true
+			}
+		}
+		if HostMatchesAny(meta.BlockedHosts, host) {
+			return true
+		}
 	}
 	inst, err := s.repo.FindByHost(host)
 	if err != nil {

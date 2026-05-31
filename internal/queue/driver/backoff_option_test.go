@@ -21,7 +21,7 @@ func TestWithFederationBackoff(t *testing.T) {
 		driver.WithFederationBackoff(),
 	})
 	assert.Equal(t, "exponential", o.BackoffType)
-	assert.Equal(t, time.Second, o.BackoffDelay)
+	assert.Equal(t, time.Minute, o.BackoffDelay)
 }
 
 // 未設定なら backoff フィールドは空のまま (= mkq は即時 retry)。

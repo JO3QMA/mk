@@ -65,6 +65,14 @@ type Policy struct {
 	// KeepFailed と併用して BullMQ TS の `removeOnFail: {age: <sec>,
 	// count: N}` を再現する。
 	KeepFailedAge time.Duration
+
+	// BackoffType / BackoffDelay override the retry backoff strategy for this
+	// queue. BackoffType is "" (use the queue's built-in default), "fixed",
+	// or "exponential"; BackoffDelay is the base delay. deliver / inbox は
+	// 未指定なら exponential base 60s (= Misskey TS httpRelatedBackoff の
+	// baseDelay) が既定 (#1405 / #1406)。
+	BackoffType  string
+	BackoffDelay time.Duration
 }
 
 // PolicyMap maps queue name → Policy. Lookups for missing queues return

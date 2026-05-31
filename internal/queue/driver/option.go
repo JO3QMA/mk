@@ -120,11 +120,15 @@ func WithBackoff(typ string, delay time.Duration) EnqueueOption {
 	}
 }
 
-// federationBackoffBaseDelay is the base delay of the exponential retry
-// backoff applied to deliver / inbox jobs: 1s, 2s, 4s, … This keeps failed
-// federation deliveries spread out and visible in the delayed bucket instead
-// of being retried immediately (#1405).
-const federationBackoffBaseDelay = time.Second
+// federationBackoffBaseDelay is the base delay of the exponential retry backoff
+// applied to deliver / inbox jobs. Misskey TS の httpRelatedBackoff は
+// baseDelay=60s (`(2^attemptsMade - 1) * 60s`、上限 8h、0-20% jitter) なので
+// base を 60s に合わせ、初回 retry のタイミングを TS と一致させる (#1405 / #1406)。
+//
+// 完全一致の制約: mkq v1.0.1 の exponential は `delay * 2^(attemptsMade-1)` で
+// 上限 (cap) と jitter を持たず、式も TS の `(2^n-1)*base` とは異なる。cap /
+// jitter / custom 式の対応は mkq 側 issue (shiroha-a/mkq) で追従する。
+const federationBackoffBaseDelay = time.Minute
 
 // WithFederationBackoff applies the default exponential retry backoff used by
 // the deliver / inbox queues (#1405).

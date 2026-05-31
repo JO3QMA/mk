@@ -179,6 +179,17 @@ func retentionOptsFromPolicy(p Policy) []driver.EnqueueOption {
 	return out
 }
 
+// backoffOptFromPolicy returns the retry backoff option for a federation
+// queue, using the Policy override when both BackoffType and BackoffDelay are
+// set and falling back to the default exponential backoff (deliver / inbox:
+// base 60s) otherwise (#1405 / #1406)。
+func backoffOptFromPolicy(p Policy) driver.EnqueueOption {
+	if p.BackoffType != "" && p.BackoffDelay > 0 {
+		return driver.WithBackoff(p.BackoffType, p.BackoffDelay)
+	}
+	return driver.WithFederationBackoff()
+}
+
 // EnqueueDeliver puts a deliver task on the queue. opts override the
 // default queue selection if they include WithQueue, but normal
 // callers should pass payload-only and let the queue routing stay
@@ -204,8 +215,8 @@ func (c *Client) EnqueueDeliver(payload DeliverPayload, opts ...driver.EnqueueOp
 	}
 	// 失敗時は exponential backoff で再試行する。backoff が無いと mkq は
 	// 遅延0で即再 enqueue し、落ちている配送先を連打 + delayed に滞在しない
-	// ため admin の Delayed が常に空に見える (#1405)。
-	base = append(base, driver.WithFederationBackoff())
+	// ため admin の Delayed が常に空に見える。Policy で上書き可 (#1405 / #1406)。
+	base = append(base, backoffOptFromPolicy(p))
 	// completed / failed bucket retention を Policy から組み立てる (#1184 / #1193)。
 	// mkqdriver 経路でのみ効き、asynqdriver では silent no-op。
 	base = append(base, retentionOptsFromPolicy(p)...)
@@ -321,8 +332,9 @@ func (c *Client) EnqueueInbox(ctx context.Context, payload InboxPayload) error {
 	if p.MaxAttempts > 0 {
 		base = append(base, driver.WithMaxRetry(p.MaxAttempts-1))
 	}
-	// deliver と同じく exponential backoff で再試行する (#1405)。
-	base = append(base, driver.WithFederationBackoff())
+	// deliver と同じく exponential backoff で再試行する。Policy で上書き可
+	// (#1405 / #1406)。
+	base = append(base, backoffOptFromPolicy(p))
 	base = append(base, retentionOptsFromPolicy(p)...)
 	return c.inner.Enqueue(ctx, TaskTypeInbox, body, base...)
 }

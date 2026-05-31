@@ -49,4 +49,13 @@ func TestService_ShouldSkipDelivery(t *testing.T) {
 		svc, _, _ := newService(t)
 		assert.False(t, svc.ShouldSkipDelivery("unknown.example"))
 	})
+
+	t.Run("federation specified excludes non-listed host", func(t *testing.T) {
+		svc, _, metaRepo := newService(t)
+		metaRepo.Meta.Federation = "specified"
+		metaRepo.Meta.FederationHosts = []string{"allowed.example"}
+		assert.True(t, svc.ShouldSkipDelivery("other.example"))
+		// allowlist に含まれる host は instance row が無ければ suspended でもないので false。
+		assert.False(t, svc.ShouldSkipDelivery("allowed.example"))
+	})
 }
