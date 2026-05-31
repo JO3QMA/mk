@@ -65,6 +65,20 @@ type EnqueueOptions struct {
 	// the cleanRemoteNotes job that want zero retries must opt in
 	// explicitly.
 	MaxRetrySet bool
+
+	// BackoffType / BackoffDelay describe the retry backoff strategy.
+	// BackoffType is "" (driver default), "fixed", "exponential", or
+	// "custom"; BackoffDelay is the base delay (ignored for "custom").
+	// mkq translates these to mkq.FixedBackoff / mkq.ExponentialBackoff /
+	// mkq.CustomBackoff (the last defers delay computation to a worker-
+	// registered strategy). asynq ignores them and applies its own
+	// server-level exponential RetryDelayFunc.
+	//
+	// 未設定の mkq は backoff 無し (= 遅延0で即時 retry) になるため、落ちて
+	// いる配送先を連打し delayed bucket にも滞在しない。federation queue
+	// (deliver / inbox) は必ず設定して hammering を防ぐ (#1405)。
+	BackoffType  string
+	BackoffDelay time.Duration
 }
 
 // EnqueueOption mutates EnqueueOptions; pass via Client.Enqueue.
@@ -94,6 +108,40 @@ func WithUnique(ttl time.Duration) EnqueueOption {
 // WithProcessIn delays processing of the task by the given duration.
 func WithProcessIn(d time.Duration) EnqueueOption {
 	return func(o *EnqueueOptions) { o.ProcessIn = d }
+}
+
+// Backoff type constants. "fixed" / "exponential" are BullMQ built-ins
+// (computed driver-side from BackoffDelay); "custom" defers the delay
+// computation to a worker-registered strategy (BullMQ's
+// settings.backoffStrategy path) and ignores BackoffDelay.
+const (
+	BackoffFixed       = "fixed"
+	BackoffExponential = "exponential"
+	BackoffCustom      = "custom"
+)
+
+// WithBackoff sets the retry backoff strategy. typ is "fixed",
+// "exponential", or "custom"; delay is the base delay (ignored for
+// "custom"). Without a backoff mkq retries immediately, so federation
+// queues must set one to avoid hammering unreachable hosts (#1405). asynq
+// ignores this and uses its own server-level RetryDelayFunc.
+func WithBackoff(typ string, delay time.Duration) EnqueueOption {
+	return func(o *EnqueueOptions) {
+		o.BackoffType = typ
+		o.BackoffDelay = delay
+	}
+}
+
+// WithFederationBackoff applies the retry backoff used by the deliver /
+// inbox queues: BullMQ "custom" strategy, whose delay is computed by the
+// worker-registered Misskey httpRelatedBackoff ((2^n-1)*60s, capped at 8h,
+// +0..20% jitter). enqueue 側は `{type:"custom"}` だけを保存し、実際の delay
+// は mkqdriver の WithBackoffStrategy が算出する。これで TS と drop-in 一致
+// する (#1405 / #1406, mkq#67)。
+func WithFederationBackoff() EnqueueOption {
+	return func(o *EnqueueOptions) {
+		o.BackoffType = BackoffCustom
+	}
 }
 
 // WithKeepFailed bounds the size of the failed bucket / ZSET for this

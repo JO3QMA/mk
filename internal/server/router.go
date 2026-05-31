@@ -586,6 +586,9 @@ func (s *Server) setupRoutes() {
 	deliverProcessor := processors.NewDeliverProcessor(apClient)
 	// 配信結果に応じて instance.isNotResponding を更新する
 	deliverProcessor.SetResponseHook(instanceService)
+	// suspend / block されたインスタンスへは dispatch 時に配送を止める (#1404)。
+	// enqueue 時の isBlockedInbox を通り抜ける retry-backoff 中・積み残しジョブも弾く。
+	deliverProcessor.SetDeliveryGate(instanceService)
 	// FEP-521a Multikey 対応で host 単位の Ed25519 degrade flag を Redis に
 	// 持つ (#1067 / #1071)。Ed25519 sign 失敗時 5min 同 host を RSA only に
 	// 縮退する safety net。

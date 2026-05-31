@@ -179,6 +179,14 @@ func (s *Server) Start() error {
 			// BullMQ-compatible per-queue metrics opt-in。
 			optsBase = append(optsBase, mkq.WithJobMetrics(s.maxMetricsPoints))
 		}
+		// custom backoff (`{type:"custom"}`) で enqueue された job の retry delay
+		// を算出する strategy を全 Worker に登録する。deliver / inbox は
+		// Misskey TS httpRelatedBackoff で enqueue されるので、worker 側で同じ
+		// 式を再現して drop-in 一致させる (#1406, mkq#67)。built-in backoff
+		// (fixed / exponential) の job には影響しない。
+		optsBase = append(optsBase, mkq.WithBackoffStrategy(func(attemptsMade int) time.Duration {
+			return httpRelatedBackoff(attemptsMade, nil)
+		}))
 
 		pool := &workerPool{
 			queue:    s.driver.queues[name],

@@ -4,6 +4,7 @@ package instance
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -242,6 +243,47 @@ func (s *Service) IsAllowed(host string) bool {
 		}
 	}
 	return !HostMatchesAny(meta.BlockedHosts, host)
+}
+
+// ShouldSkipDelivery reports whether ActivityPub delivery to host must be
+// skipped because the remote instance is blocked, excluded by the federation
+// mode, or administratively suspended (suspensionState != none). 配送の
+// dispatch hot path から呼ばれる (#1404)。
+//
+// meta は 1 回だけ Fetch する。IsBlocked + IsAllowed を別々に呼ぶと meta.Fetch
+// が 2 回走り blockedHosts も二重評価されるため、hot path 向けにここで判定を
+// インライン化した (#1406 review)。meta.Fetch / instance lookup の error は
+// IsBlocked / IsAllowed と同じく fail-open (= skip しない) に倒す (一時的な
+// DB error で連合が止まる drop-in 劣化を避ける)。
+func (s *Service) ShouldSkipDelivery(host string) bool {
+	if host == "" {
+		return false
+	}
+	if meta, err := s.metaRepo.Fetch(); err == nil {
+		switch meta.Federation {
+		case "none":
+			return true
+		case "specified":
+			if !HostMatchesAny(meta.FederationHosts, host) {
+				return true
+			}
+		}
+		if HostMatchesAny(meta.BlockedHosts, host) {
+			return true
+		}
+	} else {
+		// fail-open (IsBlocked / IsAllowed と同方針) だが、meta が読めない間は
+		// blockedHosts / federation mode の判定が丸ごと抜けて block 先へ配送し
+		// 得る。モデレーション制御の漏れなので運用で気付けるよう warn に残す。
+		// suspensionState (DB 列) の判定は後段で引き続き効く (#1406 review)。
+		slog.Warn("instance: ShouldSkipDelivery could not fetch meta; block/federation gate skipped this call",
+			"host", host, "error", err)
+	}
+	inst, err := s.repo.FindByHost(host)
+	if err != nil {
+		return false
+	}
+	return inst.SuspensionState != "" && inst.SuspensionState != model.SuspensionStateNone
 }
 
 // HostMatchesAny reports whether host (case-insensitive, Unicode-aware)
