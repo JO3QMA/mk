@@ -108,11 +108,21 @@ func WithProcessIn(d time.Duration) EnqueueOption {
 	return func(o *EnqueueOptions) { o.ProcessIn = d }
 }
 
-// WithBackoff sets the retry backoff strategy. typ is "fixed" or
-// "exponential"; delay is the base delay. Without a backoff mkq retries
-// immediately, so federation queues must set one to avoid hammering
-// unreachable hosts (#1405). asynq ignores this and uses its own
-// server-level RetryDelayFunc.
+// Backoff type constants. "fixed" / "exponential" are BullMQ built-ins
+// (computed driver-side from BackoffDelay); "custom" defers the delay
+// computation to a worker-registered strategy (BullMQ's
+// settings.backoffStrategy path) and ignores BackoffDelay.
+const (
+	BackoffFixed       = "fixed"
+	BackoffExponential = "exponential"
+	BackoffCustom      = "custom"
+)
+
+// WithBackoff sets the retry backoff strategy. typ is "fixed",
+// "exponential", or "custom"; delay is the base delay (ignored for
+// "custom"). Without a backoff mkq retries immediately, so federation
+// queues must set one to avoid hammering unreachable hosts (#1405). asynq
+// ignores this and uses its own server-level RetryDelayFunc.
 func WithBackoff(typ string, delay time.Duration) EnqueueOption {
 	return func(o *EnqueueOptions) {
 		o.BackoffType = typ
@@ -120,20 +130,16 @@ func WithBackoff(typ string, delay time.Duration) EnqueueOption {
 	}
 }
 
-// federationBackoffBaseDelay is the base delay of the exponential retry backoff
-// applied to deliver / inbox jobs. Misskey TS の httpRelatedBackoff は
-// baseDelay=60s (`(2^attemptsMade - 1) * 60s`、上限 8h、0-20% jitter) なので
-// base を 60s に合わせ、初回 retry のタイミングを TS と一致させる (#1405 / #1406)。
-//
-// 完全一致の制約: mkq v1.0.1 の exponential は `delay * 2^(attemptsMade-1)` で
-// 上限 (cap) と jitter を持たず、式も TS の `(2^n-1)*base` とは異なる。cap /
-// jitter / custom 式の対応は mkq 側 issue (shiroha-a/mkq) で追従する。
-const federationBackoffBaseDelay = time.Minute
-
-// WithFederationBackoff applies the default exponential retry backoff used by
-// the deliver / inbox queues (#1405).
+// WithFederationBackoff applies the retry backoff used by the deliver /
+// inbox queues: BullMQ "custom" strategy, whose delay is computed by the
+// worker-registered Misskey httpRelatedBackoff ((2^n-1)*60s, capped at 8h,
+// +0..20% jitter). enqueue 側は `{type:"custom"}` だけを保存し、実際の delay
+// は mkqdriver の WithBackoffStrategy が算出する。これで TS と drop-in 一致
+// する (#1405 / #1406, mkq#67)。
 func WithFederationBackoff() EnqueueOption {
-	return WithBackoff("exponential", federationBackoffBaseDelay)
+	return func(o *EnqueueOptions) {
+		o.BackoffType = BackoffCustom
+	}
 }
 
 // WithKeepFailed bounds the size of the failed bucket / ZSET for this

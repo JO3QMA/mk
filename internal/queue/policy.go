@@ -68,9 +68,10 @@ type Policy struct {
 
 	// BackoffType / BackoffDelay override the retry backoff strategy for this
 	// queue. BackoffType is "" (use the queue's built-in default), "fixed",
-	// or "exponential"; BackoffDelay is the base delay. deliver / inbox は
-	// 未指定なら exponential base 60s (= Misskey TS httpRelatedBackoff の
-	// baseDelay) が既定 (#1405 / #1406)。
+	// "exponential", or "custom"; BackoffDelay is the base delay (ignored for
+	// "custom"). deliver / inbox は未指定なら "custom" (= Misskey TS
+	// httpRelatedBackoff: (2^n-1)*60s, cap 8h, +0..20% jitter) が既定
+	// (#1405 / #1406, mkq#67)。
 	BackoffType  string
 	BackoffDelay time.Duration
 }

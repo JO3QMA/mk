@@ -35,13 +35,22 @@ func toMkqAddOptions(o driver.EnqueueOptions, taskType string, payload []byte) [
 	}
 	// retry backoff: 未設定 (BackoffType=="") なら mkq は backoff 無し
 	// (= 遅延0で即時 retry) になる。deliver / inbox は EnqueueDeliver /
-	// EnqueueInbox が exponential backoff を必ず付けて hammering を防ぐ
-	// (#1405)。
-	if o.BackoffType != "" && o.BackoffDelay > 0 {
-		switch o.BackoffType {
-		case "exponential":
+	// EnqueueInbox が backoff を必ず付けて hammering を防ぐ (#1405)。
+	//
+	// "custom" は BullMQ settings.backoffStrategy 経路: opts JSON には
+	// `{type:"custom"}` だけ保存し、delay は worker 側で登録した
+	// CustomBackoffFunc (= Misskey httpRelatedBackoff) が算出する (#1406,
+	// mkq#67)。built-in の fixed / exponential は delay から driver-side で
+	// 計算される。
+	switch o.BackoffType {
+	case driver.BackoffCustom:
+		out = append(out, mkq.WithBackoff(mkq.CustomBackoff()))
+	case driver.BackoffExponential:
+		if o.BackoffDelay > 0 {
 			out = append(out, mkq.WithBackoff(mkq.ExponentialBackoff(o.BackoffDelay)))
-		case "fixed":
+		}
+	case driver.BackoffFixed:
+		if o.BackoffDelay > 0 {
 			out = append(out, mkq.WithBackoff(mkq.FixedBackoff(o.BackoffDelay)))
 		}
 	}

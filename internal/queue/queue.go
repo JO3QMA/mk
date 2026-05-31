@@ -180,14 +180,19 @@ func retentionOptsFromPolicy(p Policy) []driver.EnqueueOption {
 }
 
 // backoffOptFromPolicy returns the retry backoff option for a federation
-// queue, using the Policy override when both BackoffType and BackoffDelay are
-// set and falling back to the default exponential backoff (deliver / inbox:
-// base 60s) otherwise (#1405 / #1406)。
+// queue. Policy override が指定されていればそれを使い、未指定なら deliver /
+// inbox の既定 (= Misskey TS httpRelatedBackoff の custom strategy) に
+// フォールバックする (#1405 / #1406, mkq#67)。custom は delay 不要なので
+// BackoffType=="custom" 単体で override 成立、built-in は delay>0 も要求する。
 func backoffOptFromPolicy(p Policy) driver.EnqueueOption {
-	if p.BackoffType != "" && p.BackoffDelay > 0 {
+	switch {
+	case p.BackoffType == driver.BackoffCustom:
+		return driver.WithBackoff(driver.BackoffCustom, 0)
+	case p.BackoffType != "" && p.BackoffDelay > 0:
 		return driver.WithBackoff(p.BackoffType, p.BackoffDelay)
+	default:
+		return driver.WithFederationBackoff()
 	}
-	return driver.WithFederationBackoff()
 }
 
 // EnqueueDeliver puts a deliver task on the queue. opts override the

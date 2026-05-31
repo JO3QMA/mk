@@ -9,22 +9,26 @@ import (
 )
 
 func TestBackoffOptFromPolicy(t *testing.T) {
-	// 未指定なら既定の exponential base 1s。
+	// 未指定なら既定の custom backoff (= Misskey TS httpRelatedBackoff)。
 	def := driver.ApplyEnqueueOptions([]driver.EnqueueOption{backoffOptFromPolicy(Policy{})})
-	assert.Equal(t, "exponential", def.BackoffType)
-	assert.Equal(t, time.Minute, def.BackoffDelay)
+	assert.Equal(t, driver.BackoffCustom, def.BackoffType)
 
-	// Policy で上書きできる。
-	override := driver.ApplyEnqueueOptions([]driver.EnqueueOption{
-		backoffOptFromPolicy(Policy{BackoffType: "fixed", BackoffDelay: 10 * time.Second}),
+	// custom を明示しても override 成立 (delay 不要)。
+	custom := driver.ApplyEnqueueOptions([]driver.EnqueueOption{
+		backoffOptFromPolicy(Policy{BackoffType: driver.BackoffCustom}),
 	})
-	assert.Equal(t, "fixed", override.BackoffType)
+	assert.Equal(t, driver.BackoffCustom, custom.BackoffType)
+
+	// built-in は delay とセットで上書きできる。
+	override := driver.ApplyEnqueueOptions([]driver.EnqueueOption{
+		backoffOptFromPolicy(Policy{BackoffType: driver.BackoffFixed, BackoffDelay: 10 * time.Second}),
+	})
+	assert.Equal(t, driver.BackoffFixed, override.BackoffType)
 	assert.Equal(t, 10*time.Second, override.BackoffDelay)
 
-	// delay 0 は不完全な指定として既定にフォールバックする。
+	// built-in で delay 0 は不完全な指定として既定 (custom) にフォールバックする。
 	partial := driver.ApplyEnqueueOptions([]driver.EnqueueOption{
-		backoffOptFromPolicy(Policy{BackoffType: "fixed"}),
+		backoffOptFromPolicy(Policy{BackoffType: driver.BackoffFixed}),
 	})
-	assert.Equal(t, "exponential", partial.BackoffType)
-	assert.Equal(t, time.Minute, partial.BackoffDelay)
+	assert.Equal(t, driver.BackoffCustom, partial.BackoffType)
 }
