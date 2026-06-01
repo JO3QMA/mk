@@ -30,6 +30,9 @@ func newHandler(t *testing.T) (
 	repo := testutil.NewMockClipRepository()
 	noteRepo := testutil.NewMockClipNoteRepository()
 	notes := testutil.NewMockNoteRepository()
+	// ListByClipVisible の visibility push-down 再現のため、clip mock に note の
+	// visibility lookup 用 map を共有させる (#1418 review)。
+	noteRepo.Notes = notes.Notes
 	idGen, _ := id.NewGenerator("aidx")
 	svc := coreclip.NewService(repo, noteRepo, notes, idGen)
 	return NewHandler(svc, idGen), repo, noteRepo, notes
@@ -576,12 +579,41 @@ func TestNotes_AnonymousOnPublic(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-// listFailNoteRepo causes ListByClip to fail.
+// public clip に含まれる followers / specified visibility のノートは、
+// 閲覧権限のない viewer に対して除外されることを guard する。
+func TestNotes_AnonymousExcludesNonPublicVisibilityInPublicClip(t *testing.T) {
+	h, repo, clipNoteRepo, notes := newHandler(t)
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", IsPublic: true}
+	// clip に紐づく ClipNote を直接 seed (AddNote を経由しない = visibility に
+	// 関係なく clip に存在する状態を再現する)。
+	clipNoteRepo.Entries["cn_pub"] = &model.ClipNote{ID: "cn_pub", ClipID: "c1", NoteID: "n_pub"}
+	clipNoteRepo.Entries["cn_fol"] = &model.ClipNote{ID: "cn_fol", ClipID: "c1", NoteID: "n_fol"}
+	clipNoteRepo.Entries["cn_spec"] = &model.ClipNote{ID: "cn_spec", ClipID: "c1", NoteID: "n_spec"}
+	notes.Notes["n_pub"] = &model.Note{ID: "n_pub", UserID: "alice", Visibility: "public", User: &model.User{ID: "alice"}}
+	notes.Notes["n_fol"] = &model.Note{ID: "n_fol", UserID: "alice", Visibility: "followers", User: &model.User{ID: "alice"}}
+	notes.Notes["n_spec"] = &model.Note{ID: "n_spec", UserID: "alice", Visibility: "specified", VisibleUserIDs: []string{"other"}, User: &model.User{ID: "alice"}}
+
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	require.NoError(t, h.Notes(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	ids := map[string]bool{}
+	for _, n := range out {
+		ids[n["id"].(string)] = true
+	}
+	assert.True(t, ids["n_pub"])
+	assert.False(t, ids["n_fol"], "followers は anonymous に漏らさない")
+	assert.False(t, ids["n_spec"], "specified は対象外 viewer に漏らさない")
+}
+
+// listFailNoteRepo causes the clip note listing to fail. clip service Notes は
+// ListByClipVisible を呼ぶためそちらを override する。
 type listFailNoteRepo struct {
 	*testutil.MockClipNoteRepository
 }
 
-func (r *listFailNoteRepo) ListByClip(_ string, _, _ string, _ int) ([]*model.ClipNote, error) {
+func (r *listFailNoteRepo) ListByClipVisible(_, _, _, _ string, _ int) ([]*model.ClipNote, error) {
 	return nil, errors.New("boom")
 }
 
