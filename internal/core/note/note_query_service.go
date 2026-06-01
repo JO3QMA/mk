@@ -70,9 +70,9 @@ func (s *QueryService) ShowForAPI(noteID string) (*model.Note, error) {
 // Returns ErrNoteNotFound when the note does not exist OR the viewer cannot
 // see it (followers / specified visibility). Used by mutation endpoints that
 // must reject non-viewer actions while hiding existence — favorites/create
-// (#1443) 等の「ID 既知 viewer が favorite / clip など別 channel に
-// note を永続化する」経路で、author が visibility を絞った後も content が
-// 漏れ続ける security risk を防ぐためのチェック。
+// (#1443) や clips/add-note (#1456) 等の「ID 既知 viewer が favorite / clip
+// など別 channel に note を永続化する」経路で、author が visibility を絞った
+// 後も content が漏れ続ける / 存在が漏れる security risk を防ぐためのチェック。
 //
 // 戻り値の note は handler 側で pack せず捨てるか top-level フィールド
 // だけを参照する想定 (#425)。pack 用 full preload が必要なら Show を使う。
