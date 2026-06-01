@@ -9,7 +9,6 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/api/pagination"
 	coreclip "github.com/shiroha-a/mk/internal/core/clip"
-	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/core/notesfilter"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -87,22 +86,6 @@ func (h *Handler) emojiLookup() entity.EmojiLookup {
 		return nil
 	}
 	return h.emojiRepo
-}
-
-// filterVisible drops notes the viewer is not allowed to see. followingRepo
-// が未配線の場合 CanSeeNote は followers visibility を投稿者本人以外に
-// 見せない (fail-closed)。
-func (h *Handler) filterVisible(viewer *model.User, notes []*model.Note) []*model.Note {
-	if len(notes) == 0 {
-		return notes
-	}
-	out := make([]*model.Note, 0, len(notes))
-	for _, n := range notes {
-		if corenote.CanSeeNote(viewer, n, h.followingRepo) {
-			out = append(out, n)
-		}
-	}
-	return out
 }
 
 // NewHandler creates a new clips Handler.
@@ -353,7 +336,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	notes = h.filterVisible(user, notes)
+	notes = notesfilter.FilterVisible(user, notes, h.followingRepo)
 	notes = notesfilter.ApplyHardMute(h.userRepo, user, notes)
 	entities := entity.PackNotes(c.Request().Context(), notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(entities, user)

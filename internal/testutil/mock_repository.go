@@ -739,6 +739,12 @@ func applyProfileFields(p *model.UserProfile, fields map[string]any) {
 type MockNoteRepository struct {
 	Notes          map[string]*model.Note
 	ReactionCounts map[string]map[string]int // noteID -> reaction -> count
+	// Following は ListByUserIDFiltered の visibility push-down (followers note
+	// の follow 判定) に使う followerID -> followeeIDs map。未設定なら follow
+	// なし扱い (= 非 follower viewer)。testutil は core/note を import すると
+	// repository 内部テストとの循環になるため CanSeeNote は使わず inline で
+	// 可視性を再現する (条件は CanSeeNote / real repo SQL と一致させる)。
+	Following map[string][]string
 }
 
 func NewMockNoteRepository() *MockNoteRepository {
@@ -1003,9 +1009,13 @@ func (m *MockNoteRepository) ListByUserID(userID string, untilID, sinceID string
 // 詰めて listFiltered に委譲する (#1021)。bool 4 引数は repository interface
 // の signature に整合 (= struct を介さない理由は testutil ↔ repository の
 // import cycle 回避)。
-func (m *MockNoteRepository) ListByUserIDFiltered(userID, untilID, sinceID string, limit int, withFiles, withReplies, withRenotes, withChannelNotes bool) ([]*model.Note, error) {
+func (m *MockNoteRepository) ListByUserIDFiltered(userID, viewerID, untilID, sinceID string, limit int, withFiles, withReplies, withRenotes, withChannelNotes bool) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
 		if n.UserID != userID {
+			return false
+		}
+		// visibility push-down を real repo SQL と揃えて inline 再現する。
+		if !m.canViewerSeeNote(viewerID, n) {
 			return false
 		}
 		if withFiles && len(n.FileIDs) == 0 {
@@ -1029,6 +1039,41 @@ func (m *MockNoteRepository) ListByUserIDFiltered(userID, untilID, sinceID strin
 		}
 		return true
 	}, untilID, sinceID, limit), nil
+}
+
+// canViewerSeeNote replicates the real repo's visibility push-down inline.
+// 条件は core/note.CanSeeNote / real repo の SQL と一致させる (public/home は
+// 全員、followers は author 本人または follow 済み、specified は author 本人
+// または visibleUserIds に含まれる)。
+func (m *MockNoteRepository) canViewerSeeNote(viewerID string, n *model.Note) bool {
+	switch n.Visibility {
+	case model.NoteVisibilityPublic, model.NoteVisibilityHome:
+		return true
+	}
+	if viewerID == "" {
+		return false
+	}
+	// author 本人は followers/specified を問わず閲覧可。
+	if viewerID == n.UserID {
+		return true
+	}
+	switch n.Visibility {
+	case model.NoteVisibilityFollowers:
+		for _, followee := range m.Following[viewerID] {
+			if followee == n.UserID {
+				return true
+			}
+		}
+		return false
+	case model.NoteVisibilitySpecified:
+		for _, id := range n.VisibleUserIDs {
+			if id == viewerID {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func (m *MockNoteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note, error) {
