@@ -151,3 +151,24 @@ func TestProcessCreate_NonFederatedHostIsDroppedNotRetried(t *testing.T) {
 	assert.Empty(t, noteRepo.Notes, "非連合 host の note は永続化しない")
 	assert.Empty(t, repo.Users, "非連合 host の actor も作らない")
 }
+
+// 送信者 (act.Actor) の host は許可されているが、note の attributedTo が
+// 非連合 host を指すケース (中継経由)。handleCreate 冒頭の actor 解決は通過し、
+// IngestNoteWithCreated 段の gate で ErrHostNotAllowed → ack される (= ingest
+// 段の drop 分岐を踏む)。note は永続化されないこと。
+func TestProcessCreate_AllowedSenderNonFederatedAttributedToIsDropped(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	// note の attributedTo (remote.example) のみ非連合。送信者 host は許可。
+	resolver.SetHostBlockChecker(&stubHostBlocker{disallowed: map[string]bool{"remote.example": true}})
+	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
+	p := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
+
+	body := []byte(`{"type":"Create","actor":"https://relay.allowed/users/relay","object":` + sampleRemoteNote + `}`)
+	require.NoError(t, p.Process(body))
+	assert.Empty(t, noteRepo.Notes, "非連合 host (attributedTo) の note は永続化しない")
+}
