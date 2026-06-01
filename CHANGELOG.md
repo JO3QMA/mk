@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: `useObjectStorage = true` のインスタンスで、`storedInternal = true` なドライブファイルへの `/files/:accessKey` アクセスが常に 404 になる問題を修正 (Misskey TS からの S3 移行前に保存されたローカルファイルが、移行後もアクセス可能に)
 - Fix: 配送先が一時的にダウンしている場合に、deliver/inbox ジョブが設定省略時にリトライされない問題を修正 (既定の試行回数を Misskey 本家と同じ deliver=12 / inbox=8 に。従来の no-retry 挙動が必要な場合は `deliverJobMaxAttempts` / `inboxJobMaxAttempts` に 1 を指定)
 
 ## 0.9.2
