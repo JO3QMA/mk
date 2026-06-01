@@ -9,6 +9,7 @@ import (
 
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestShouldSkipDelivery_SuspendCache verifies that the suspend decision is
@@ -71,6 +72,47 @@ func TestShouldSkipDelivery_SuspendCache(t *testing.T) {
 		now = base.Add(6 * time.Minute)
 		assert.True(t, svc.ShouldSkipDelivery("host.example"), "suspension reflected after TTL expiry")
 	})
+}
+
+// TestShouldSkipDelivery_SuspendInvalidatesCache verifies that calling Suspend
+// drops the cached decision so the new suspensionState takes effect immediately
+// rather than waiting out the TTL (#1407 review).
+func TestShouldSkipDelivery_SuspendInvalidatesCache(t *testing.T) {
+	svc, repo, _ := newService(t)
+	repo.Instances["host.example"] = &model.Instance{
+		ID:              "i1",
+		Host:            "host.example",
+		SuspensionState: model.SuspensionStateNone,
+	}
+
+	// 配送可と判定してキャッシュに載せる
+	assert.False(t, svc.ShouldSkipDelivery("host.example"))
+
+	// Suspend は cache を invalidate するので、TTL を待たずに次回判定へ即時反映される
+	require.NoError(t, svc.Suspend("host.example", model.SuspensionStateManuallySuspended))
+	assert.True(t, svc.ShouldSkipDelivery("host.example"), "suspend must take effect immediately")
+}
+
+// TestShouldSkipDelivery_EvictsExpiredEntries verifies that a cache write also
+// prunes other entries whose TTL has elapsed, bounding map growth (#1407 review).
+func TestShouldSkipDelivery_EvictsExpiredEntries(t *testing.T) {
+	svc, repo, _ := newService(t)
+	for _, h := range []string{"a.example", "b.example"} {
+		repo.Instances[h] = &model.Instance{ID: "i-" + h, Host: h, SuspensionState: model.SuspensionStateNone}
+	}
+
+	base := time.Unix(0, 0)
+	now := base
+	svc.SetClock(func() time.Time { return now })
+
+	// a.example を載せる
+	assert.False(t, svc.ShouldSkipDelivery("a.example"))
+	assert.Equal(t, 1, svc.SuspendCacheLen(), "a cached")
+
+	// TTL 超に進めてから別 host を載せると、期限切れの a が掃除される
+	now = base.Add(6 * time.Minute)
+	assert.False(t, svc.ShouldSkipDelivery("b.example"))
+	assert.Equal(t, 1, svc.SuspendCacheLen(), "expired a evicted, only b remains")
 }
 
 // TestShouldSkipDelivery_MetaWarnRateLimit verifies that a persistent meta-fetch

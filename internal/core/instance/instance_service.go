@@ -336,10 +336,42 @@ func (s *Service) shouldSkipBySuspend(host string) bool {
 	skip := s.lookupSuspended(host)
 
 	s.mu.Lock()
+	// cache miss / 期限切れ時に書き込むついでに、既に期限切れの他 entry も
+	// 掃除する。配送先 host は有界 (連合先数) だが、過去に配送した host が
+	// 二度と来ない場合でも map に滞留し続けないよう、書き込みコストに相乗り
+	// させた amortized なエビクションで上限を抑える (#1407 review)。
+	s.evictExpiredLocked(now)
 	s.suspendCache[host] = suspendEntry{skip: skip, expiresAt: now.Add(s.cacheTTL)}
 	s.mu.Unlock()
 
 	return skip
+}
+
+// evictExpiredLocked drops cache entries whose TTL has elapsed. Must be called
+// with s.mu held. host cardinality は有界なので全走査で十分 (#1407 review)。
+func (s *Service) evictExpiredLocked(now time.Time) {
+	for h, e := range s.suspendCache {
+		if !now.Before(e.expiresAt) {
+			delete(s.suspendCache, h)
+		}
+	}
+}
+
+// invalidateSuspendCache drops the cached suspend decision for host so the next
+// ShouldSkipDelivery re-reads it from the repository. suspend / unsuspend 直後に
+// 呼ぶことで、TTL を待たずに配送可否へ即時反映する (#1407 review)。
+func (s *Service) invalidateSuspendCache(host string) {
+	s.mu.Lock()
+	delete(s.suspendCache, host)
+	s.mu.Unlock()
+}
+
+// SuspendCacheLen returns the number of entries currently held in the suspend
+// decision cache. Intended for tests asserting eviction behaviour (#1407 review).
+func (s *Service) SuspendCacheLen() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.suspendCache)
 }
 
 // lookupSuspended resolves the suspend decision for host directly from the
@@ -410,9 +442,14 @@ func (s *Service) Suspend(host string, state model.SuspensionState) error {
 	if _, err := s.repo.FindByHost(host); err != nil {
 		return ErrInstanceNotFound
 	}
-	return s.repo.UpdateFields(host, map[string]any{
+	if err := s.repo.UpdateFields(host, map[string]any{
 		"suspensionState": state,
-	})
+	}); err != nil {
+		return err
+	}
+	// suspend / unsuspend の結果を配送可否へ TTL を待たず即時反映する (#1407 review)。
+	s.invalidateSuspendCache(host)
+	return nil
 }
 
 // UpdateModerationNote sets the moderationNote field on the instance row.
