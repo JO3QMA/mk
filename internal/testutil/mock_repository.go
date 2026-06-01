@@ -1041,39 +1041,10 @@ func (m *MockNoteRepository) ListByUserIDFiltered(userID, viewerID, untilID, sin
 	}, untilID, sinceID, limit), nil
 }
 
-// canViewerSeeNote replicates the real repo's visibility push-down inline.
-// 条件は core/note.CanSeeNote / real repo の SQL と一致させる (public/home は
-// 全員、followers は author 本人または follow 済み、specified は author 本人
-// または visibleUserIds に含まれる)。
+// canViewerSeeNote replicates the real repo's visibility push-down inline via
+// the shared noteVisibleToViewer helper.
 func (m *MockNoteRepository) canViewerSeeNote(viewerID string, n *model.Note) bool {
-	switch n.Visibility {
-	case model.NoteVisibilityPublic, model.NoteVisibilityHome:
-		return true
-	}
-	if viewerID == "" {
-		return false
-	}
-	// author 本人は followers/specified を問わず閲覧可。
-	if viewerID == n.UserID {
-		return true
-	}
-	switch n.Visibility {
-	case model.NoteVisibilityFollowers:
-		for _, followee := range m.Following[viewerID] {
-			if followee == n.UserID {
-				return true
-			}
-		}
-		return false
-	case model.NoteVisibilitySpecified:
-		for _, id := range n.VisibleUserIDs {
-			if id == viewerID {
-				return true
-			}
-		}
-		return false
-	}
-	return false
+	return noteVisibleToViewer(viewerID, n, m.Following)
 }
 
 func (m *MockNoteRepository) FindManyByIDsWithUser(ids []string) ([]*model.Note, error) {
@@ -1462,6 +1433,14 @@ func (m *MockNoteReactionRepository) ListByUserID(userID, viewerID, untilID, sin
 // が note 行を要求して false になるのと揃えて除外する (production は FK + Preload
 // で note が必ず存在するためこの分岐は起きない。test は note を必ず seed する)。
 func (m *MockNoteReactionRepository) canViewerSeeNote(viewerID string, n *model.Note) bool {
+	return noteVisibleToViewer(viewerID, n, m.Following)
+}
+
+// noteVisibleToViewer replicates core/note.CanSeeNote / the real repo の
+// visibility SQL を inline で再現する共通ヘルパー。testutil は core/note を
+// import すると repository 内部テストとの循環になるためロジックを複製する
+// (条件は CanSeeNote と一致させる)。following は followerID -> followeeIDs。
+func noteVisibleToViewer(viewerID string, n *model.Note, following map[string][]string) bool {
 	if n == nil {
 		return false
 	}
@@ -1478,7 +1457,7 @@ func (m *MockNoteReactionRepository) canViewerSeeNote(viewerID string, n *model.
 	}
 	switch n.Visibility {
 	case model.NoteVisibilityFollowers:
-		for _, followee := range m.Following[viewerID] {
+		for _, followee := range following[viewerID] {
 			if followee == n.UserID {
 				return true
 			}
@@ -3020,6 +2999,11 @@ func applyClipFields(c *model.Clip, fields map[string]any) {
 // MockClipNoteRepository is a test double for repository.ClipNoteRepository.
 type MockClipNoteRepository struct {
 	Entries map[string]*model.ClipNote
+	// Notes / Following は ListByClipVisible の visibility push-down 再現に
+	// 使う。Notes は noteID -> note (visibility 判定用)、Following は
+	// followerID -> followeeIDs。未設定なら note 不在扱い (= 非可視)。
+	Notes     map[string]*model.Note
+	Following map[string][]string
 }
 
 // NewMockClipNoteRepository creates an empty MockClipNoteRepository.
@@ -3057,9 +3041,22 @@ func (m *MockClipNoteRepository) CountByClip(clipID string) (int64, error) {
 }
 
 func (m *MockClipNoteRepository) ListByClip(clipID string, untilID, sinceID string, limit int) ([]*model.ClipNote, error) {
+	return m.listByClip(clipID, "", false, untilID, sinceID, limit)
+}
+
+// ListByClipVisible mirrors the real repo's visibility push-down: clip entries
+// whose note the viewer cannot see are dropped before the limit slice.
+func (m *MockClipNoteRepository) ListByClipVisible(clipID, viewerID, untilID, sinceID string, limit int) ([]*model.ClipNote, error) {
+	return m.listByClip(clipID, viewerID, true, untilID, sinceID, limit)
+}
+
+func (m *MockClipNoteRepository) listByClip(clipID, viewerID string, filterVisibility bool, untilID, sinceID string, limit int) ([]*model.ClipNote, error) {
 	var rows []*model.ClipNote
 	for _, cn := range m.Entries {
 		if cn.ClipID != clipID {
+			continue
+		}
+		if filterVisibility && !noteVisibleToViewer(viewerID, m.Notes[cn.NoteID], m.Following) {
 			continue
 		}
 		if untilID != "" && cn.ID >= untilID {

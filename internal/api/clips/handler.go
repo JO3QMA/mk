@@ -29,21 +29,12 @@ type Handler struct {
 	// userRepo は clips/notes 経由で他人の clip を閲覧する際の hardMutedWords
 	// filter (#787) のために viewer profile を引く。未配線時は filter skip。
 	userRepo repository.UserRepository
-	// followingRepo は clips/notes で clip 内の各 note の visibility 判定
-	// (= core/note.CanSeeNote) で follower 関係を引くために使う。
-	followingRepo repository.FollowingRepository
 }
 
 // SetUserRepo wires a UserRepository so clips/notes filters out notes that
 // match the viewer's hardMutedWords (#787).
 func (h *Handler) SetUserRepo(r repository.UserRepository) {
 	h.userRepo = r
-}
-
-// SetFollowingRepo wires a FollowingRepository used by clips/notes for the
-// per-note visibility check. 未配線時は CanSeeNote が fail-closed に倒れる。
-func (h *Handler) SetFollowingRepo(r repository.FollowingRepository) {
-	h.followingRepo = r
 }
 
 // SetNoteFieldResolver wires the shared resolver that fills Files /
@@ -336,7 +327,8 @@ func (h *Handler) Notes(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
-	notes = notesfilter.FilterVisible(user, notes, h.followingRepo)
+	// visibility は clip service の ListByClipVisible で push down 済み (#1418
+	// review)。ここでは hardMutedWords filter のみ適用する。
 	notes = notesfilter.ApplyHardMute(h.userRepo, user, notes)
 	entities := entity.PackNotes(c.Request().Context(), notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(entities, user)
