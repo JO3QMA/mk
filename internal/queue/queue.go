@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -190,6 +191,13 @@ func backoffOptFromPolicy(p Policy) driver.EnqueueOption {
 		return driver.WithBackoff(driver.BackoffCustom, 0)
 	case p.BackoffType != "" && p.BackoffDelay > 0:
 		return driver.WithBackoff(p.BackoffType, p.BackoffDelay)
+	case p.BackoffType != "":
+		// built-in backoff (fixed/exponential) は delay が必須なのに未指定。
+		// delay=0 のまま当てるとリトライが遅延0で即時連打になり危険なので、
+		// 設定ミスを警告したうえで federation 既定 backoff にフォールバックする (#1409)。
+		slog.Warn("queue: built-in backoff type specified without a positive delay; falling back to federation backoff",
+			"backoffType", p.BackoffType, "backoffDelay", p.BackoffDelay)
+		return driver.WithFederationBackoff()
 	default:
 		return driver.WithFederationBackoff()
 	}
@@ -360,6 +368,10 @@ func (c *Client) EnqueueUserWebhook(ctx context.Context, payload WebhookPayload)
 	base := []driver.EnqueueOption{
 		driver.WithQueue(WebhookQueueName),
 		driver.WithMaxRetry(4),
+		// deliver/inbox と同じ custom backoff を webhook 配送にも付与する。
+		// worker 側 strategy は全 queue に登録済みなので enqueue 側で付けるだけで
+		// 段階的なリトライ間隔が効く (#1408)。
+		driver.WithFederationBackoff(),
 	}
 	base = append(base, c.retentionOpts(WebhookQueueName)...)
 	return c.inner.Enqueue(ctx, TaskTypeUserWebhook, body, base...)
@@ -371,6 +383,8 @@ func (c *Client) EnqueueSystemWebhook(ctx context.Context, payload WebhookPayloa
 	base := []driver.EnqueueOption{
 		driver.WithQueue(WebhookQueueName),
 		driver.WithMaxRetry(4),
+		// user webhook と同様に custom backoff を付与する (#1408)。
+		driver.WithFederationBackoff(),
 	}
 	base = append(base, c.retentionOpts(WebhookQueueName)...)
 	return c.inner.Enqueue(ctx, TaskTypeSystemWebhook, body, base...)

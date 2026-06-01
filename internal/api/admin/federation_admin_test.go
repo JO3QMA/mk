@@ -302,3 +302,45 @@ func TestFederationUpdateInstance_WritesBothLogs(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"suspendRemoteInstance", "updateRemoteInstanceNote"}, types)
 }
+
+// stubSuspendCacheInvalidator captures InvalidateSuspendCache calls.
+type stubSuspendCacheInvalidator struct {
+	hosts []string
+}
+
+func (s *stubSuspendCacheInvalidator) InvalidateSuspendCache(host string) {
+	s.hosts = append(s.hosts, host)
+}
+
+// #1407 review: suspend / unsuspend を伴う update では deliver hot path の
+// suspend 判定 cache を即時失効する (TTL を待たない)。
+func TestFederationUpdateInstance_InvalidatesSuspendCacheOnSuspendChange(t *testing.T) {
+	h, _ := setupFederationUpdateInstance(t, &model.Instance{
+		ID:              "inst-inv",
+		Host:            "remote.example",
+		SuspensionState: model.SuspensionStateNone,
+	})
+	inv := &stubSuspendCacheInvalidator{}
+	h.SetInstanceSuspendCacheInvalidator(inv)
+
+	rec := doPost(h.FederationUpdateInstance, `{"host":"remote.example","isSuspended":true}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, []string{"remote.example"}, inv.hosts, "suspend change must flush the host cache")
+}
+
+// #1407 review: isSuspended を含まない (note のみ等) update では cache を
+// 失効させない。suspensionState は変わっていないため不要なフラッシュを避ける。
+func TestFederationUpdateInstance_DoesNotInvalidateWithoutSuspendChange(t *testing.T) {
+	h, _ := setupFederationUpdateInstance(t, &model.Instance{
+		ID:              "inst-inv2",
+		Host:            "remote.example",
+		SuspensionState: model.SuspensionStateNone,
+		ModerationNote:  "old",
+	})
+	inv := &stubSuspendCacheInvalidator{}
+	h.SetInstanceSuspendCacheInvalidator(inv)
+
+	rec := doPost(h.FederationUpdateInstance, `{"host":"remote.example","moderationNote":"new"}`, adminUser)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, inv.hosts, "note-only update must not flush the suspend cache")
+}

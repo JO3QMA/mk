@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/text/cases"
@@ -46,15 +47,36 @@ type Service struct {
 	idGen           id.Generator
 	clock           func() time.Time
 	metadataFetcher MetadataFetcher
+
+	// mu は suspendCache と lastMetaWarn を保護する。ShouldSkipDelivery は
+	// deliver hot path から並行に呼ばれるため軽量な Mutex で囲う (#1407 / #1410)。
+	mu sync.Mutex
+	// suspendCache は host -> suspend 判定 (bool) の短期キャッシュ。deliver hot
+	// path の FindByHost DB 往復を cacheTTL の間だけ省く (#1407)。
+	suspendCache map[string]suspendEntry
+	cacheTTL     time.Duration
+	// lastMetaWarn / metaWarnEvery は meta.Fetch 失敗 warn のレート制限用。
+	// 継続障害時に配送ごとに warn を吐かないよう間引く (#1410)。
+	lastMetaWarn  time.Time
+	metaWarnEvery time.Duration
+}
+
+// suspendEntry caches a host's delivery-suspend decision until expiresAt.
+type suspendEntry struct {
+	skip      bool
+	expiresAt time.Time
 }
 
 // NewService constructs an instance Service.
 func NewService(repo repository.InstanceRepository, metaRepo repository.MetaRepository, idGen id.Generator) *Service {
 	return &Service{
-		repo:     repo,
-		metaRepo: metaRepo,
-		idGen:    idGen,
-		clock:    time.Now,
+		repo:          repo,
+		metaRepo:      metaRepo,
+		idGen:         idGen,
+		clock:         time.Now,
+		suspendCache:  make(map[string]suspendEntry),
+		cacheTTL:      5 * time.Minute,
+		metaWarnEvery: time.Minute,
 	}
 }
 
@@ -63,6 +85,22 @@ func (s *Service) SetClock(now func() time.Time) {
 	if now != nil {
 		s.clock = now
 	}
+}
+
+// SetSuspendCacheTTL overrides the suspend-decision cache TTL. Intended for
+// tests that need to exercise cache expiry deterministically (#1407).
+func (s *Service) SetSuspendCacheTTL(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cacheTTL = d
+}
+
+// SetMetaWarnEvery overrides the meta-fetch warning rate-limit window.
+// Intended for tests (#1410).
+func (s *Service) SetMetaWarnEvery(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.metaWarnEvery = d
 }
 
 // SetMetadataFetcher attaches a MetadataFetcher invoked best-effort after a
@@ -276,14 +314,98 @@ func (s *Service) ShouldSkipDelivery(host string) bool {
 		// blockedHosts / federation mode の判定が丸ごと抜けて block 先へ配送し
 		// 得る。モデレーション制御の漏れなので運用で気付けるよう warn に残す。
 		// suspensionState (DB 列) の判定は後段で引き続き効く (#1406 review)。
-		slog.Warn("instance: ShouldSkipDelivery could not fetch meta; block/federation gate skipped this call",
-			"host", host, "error", err)
+		// 継続障害時に配送ごとに warn を吐かないようレート制限する (#1410)。
+		s.warnMetaFetchFailed(host, err)
 	}
+	return s.shouldSkipBySuspend(host)
+}
+
+// shouldSkipBySuspend returns the cached suspend decision for host, looking it
+// up from the repository only on a cache miss or after cacheTTL has elapsed.
+// deliver hot path の FindByHost DB 往復を cacheTTL の間だけ省く (#1407)。
+func (s *Service) shouldSkipBySuspend(host string) bool {
+	now := s.clock()
+
+	s.mu.Lock()
+	if e, ok := s.suspendCache[host]; ok && now.Before(e.expiresAt) {
+		s.mu.Unlock()
+		return e.skip
+	}
+	s.mu.Unlock()
+
+	skip := s.lookupSuspended(host)
+
+	s.mu.Lock()
+	// cache miss / 期限切れ時に書き込むついでに、既に期限切れの他 entry も
+	// 掃除する。配送先 host は有界 (連合先数) だが、過去に配送した host が
+	// 二度と来ない場合でも map に滞留し続けないよう、書き込みコストに相乗り
+	// させた amortized なエビクションで上限を抑える (#1407 review)。
+	s.evictExpiredLocked(now)
+	s.suspendCache[host] = suspendEntry{skip: skip, expiresAt: now.Add(s.cacheTTL)}
+	s.mu.Unlock()
+
+	return skip
+}
+
+// evictExpiredLocked drops cache entries whose TTL has elapsed. Must be called
+// with s.mu held. host cardinality は有界なので全走査で十分 (#1407 review)。
+func (s *Service) evictExpiredLocked(now time.Time) {
+	for h, e := range s.suspendCache {
+		if !now.Before(e.expiresAt) {
+			delete(s.suspendCache, h)
+		}
+	}
+}
+
+// InvalidateSuspendCache drops the cached suspend decision for host so the next
+// ShouldSkipDelivery re-reads it from the repository. suspend / unsuspend 直後に
+// 呼ぶことで、TTL を待たずに配送可否へ即時反映する (#1407 review)。Service.Suspend
+// 経由だけでなく、admin/federation/update-instance のように instanceRepo を直接
+// 更新する handler からも呼べるよう公開している。
+func (s *Service) InvalidateSuspendCache(host string) {
+	if host == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.suspendCache, host)
+	s.mu.Unlock()
+}
+
+// SuspendCacheLen returns the number of entries currently held in the suspend
+// decision cache. Intended for tests asserting eviction behaviour (#1407 review).
+func (s *Service) SuspendCacheLen() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.suspendCache)
+}
+
+// lookupSuspended resolves the suspend decision for host directly from the
+// repository. A missing row or lookup error is fail-open (not skipped), matching
+// the previous inline behaviour.
+func (s *Service) lookupSuspended(host string) bool {
 	inst, err := s.repo.FindByHost(host)
 	if err != nil {
 		return false
 	}
 	return inst.SuspensionState != "" && inst.SuspensionState != model.SuspensionStateNone
+}
+
+// warnMetaFetchFailed logs a meta-fetch failure at most once per metaWarnEvery
+// window so a persistent meta outage does not emit a warning per delivery job.
+// The first failure always logs to preserve observability (#1410).
+func (s *Service) warnMetaFetchFailed(host string, err error) {
+	now := s.clock()
+
+	s.mu.Lock()
+	if !s.lastMetaWarn.IsZero() && now.Sub(s.lastMetaWarn) < s.metaWarnEvery {
+		s.mu.Unlock()
+		return
+	}
+	s.lastMetaWarn = now
+	s.mu.Unlock()
+
+	slog.Warn("instance: ShouldSkipDelivery could not fetch meta; block/federation gate skipped this call",
+		"host", host, "error", err)
 }
 
 // HostMatchesAny reports whether host (case-insensitive, Unicode-aware)
@@ -325,9 +447,14 @@ func (s *Service) Suspend(host string, state model.SuspensionState) error {
 	if _, err := s.repo.FindByHost(host); err != nil {
 		return ErrInstanceNotFound
 	}
-	return s.repo.UpdateFields(host, map[string]any{
+	if err := s.repo.UpdateFields(host, map[string]any{
 		"suspensionState": state,
-	})
+	}); err != nil {
+		return err
+	}
+	// suspend / unsuspend の結果を配送可否へ TTL を待たず即時反映する (#1407 review)。
+	s.InvalidateSuspendCache(host)
+	return nil
 }
 
 // UpdateModerationNote sets the moderationNote field on the instance row.
