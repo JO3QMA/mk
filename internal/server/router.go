@@ -1961,6 +1961,9 @@ func (s *Server) setupRoutes() {
 	// 満たしている。
 	adminHandler.SetUserTokenInvalidator(s.auth)
 	adminHandler.SetInstanceRepo(instanceRepo)
+	// admin/federation/update-instance の suspend / unsuspend を deliver hot path
+	// の suspend 判定 cache へ TTL を待たず即時反映する (#1407 review)。
+	adminHandler.SetInstanceSuspendCacheInvalidator(instanceService)
 	// admin/show-user の signins field を実データで埋める (#1198)。signinRepo
 	// は signin handler 配線時に既に構築済 (line ~1030)。
 	adminHandler.SetSigninRepo(signinRepo)

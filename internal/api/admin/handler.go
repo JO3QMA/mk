@@ -135,6 +135,37 @@ type Handler struct {
 	// signinRepo は admin/show-user の `signins` field を実データで埋める
 	// ために使う (#1198)。未配線時は `[]` fallback で shape compat を保つ。
 	signinRepo repository.SigninRepository
+	// instanceSuspendInvalidator は admin が remote instance を suspend /
+	// unsuspend した直後に deliver hot path の suspend 判定 cache を即時失効
+	// するために使う (#1407 review)。未配線時は最大 cacheTTL (5min) 待ちで
+	// stale な配送可否判定が残るが security regression ではないため optional。
+	instanceSuspendInvalidator InstanceSuspendCacheInvalidator
+}
+
+// InstanceSuspendCacheInvalidator drops the cached delivery-suspend decision
+// for a host so the next ShouldSkipDelivery re-reads it from the DB. Implemented
+// by core/instance.Service. Used by admin/federation/update-instance which
+// writes suspensionState through instanceRepo directly (bypassing
+// instance.Service.Suspend) — see #1407 review.
+type InstanceSuspendCacheInvalidator interface {
+	InvalidateSuspendCache(host string)
+}
+
+// SetInstanceSuspendCacheInvalidator wires the instance Service so
+// admin/federation/update-instance flushes the deliver suspend cache for the
+// affected host immediately. production では wire 推奨 (未配線時は最大 5min
+// stale window が残るが、issue #1407 が許容する範囲)。
+func (h *Handler) SetInstanceSuspendCacheInvalidator(inv InstanceSuspendCacheInvalidator) {
+	h.instanceSuspendInvalidator = inv
+}
+
+// invalidateInstanceSuspendCache は host の deliver suspend 判定 cache を即時
+// 失効させる helper。invalidator 未配線 / host 空のときは noop。
+func (h *Handler) invalidateInstanceSuspendCache(host string) {
+	if h.instanceSuspendInvalidator == nil || host == "" {
+		return
+	}
+	h.instanceSuspendInvalidator.InvalidateSuspendCache(host)
 }
 
 // UserTokenInvalidator drops every cached auth entry for the given userID

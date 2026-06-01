@@ -357,10 +357,15 @@ func (s *Service) evictExpiredLocked(now time.Time) {
 	}
 }
 
-// invalidateSuspendCache drops the cached suspend decision for host so the next
+// InvalidateSuspendCache drops the cached suspend decision for host so the next
 // ShouldSkipDelivery re-reads it from the repository. suspend / unsuspend 直後に
-// 呼ぶことで、TTL を待たずに配送可否へ即時反映する (#1407 review)。
-func (s *Service) invalidateSuspendCache(host string) {
+// 呼ぶことで、TTL を待たずに配送可否へ即時反映する (#1407 review)。Service.Suspend
+// 経由だけでなく、admin/federation/update-instance のように instanceRepo を直接
+// 更新する handler からも呼べるよう公開している。
+func (s *Service) InvalidateSuspendCache(host string) {
+	if host == "" {
+		return
+	}
 	s.mu.Lock()
 	delete(s.suspendCache, host)
 	s.mu.Unlock()
@@ -448,7 +453,7 @@ func (s *Service) Suspend(host string, state model.SuspensionState) error {
 		return err
 	}
 	// suspend / unsuspend の結果を配送可否へ TTL を待たず即時反映する (#1407 review)。
-	s.invalidateSuspendCache(host)
+	s.InvalidateSuspendCache(host)
 	return nil
 }
 

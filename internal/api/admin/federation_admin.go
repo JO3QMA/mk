@@ -205,6 +205,10 @@ func (h *Handler) FederationUpdateInstance(c echo.Context) error {
 			// なって moderation log だけ書き込まれる症状が再発する。warn
 			// で残すことで運用者が気付ける。
 			slog.Warn("admin: instance UpdateFields failed", "host", req.Host, "err", err)
+		} else if req.IsSuspended != nil {
+			// suspensionState を更新したら deliver hot path の suspend 判定
+			// cache を即時失効し、TTL を待たず配送可否へ反映する (#1407 review)。
+			h.invalidateInstanceSuspendCache(req.Host)
 		}
 	}
 	// suspend / unsuspend と moderationNote 変更で個別 log を出す。
