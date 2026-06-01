@@ -127,13 +127,12 @@ func TestClipNoteRepository_ListByClipVisible(t *testing.T) {
 		{ID: "n_cnv_fol", UserID: author.ID, Visibility: model.NoteVisibilityFollowers, Reactions: datatypes.JSON([]byte("{}"))},
 		{ID: "n_cnv_spec", UserID: author.ID, Visibility: model.NoteVisibilitySpecified, VisibleUserIDs: pq.StringArray{allowed.ID}, Reactions: datatypes.JSON([]byte("{}"))},
 	}
-	for i, n := range notes {
+	for _, n := range notes {
 		require.NoError(t, noteRepo.Create(n))
 		defer cleanupNote(t, n.ID)
 		cn := &model.ClipNote{ID: "cnv_" + n.ID, ClipID: c.ID, NoteID: n.ID}
 		require.NoError(t, repo.Create(cn))
 		defer testDB.Exec(`DELETE FROM "clip_note" WHERE id = ?`, cn.ID)
-		_ = i
 	}
 
 	f := &model.Following{ID: "fl_cnv_1", FollowerID: follower.ID, FolloweeID: author.ID}
