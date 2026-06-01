@@ -1,6 +1,7 @@
 package notes
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -227,12 +228,25 @@ func (h *Handler) SearchByTag(c echo.Context) error {
 	req.Limit = pagination.ClampLimit(req.Limit, 10, 100)
 	// sinceDate / untilDate を aidx prefix に正規化 (#1166)。
 	sinceID, untilID := id.NormalizeCursor(req.SinceID, req.UntilID, req.SinceDate, req.UntilDate)
-	// tagsカラムにtagを含むノートを検索
-	notes, err := h.noteRepo.SearchByTag(req.Tag, req.Limit, sinceID, untilID)
+	// tagsカラムにtagを含むノートを検索。visibility は repository 側で
+	// push-down する (#1439)。discovery 系の tag 検索は notes/show の
+	// 「ID 既知公開」doctrine 対象外なので、匿名/非follower には followers/
+	// specified note を返さない。
+	viewer := middleware.GetUser(c)
+	viewerID := ""
+	if viewer != nil {
+		viewerID = viewer.ID
+	}
+	notes, err := h.noteRepo.SearchByTag(req.Tag, viewerID, req.Limit, sinceID, untilID)
 	if err != nil {
+		// tag 検索失敗は従来どおり空配列で返す (TS 互換) が、visibility
+		// push-down 追加で SQL エラーも黙殺されうるため診断用に 1 行残す。
+		// ユーザー挙動 (200 + 空配列) は不変で operator-actionable でもないため
+		// Warn ではなく Debug に留める (#1446 review)。
+		slog.Debug("notes/search-by-tag: SearchByTag failed", "tag", req.Tag, "err", err)
 		return c.JSON(http.StatusOK, []entity.NoteEntity{})
 	}
-	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, middleware.GetUser(c)))
+	return c.JSON(http.StatusOK, h.packMany(c.Request().Context(), notes, viewer))
 }
 
 // Clips handles POST /api/notes/clips.
