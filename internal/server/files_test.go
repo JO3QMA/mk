@@ -42,15 +42,11 @@ func (s *stubFilesLookup) FindByAnyAccessKey(key string) (*model.DriveFile, erro
 // io.NopCloser に包んで返す (non-seekable 経路を試すため敢えて *os.File
 // を使わない)。
 type memStorage struct {
-	byKey   map[string]string
-	getFail map[string]error
+	byKey map[string]string
 }
 
 func (m *memStorage) Put(string, io.Reader) (string, error) { return "", nil }
 func (m *memStorage) Get(key string) (io.ReadCloser, error) {
-	if err, ok := m.getFail[key]; ok {
-		return nil, err
-	}
 	body, ok := m.byKey[key]
 	if !ok {
 		return nil, coredrive.ErrObjectNotFound
