@@ -1498,7 +1498,16 @@ func (s *Server) setupRoutes() {
 
 	// Static file serving for LocalStorage / S3 backend. `storedInternal=true`
 	// な行は driveStorage が S3 でも localDriveStorage に倒して提供する (#1414)。
-	s.echo.GET("/files/:accessKey", filesHandler(driveFileRepo, driveStorage, localDriveStorage))
+	//
+	// driveStorage がローカル (= object storage 非活性) の場合は primary と
+	// local が同じローカル FS を指すため storedInternal 判定が無意味。この
+	// 経路では lookup を nil 配線し、ホットパスである `/files/:accessKey` の
+	// 毎リクエスト DB クエリを省く (filesHandler の nil-lookup 分岐に倒す)。
+	var filesLookup filesDriveLookup
+	if _, isLocal := driveStorage.(*coredrive.LocalStorage); !isLocal {
+		filesLookup = driveFileRepo
+	}
+	s.echo.GET("/files/:accessKey", filesHandler(filesLookup, driveStorage, localDriveStorage))
 
 	// Media proxy endpoint
 	proxyAllowlist := coremediaproxy.NewDBAllowlistChecker(s.db)
