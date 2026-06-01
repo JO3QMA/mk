@@ -527,6 +527,10 @@ func (s *Server) setupRoutes() {
 	// Instance management (Phase 3 Step H)
 	instanceService := coreinstance.NewService(instanceRepo, metaRepo, idGen)
 	federationResolver.SetInstanceTracker(instanceService)
+	// ホワイトリスト連合 (federation: specified) / blockedHosts に対する gate を
+	// resolver の入口 (fetchActor / resolveNoteOnce / IngestNoteWithCreated) に
+	// 適用する。deliver_service / inboxProcessor と同じ instanceService を共有。
+	federationResolver.SetHostBlockChecker(instanceService)
 	// 新規 instance row 発見時に nodeinfo を取得して metadata を更新する。
 	// admin/federation/refresh-remote-instance-metadata でも同じ fetcher を
 	// 再利用して on-demand で再取得する (#351 フォロー)。
