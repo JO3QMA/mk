@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/api/pagination"
 	coreclip "github.com/shiroha-a/mk/internal/core/clip"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/core/notesfilter"
 	"github.com/shiroha-a/mk/internal/entity"
 	"github.com/shiroha-a/mk/internal/misc/id"
@@ -29,12 +30,21 @@ type Handler struct {
 	// userRepo は clips/notes 経由で他人の clip を閲覧する際の hardMutedWords
 	// filter (#787) のために viewer profile を引く。未配線時は filter skip。
 	userRepo repository.UserRepository
+	// followingRepo は clips/notes で clip 内の各 note の visibility 判定
+	// (= core/note.CanSeeNote) で follower 関係を引くために使う。
+	followingRepo repository.FollowingRepository
 }
 
 // SetUserRepo wires a UserRepository so clips/notes filters out notes that
 // match the viewer's hardMutedWords (#787).
 func (h *Handler) SetUserRepo(r repository.UserRepository) {
 	h.userRepo = r
+}
+
+// SetFollowingRepo wires a FollowingRepository used by clips/notes for the
+// per-note visibility check. 未配線時は CanSeeNote が fail-closed に倒れる。
+func (h *Handler) SetFollowingRepo(r repository.FollowingRepository) {
+	h.followingRepo = r
 }
 
 // SetNoteFieldResolver wires the shared resolver that fills Files /
@@ -77,6 +87,22 @@ func (h *Handler) emojiLookup() entity.EmojiLookup {
 		return nil
 	}
 	return h.emojiRepo
+}
+
+// filterVisible drops notes the viewer is not allowed to see. followingRepo
+// が未配線の場合 CanSeeNote は followers visibility を投稿者本人以外に
+// 見せない (fail-closed)。
+func (h *Handler) filterVisible(viewer *model.User, notes []*model.Note) []*model.Note {
+	if len(notes) == 0 {
+		return notes
+	}
+	out := make([]*model.Note, 0, len(notes))
+	for _, n := range notes {
+		if corenote.CanSeeNote(viewer, n, h.followingRepo) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // NewHandler creates a new clips Handler.
@@ -327,6 +353,7 @@ func (h *Handler) Notes(c echo.Context) error {
 		}
 		return apierr.JSONInternalError(c)
 	}
+	notes = h.filterVisible(user, notes)
 	notes = notesfilter.ApplyHardMute(h.userRepo, user, notes)
 	entities := entity.PackNotes(c.Request().Context(), notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(entities, user)

@@ -935,6 +935,62 @@ func TestNotes_WithChannelNotes(t *testing.T) {
 	assert.True(t, hasChannel, "withChannelNotes=true で channel 投稿が含まれる")
 }
 
+// followers / specified visibility のノートは閲覧権限のない viewer に対して
+// 除外されることを guard する。
+func TestNotes_AnonymousExcludesNonPublicVisibility(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+	noteRepo := h.noteRepo.(*testutil.MockNoteRepository)
+	text := "secret"
+	noteRepo.Notes["nv_pub"] = &model.Note{
+		ID: "nv_pub", UserID: "user1", Text: &text,
+		Visibility: model.NoteVisibilityPublic, Reactions: datatypes.JSON([]byte("{}")),
+	}
+	noteRepo.Notes["nv_fol"] = &model.Note{
+		ID: "nv_fol", UserID: "user1", Text: &text,
+		Visibility: model.NoteVisibilityFollowers, Reactions: datatypes.JSON([]byte("{}")),
+	}
+	noteRepo.Notes["nv_spec"] = &model.Note{
+		ID: "nv_spec", UserID: "user1", Text: &text,
+		Visibility:     model.NoteVisibilitySpecified,
+		VisibleUserIDs: []string{"other"},
+		Reactions:      datatypes.JSON([]byte("{}")),
+	}
+
+	rec := post(h.Notes, `{"userId":"user1"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	ids := map[string]bool{}
+	for _, n := range out {
+		ids[n["id"].(string)] = true
+	}
+	assert.True(t, ids["nv_pub"], "public は anonymous で見える")
+	assert.False(t, ids["nv_fol"], "followers は anonymous に漏らさない")
+	assert.False(t, ids["nv_spec"], "specified は対象外 viewer に漏らさない")
+}
+
+// follower 関係にある viewer は followers visibility のノートを閲覧可能。
+func TestNotes_FollowerSeesFollowersVisibility(t *testing.T) {
+	h, repo := newTestHandler(t)
+	addTestUser(repo)
+	noteRepo := h.noteRepo.(*testutil.MockNoteRepository)
+	text := "for-followers"
+	noteRepo.Notes["nv_fol2"] = &model.Note{
+		ID: "nv_fol2", UserID: "user1", Text: &text,
+		Visibility: model.NoteVisibilityFollowers, Reactions: datatypes.JSON([]byte("{}")),
+	}
+	fRepo := h.followingRepo.(*testutil.MockFollowingRepository)
+	fRepo.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "viewer", FolloweeID: "user1"}
+
+	rec := postStub(h.Notes, `{"userId":"user1"}`, &model.User{ID: "viewer"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out, 1)
+	assert.Equal(t, "nv_fol2", out[0]["id"])
+}
+
 func TestNotes_LimitClamp(t *testing.T) {
 	h, repo := newTestHandler(t)
 	addTestUser(repo)

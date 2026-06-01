@@ -11,6 +11,7 @@ import (
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	"github.com/shiroha-a/mk/internal/api/pagination"
 	corefollowing "github.com/shiroha-a/mk/internal/core/following"
+	corenote "github.com/shiroha-a/mk/internal/core/note"
 	"github.com/shiroha-a/mk/internal/core/notesfilter"
 	corerole "github.com/shiroha-a/mk/internal/core/role"
 	"github.com/shiroha-a/mk/internal/core/user"
@@ -226,6 +227,22 @@ func (h *Handler) emojiLookup() entity.EmojiLookup {
 		return nil
 	}
 	return h.emojiRepo
+}
+
+// filterVisible drops notes the viewer is not allowed to see. followingRepo
+// が未配線の場合 CanSeeNote は followers visibility を投稿者本人以外に
+// 見せない (fail-closed)。
+func (h *Handler) filterVisible(viewer *model.User, notes []*model.Note) []*model.Note {
+	if len(notes) == 0 {
+		return notes
+	}
+	out := make([]*model.Note, 0, len(notes))
+	for _, n := range notes {
+		if corenote.CanSeeNote(viewer, n, h.followingRepo) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // populateUserEmojis resolves custom emoji names in user.Emojis to URLs and
@@ -597,6 +614,7 @@ func (h *Handler) Notes(c echo.Context) error {
 	}
 
 	viewer := middleware.GetUser(c)
+	notes = h.filterVisible(viewer, notes)
 	notes = notesfilter.ApplyHardMute(h.userRepo, viewer, notes)
 	out := entity.PackNotes(c.Request().Context(), notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 	h.fieldRes.Apply(out, viewer)
@@ -969,6 +987,7 @@ func (h *Handler) fillPinned(ctx context.Context, viewer *model.User, u *model.U
 			detailed.PinnedNoteIDs = ids
 			if h.noteRepo != nil {
 				if notes, err := h.noteRepo.FindManyByIDsWithUser(ids); err == nil {
+					notes = h.filterVisible(viewer, notes)
 					entities := entity.PackNotes(ctx, notes, h.idGen, h.instanceLookup(), h.emojiLookup(), h.reactionReader())
 					h.fieldRes.Apply(entities, viewer)
 					packed := make([]any, 0, len(entities))

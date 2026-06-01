@@ -576,6 +576,35 @@ func TestNotes_AnonymousOnPublic(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// public clip に含まれる followers / specified visibility のノートは、
+// 閲覧権限のない viewer に対して除外されることを guard する。
+func TestNotes_AnonymousExcludesNonPublicVisibilityInPublicClip(t *testing.T) {
+	h, repo, clipNoteRepo, notes := newHandler(t)
+	h.SetFollowingRepo(testutil.NewMockFollowingRepository())
+	repo.Clips["c1"] = &model.Clip{ID: "c1", UserID: "alice", IsPublic: true}
+	// clip に紐づく ClipNote を直接 seed (AddNote を経由しない = visibility に
+	// 関係なく clip に存在する状態を再現する)。
+	clipNoteRepo.Entries["cn_pub"] = &model.ClipNote{ID: "cn_pub", ClipID: "c1", NoteID: "n_pub"}
+	clipNoteRepo.Entries["cn_fol"] = &model.ClipNote{ID: "cn_fol", ClipID: "c1", NoteID: "n_fol"}
+	clipNoteRepo.Entries["cn_spec"] = &model.ClipNote{ID: "cn_spec", ClipID: "c1", NoteID: "n_spec"}
+	notes.Notes["n_pub"] = &model.Note{ID: "n_pub", UserID: "alice", Visibility: "public", User: &model.User{ID: "alice"}}
+	notes.Notes["n_fol"] = &model.Note{ID: "n_fol", UserID: "alice", Visibility: "followers", User: &model.User{ID: "alice"}}
+	notes.Notes["n_spec"] = &model.Note{ID: "n_spec", UserID: "alice", Visibility: "specified", VisibleUserIDs: []string{"other"}, User: &model.User{ID: "alice"}}
+
+	c, rec := newReq(t, `{"clipId":"c1"}`)
+	require.NoError(t, h.Notes(c))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	ids := map[string]bool{}
+	for _, n := range out {
+		ids[n["id"].(string)] = true
+	}
+	assert.True(t, ids["n_pub"])
+	assert.False(t, ids["n_fol"], "followers は anonymous に漏らさない")
+	assert.False(t, ids["n_spec"], "specified は対象外 viewer に漏らさない")
+}
+
 // listFailNoteRepo causes ListByClip to fail.
 type listFailNoteRepo struct {
 	*testutil.MockClipNoteRepository
