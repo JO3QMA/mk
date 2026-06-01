@@ -158,9 +158,10 @@ func (h *Handler) Show(c echo.Context) error {
 		return apierr.JSONInvalidParam(c)
 	}
 	if err != nil {
-		if errors.Is(err, corepage.ErrAccessDenied) {
-			return apierr.JSONAccessDenied(c)
-		}
+		// 非 public page を非許可 viewer が引いた場合 (ErrAccessDenied) も存在ごと
+		// 隠して NO_SUCH_PAGE (404) を返す。upstream TS pages/show は可視性ゲートを
+		// 持たず noSuchPage のみ返すため shape が一致し、private page の存在を 403 で
+		// 露呈しない (#1432)。update/delete は TS に accessDenied があるため 403 のまま。
 		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_PAGE", "No such page.", "222120c0-3ead-4528-811b-b96f233388d7"))
 	}
 	// owner / isLiked を attach (#1134)。owner lookup miss は frontend page.vue
