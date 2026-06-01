@@ -751,6 +751,7 @@ func NewMockNoteRepository() *MockNoteRepository {
 	return &MockNoteRepository{
 		Notes:          make(map[string]*model.Note),
 		ReactionCounts: make(map[string]map[string]int),
+		Following:      make(map[string][]string),
 	}
 }
 
@@ -988,11 +989,14 @@ func (m *MockNoteRepository) listFiltered(filter func(*model.Note) bool, untilID
 	return out
 }
 
-// ListByChannelID returns notes posted to the given channel using the
-// shared listFiltered helper (paginationOrder: ASC when sinceID-only, DESC otherwise).
-func (m *MockNoteRepository) ListByChannelID(channelID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+// ListByChannelID mirrors the real repo's visibility push-down for
+// channels/timeline (#1440). viewerID="" は匿名 (public/home のみ)。
+func (m *MockNoteRepository) ListByChannelID(channelID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	return m.listFiltered(func(n *model.Note) bool {
-		return n.ChannelID != nil && *n.ChannelID == channelID
+		if n.ChannelID == nil || *n.ChannelID != channelID {
+			return false
+		}
+		return m.canViewerSeeNote(viewerID, n)
 	}, untilID, sinceID, limit), nil
 }
 
