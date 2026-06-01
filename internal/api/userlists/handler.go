@@ -210,15 +210,16 @@ func (h *Handler) Pull(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ListID == "" || req.UserID == "" {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "listId and userId are required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
-	// 所有者以外は存在ごと隠す。Show と同 UUID を返して、「存在しない」と
-	// 「他人」の判別ができないようにする (probing 耐性)。
+	// 所有者以外は存在ごと隠す。upstream Misskey TS users/lists/pull と同 UUID
+	// (= update-membership と共有)。これにより「未存在」と「他人」を error UUID
+	// で識別できないようにする副次効果も得られる。
 	list, err := h.repo.FindByID(req.ListID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7bc05c21-1d7a-41ae-88f1-66820f4dc686"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"))
 	}
 	viewer := middleware.GetUser(c)
 	if viewer == nil || list.UserID != viewer.ID {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7bc05c21-1d7a-41ae-88f1-66820f4dc686"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7f44670e-ab16-43b8-b4c1-ccd2ee89cc02"))
 	}
 	if err := h.repo.RemoveMember(req.ListID, req.UserID); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
@@ -235,14 +236,15 @@ func (h *Handler) Delete(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, apierr.Error("INVALID_PARAM", "listId is required.", "3d81ceae-475f-4600-b2a8-2bc116157532"))
 	}
 	// 所有者以外は存在ごと隠す。これが無いと任意の認証ユーザーが他人の list
-	// を delete できる (data loss、ulid のため復元不能)。
+	// を delete できる (data loss、ulid のため復元不能)。UUID は upstream
+	// Misskey TS users/lists/delete と一致させる。
 	list, err := h.repo.FindByID(req.ListID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7bc05c21-1d7a-41ae-88f1-66820f4dc686"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "78436795-db79-42f5-b1e2-55ea2cf19166"))
 	}
 	viewer := middleware.GetUser(c)
 	if viewer == nil || list.UserID != viewer.ID {
-		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "7bc05c21-1d7a-41ae-88f1-66820f4dc686"))
+		return c.JSON(http.StatusNotFound, apierr.Error("NO_SUCH_LIST", "No such list.", "78436795-db79-42f5-b1e2-55ea2cf19166"))
 	}
 	if err := h.repo.Delete(req.ListID); err != nil {
 		return c.JSON(http.StatusInternalServerError, apierr.Error("INTERNAL_ERROR", "Internal error.", "5d37dbcb-891e-41ca-a3d6-e690c97775ac"))
