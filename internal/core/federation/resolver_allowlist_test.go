@@ -5,6 +5,7 @@ import (
 
 	"github.com/shiroha-a/mk/internal/activitypub"
 	"github.com/shiroha-a/mk/internal/core/federation"
+	corefollowing "github.com/shiroha-a/mk/internal/core/following"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -128,4 +129,25 @@ func TestIngestNote_DedupHitPassesEvenIfHostBlocked(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "existing", got.ID)
 	assert.False(t, created)
+}
+
+// 非連合 host からの Create(Note) を inbox processor が受けたとき、gate の
+// ErrHostNotAllowed は permanent skip として ack され (Process は nil を返す)、
+// queue retry に乗らないこと。actor / note いずれも DB に作られないことも確認。
+func TestProcessCreate_NonFederatedHostIsDroppedNotRetried(t *testing.T) {
+	repo := testutil.NewMockUserRepository()
+	noteRepo := testutil.NewMockNoteRepository()
+	followingRepo := testutil.NewMockFollowingRepository()
+	urls := activitypub.NewURLBuilder("https://example.com")
+	idGen, _ := id.NewGenerator("aidx")
+	resolver := federation.NewResolver(repo, noteRepo, urls, &stubFetcher{body: []byte(sampleActor)}, idGen)
+	resolver.SetHostBlockChecker(&stubHostBlocker{disallowed: map[string]bool{"remote.example": true}})
+	followingSvc := corefollowing.NewService(repo, followingRepo, testutil.NewMockFollowRequestRepository(), idGen)
+	p := federation.NewProcessor(resolver, followingSvc, nil, nil, repo, noteRepo)
+
+	body := []byte(`{"type":"Create","actor":"https://remote.example/users/alice","object":` + sampleRemoteNote + `}`)
+	// permanent skip = ack。err を返すと queue が無駄に retry してしまう。
+	require.NoError(t, p.Process(body))
+	assert.Empty(t, noteRepo.Notes, "非連合 host の note は永続化しない")
+	assert.Empty(t, repo.Users, "非連合 host の actor も作らない")
 }
