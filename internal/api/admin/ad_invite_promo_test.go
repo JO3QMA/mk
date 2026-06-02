@@ -483,6 +483,25 @@ func TestPromoCreate_NonPublicNoteRejected(t *testing.T) {
 	}
 }
 
+// #1469 review (指摘 2): promoNoteRepo は配線済み + noteFinder 未配線の状態で
+// visibility check ができないまま promote が通る fail-open を塞ぐ。production の
+// router.go では SetPromoNoteRepo の直後に SetNoteFinder が必ず呼ばれるため
+// 経路に達しないが、設定ミス検出 + 兄弟 PR (#1467/#1468/#1460) の fail-closed
+// doctrine と揃えるため明示 gate する。
+func TestPromoCreate_NoteFinderUnwired_FailClosed(t *testing.T) {
+	h, _, _, _ := newTestHandler(t)
+	promo := &stubPromoRepo{}
+	h.SetPromoNoteRepo(promo)
+	// SetNoteFinder は故意に呼ばない
+
+	expires := time.Now().Add(24 * time.Hour).UnixMilli()
+	body := fmt.Sprintf(`{"noteId":"n1","expiresAt":%d}`, expires)
+	rec := doPost(h.PromoCreate, body, adminUser)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code,
+		"missing noteFinder must fail-closed instead of bypassing visibility check")
+	assert.Nil(t, promo.created, "promo row must not be persisted when visibility cannot be verified")
+}
+
 func TestPromoCreate_MissingNoteID(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	h.SetPromoNoteRepo(&stubPromoRepo{})
