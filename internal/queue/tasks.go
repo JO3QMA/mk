@@ -362,8 +362,10 @@ const TaskTypeObjectStorageMigrateScan = "objectStorage:migrateScan"
 // TaskTypeObjectStorageMigrateFile migrates a single drive_file row to S3.
 const TaskTypeObjectStorageMigrateFile = "objectStorage:migrateFile"
 
-// ObjectStorageMigrateScanPayload is an empty scan coordinator payload.
-type ObjectStorageMigrateScanPayload struct{}
+// ObjectStorageMigrateScanPayload carries pagination for chained scan jobs.
+type ObjectStorageMigrateScanPayload struct {
+	UntilID string `json:"untilId,omitempty"`
+}
 
 // ObjectStorageMigrateFilePayload identifies one drive_file to migrate.
 type ObjectStorageMigrateFilePayload struct {
@@ -371,8 +373,18 @@ type ObjectStorageMigrateFilePayload struct {
 }
 
 // NewObjectStorageMigrateScanTask builds a scan task.
-func NewObjectStorageMigrateScanTask() driver.Task {
-	return driver.RawTask{TypeName: TaskTypeObjectStorageMigrateScan, Body: []byte("{}")}
+func NewObjectStorageMigrateScanTask(payload ObjectStorageMigrateScanPayload) driver.Task {
+	body, _ := json.Marshal(payload)
+	return driver.RawTask{TypeName: TaskTypeObjectStorageMigrateScan, Body: body}
+}
+
+// DecodeObjectStorageMigrateScanPayload extracts a scan coordinator payload.
+func DecodeObjectStorageMigrateScanPayload(body []byte) (ObjectStorageMigrateScanPayload, error) {
+	var p ObjectStorageMigrateScanPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ObjectStorageMigrateScanPayload{}, err
+	}
+	return p, nil
 }
 
 // NewObjectStorageMigrateFileTask builds a per-file migration task.

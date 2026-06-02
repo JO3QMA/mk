@@ -128,12 +128,13 @@ mk-go 固有。`meta` テーブルで object storage を有効化したあと、
 |---|---|---|---|
 | `driveLocalToObjectStorage.enabled` | bool | `false` | `true` で起動時に `objectStorage` キューへ scan ジョブを 1 件投入 |
 | `driveLocalToObjectStorage.deleteLocal` | bool | `false` | 移行成功後にローカル blob を削除 |
-| `driveLocalToObjectStorage.localPath` | string | `./drive-files` | 移行元ディレクトリ |
-| `driveLocalToObjectStorage.concurrency` | int | `2` | `objectStorage` キューの worker 数 (`mkq` / `asynq` 両方) |
+| `driveLocalToObjectStorage.localPath` | string | `./drive-files` | 移行元ディレクトリ（`enabled: true` 時は起動時に絶対パスへ解決。存在しない場合は警告のみ） |
+| `driveLocalToObjectStorage.concurrency` | int | `2` | `objectStorage` キューの worker 数（**プロセス再起動後**に反映、`mkq` / `asynq` 両方） |
+| `driveLocalToObjectStorage.scanBatchSize` | int | `100` | 1 回の `migrateScan` が enqueue する `migrateFile` 件数。残件がある場合は次バッチ用 scan を連鎖投入 |
 
-環境変数: `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_ENABLED`, `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_DELETE_LOCAL`, `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_LOCAL_PATH`, `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_CONCURRENCY`
+環境変数: `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_ENABLED`, `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_DELETE_LOCAL`, `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_LOCAL_PATH`, `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_CONCURRENCY`, `MK_DRIVE_LOCAL_TO_OBJECT_STORAGE_SCAN_BATCH_SIZE`
 
-**前提**: `meta.useObjectStorage=true` かつ `meta.objectStorageBucket` が設定済み。満たさない状態で `enabled: true` にすると **起動失敗** する。
+**前提**: `meta.useObjectStorage=true` かつ `meta.objectStorageBucket` が設定済み。満たさない状態で `enabled: true` にしても **サーバーは起動する** が、移行ジョブは投入されない（起動ログに警告）。
 
 **運用手順**:
 
@@ -144,7 +145,11 @@ mk-go 固有。`meta` テーブルで object storage を有効化したあと、
 5. `enabled: false` に戻して再起動する（完了後の誤再実行防止）
 6. 任意: ローカルディレクトリをバックアップして削除する
 
-移行後の `GET /files/:accessKey` は、DB 上 `storedInternal=false` の行について公開 URL (`drive_file.url` 等) へ **302 リダイレクト** する。
+移行後の `GET /files/:accessKey` は、DB 上 `storedInternal=false` の行について公開 URL へ **302 リダイレクト** する。リクエストキーに応じて `drive_file.url` / `thumbnailUrl` / `webpublicUrl` を出し分ける。
+
+**配信と CDN (#730)**: 302 化により same-origin プロキシで付与していた `Cache-Control: no-transform` はリダイレクト先へ引き継がれない。Cloudflare Polish 等による再エンコードを避けるには、S3 / CloudFront / CDN 側で同等のヘッダを設定すること。private bucket + pre-signed URL 運用は想定外（公開 URL / CloudFront 前提）。
+
+**scan ジョブ**: `migrateScan` は `scanBatchSize` 件ずつ `migrateFile` を enqueue し、残件があれば `untilId` 付きで次の scan を連鎖する。Redis ロックで並行 scan を抑止する。
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|

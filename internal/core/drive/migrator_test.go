@@ -85,6 +85,56 @@ func TestMigrator_DeleteLocalKeys(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+func TestURLUsesDrivePrefix(t *testing.T) {
+	base := "https://example.com/files"
+	assert.True(t, urlUsesDrivePrefix("https://example.com/files/abc", base))
+	assert.False(t, urlUsesDrivePrefix("https://cdn.example.com/abc", base))
+}
+
+func TestMigrator_RepairDenormalizedCascade(t *testing.T) {
+	db := openMigratorTestDB(t)
+
+	fileID := "frepair1"
+	key := "repairkey"
+	oldURL := "https://example.com/files/" + key
+	newURL := "https://cdn.example.com/files/" + key
+	f := &model.DriveFile{
+		ID:             fileID,
+		StoredInternal: false,
+		AccessKey:      &key,
+		URL:            newURL,
+		Properties:     datatypes.JSON([]byte("{}")),
+		RequestHeaders: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, db.Create(f).Error)
+	t.Cleanup(func() { db.Exec(`DELETE FROM "drive_file" WHERE id = ?`, fileID) })
+
+	user := &model.User{
+		ID:                "urepair1",
+		Username:          "repair1",
+		UsernameLower:     "repair1",
+		AvatarID:          &fileID,
+		AvatarURL:         &oldURL,
+		AvatarDecorations: datatypes.JSON([]byte("[]")),
+	}
+	require.NoError(t, db.Create(user).Error)
+	t.Cleanup(func() { db.Exec(`DELETE FROM "user" WHERE id = ?`, user.ID) })
+
+	bucket := "b"
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{UseObjectStorage: true, ObjectStorageBucket: &bucket}
+	fileRepo := testutil.NewMockDriveFileRepository()
+	fileRepo.Files[fileID] = f
+
+	m := NewMigrator(metaRepo, fileRepo, db, config.DriveLocalToObjectStorageConfig{}, "https://example.com/files")
+	require.NoError(t, m.MigrateFile(context.Background(), fileID))
+
+	var got model.User
+	require.NoError(t, db.First(&got, "id = ?", user.ID).Error)
+	require.NotNil(t, got.AvatarURL)
+	assert.Equal(t, newURL, *got.AvatarURL)
+}
+
 func TestMigrator_MigrateFile_SkipsNonInternal(t *testing.T) {
 	bucket := "b"
 	metaRepo := testutil.NewMockMetaRepository()

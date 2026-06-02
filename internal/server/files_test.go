@@ -90,6 +90,52 @@ func TestFilesHandler_StoredInternalServesFromLocal(t *testing.T) {
 	assert.Equal(t, "max-age=31536000, immutable, no-transform", rec.Header().Get("Cache-Control"))
 }
 
+func TestFilesHandler_ThumbnailKeyRedirectsToThumbnailURL(t *testing.T) {
+	thumbKey := "thumb-key"
+	primaryKey := "primary-key"
+	thumbURL := "https://cdn.example.com/files/thumb-key"
+	lookup := &stubFilesLookup{
+		byKey: map[string]*model.DriveFile{
+			thumbKey: {
+				ID:                 "f-thumb",
+				StoredInternal:     false,
+				URL:                "https://cdn.example.com/files/primary-key",
+				AccessKey:          &primaryKey,
+				ThumbnailAccessKey: &thumbKey,
+				ThumbnailURL:       &thumbURL,
+			},
+		},
+	}
+	c, rec := newFilesTestContext(t, thumbKey)
+	h := filesHandler(lookup, &memStorage{}, &memStorage{})
+	require.NoError(t, h(c))
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, thumbURL, rec.Header().Get("Location"))
+}
+
+func TestFilesHandler_WebpublicKeyRedirectsToWebpublicURL(t *testing.T) {
+	webKey := "web-key"
+	primaryKey := "primary-key"
+	webURL := "https://cdn.example.com/files/web-key"
+	lookup := &stubFilesLookup{
+		byKey: map[string]*model.DriveFile{
+			webKey: {
+				ID:                 "f-web",
+				StoredInternal:     false,
+				URL:                "https://cdn.example.com/files/primary-key",
+				AccessKey:          &primaryKey,
+				WebpublicAccessKey: &webKey,
+				WebpublicURL:       &webURL,
+			},
+		},
+	}
+	c, rec := newFilesTestContext(t, webKey)
+	h := filesHandler(lookup, &memStorage{}, &memStorage{})
+	require.NoError(t, h(c))
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, webURL, rec.Header().Get("Location"))
+}
+
 func TestFilesHandler_MigratedRowRedirectsToPublicURL(t *testing.T) {
 	key := "s3-key"
 	cdnURL := "https://cdn.example.com/files/s3-key"

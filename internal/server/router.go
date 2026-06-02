@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/pprof"
 	urlpkg "net/url"
@@ -367,13 +366,8 @@ func (s *Server) setupRoutes() error {
 	localPath := s.config.DriveLocalToObjectStorage.LocalPath
 	localDriveStorage := coredrive.NewLocalStorage(localPath, s.config.DriveURL)
 	serverMeta, serverMetaErr := metaRepo.Fetch()
-	if s.config.DriveLocalToObjectStorage.Enabled {
-		if serverMetaErr != nil {
-			return fmt.Errorf("drive migration: fetch meta: %w", serverMetaErr)
-		}
-		if err := validateDriveLocalMigration(s.config, serverMeta); err != nil {
-			return err
-		}
+	if s.config.DriveLocalToObjectStorage.Enabled && serverMetaErr != nil {
+		slog.Warn("driveLocalToObjectStorage.enabled but meta could not be loaded; migration jobs will not run", "error", serverMetaErr)
 	}
 	var driveStorage coredrive.Storage
 	if serverMetaErr == nil {
@@ -479,10 +473,12 @@ func (s *Server) setupRoutes() error {
 		migrateRedis = s.redis.JobQueue
 	}
 	osMigrateProcessor := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
-		Migrator:    driveMigrator,
-		FileRepo:    driveFileRepo,
-		EnqueueFile: s.queueClient.EnqueueObjectStorageMigrateFile,
-		Redis:       migrateRedis,
+		Migrator:      driveMigrator,
+		FileRepo:      driveFileRepo,
+		EnqueueFile:   s.queueClient.EnqueueObjectStorageMigrateFile,
+		EnqueueScan:   s.queueClient.EnqueueObjectStorageMigrateScanFrom,
+		ScanBatchSize: s.config.DriveLocalToObjectStorage.ScanBatchSize,
+		Redis:         migrateRedis,
 	})
 	s.queueServer.Handle(queue.TaskTypeObjectStorageMigrateScan, osMigrateProcessor.Handle)
 	s.queueServer.Handle(queue.TaskTypeObjectStorageMigrateFile, osMigrateProcessor.Handle)
@@ -2561,7 +2557,7 @@ func (s *Server) setupRoutes() error {
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontend)
 
-	if err := s.maybeEnqueueDriveLocalMigration(driveFileRepo); err != nil {
+	if err := s.maybeEnqueueDriveLocalMigration(driveFileRepo, serverMeta); err != nil {
 		return err
 	}
 	return nil

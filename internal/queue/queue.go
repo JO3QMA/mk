@@ -450,9 +450,15 @@ func (c *Client) EnqueueUnfollow(payload UnfollowPayload) error {
 // EnqueueObjectStorageMigrateScan starts a coordinator that fans out
 // per-file migration jobs (#1476).
 func (c *Client) EnqueueObjectStorageMigrateScan() error {
+	return c.EnqueueObjectStorageMigrateScanFrom("")
+}
+
+// EnqueueObjectStorageMigrateScanFrom continues a chained scan from untilID.
+func (c *Client) EnqueueObjectStorageMigrateScanFrom(untilID string) error {
+	body := mustMarshal(ObjectStorageMigrateScanPayload{UntilID: untilID})
 	base := []driver.EnqueueOption{driver.WithQueue(ObjectStorageQueueName)}
 	base = append(base, c.retentionOpts(ObjectStorageQueueName)...)
-	return c.inner.Enqueue(context.Background(), TaskTypeObjectStorageMigrateScan, []byte("{}"), base...)
+	return c.inner.Enqueue(context.Background(), TaskTypeObjectStorageMigrateScan, body, base...)
 }
 
 // EnqueueObjectStorageMigrateFile enqueues migration for one drive_file row.

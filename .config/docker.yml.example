@@ -227,6 +227,7 @@ proxyBypassHosts:
 #  deleteLocal: false
 #  localPath: ./drive-files
 #  concurrency: 2
+#  scanBatchSize: 100
 
 # Expose the Prometheus /metrics endpoint with job-queue metrics.
 # Unauthenticated; restrict access via nginx / LB ACL if exposed outside

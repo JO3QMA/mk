@@ -55,7 +55,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_Enqueues(t *testing.T) {
 			return nil
 		},
 	})
-	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask())
+	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{}))
 	require.NoError(t, err)
 	require.Contains(t, enqueued, "a")
 }
@@ -83,7 +83,7 @@ func TestObjectStorageMigrateProcessor_HandleFile_MigrationNotConfigured(t *test
 
 func TestObjectStorageMigrateProcessor_HandleScan_NotConfigured(t *testing.T) {
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{})
-	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask())
+	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{}))
 	require.Error(t, err)
 	require.ErrorIs(t, err, driver.SkipRetry)
 }
@@ -106,7 +106,7 @@ func TestObjectStorageMigrateProcessor_HandleFile_BadPayload(t *testing.T) {
 
 func TestObjectStorageMigrateProcessor_HandleScan_LockHeld(t *testing.T) {
 	mr, rdb := newMiniredisClient(t)
-	require.NoError(t, mr.Set("mk:drive:objectStorage:migrateScan:lock", "1"))
+	require.NoError(t, mr.Set(processors.ObjectStorageScanLockKey, "1"))
 
 	repo := testutil.NewMockDriveFileRepository()
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
@@ -117,7 +117,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_LockHeld(t *testing.T) {
 		},
 		Redis: rdb,
 	})
-	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
+	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{})))
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_EmptyRepo(t *testing.T) {
@@ -128,7 +128,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_EmptyRepo(t *testing.T) {
 			return nil
 		},
 	})
-	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
+	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{})))
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_ListError(t *testing.T) {
@@ -140,7 +140,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_ListError(t *testing.T) {
 		FileRepo:    repo,
 		EnqueueFile: func(string) error { return nil },
 	})
-	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask())
+	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{}))
 	require.ErrorContains(t, err, "list failed")
 }
 
@@ -154,21 +154,29 @@ func TestObjectStorageMigrateProcessor_HandleScan_EnqueueError(t *testing.T) {
 		Properties:     datatypes.JSON([]byte("{}")),
 	}
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
-		FileRepo: repo,
+		FileRepo:    repo,
 		EnqueueFile: func(string) error { return errors.New("enqueue failed") },
 	})
-	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask())
+	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{}))
 	require.ErrorContains(t, err, "enqueue failed")
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	key := "k"
+	repo := testutil.NewMockDriveFileRepository()
+	repo.Files["a"] = &model.DriveFile{
+		ID:             "a",
+		StoredInternal: true,
+		AccessKey:      &key,
+		Properties:     datatypes.JSON([]byte("{}")),
+	}
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
-		FileRepo:    testutil.NewMockDriveFileRepository(),
+		FileRepo:    repo,
 		EnqueueFile: func(string) error { return nil },
 	})
-	err := p.Handle(ctx, queue.NewObjectStorageMigrateScanTask())
+	err := p.Handle(ctx, queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{}))
 	require.ErrorIs(t, err, context.Canceled)
 }
 
@@ -187,14 +195,51 @@ func TestObjectStorageMigrateProcessor_HandleScan_MultiPage(t *testing.T) {
 	}
 	var enqueued int
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
-		FileRepo: repo,
+		FileRepo:      repo,
+		ScanBatchSize: 600,
 		EnqueueFile: func(string) error {
 			enqueued++
 			return nil
 		},
+		EnqueueScan: func(string) error { return nil },
 	})
-	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
+	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{})))
 	require.Equal(t, 501, enqueued)
+}
+
+func TestObjectStorageMigrateProcessor_HandleScan_ChainsNextBatch(t *testing.T) {
+	repo := testutil.NewMockDriveFileRepository()
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("f%d", i)
+		key := fmt.Sprintf("k%d", i)
+		repo.Files[id] = &model.DriveFile{
+			ID:             id,
+			StoredInternal: true,
+			URL:            "https://example.com/files/" + key,
+			AccessKey:      &key,
+			Properties:     datatypes.JSON([]byte("{}")),
+		}
+	}
+	var enqueuedFiles []string
+	var scanJobs int
+	var chainedUntil string
+	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
+		FileRepo:      repo,
+		ScanBatchSize: 2,
+		EnqueueFile: func(fileID string) error {
+			enqueuedFiles = append(enqueuedFiles, fileID)
+			return nil
+		},
+		EnqueueScan: func(untilID string) error {
+			scanJobs++
+			chainedUntil = untilID
+			return nil
+		},
+	})
+	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{})))
+	require.Len(t, enqueuedFiles, 2)
+	require.Equal(t, 1, scanJobs)
+	require.Equal(t, "f1", chainedUntil)
 }
 
 func TestObjectStorageMigrateProcessor_HandleFile_Success(t *testing.T) {
@@ -230,7 +275,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_WithRedisLock(t *testing.T) {
 		},
 		Redis: rdb,
 	})
-	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
+	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{})))
 	require.Contains(t, enqueued, "a")
 }
 

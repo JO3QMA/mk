@@ -6,33 +6,28 @@ import (
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestValidateDriveLocalMigration_Disabled(t *testing.T) {
+func TestDriveLocalMigrationReady_Disabled(t *testing.T) {
 	cfg := &config.Config{}
-	require.NoError(t, validateDriveLocalMigration(cfg, nil))
+	assert.False(t, driveLocalMigrationReady(cfg, nil))
 }
 
-func TestValidateDriveLocalMigration_RequiresMeta(t *testing.T) {
+func TestDriveLocalMigrationReady_RequiresMeta(t *testing.T) {
 	cfg := &config.Config{
 		DriveLocalToObjectStorage: config.DriveLocalToObjectStorageConfig{Enabled: true},
 	}
-	err := validateDriveLocalMigration(cfg, &model.Meta{UseObjectStorage: false})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "useObjectStorage")
+	assert.False(t, driveLocalMigrationReady(cfg, &model.Meta{UseObjectStorage: false}))
 }
 
-func TestValidateDriveLocalMigration_RequiresBucket(t *testing.T) {
+func TestDriveLocalMigrationReady_RequiresBucket(t *testing.T) {
 	cfg := &config.Config{
 		DriveLocalToObjectStorage: config.DriveLocalToObjectStorageConfig{Enabled: true},
 	}
-	err := validateDriveLocalMigration(cfg, &model.Meta{UseObjectStorage: true})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "objectStorageBucket")
+	assert.False(t, driveLocalMigrationReady(cfg, &model.Meta{UseObjectStorage: true}))
 }
 
-func TestValidateDriveLocalMigration_OK(t *testing.T) {
+func TestDriveLocalMigrationReady_OK(t *testing.T) {
 	bucket := "my-bucket"
 	cfg := &config.Config{
 		DriveLocalToObjectStorage: config.DriveLocalToObjectStorageConfig{Enabled: true},
@@ -41,5 +36,5 @@ func TestValidateDriveLocalMigration_OK(t *testing.T) {
 		UseObjectStorage:    true,
 		ObjectStorageBucket: &bucket,
 	}
-	require.NoError(t, validateDriveLocalMigration(cfg, meta))
+	assert.True(t, driveLocalMigrationReady(cfg, meta))
 }

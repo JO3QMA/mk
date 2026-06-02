@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -288,30 +290,34 @@ type Source struct {
 
 // DriveLocalToObjectStorageOptions is the YAML shape for local→S3 migration.
 type DriveLocalToObjectStorageOptions struct {
-	Enabled     bool   `mapstructure:"enabled"`
-	DeleteLocal bool   `mapstructure:"deleteLocal"`
-	LocalPath   string `mapstructure:"localPath"`
-	Concurrency int    `mapstructure:"concurrency"`
+	Enabled       bool   `mapstructure:"enabled"`
+	DeleteLocal   bool   `mapstructure:"deleteLocal"`
+	LocalPath     string `mapstructure:"localPath"`
+	Concurrency   int    `mapstructure:"concurrency"`
+	ScanBatchSize int    `mapstructure:"scanBatchSize"`
 }
 
 // DriveLocalToObjectStorageConfig is the resolved migration settings.
 type DriveLocalToObjectStorageConfig struct {
-	Enabled     bool
-	DeleteLocal bool
-	LocalPath   string
-	Concurrency int
+	Enabled       bool
+	DeleteLocal   bool
+	LocalPath     string
+	Concurrency   int
+	ScanBatchSize int
 }
 
 const (
-	defaultDriveMigrationLocalPath   = "./drive-files"
-	defaultDriveMigrationConcurrency = 2
+	defaultDriveMigrationLocalPath     = "./drive-files"
+	defaultDriveMigrationConcurrency   = 2
+	defaultDriveMigrationScanBatchSize = 100
 )
 
 // ResolveDriveLocalToObjectStorage normalises YAML/env into runtime defaults.
 func ResolveDriveLocalToObjectStorage(src *DriveLocalToObjectStorageOptions) DriveLocalToObjectStorageConfig {
 	cfg := DriveLocalToObjectStorageConfig{
-		LocalPath:   defaultDriveMigrationLocalPath,
-		Concurrency: defaultDriveMigrationConcurrency,
+		LocalPath:     defaultDriveMigrationLocalPath,
+		Concurrency:   defaultDriveMigrationConcurrency,
+		ScanBatchSize: defaultDriveMigrationScanBatchSize,
 	}
 	if src == nil {
 		return cfg
@@ -324,7 +330,27 @@ func ResolveDriveLocalToObjectStorage(src *DriveLocalToObjectStorageOptions) Dri
 	if src.Concurrency > 0 {
 		cfg.Concurrency = src.Concurrency
 	}
+	if src.ScanBatchSize > 0 {
+		cfg.ScanBatchSize = src.ScanBatchSize
+	}
 	return cfg
+}
+
+// normalizeDriveLocalMigrationPath resolves localPath to an absolute path when migration is enabled.
+func normalizeDriveLocalMigrationPath(cfg *DriveLocalToObjectStorageConfig) error {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
+	abs, err := filepath.Abs(cfg.LocalPath)
+	if err != nil {
+		return fmt.Errorf("driveLocalToObjectStorage.localPath: %w", err)
+	}
+	cfg.LocalPath = abs
+	if _, err := os.Stat(abs); os.IsNotExist(err) {
+		slog.Warn("driveLocalToObjectStorage.localPath does not exist; migration will skip missing blobs",
+			"path", abs)
+	}
+	return nil
 }
 
 // Config represents the resolved application configuration.
@@ -532,6 +558,7 @@ func bindEnvKeys(v *viper.Viper) {
 		"driveLocalToObjectStorage.deleteLocal",
 		"driveLocalToObjectStorage.localPath",
 		"driveLocalToObjectStorage.concurrency",
+		"driveLocalToObjectStorage.scanBatchSize",
 	}
 	for _, k := range keys {
 		_ = v.BindEnv(k)
@@ -691,11 +718,16 @@ func resolve(src *Source) (*Config, error) {
 		DriveLocalToObjectStorage: ResolveDriveLocalToObjectStorage(src.DriveLocalToObjectStorage),
 	}
 
+	if err := normalizeDriveLocalMigrationPath(&cfg.DriveLocalToObjectStorage); err != nil {
+		return nil, err
+	}
+
 	if cfg.DriveLocalToObjectStorage.Enabled {
 		slog.Info("config: driveLocalToObjectStorage migration is enabled; storedInternal files will be migrated on startup",
 			"localPath", cfg.DriveLocalToObjectStorage.LocalPath,
 			"deleteLocal", cfg.DriveLocalToObjectStorage.DeleteLocal,
-			"concurrency", cfg.DriveLocalToObjectStorage.Concurrency)
+			"concurrency", cfg.DriveLocalToObjectStorage.Concurrency,
+			"scanBatchSize", cfg.DriveLocalToObjectStorage.ScanBatchSize)
 	}
 
 	if cfg.TestMode {

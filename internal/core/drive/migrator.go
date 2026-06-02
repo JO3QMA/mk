@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/model"
@@ -60,8 +61,14 @@ func (m *Migrator) MigrateFile(ctx context.Context, fileID string) error {
 	if err != nil {
 		return err
 	}
-	if !f.StoredInternal || f.IsLink {
+	if f.IsLink {
 		return nil
+	}
+	if !f.StoredInternal {
+		if !urlUsesDrivePrefix(f.URL, m.driveURL) {
+			return m.repairDenormalizedCascade(ctx, f, fileID)
+		}
+		// storedInternal=false だが URL がまだ same-origin /files/ の行は再移行する。
 	}
 
 	local := NewLocalStorage(m.cfg.LocalPath, m.driveURL)
@@ -96,6 +103,57 @@ func (m *Migrator) MigrateFile(ctx context.Context, fileID string) error {
 		newWebpublicURL = &u
 	}
 
+	return m.persistMigration(ctx, fileID, f, local, oldURL, newURL, oldThumbURL, newThumbURL, oldWebpublicURL, newWebpublicURL)
+}
+
+// repairDenormalizedCascade re-runs user/emoji URL updates when drive_file already
+// points at object storage but denormalized columns were not updated (#1476).
+func (m *Migrator) repairDenormalizedCascade(ctx context.Context, f *model.DriveFile, fileID string) error {
+	if m.db == nil || f.AccessKey == nil {
+		return nil
+	}
+	newURL := f.URL
+	if newURL == "" || urlUsesDrivePrefix(newURL, m.driveURL) {
+		return nil
+	}
+	oldURL := fileURLForAccessKey(m.driveURL, *f.AccessKey)
+
+	var oldThumbURL, newThumbURL *string
+	if f.ThumbnailAccessKey != nil && f.ThumbnailURL != nil {
+		ot := fileURLForAccessKey(m.driveURL, *f.ThumbnailAccessKey)
+		if urlUsesDrivePrefix(*f.ThumbnailURL, m.driveURL) {
+			ot = *f.ThumbnailURL
+		}
+		oldThumbURL = &ot
+		nt := *f.ThumbnailURL
+		newThumbURL = &nt
+	}
+
+	var oldWebpublicURL, newWebpublicURL *string
+	if f.WebpublicAccessKey != nil && f.WebpublicURL != nil {
+		ow := fileURLForAccessKey(m.driveURL, *f.WebpublicAccessKey)
+		if urlUsesDrivePrefix(*f.WebpublicURL, m.driveURL) {
+			ow = *f.WebpublicURL
+		}
+		oldWebpublicURL = &ow
+		nw := *f.WebpublicURL
+		newWebpublicURL = &nw
+	}
+
+	return m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return cascadeDenormalizedURLs(tx, fileID, oldURL, newURL, oldThumbURL, newThumbURL, oldWebpublicURL, newWebpublicURL)
+	})
+}
+
+func (m *Migrator) persistMigration(
+	ctx context.Context,
+	fileID string,
+	f *model.DriveFile,
+	local Storage,
+	oldURL, newURL string,
+	oldThumbURL, newThumbURL *string,
+	oldWebpublicURL, newWebpublicURL *string,
+) error {
 	fields := map[string]any{
 		"url":            newURL,
 		"storedInternal": false,
@@ -130,6 +188,18 @@ func migrationMetaReady(meta *model.Meta) bool {
 		return false
 	}
 	return true
+}
+
+func urlUsesDrivePrefix(u, driveURL string) bool {
+	if u == "" || driveURL == "" {
+		return false
+	}
+	base := strings.TrimRight(driveURL, "/")
+	return strings.HasPrefix(u, base+"/") || u == base
+}
+
+func fileURLForAccessKey(driveURL, accessKey string) string {
+	return strings.TrimRight(driveURL, "/") + "/" + accessKey
 }
 
 func (m *Migrator) migrateObject(local Storage, s3 *S3Storage, accessKey *string) (string, error) {

@@ -87,6 +87,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.False(t, cfg.DriveLocalToObjectStorage.Enabled)
 	assert.Equal(t, "./drive-files", cfg.DriveLocalToObjectStorage.LocalPath)
 	assert.Equal(t, 2, cfg.DriveLocalToObjectStorage.Concurrency)
+	assert.Equal(t, 100, cfg.DriveLocalToObjectStorage.ScanBatchSize)
 }
 
 func TestLoad_DriveLocalToObjectStorage(t *testing.T) {
@@ -96,6 +97,7 @@ driveLocalToObjectStorage:
   deleteLocal: true
   localPath: /data/drive
   concurrency: 4
+  scanBatchSize: 50
 `
 	path := writeTestConfig(t, yaml)
 	cfg, err := Load(path)
@@ -104,6 +106,7 @@ driveLocalToObjectStorage:
 	assert.True(t, cfg.DriveLocalToObjectStorage.DeleteLocal)
 	assert.Equal(t, "/data/drive", cfg.DriveLocalToObjectStorage.LocalPath)
 	assert.Equal(t, 4, cfg.DriveLocalToObjectStorage.Concurrency)
+	assert.Equal(t, 50, cfg.DriveLocalToObjectStorage.ScanBatchSize)
 }
 
 func TestResolveDriveLocalToObjectStorage_Nil(t *testing.T) {
@@ -111,6 +114,17 @@ func TestResolveDriveLocalToObjectStorage_Nil(t *testing.T) {
 	assert.False(t, cfg.Enabled)
 	assert.Equal(t, "./drive-files", cfg.LocalPath)
 	assert.Equal(t, 2, cfg.Concurrency)
+	assert.Equal(t, 100, cfg.ScanBatchSize)
+}
+
+func TestNormalizeDriveLocalMigrationPath_AbsWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DriveLocalToObjectStorageConfig{
+		Enabled:   true,
+		LocalPath: dir,
+	}
+	require.NoError(t, normalizeDriveLocalMigrationPath(&cfg))
+	assert.True(t, filepath.IsAbs(cfg.LocalPath))
 }
 
 func TestLoad_DisableEndpointRateLimitsTrue(t *testing.T) {
