@@ -33,6 +33,7 @@ type mockStorage struct {
 
 func (m *mockStorage) Put(_ string, _ io.Reader) (string, error) { return "", nil }
 func (m *mockStorage) Delete(_ string) error                     { return nil }
+func (m *mockStorage) StoredInternal() bool                      { return true }
 func (m *mockStorage) Get(key string) (io.ReadCloser, error) {
 	data, ok := m.files[key]
 	if !ok {

@@ -346,9 +346,13 @@ func normalizeDriveLocalMigrationPath(cfg *DriveLocalToObjectStorageConfig) erro
 		return fmt.Errorf("driveLocalToObjectStorage.localPath: %w", err)
 	}
 	cfg.LocalPath = abs
-	if _, err := os.Stat(abs); os.IsNotExist(err) {
-		slog.Warn("driveLocalToObjectStorage.localPath does not exist; migration will skip missing blobs",
-			"path", abs)
+	if _, err := os.Stat(abs); err != nil {
+		if os.IsNotExist(err) {
+			slog.Warn("driveLocalToObjectStorage.localPath does not exist; migration will skip missing blobs",
+				"path", abs)
+			return nil
+		}
+		return fmt.Errorf("driveLocalToObjectStorage.localPath: cannot stat %s: %w", abs, err)
 	}
 	return nil
 }

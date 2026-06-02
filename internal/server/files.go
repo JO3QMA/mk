@@ -43,7 +43,7 @@ type filesDriveLookup interface {
 // 倒していたが、Cloudflare Tunnel 経由のデプロイで bigger-than-buffer
 // (33KB 程度) なファイルが truncate される問題があった (#730)。明示
 // Content-Length + Cache-Control: no-transform でこれを回避する。
-func filesHandler(lookup filesDriveLookup, primary, local coredrive.Storage) echo.HandlerFunc {
+func filesHandler(lookup filesDriveLookup, primary, local coredrive.Storage, driveURL string) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		key := c.Param("accessKey")
 		storage := primary
@@ -51,7 +51,7 @@ func filesHandler(lookup filesDriveLookup, primary, local coredrive.Storage) ech
 			if f, err := lookup.FindByAnyAccessKey(key); err == nil {
 				if f.StoredInternal {
 					storage = local
-				} else if target := redirectURLForAccessKey(f, key); target != "" {
+				} else if target := redirectURLForAccessKey(f, key, driveURL); target != "" {
 					return c.Redirect(http.StatusFound, target)
 				}
 			}
@@ -105,7 +105,8 @@ func filesHandler(lookup filesDriveLookup, primary, local coredrive.Storage) ech
 }
 
 // redirectURLForAccessKey returns the public CDN/S3 URL for a migrated file row.
-func redirectURLForAccessKey(f *model.DriveFile, accessKey string) string {
+// Same-origin /files/ URLs are not redirected (avoids 302 loops during migration).
+func redirectURLForAccessKey(f *model.DriveFile, accessKey, driveURL string) string {
 	if f == nil {
 		return ""
 	}
@@ -123,6 +124,9 @@ func redirectURLForAccessKey(f *model.DriveFile, accessKey string) string {
 		return ""
 	}
 	if _, err := url.Parse(u); err != nil {
+		return ""
+	}
+	if coredrive.URLUsesDrivePrefix(u, driveURL) {
 		return ""
 	}
 	return u

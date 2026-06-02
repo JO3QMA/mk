@@ -65,7 +65,7 @@ func (m *Migrator) MigrateFile(ctx context.Context, fileID string) error {
 		return nil
 	}
 	if !f.StoredInternal {
-		if !urlUsesDrivePrefix(f.URL, m.driveURL) {
+		if !URLUsesDrivePrefix(f.URL, m.driveURL) {
 			return m.repairDenormalizedCascade(ctx, f, fileID)
 		}
 		// storedInternal=false だが URL がまだ same-origin /files/ の行は再移行する。
@@ -113,7 +113,7 @@ func (m *Migrator) repairDenormalizedCascade(ctx context.Context, f *model.Drive
 		return nil
 	}
 	newURL := f.URL
-	if newURL == "" || urlUsesDrivePrefix(newURL, m.driveURL) {
+	if newURL == "" || URLUsesDrivePrefix(newURL, m.driveURL) {
 		return nil
 	}
 	oldURL := fileURLForAccessKey(m.driveURL, *f.AccessKey)
@@ -121,7 +121,7 @@ func (m *Migrator) repairDenormalizedCascade(ctx context.Context, f *model.Drive
 	var oldThumbURL, newThumbURL *string
 	if f.ThumbnailAccessKey != nil && f.ThumbnailURL != nil {
 		ot := fileURLForAccessKey(m.driveURL, *f.ThumbnailAccessKey)
-		if urlUsesDrivePrefix(*f.ThumbnailURL, m.driveURL) {
+		if URLUsesDrivePrefix(*f.ThumbnailURL, m.driveURL) {
 			ot = *f.ThumbnailURL
 		}
 		oldThumbURL = &ot
@@ -132,7 +132,7 @@ func (m *Migrator) repairDenormalizedCascade(ctx context.Context, f *model.Drive
 	var oldWebpublicURL, newWebpublicURL *string
 	if f.WebpublicAccessKey != nil && f.WebpublicURL != nil {
 		ow := fileURLForAccessKey(m.driveURL, *f.WebpublicAccessKey)
-		if urlUsesDrivePrefix(*f.WebpublicURL, m.driveURL) {
+		if URLUsesDrivePrefix(*f.WebpublicURL, m.driveURL) {
 			ow = *f.WebpublicURL
 		}
 		oldWebpublicURL = &ow
@@ -190,7 +190,8 @@ func migrationMetaReady(meta *model.Meta) bool {
 	return true
 }
 
-func urlUsesDrivePrefix(u, driveURL string) bool {
+// URLUsesDrivePrefix reports whether u is under the instance same-origin /files/ base.
+func URLUsesDrivePrefix(u, driveURL string) bool {
 	if u == "" || driveURL == "" {
 		return false
 	}
@@ -243,6 +244,11 @@ func cascadeDenormalizedURLs(
 	oldThumbURL, newThumbURL *string,
 	oldWebpublicURL, newWebpublicURL *string,
 ) error {
+	if oldURL == newURL &&
+		(oldThumbURL == nil || newThumbURL == nil || *oldThumbURL == *newThumbURL) &&
+		(oldWebpublicURL == nil || newWebpublicURL == nil || *oldWebpublicURL == *newWebpublicURL) {
+		return nil
+	}
 	if err := tx.Model(&model.User{}).Where(`"avatarId" = ?`, fileID).Update("avatarUrl", newURL).Error; err != nil {
 		return err
 	}

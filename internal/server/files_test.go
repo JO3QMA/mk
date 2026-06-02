@@ -18,6 +18,8 @@ import (
 	"github.com/shiroha-a/mk/internal/model"
 )
 
+const testDriveURL = "https://example.com/files"
+
 // stubFilesLookup is a minimal stand-in for filesDriveLookup. We hand-roll
 // the stub rather than reuse testutil.MockDriveFileRepository so the test
 // stays focused on the handler's storage-switching contract.
@@ -53,7 +55,8 @@ func (m *memStorage) Get(key string) (io.ReadCloser, error) {
 	}
 	return io.NopCloser(strings.NewReader(body)), nil
 }
-func (m *memStorage) Delete(string) error { return nil }
+func (m *memStorage) Delete(string) error  { return nil }
+func (m *memStorage) StoredInternal() bool { return false }
 
 func newFilesTestContext(t *testing.T, key string) (echo.Context, *httptest.ResponseRecorder) {
 	t.Helper()
@@ -82,7 +85,7 @@ func TestFilesHandler_StoredInternalServesFromLocal(t *testing.T) {
 	local := &memStorage{byKey: map[string]string{key: "local-body"}}
 
 	c, rec := newFilesTestContext(t, key)
-	h := filesHandler(lookup, primary, local)
+	h := filesHandler(lookup, primary, local, testDriveURL)
 	require.NoError(t, h(c))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -107,7 +110,7 @@ func TestFilesHandler_ThumbnailKeyRedirectsToThumbnailURL(t *testing.T) {
 		},
 	}
 	c, rec := newFilesTestContext(t, thumbKey)
-	h := filesHandler(lookup, &memStorage{}, &memStorage{})
+	h := filesHandler(lookup, &memStorage{}, &memStorage{}, testDriveURL)
 	require.NoError(t, h(c))
 	assert.Equal(t, http.StatusFound, rec.Code)
 	assert.Equal(t, thumbURL, rec.Header().Get("Location"))
@@ -130,7 +133,7 @@ func TestFilesHandler_WebpublicKeyRedirectsToWebpublicURL(t *testing.T) {
 		},
 	}
 	c, rec := newFilesTestContext(t, webKey)
-	h := filesHandler(lookup, &memStorage{}, &memStorage{})
+	h := filesHandler(lookup, &memStorage{}, &memStorage{}, testDriveURL)
 	require.NoError(t, h(c))
 	assert.Equal(t, http.StatusFound, rec.Code)
 	assert.Equal(t, webURL, rec.Header().Get("Location"))
@@ -148,11 +151,52 @@ func TestFilesHandler_MigratedRowRedirectsToPublicURL(t *testing.T) {
 	local := &memStorage{byKey: map[string]string{}}
 
 	c, rec := newFilesTestContext(t, key)
-	h := filesHandler(lookup, primary, local)
+	h := filesHandler(lookup, primary, local, testDriveURL)
 	require.NoError(t, h(c))
 
 	assert.Equal(t, http.StatusFound, rec.Code)
 	assert.Equal(t, cdnURL, rec.Header().Get("Location"))
+}
+
+func TestRedirectURLForAccessKey_SameOriginReturnsEmpty(t *testing.T) {
+	key := "loop-key"
+	sameOrigin := testDriveURL + "/" + key
+	f := &model.DriveFile{
+		ID:        "f1",
+		URL:       sameOrigin,
+		AccessKey: &key,
+	}
+	assert.Empty(t, redirectURLForAccessKey(f, key, testDriveURL))
+}
+
+func TestRedirectURLForAccessKey_NoMatch(t *testing.T) {
+	key := "unknown-key"
+	other := "other-key"
+	f := &model.DriveFile{
+		ID:        "f1",
+		AccessKey: &other,
+		URL:       "https://cdn.example.com/files/other-key",
+	}
+	assert.Empty(t, redirectURLForAccessKey(f, key, testDriveURL))
+}
+
+func TestFilesHandler_SameOriginURLFallsBackToPrimary(t *testing.T) {
+	key := "loop-key"
+	sameOrigin := testDriveURL + "/" + key
+	lookup := &stubFilesLookup{
+		byKey: map[string]*model.DriveFile{
+			key: {ID: "f1", StoredInternal: false, URL: sameOrigin, AccessKey: &key},
+		},
+	}
+	primary := &memStorage{byKey: map[string]string{key: "primary-body"}}
+	local := &memStorage{byKey: map[string]string{key: "local-body"}}
+
+	c, rec := newFilesTestContext(t, key)
+	h := filesHandler(lookup, primary, local, testDriveURL)
+	require.NoError(t, h(c))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "primary-body", rec.Body.String())
 }
 
 // DB に行がなければ primary に倒す (旧挙動互換)。
@@ -163,7 +207,7 @@ func TestFilesHandler_LookupMissFallsBackToPrimary(t *testing.T) {
 	local := &memStorage{byKey: map[string]string{key: "should-not-be-used"}}
 
 	c, rec := newFilesTestContext(t, key)
-	h := filesHandler(lookup, primary, local)
+	h := filesHandler(lookup, primary, local, testDriveURL)
 	require.NoError(t, h(c))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -178,7 +222,7 @@ func TestFilesHandler_NilLookupUsesPrimary(t *testing.T) {
 	local := &memStorage{byKey: map[string]string{key: "l"}}
 
 	c, rec := newFilesTestContext(t, key)
-	h := filesHandler(nil, primary, local)
+	h := filesHandler(nil, primary, local, testDriveURL)
 	require.NoError(t, h(c))
 
 	assert.Equal(t, "p", rec.Body.String())
@@ -192,7 +236,7 @@ func TestFilesHandler_PrimaryMissReturns404(t *testing.T) {
 	local := &memStorage{byKey: map[string]string{}}
 
 	c, rec := newFilesTestContext(t, key)
-	h := filesHandler(lookup, primary, local)
+	h := filesHandler(lookup, primary, local, testDriveURL)
 	require.NoError(t, h(c))
 
 	assert.Equal(t, http.StatusNotFound, rec.Code)
@@ -212,7 +256,8 @@ func (s *fileStorage) Get(key string) (io.ReadCloser, error) {
 	}
 	return f, nil
 }
-func (s *fileStorage) Delete(string) error { return nil }
+func (s *fileStorage) Delete(string) error  { return nil }
+func (s *fileStorage) StoredInternal() bool { return true }
 
 // LocalStorage 互換経路 (*os.File を返す storage) で Stat() からの
 // modtime 取得と Last-Modified 出力経路まで踏む。
@@ -228,7 +273,7 @@ func TestFilesHandler_OsFileSeekablePath(t *testing.T) {
 	local := &fileStorage{root: dir}
 
 	c, rec := newFilesTestContext(t, key)
-	h := filesHandler(lookup, primary, local)
+	h := filesHandler(lookup, primary, local, testDriveURL)
 	require.NoError(t, h(c))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -245,7 +290,7 @@ func TestFilesHandler_SetsDetectedContentType(t *testing.T) {
 	pngHeader := "\x89PNG\r\n\x1a\n"
 	primary := &memStorage{byKey: map[string]string{key: pngHeader + "..."}}
 	c, rec := newFilesTestContext(t, key)
-	h := filesHandler(nil, primary, nil)
+	h := filesHandler(nil, primary, nil, testDriveURL)
 	require.NoError(t, h(c))
 
 	assert.Equal(t, http.StatusOK, rec.Code)

@@ -347,11 +347,7 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (*model.DriveFile,
 		userIDPtr = &uid
 		userHostPtr = in.User.Host
 	}
-	storedInternal := true
-	if _, ok := s.storage.(*S3Storage); ok {
-		// S3 保存時は TS 互換で storedInternal=false（実体は object storage のみ）
-		storedInternal = false
-	}
+	storedInternal := s.storage.StoredInternal()
 	f := &model.DriveFile{
 		ID:                 fileID,
 		UserID:             userIDPtr,

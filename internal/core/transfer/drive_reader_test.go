@@ -32,6 +32,7 @@ func (f *fakeStorage) Get(accessKey string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(string(b))), nil
 }
 func (f *fakeStorage) Delete(_ string) error { return nil }
+func (f *fakeStorage) StoredInternal() bool  { return true }
 
 // fakeDriveFileRepo is a minimal stub sufficient for the reader test.
 // Only FindByID is exercised. Other methods return nil errors to satisfy the

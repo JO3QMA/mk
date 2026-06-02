@@ -1535,7 +1535,7 @@ func (s *Server) setupRoutes() error {
 	if _, isLocal := driveStorage.(*coredrive.LocalStorage); !isLocal {
 		filesLookup = driveFileRepo
 	}
-	s.echo.GET("/files/:accessKey", filesHandler(filesLookup, driveStorage, localDriveStorage))
+	s.echo.GET("/files/:accessKey", filesHandler(filesLookup, driveStorage, localDriveStorage, s.config.DriveURL))
 
 	// Media proxy endpoint
 	proxyAllowlist := coremediaproxy.NewDBAllowlistChecker(s.db)

@@ -104,8 +104,8 @@ func TestMigrator_DeleteLocalKeys(t *testing.T) {
 
 func TestURLUsesDrivePrefix(t *testing.T) {
 	base := "https://example.com/files"
-	assert.True(t, urlUsesDrivePrefix("https://example.com/files/abc", base))
-	assert.False(t, urlUsesDrivePrefix("https://cdn.example.com/abc", base))
+	assert.True(t, URLUsesDrivePrefix("https://example.com/files/abc", base))
+	assert.False(t, URLUsesDrivePrefix("https://cdn.example.com/abc", base))
 }
 
 func TestMigrator_RepairDenormalizedCascade(t *testing.T) {
@@ -276,6 +276,55 @@ func TestMigrator_MigrateFile_HappyPath(t *testing.T) {
 	assert.Equal(t, "https://cdn.example.com/files/migkey", got.URL)
 	_, err := os.Stat(filepath.Join(dir, key))
 	assert.True(t, os.IsNotExist(err))
+}
+
+func TestMigrator_MigrateFile_HappyPath_DeleteLocalFalse(t *testing.T) {
+	db := openMigratorTestDB(t)
+
+	dir := t.TempDir()
+	key := "migkey_keep"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, key), []byte("payload"), 0o644))
+
+	bucket := "bucket"
+	baseURL := "https://cdn.example.com"
+	meta := &model.Meta{UseObjectStorage: true, ObjectStorageBucket: &bucket, ObjectStorageBaseURL: &baseURL}
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = meta
+
+	oldURL := "https://example.com/files/" + key
+	f := &model.DriveFile{
+		ID:             "fmig_keep",
+		StoredInternal: true,
+		AccessKey:      &key,
+		URL:            oldURL,
+		Properties:     datatypes.JSON([]byte("{}")),
+		RequestHeaders: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, db.Create(f).Error)
+	t.Cleanup(func() { db.Exec(`DELETE FROM "drive_file" WHERE id = ?`, f.ID) })
+
+	fileRepo := testutil.NewMockDriveFileRepository()
+	fileRepo.Files[f.ID] = f
+
+	mock := &mockS3API{}
+	restore := setStorageFromMetaForTest(func(_ *model.Meta, localDir, _ string) Storage {
+		return NewS3Storage(S3StorageConfig{
+			Client:  mock,
+			Bucket:  bucket,
+			Prefix:  "files",
+			BaseURL: baseURL,
+		})
+	})
+	t.Cleanup(restore)
+
+	m := NewMigrator(metaRepo, fileRepo, db, config.DriveLocalToObjectStorageConfig{
+		LocalPath:   dir,
+		DeleteLocal: false,
+	}, "https://example.com/files")
+	require.NoError(t, m.MigrateFile(context.Background(), f.ID))
+
+	_, err := os.Stat(filepath.Join(dir, key))
+	require.NoError(t, err, "local blob should remain when DeleteLocal is false")
 }
 
 func TestCascadeDenormalizedURLs(t *testing.T) {

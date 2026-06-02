@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/shiroha-a/mk/internal/model"
@@ -515,13 +516,7 @@ func (m *MockDriveFileRepository) ListStoredInternalIDs(untilID string, limit in
 		ids = append(ids, id)
 	}
 	// desc order by id (aidx sorts lexicographically as time order)
-	for i := 0; i < len(ids); i++ {
-		for j := i + 1; j < len(ids); j++ {
-			if ids[j] > ids[i] {
-				ids[i], ids[j] = ids[j], ids[i]
-			}
-		}
-	}
+	sort.Sort(sort.Reverse(sort.StringSlice(ids)))
 	if len(ids) > limit {
 		ids = ids[:limit]
 	}

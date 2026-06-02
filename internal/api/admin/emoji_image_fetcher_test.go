@@ -52,6 +52,8 @@ func (r *recordingStorage) Delete(accessKey string) error {
 	return nil
 }
 
+func (r *recordingStorage) StoredInternal() bool { return true }
+
 // We need a drive.Storage interface; use a minimal embedding fake. Build a
 // real drive.Service with mock repositories so Upload exercises the full
 // path including row creation.

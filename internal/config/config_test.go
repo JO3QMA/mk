@@ -127,6 +127,32 @@ func TestNormalizeDriveLocalMigrationPath_AbsWhenEnabled(t *testing.T) {
 	assert.True(t, filepath.IsAbs(cfg.LocalPath))
 }
 
+func TestNormalizeDriveLocalMigrationPath_NotExistWarns(t *testing.T) {
+	cfg := DriveLocalToObjectStorageConfig{
+		Enabled:   true,
+		LocalPath: filepath.Join(t.TempDir(), "missing-subdir"),
+	}
+	require.NoError(t, normalizeDriveLocalMigrationPath(&cfg))
+}
+
+func TestNormalizeDriveLocalMigrationPath_StatError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root may stat chmod 000 directories")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	if _, probeErr := os.Stat(locked); probeErr == nil {
+		t.Skip("owner can stat mode 000 directories on this platform")
+	}
+
+	cfg := DriveLocalToObjectStorageConfig{Enabled: true, LocalPath: locked}
+	err := normalizeDriveLocalMigrationPath(&cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot stat")
+}
+
 func TestLoad_DisableEndpointRateLimitsTrue(t *testing.T) {
 	// disableEndpointRateLimits=true は bench / test 用の opt-in 設定。
 	// production 同梱 example には載せず、env / 個別 yml で明示指定する想定。

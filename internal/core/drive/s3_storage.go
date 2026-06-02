@@ -163,6 +163,9 @@ func (s *S3Storage) Get(accessKey string) (io.ReadCloser, error) {
 	return output.Body, nil
 }
 
+// StoredInternal implements Storage.
+func (s *S3Storage) StoredInternal() bool { return false }
+
 // Delete removes an object from S3. Missing objects are silently ignored.
 func (s *S3Storage) Delete(accessKey string) error {
 	key := s.objectKey(accessKey)

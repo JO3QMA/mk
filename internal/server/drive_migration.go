@@ -44,7 +44,9 @@ func (s *Server) maybeEnqueueDriveLocalMigration(
 		ctx := context.Background()
 		held, err := s.redis.JobQueue.Exists(ctx, processors.ObjectStorageScanLockKey).Result()
 		if err != nil {
-			return fmt.Errorf("drive migration: scan lock check: %w", err)
+			slog.Error("drive migration: scan lock check failed; server will start without enqueueing migration",
+				"error", err)
+			return nil
 		}
 		if held > 0 {
 			slog.Info("drive local→object storage migration: scan already scheduled or running")
@@ -52,7 +54,9 @@ func (s *Server) maybeEnqueueDriveLocalMigration(
 		}
 	}
 	if err := s.queueClient.EnqueueObjectStorageMigrateScan(); err != nil {
-		return fmt.Errorf("drive migration: enqueue scan: %w", err)
+		slog.Error("drive migration: enqueue scan failed; server will start without migration job",
+			"error", err)
+		return nil
 	}
 	slog.Info("drive local→object storage migration: scan job enqueued")
 	return nil

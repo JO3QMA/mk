@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix: `storedInternal=false` かつ URL が same-origin `/files/` のままの行で `/files/:accessKey` が自己参照 302 ループに陥る問題を修正。リダイレクトせず storage から配信する（#1476）
+- Fix: ローカル→S3 移行の起動時 enqueue / Redis lock チェック失敗でサーバー全体が起動不能になる問題を修正。エラーはログのみ（#1476）
+- Fix: `driveLocalToObjectStorage.localPath` の `os.Stat` で存在以外のエラー（権限拒否等）を無視していた問題を修正（#1476）
 - Change: `useObjectStorage=true` かつ `storedInternal=false` の `GET /files/:accessKey` は公開 URL（S3 / CDN）へ 302 リダイレクトする。ローカル→S3 移行ジョブ（`driveLocalToObjectStorage`）の有無に関わらず、object storage 運用インスタンス全体に適用される。same-origin プロキシで付与していた `Cache-Control: no-transform` はリダイレクト先に引き継がれない（#730 / #1476）
 - Fix: ローカルドライブ→S3 移行のフォールバック存在確認で `S3Storage.Get` のレスポンスボディを破棄していた問題を修正。`HeadObject` ベースの `Exists` に切り替え（#1476）
 - Fix: 管理画面のプロモーション登録 (`/api/admin/promo/create`) で、公開範囲が public 以外のノート (フォロワー限定 / ホーム / specified) も登録できていた問題を修正 (将来 promo 表示エンドポイントが実装された際に非公開ノートが全閲覧者に漏れる潜在的問題を作成段階で防止)

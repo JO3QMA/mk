@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/queue"
+	"github.com/shiroha-a/mk/internal/queue/driver"
 	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,4 +76,30 @@ func TestMaybeEnqueueDriveLocalMigration_SkipsCountStoredInternal(t *testing.T) 
 	require.NoError(t, srv.maybeEnqueueDriveLocalMigration(spy, meta))
 	assert.False(t, spy.countCalled, "startup must not run COUNT on drive_file")
 	assert.Equal(t, queue.TaskTypeObjectStorageMigrateScan, rec.lastTaskType)
+}
+
+type failingEnqueueClient struct {
+	err error
+}
+
+func (f *failingEnqueueClient) Enqueue(context.Context, string, []byte, ...driver.EnqueueOption) error {
+	return f.err
+}
+func (f *failingEnqueueClient) Close() error { return nil }
+
+func TestMaybeEnqueueDriveLocalMigration_EnqueueFailureDoesNotBlockStartup(t *testing.T) {
+	bucket := "my-bucket"
+	srv := &Server{
+		config: &config.Config{
+			DriveLocalToObjectStorage: config.DriveLocalToObjectStorageConfig{Enabled: true},
+		},
+		queueClient: queue.NewClient(&stubDriver{client: &failingEnqueueClient{err: errors.New("redis unavailable")}}),
+	}
+	defer func() { _ = srv.queueClient.Close() }()
+
+	meta := &model.Meta{
+		UseObjectStorage:    true,
+		ObjectStorageBucket: &bucket,
+	}
+	require.NoError(t, srv.maybeEnqueueDriveLocalMigration(testutil.NewMockDriveFileRepository(), meta))
 }

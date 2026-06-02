@@ -210,3 +210,4 @@ func (s *stubDriveStorage) Get(key string) (io.ReadCloser, error) {
 // Put / Delete satisfy coredrive.Storage; not exercised here.
 func (s *stubDriveStorage) Put(_ string, _ io.Reader) (string, error) { return "", nil }
 func (s *stubDriveStorage) Delete(_ string) error                     { return nil }
+func (s *stubDriveStorage) StoredInternal() bool                      { return true }

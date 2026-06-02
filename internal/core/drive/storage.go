@@ -21,6 +21,8 @@ type Storage interface {
 	Get(accessKey string) (io.ReadCloser, error)
 	// Delete removes an object. Missing objects do not produce an error.
 	Delete(accessKey string) error
+	// StoredInternal reports whether file bytes live on the instance (local FS).
+	StoredInternal() bool
 }
 
 // LocalStorage stores objects on the local filesystem.
@@ -67,6 +69,9 @@ func (s *LocalStorage) Get(accessKey string) (io.ReadCloser, error) {
 	}
 	return f, nil
 }
+
+// StoredInternal implements Storage.
+func (s *LocalStorage) StoredInternal() bool { return true }
 
 // Delete removes the object from disk. Missing files are ignored.
 func (s *LocalStorage) Delete(accessKey string) error {

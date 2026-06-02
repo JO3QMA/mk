@@ -72,32 +72,25 @@ func (p *ObjectStorageMigrateProcessor) HandleScan(ctx context.Context, untilID 
 			slog.Info("object storage migrate scan skipped: lock held")
 			return nil
 		}
-	}
-
-	releaseLock := func() {
-		if p.redis != nil {
+		defer func() {
 			_ = p.redis.Del(context.Background(), ObjectStorageScanLockKey).Err()
-		}
+		}()
 	}
 
 	ids, err := p.fileRepo.ListStoredInternalIDs(untilID, p.scanBatchSize)
 	if err != nil {
-		releaseLock()
 		return err
 	}
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			releaseLock()
 			return ctx.Err()
 		}
 		if err := p.enqueueFile(id); err != nil {
-			releaseLock()
 			return err
 		}
 	}
 
 	hasMore := len(ids) >= p.scanBatchSize
-	releaseLock()
 
 	if hasMore {
 		if p.enqueueScan == nil {
