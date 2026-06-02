@@ -437,7 +437,7 @@ func TestPromoCreate_Success(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	promo := &stubPromoRepo{}
 	h.SetPromoNoteRepo(promo)
-	note := &model.Note{ID: "n1", UserID: "authorU"}
+	note := &model.Note{ID: "n1", UserID: "authorU", Visibility: model.NoteVisibilityPublic}
 	h.SetNoteFinder(&stubNoteFinder{note: note})
 
 	expires := time.Now().Add(24 * time.Hour).UnixMilli()
@@ -447,6 +447,40 @@ func TestPromoCreate_Success(t *testing.T) {
 	require.NotNil(t, promo.created)
 	assert.Equal(t, "n1", promo.created.NoteID)
 	assert.Equal(t, "authorU", promo.created.UserID)
+}
+
+// #1466: followers / home / specified visibility note の promote 試行は
+// ACCESS_DENIED (403) で reject される。promo 表示 endpoint が実装された時に
+// 非 public note の本文が viewer に漏れる latent IDOR を create 段で塞ぐ。
+func TestPromoCreate_NonPublicNoteRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		vis  model.NoteVisibility
+	}{
+		{"followers", model.NoteVisibilityFollowers},
+		{"home", model.NoteVisibilityHome},
+		{"specified", model.NoteVisibilitySpecified},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, _, _ := newTestHandler(t)
+			promo := &stubPromoRepo{}
+			h.SetPromoNoteRepo(promo)
+			h.SetNoteFinder(&stubNoteFinder{note: &model.Note{ID: "n1", UserID: "authorU", Visibility: tc.vis}})
+
+			expires := time.Now().Add(24 * time.Hour).UnixMilli()
+			body := fmt.Sprintf(`{"noteId":"n1","expiresAt":%d}`, expires)
+			rec := doPost(h.PromoCreate, body, adminUser)
+			assert.Equal(t, http.StatusForbidden, rec.Code, "non-public note must be rejected with 403")
+			assert.Nil(t, promo.created, "promo row must not be persisted for non-public note")
+
+			var respBody map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &respBody))
+			errField, ok := respBody["error"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, "ACCESS_DENIED", errField["code"])
+		})
+	}
 }
 
 func TestPromoCreate_MissingNoteID(t *testing.T) {
@@ -468,7 +502,7 @@ func TestPromoCreate_NoSuchNote(t *testing.T) {
 func TestPromoCreate_AlreadyPromoted(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 	h.SetPromoNoteRepo(&stubPromoRepo{exists: true})
-	h.SetNoteFinder(&stubNoteFinder{note: &model.Note{ID: "n1", UserID: "u"}})
+	h.SetNoteFinder(&stubNoteFinder{note: &model.Note{ID: "n1", UserID: "u", Visibility: model.NoteVisibilityPublic}})
 	rec := doPost(h.PromoCreate, `{"noteId":"n1","expiresAt":1}`, adminUser)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	var body map[string]any

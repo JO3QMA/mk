@@ -30,6 +30,14 @@ func (h *Handler) PromoCreate(c echo.Context) error {
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, apierr.Error("NO_SUCH_NOTE", "No such note.", "ee449fbe-af2a-453b-9cae-cf2fe7c895fc"))
 		}
+		// 公開範囲が public 以外の note は promote できない (#1466)。
+		// upstream Misskey TS `admin/promo/create.ts` は `note.visibility !==
+		// 'public'` で ACCESS_DENIED を返す。followers / specified / home note を
+		// promote すると、将来 promo 表示 endpoint 実装時に全 viewer に本文が
+		// 漏れる latent IDOR になるため create 段で reject する。
+		if note.Visibility != model.NoteVisibilityPublic {
+			return apierr.JSONAccessDenied(c)
+		}
 		targetUserID = note.UserID
 	}
 
