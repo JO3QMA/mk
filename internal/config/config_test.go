@@ -91,6 +91,7 @@ func TestLoad_Defaults(t *testing.T) {
 }
 
 func TestLoad_DriveLocalToObjectStorage(t *testing.T) {
+	t.Parallel()
 	yaml := testYAML + `
 driveLocalToObjectStorage:
   enabled: true
@@ -110,6 +111,7 @@ driveLocalToObjectStorage:
 }
 
 func TestResolveDriveLocalToObjectStorage_Nil(t *testing.T) {
+	t.Parallel()
 	cfg := ResolveDriveLocalToObjectStorage(nil)
 	assert.False(t, cfg.Enabled)
 	assert.Equal(t, "./drive-files", cfg.LocalPath)
@@ -118,6 +120,7 @@ func TestResolveDriveLocalToObjectStorage_Nil(t *testing.T) {
 }
 
 func TestNormalizeDriveLocalMigrationPath_AbsWhenEnabled(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := DriveLocalToObjectStorageConfig{
 		Enabled:   true,
@@ -128,6 +131,7 @@ func TestNormalizeDriveLocalMigrationPath_AbsWhenEnabled(t *testing.T) {
 }
 
 func TestNormalizeDriveLocalMigrationPath_NotExistWarns(t *testing.T) {
+	t.Parallel()
 	cfg := DriveLocalToObjectStorageConfig{
 		Enabled:   true,
 		LocalPath: filepath.Join(t.TempDir(), "missing-subdir"),
@@ -136,6 +140,7 @@ func TestNormalizeDriveLocalMigrationPath_NotExistWarns(t *testing.T) {
 }
 
 func TestNormalizeDriveLocalMigrationPath_StatError(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("root may stat chmod 000 directories")
 	}

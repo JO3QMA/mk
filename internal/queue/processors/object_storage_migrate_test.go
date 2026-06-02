@@ -20,6 +20,7 @@ import (
 )
 
 func TestObjectStorageMigrateProcessor_HandleFile_NotConfigured(t *testing.T) {
+	t.Parallel()
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{})
 	task := queue.NewObjectStorageMigrateFileTask(queue.ObjectStorageMigrateFilePayload{FileID: "f1"})
 	err := p.Handle(context.Background(), task)
@@ -28,6 +29,7 @@ func TestObjectStorageMigrateProcessor_HandleFile_NotConfigured(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleFile_MissingID(t *testing.T) {
+	t.Parallel()
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
 		Migrator: coredrive.NewMigrator(nil, nil, nil, config.DriveLocalToObjectStorageConfig{}, "https://example.com/files"),
 	})
@@ -38,6 +40,7 @@ func TestObjectStorageMigrateProcessor_HandleFile_MissingID(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_Enqueues(t *testing.T) {
+	t.Parallel()
 	key := "abc"
 	repo := testutil.NewMockDriveFileRepository()
 	repo.Files["a"] = &model.DriveFile{
@@ -61,6 +64,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_Enqueues(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleFile_MigrationNotConfigured(t *testing.T) {
+	t.Parallel()
 	meta := testutil.NewMockMetaRepository()
 	meta.Meta = &model.Meta{UseObjectStorage: false}
 	fileRepo := testutil.NewMockDriveFileRepository()
@@ -82,6 +86,7 @@ func TestObjectStorageMigrateProcessor_HandleFile_MigrationNotConfigured(t *test
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_NotConfigured(t *testing.T) {
+	t.Parallel()
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{})
 	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask(queue.ObjectStorageMigrateScanPayload{}))
 	require.Error(t, err)
@@ -89,6 +94,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_NotConfigured(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_Handle_UnknownType(t *testing.T) {
+	t.Parallel()
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{})
 	err := p.Handle(context.Background(), driver.RawTask{TypeName: "objectStorage:unknown", Body: []byte("{}")})
 	require.Error(t, err)
@@ -96,6 +102,7 @@ func TestObjectStorageMigrateProcessor_Handle_UnknownType(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleFile_BadPayload(t *testing.T) {
+	t.Parallel()
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
 		Migrator: coredrive.NewMigrator(nil, nil, nil, config.DriveLocalToObjectStorageConfig{}, "https://example.com/files"),
 	})
@@ -105,6 +112,7 @@ func TestObjectStorageMigrateProcessor_HandleFile_BadPayload(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_LockHeld(t *testing.T) {
+	t.Parallel()
 	mr, rdb := newMiniredisClient(t)
 	require.NoError(t, mr.Set(processors.ObjectStorageScanLockKey, "1"))
 
@@ -121,6 +129,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_LockHeld(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_EmptyRepo(t *testing.T) {
+	t.Parallel()
 	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
 		FileRepo: testutil.NewMockDriveFileRepository(),
 		EnqueueFile: func(string) error {
@@ -132,6 +141,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_EmptyRepo(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_ListError(t *testing.T) {
+	t.Parallel()
 	repo := &listErrDriveRepo{
 		MockDriveFileRepository: testutil.NewMockDriveFileRepository(),
 		listErr:                 errors.New("list failed"),
@@ -145,6 +155,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_ListError(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_EnqueueError(t *testing.T) {
+	t.Parallel()
 	key := "k"
 	repo := testutil.NewMockDriveFileRepository()
 	repo.Files["a"] = &model.DriveFile{
@@ -162,6 +173,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_EnqueueError(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_ContextCanceled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	key := "k"
@@ -181,6 +193,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_ContextCanceled(t *testing.T) 
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_MultiPage(t *testing.T) {
+	t.Parallel()
 	repo := testutil.NewMockDriveFileRepository()
 	for i := 1; i <= 501; i++ {
 		id := fmt.Sprintf("f%03d", i)
@@ -208,6 +221,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_MultiPage(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_ChainsNextBatch(t *testing.T) {
+	t.Parallel()
 	repo := testutil.NewMockDriveFileRepository()
 	for i := 0; i < 3; i++ {
 		id := fmt.Sprintf("f%d", i)
@@ -243,6 +257,7 @@ func TestObjectStorageMigrateProcessor_HandleScan_ChainsNextBatch(t *testing.T) 
 }
 
 func TestObjectStorageMigrateProcessor_HandleFile_Success(t *testing.T) {
+	t.Parallel()
 	bucket := "b"
 	meta := testutil.NewMockMetaRepository()
 	meta.Meta = &model.Meta{UseObjectStorage: true, ObjectStorageBucket: &bucket}
@@ -255,6 +270,7 @@ func TestObjectStorageMigrateProcessor_HandleFile_Success(t *testing.T) {
 }
 
 func TestObjectStorageMigrateProcessor_HandleScan_WithRedisLock(t *testing.T) {
+	t.Parallel()
 	_, rdb := newMiniredisClient(t)
 
 	key := "k"

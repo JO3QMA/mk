@@ -14,23 +14,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// countSpyFileRepo records whether CountStoredInternal was invoked.
-type countSpyFileRepo struct {
-	*testutil.MockDriveFileRepository
-	countCalled bool
-}
-
-func (s *countSpyFileRepo) CountStoredInternal() (int64, error) {
-	s.countCalled = true
-	return s.MockDriveFileRepository.CountStoredInternal()
-}
-
 func TestDriveLocalMigrationReady_Disabled(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	assert.False(t, driveLocalMigrationReady(cfg, nil))
 }
 
 func TestDriveLocalMigrationReady_RequiresMeta(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		DriveLocalToObjectStorage: config.DriveLocalToObjectStorageConfig{Enabled: true},
 	}
@@ -38,6 +29,7 @@ func TestDriveLocalMigrationReady_RequiresMeta(t *testing.T) {
 }
 
 func TestDriveLocalMigrationReady_RequiresBucket(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		DriveLocalToObjectStorage: config.DriveLocalToObjectStorageConfig{Enabled: true},
 	}
@@ -45,6 +37,7 @@ func TestDriveLocalMigrationReady_RequiresBucket(t *testing.T) {
 }
 
 func TestDriveLocalMigrationReady_OK(t *testing.T) {
+	t.Parallel()
 	bucket := "my-bucket"
 	cfg := &config.Config{
 		DriveLocalToObjectStorage: config.DriveLocalToObjectStorageConfig{Enabled: true},
@@ -56,7 +49,8 @@ func TestDriveLocalMigrationReady_OK(t *testing.T) {
 	assert.True(t, driveLocalMigrationReady(cfg, meta))
 }
 
-func TestMaybeEnqueueDriveLocalMigration_SkipsCountStoredInternal(t *testing.T) {
+func TestMaybeEnqueueDriveLocalMigration_EnqueuesScan(t *testing.T) {
+	t.Parallel()
 	bucket := "my-bucket"
 	rec := &recordingDriverClient{}
 	srv := &Server{
@@ -67,14 +61,12 @@ func TestMaybeEnqueueDriveLocalMigration_SkipsCountStoredInternal(t *testing.T) 
 	}
 	defer func() { _ = srv.queueClient.Close() }()
 
-	spy := &countSpyFileRepo{MockDriveFileRepository: testutil.NewMockDriveFileRepository()}
 	meta := &model.Meta{
 		UseObjectStorage:    true,
 		ObjectStorageBucket: &bucket,
 	}
 
-	require.NoError(t, srv.maybeEnqueueDriveLocalMigration(spy, meta))
-	assert.False(t, spy.countCalled, "startup must not run COUNT on drive_file")
+	require.NoError(t, srv.maybeEnqueueDriveLocalMigration(testutil.NewMockDriveFileRepository(), meta))
 	assert.Equal(t, queue.TaskTypeObjectStorageMigrateScan, rec.lastTaskType)
 }
 
@@ -88,6 +80,7 @@ func (f *failingEnqueueClient) Enqueue(context.Context, string, []byte, ...drive
 func (f *failingEnqueueClient) Close() error { return nil }
 
 func TestMaybeEnqueueDriveLocalMigration_EnqueueFailureDoesNotBlockStartup(t *testing.T) {
+	t.Parallel()
 	bucket := "my-bucket"
 	srv := &Server{
 		config: &config.Config{

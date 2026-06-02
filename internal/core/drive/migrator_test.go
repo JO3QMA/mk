@@ -17,6 +17,7 @@ import (
 )
 
 func TestMigrationMetaReady(t *testing.T) {
+	t.Parallel()
 	bucket := "b"
 	assert.False(t, migrationMetaReady(nil))
 	assert.False(t, migrationMetaReady(&model.Meta{UseObjectStorage: false}))
@@ -28,6 +29,7 @@ func TestMigrationMetaReady(t *testing.T) {
 }
 
 func TestMigrator_MigrateObject_FromLocal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	key := "abc123"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, key), []byte("hello"), 0o644))
@@ -49,6 +51,7 @@ func TestMigrator_MigrateObject_FromLocal(t *testing.T) {
 }
 
 func TestMigrator_MigrateObject_FallbackWhenLocalMissing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	key := "only-s3"
 	mock := &mockS3API{}
@@ -68,6 +71,7 @@ func TestMigrator_MigrateObject_FallbackWhenLocalMissing(t *testing.T) {
 }
 
 func TestMigrator_MigrateObject_FallbackUsesHeadNotGet(t *testing.T) {
+	t.Parallel()
 	key := "s3-only"
 	mock := &mockS3API{}
 	s3 := NewS3Storage(S3StorageConfig{
@@ -85,12 +89,14 @@ func TestMigrator_MigrateObject_FallbackUsesHeadNotGet(t *testing.T) {
 }
 
 func TestMigrator_MigrateObject_EmptyKey(t *testing.T) {
+	t.Parallel()
 	m := &Migrator{}
 	_, err := m.migrateObject(NewLocalStorage(t.TempDir(), ""), &S3Storage{}, nil)
 	require.Error(t, err)
 }
 
 func TestMigrator_DeleteLocalKeys(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	key := "k1"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, key), []byte("x"), 0o644))
@@ -103,12 +109,14 @@ func TestMigrator_DeleteLocalKeys(t *testing.T) {
 }
 
 func TestURLUsesDrivePrefix(t *testing.T) {
+	t.Parallel()
 	base := "https://example.com/files"
 	assert.True(t, URLUsesDrivePrefix("https://example.com/files/abc", base))
 	assert.False(t, URLUsesDrivePrefix("https://cdn.example.com/abc", base))
 }
 
 func TestMigrator_RepairDenormalizedCascade(t *testing.T) {
+	t.Parallel()
 	db := openMigratorTestDB(t)
 
 	fileID := "frepair1"
@@ -153,6 +161,7 @@ func TestMigrator_RepairDenormalizedCascade(t *testing.T) {
 }
 
 func TestMigrator_MigrateFile_SkipsNonInternal(t *testing.T) {
+	t.Parallel()
 	bucket := "b"
 	metaRepo := testutil.NewMockMetaRepository()
 	metaRepo.Meta = &model.Meta{UseObjectStorage: true, ObjectStorageBucket: &bucket}
@@ -163,6 +172,7 @@ func TestMigrator_MigrateFile_SkipsNonInternal(t *testing.T) {
 }
 
 func TestMigrator_MigrateFile_NotConfigured(t *testing.T) {
+	t.Parallel()
 	metaRepo := testutil.NewMockMetaRepository()
 	metaRepo.Meta = &model.Meta{UseObjectStorage: false}
 	fileRepo := testutil.NewMockDriveFileRepository()
@@ -174,6 +184,7 @@ func TestMigrator_MigrateFile_NotConfigured(t *testing.T) {
 }
 
 func TestMigrator_MigrateFile_ContextCanceled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	m := NewMigrator(testutil.NewMockMetaRepository(), testutil.NewMockDriveFileRepository(), nil, config.DriveLocalToObjectStorageConfig{}, "")
@@ -182,6 +193,7 @@ func TestMigrator_MigrateFile_ContextCanceled(t *testing.T) {
 }
 
 func TestMigrator_MigrateFile_SkipsLink(t *testing.T) {
+	t.Parallel()
 	bucket := "b"
 	metaRepo := testutil.NewMockMetaRepository()
 	metaRepo.Meta = &model.Meta{UseObjectStorage: true, ObjectStorageBucket: &bucket}
@@ -193,6 +205,7 @@ func TestMigrator_MigrateFile_SkipsLink(t *testing.T) {
 }
 
 func TestMigrator_MigrateObject_LocalMissingNoS3(t *testing.T) {
+	t.Parallel()
 	key := "missing"
 	local := NewLocalStorage(t.TempDir(), "https://example.com/files")
 	s3 := NewS3Storage(S3StorageConfig{
@@ -206,6 +219,7 @@ func TestMigrator_MigrateObject_LocalMissingNoS3(t *testing.T) {
 }
 
 func TestMigrator_DeleteLocalKeys_AllVariants(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	keys := []string{"p", "t", "w"}
 	for _, k := range keys {
@@ -225,6 +239,7 @@ func TestMigrator_DeleteLocalKeys_AllVariants(t *testing.T) {
 	}
 }
 
+// storageFromMeta を差し替えるため t.Parallel() 非対応
 func TestMigrator_MigrateFile_HappyPath(t *testing.T) {
 	db := openMigratorTestDB(t)
 
@@ -278,6 +293,7 @@ func TestMigrator_MigrateFile_HappyPath(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+// storageFromMeta を差し替えるため t.Parallel() 非対応
 func TestMigrator_MigrateFile_HappyPath_DeleteLocalFalse(t *testing.T) {
 	db := openMigratorTestDB(t)
 
@@ -328,6 +344,7 @@ func TestMigrator_MigrateFile_HappyPath_DeleteLocalFalse(t *testing.T) {
 }
 
 func TestCascadeDenormalizedURLs(t *testing.T) {
+	t.Parallel()
 	db := openMigratorTestDB(t)
 
 	fileID := "fcascade1"

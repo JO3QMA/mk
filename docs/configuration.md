@@ -145,11 +145,25 @@ mk-go 固有。`meta` テーブルで object storage を有効化したあと、
 5. `enabled: false` に戻して再起動する（完了後の誤再実行防止）
 6. 任意: ローカルディレクトリをバックアップして削除する
 
-object storage 利用時（`meta.useObjectStorage=true`）の `GET /files/:accessKey` は、DB 上 `storedInternal=false` の行について公開 URL へ **302 リダイレクト** する（`driveLocalToObjectStorage` の有無に関わらず、S3 へ直接アップロードしたファイルも含む）。リクエストキーに応じて `drive_file.url` / `thumbnailUrl` / `webpublicUrl` を出し分ける。drop-in 互換・CORS・同一オリジン URL を前提としたクライアントは、リダイレクト先ドメインへの影響を確認すること。
+**scan ジョブ**: `migrateScan` は `scanBatchSize` 件ずつ `migrateFile` を enqueue し、残件があれば `untilId` 付きで次の scan を連鎖する。Redis ロックは **1 バッチの `HandleScan` 実行中のみ** 保持され、バッチ完了時に解放される（バッチ間や `migrateFile` 処理中の再起動では別 scan チェーンが走りうる。`migrateFile` は冪等のため実害は重複ジョブ程度）。`ListStoredInternalIDs` は専用インデックスなしの seq scan になりうるため、巨大 `drive_file` では初回 scan に時間がかかることがある。
 
-**配信と CDN (#730)**: 302 化により same-origin プロキシで付与していた `Cache-Control: no-transform` はリダイレクト先へ引き継がれない。Cloudflare Polish 等による再エンコードを避けるには、S3 / CloudFront / CDN 側で同等のヘッダを設定すること。private bucket + pre-signed URL 運用は想定外（公開 URL / CloudFront 前提）。
+#### object storage 利用時の `/files/:accessKey` 配信 (#1476)
 
-**scan ジョブ**: `migrateScan` は `scanBatchSize` 件ずつ `migrateFile` を enqueue し、残件があれば `untilId` 付きで次の scan を連鎖する。Redis ロックで並行 scan を抑止する。
+`meta.useObjectStorage=true` のインスタンス向け。**移行ジョブ (`driveLocalToObjectStorage`) の有無に関わらず**、DB 上 `storedInternal=false` の行は公開 URL（S3 / CDN）へ **302 リダイレクト** する（S3 へ直接アップロードしたファイルも含む）。リクエストキーに応じて `drive_file.url` / `thumbnailUrl` / `webpublicUrl` を出し分ける。
+
+| 項目 | 内容 |
+|---|---|
+| 影響範囲 | `useObjectStorage=true` の全インスタンス（移行 YAML を有効にしていない既存 S3 運用も含む） |
+| 従来挙動 | mk-go が primary (S3) から same-origin プロキシ配信し `Cache-Control: no-transform` を付与 |
+| 本番挙動 | 公開 URL へ 302（`no-transform` はリダイレクト先に引き継がれない） |
+| same-origin 例外 | DB の URL がまだインスタンス same-origin `/files/` の行は 302 せず storage から配信。`objectStorage.baseUrl` を同一オリジンに向けた proxy 運用も継続可能 |
+
+**アップグレード前チェックリスト**:
+
+1. 代表ファイルで `curl -I https://<instance>/files/<accessKey>` を実行し、`Location` が想定 CDN か確認する
+2. drop-in 互換・CORS・同一オリジン `/files/` URL 前提のクライアントは、リダイレクト先ドメインへの影響を確認する
+3. Cloudflare Polish 等を使う場合は S3 / CloudFront / CDN 側で `Cache-Control: no-transform` 等を設定する（#730）
+4. private bucket + pre-signed URL 運用は想定外（公開 URL / CloudFront 前提）
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|

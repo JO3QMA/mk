@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Upgrade notes (object storage / #1476)
+
+`meta.useObjectStorage=true` のインスタンスは、**`driveLocalToObjectStorage` を有効にしていなくても**、`storedInternal=false` の `GET /files/:accessKey` が公開 URL（S3 / CDN）へ **302** になります（従来は mk-go が same-origin でプロキシ配信し `Cache-Control: no-transform` を付与）。
+
+- **確認**: アップグレード前後で代表ファイルに `curl -I https://<instance>/files/<accessKey>` を実行し、`Location` が想定 CDN か確認する
+- **CDN (#730)**: `no-transform` はリダイレクト先に引き継がれない。Cloudflare Polish 等を使う場合は S3 / CloudFront / CDN 側で同等ヘッダを設定する
+- **CORS / クライアント**: 同一オリジン `/files/` URL を前提とした埋め込みは、リダイレクト先ドメインの CORS に依存する
+- **private bucket**: pre-signed URL 前提の非公開バケット運用は想定外（公開 URL / CloudFront 前提）
+- **例外 (same-origin)**: DB の URL がまだインスタンス same-origin `/files/` の行は 302 せず storage から配信（移行途中・ハーフ適用対策）。`objectStorage.baseUrl` を同一オリジンに向けた proxy 運用もこの経路で従来どおりプロキシされる
+
 - Fix: `storedInternal=false` かつ URL が same-origin `/files/` のままの行で `/files/:accessKey` が自己参照 302 ループに陥る問題を修正。リダイレクトせず storage から配信する（#1476）
 - Fix: ローカル→S3 移行の起動時 enqueue / Redis lock チェック失敗でサーバー全体が起動不能になる問題を修正。エラーはログのみ（#1476）
 - Fix: `driveLocalToObjectStorage.localPath` の `os.Stat` で存在以外のエラー（権限拒否等）を無視していた問題を修正（#1476）

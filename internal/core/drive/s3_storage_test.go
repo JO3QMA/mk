@@ -174,6 +174,7 @@ func TestS3Storage_Get_NotFound(t *testing.T) {
 }
 
 func TestS3Storage_Exists_HappyPath(t *testing.T) {
+	t.Parallel()
 	mock := &mockS3API{}
 	st := NewS3Storage(S3StorageConfig{
 		Client: mock,
@@ -189,6 +190,7 @@ func TestS3Storage_Exists_HappyPath(t *testing.T) {
 }
 
 func TestS3Storage_Exists_NotFound(t *testing.T) {
+	t.Parallel()
 	mock := &mockS3API{headErr: &smithy.GenericAPIError{Code: "NoSuchKey", Message: "not found"}}
 	st := NewS3Storage(S3StorageConfig{
 		Client: mock,
@@ -201,6 +203,7 @@ func TestS3Storage_Exists_NotFound(t *testing.T) {
 }
 
 func TestS3Storage_Exists_APIError(t *testing.T) {
+	t.Parallel()
 	mock := &mockS3API{headErr: errors.New("access denied")}
 	st := NewS3Storage(S3StorageConfig{
 		Client: mock,

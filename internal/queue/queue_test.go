@@ -643,6 +643,7 @@ func TestDecodeWebPushPayload_Invalid(t *testing.T) {
 }
 
 func TestNewObjectStorageMigrateScanTask_RoundTrip(t *testing.T) {
+	t.Parallel()
 	payload := queue.ObjectStorageMigrateScanPayload{UntilID: "f100"}
 	task := queue.NewObjectStorageMigrateScanTask(payload)
 	assert.Equal(t, queue.TaskTypeObjectStorageMigrateScan, task.Type())
@@ -653,11 +654,13 @@ func TestNewObjectStorageMigrateScanTask_RoundTrip(t *testing.T) {
 }
 
 func TestDecodeObjectStorageMigrateScanPayload_Invalid(t *testing.T) {
+	t.Parallel()
 	_, err := queue.DecodeObjectStorageMigrateScanPayload([]byte(`{bad`))
 	assert.Error(t, err)
 }
 
 func TestNewObjectStorageMigrateFileTask_RoundTrip(t *testing.T) {
+	t.Parallel()
 	payload := queue.ObjectStorageMigrateFilePayload{FileID: "f1"}
 	task := queue.NewObjectStorageMigrateFileTask(payload)
 	assert.Equal(t, queue.TaskTypeObjectStorageMigrateFile, task.Type())
@@ -668,6 +671,7 @@ func TestNewObjectStorageMigrateFileTask_RoundTrip(t *testing.T) {
 }
 
 func TestDecodeObjectStorageMigrateFilePayload_Invalid(t *testing.T) {
+	t.Parallel()
 	_, err := queue.DecodeObjectStorageMigrateFilePayload([]byte(`{bad`))
 	assert.Error(t, err)
 }

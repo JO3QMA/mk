@@ -491,16 +491,6 @@ func (m *MockDriveFileRepository) DeleteByHost(host string) (int64, error) {
 	return n, nil
 }
 
-func (m *MockDriveFileRepository) CountStoredInternal() (int64, error) {
-	var n int64
-	for _, f := range m.Files {
-		if f.StoredInternal && !f.IsLink {
-			n++
-		}
-	}
-	return n, nil
-}
-
 func (m *MockDriveFileRepository) ListStoredInternalIDs(untilID string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 500

@@ -58,9 +58,9 @@ type DriveFileRepository interface {
 	// ListStoredInternalIDs returns IDs of locally stored files pending
 	// migration to object storage (#1476). untilID is an exclusive upper
 	// bound on id when non-empty (cursor pagination).
+	// No dedicated index exists for storedInternal+isLink+ORDER BY id DESC;
+	// expect sequential scans on very large drive_file tables during one-off scans.
 	ListStoredInternalIDs(untilID string, limit int) ([]string, error)
-	// CountStoredInternal returns rows with storedInternal=true and isLink=false.
-	CountStoredInternal() (int64, error)
 }
 
 type driveFileRepository struct {
@@ -357,14 +357,6 @@ func (r *driveFileRepository) DeleteByHost(host string) (int64, error) {
 
 func (r *driveFileRepository) storedInternalQuery() *gorm.DB {
 	return r.db.Model(&model.DriveFile{}).Where(`"storedInternal" = true AND "isLink" = false`)
-}
-
-func (r *driveFileRepository) CountStoredInternal() (int64, error) {
-	var n int64
-	if err := r.storedInternalQuery().Count(&n).Error; err != nil {
-		return 0, err
-	}
-	return n, nil
 }
 
 func (r *driveFileRepository) ListStoredInternalIDs(untilID string, limit int) ([]string, error) {

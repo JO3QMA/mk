@@ -572,10 +572,6 @@ func TestDriveFileRepository_StoredInternalMigrationQueries(t *testing.T) {
 	require.NoError(t, repo.Create(link))
 	defer cleanupDriveFile(t, link.ID)
 
-	n, err := repo.CountStoredInternal()
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), n)
-
 	ids, err := repo.ListStoredInternalIDs("", 10)
 	require.NoError(t, err)
 	require.Len(t, ids, 1)

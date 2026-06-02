@@ -16,6 +16,8 @@ import (
 )
 
 // ObjectStorageScanLockKey prevents concurrent migrateScan workers (#1476).
+// The lock is held only for the duration of one HandleScan batch (released via defer Del);
+// a restart between batches may start a second scan chain (harmless duplicate enqueue).
 const ObjectStorageScanLockKey = "mk:drive:objectStorage:migrateScan:lock"
 
 // ObjectStorageScanLockTTL bounds how long a crashed scan worker blocks rescheduling.
