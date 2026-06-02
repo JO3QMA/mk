@@ -3,6 +3,7 @@ package processors_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -119,6 +120,95 @@ func TestObjectStorageMigrateProcessor_HandleScan_LockHeld(t *testing.T) {
 	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
 }
 
+func TestObjectStorageMigrateProcessor_HandleScan_EmptyRepo(t *testing.T) {
+	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
+		FileRepo: testutil.NewMockDriveFileRepository(),
+		EnqueueFile: func(string) error {
+			t.Fatal("enqueue should not run for empty repo")
+			return nil
+		},
+	})
+	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
+}
+
+func TestObjectStorageMigrateProcessor_HandleScan_ListError(t *testing.T) {
+	repo := &listErrDriveRepo{
+		MockDriveFileRepository: testutil.NewMockDriveFileRepository(),
+		listErr:                 errors.New("list failed"),
+	}
+	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
+		FileRepo:    repo,
+		EnqueueFile: func(string) error { return nil },
+	})
+	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask())
+	require.ErrorContains(t, err, "list failed")
+}
+
+func TestObjectStorageMigrateProcessor_HandleScan_EnqueueError(t *testing.T) {
+	key := "k"
+	repo := testutil.NewMockDriveFileRepository()
+	repo.Files["a"] = &model.DriveFile{
+		ID:             "a",
+		StoredInternal: true,
+		AccessKey:      &key,
+		Properties:     datatypes.JSON([]byte("{}")),
+	}
+	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
+		FileRepo: repo,
+		EnqueueFile: func(string) error { return errors.New("enqueue failed") },
+	})
+	err := p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask())
+	require.ErrorContains(t, err, "enqueue failed")
+}
+
+func TestObjectStorageMigrateProcessor_HandleScan_ContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
+		FileRepo:    testutil.NewMockDriveFileRepository(),
+		EnqueueFile: func(string) error { return nil },
+	})
+	err := p.Handle(ctx, queue.NewObjectStorageMigrateScanTask())
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestObjectStorageMigrateProcessor_HandleScan_MultiPage(t *testing.T) {
+	repo := testutil.NewMockDriveFileRepository()
+	for i := 1; i <= 501; i++ {
+		id := fmt.Sprintf("f%03d", i)
+		key := "k" + id
+		repo.Files[id] = &model.DriveFile{
+			ID:             id,
+			StoredInternal: true,
+			URL:            "https://example.com/files/" + key,
+			AccessKey:      &key,
+			Properties:     datatypes.JSON([]byte("{}")),
+		}
+	}
+	var enqueued int
+	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
+		FileRepo: repo,
+		EnqueueFile: func(string) error {
+			enqueued++
+			return nil
+		},
+	})
+	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
+	require.Equal(t, 501, enqueued)
+}
+
+func TestObjectStorageMigrateProcessor_HandleFile_Success(t *testing.T) {
+	bucket := "b"
+	meta := testutil.NewMockMetaRepository()
+	meta.Meta = &model.Meta{UseObjectStorage: true, ObjectStorageBucket: &bucket}
+	fileRepo := testutil.NewMockDriveFileRepository()
+	fileRepo.Files["f1"] = &model.DriveFile{ID: "f1", StoredInternal: false}
+	m := coredrive.NewMigrator(meta, fileRepo, nil, config.DriveLocalToObjectStorageConfig{}, "https://example.com/files")
+	p := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{Migrator: m})
+	task := queue.NewObjectStorageMigrateFileTask(queue.ObjectStorageMigrateFilePayload{FileID: "f1"})
+	require.NoError(t, p.Handle(context.Background(), task))
+}
+
 func TestObjectStorageMigrateProcessor_HandleScan_WithRedisLock(t *testing.T) {
 	_, rdb := newMiniredisClient(t)
 
@@ -142,6 +232,15 @@ func TestObjectStorageMigrateProcessor_HandleScan_WithRedisLock(t *testing.T) {
 	})
 	require.NoError(t, p.Handle(context.Background(), queue.NewObjectStorageMigrateScanTask()))
 	require.Contains(t, enqueued, "a")
+}
+
+type listErrDriveRepo struct {
+	*testutil.MockDriveFileRepository
+	listErr error
+}
+
+func (r *listErrDriveRepo) ListStoredInternalIDs(string, int) ([]string, error) {
+	return nil, r.listErr
 }
 
 func newMiniredisClient(t *testing.T) (*miniredis.Miniredis, goredis.UniversalClient) {
