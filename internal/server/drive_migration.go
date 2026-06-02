@@ -40,14 +40,6 @@ func (s *Server) maybeEnqueueDriveLocalMigration(
 	if fileRepo == nil || s.queueClient == nil {
 		return fmt.Errorf("drive migration: file repository or queue client not configured")
 	}
-	n, err := fileRepo.CountStoredInternal()
-	if err != nil {
-		return fmt.Errorf("drive migration: count storedInternal: %w", err)
-	}
-	if n == 0 {
-		slog.Info("drive local→object storage migration: no pending files")
-		return nil
-	}
 	if s.redis != nil && s.redis.JobQueue != nil {
 		ctx := context.Background()
 		held, err := s.redis.JobQueue.Exists(ctx, processors.ObjectStorageScanLockKey).Result()
@@ -62,6 +54,6 @@ func (s *Server) maybeEnqueueDriveLocalMigration(
 	if err := s.queueClient.EnqueueObjectStorageMigrateScan(); err != nil {
 		return fmt.Errorf("drive migration: enqueue scan: %w", err)
 	}
-	slog.Info("drive local→object storage migration: scan job enqueued", "pendingFiles", n)
+	slog.Info("drive local→object storage migration: scan job enqueued")
 	return nil
 }

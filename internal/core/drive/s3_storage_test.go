@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,11 +19,14 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockS3API struct {
-	putInput  *s3.PutObjectInput
-	putErr    error
-	getBody   io.ReadCloser
-	getErr    error
-	deleteErr error
+	putInput   *s3.PutObjectInput
+	putErr     error
+	getBody    io.ReadCloser
+	getErr     error
+	headErr    error
+	deleteErr  error
+	getCalled  bool
+	headCalled bool
 }
 
 func (m *mockS3API) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -31,10 +35,19 @@ func (m *mockS3API) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...
 }
 
 func (m *mockS3API) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	m.getCalled = true
 	if m.getErr != nil {
 		return nil, m.getErr
 	}
 	return &s3.GetObjectOutput{Body: m.getBody}, nil
+}
+
+func (m *mockS3API) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	m.headCalled = true
+	if m.headErr != nil {
+		return nil, m.headErr
+	}
+	return &s3.HeadObjectOutput{}, nil
 }
 
 func (m *mockS3API) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
@@ -158,6 +171,46 @@ func TestS3Storage_Get_NotFound(t *testing.T) {
 
 	_, err := st.Get("missing")
 	assert.ErrorIs(t, err, ErrObjectNotFound)
+}
+
+func TestS3Storage_Exists_HappyPath(t *testing.T) {
+	mock := &mockS3API{}
+	st := NewS3Storage(S3StorageConfig{
+		Client: mock,
+		Bucket: "bucket",
+		Prefix: "files/",
+	})
+
+	ok, err := st.Exists("key1")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.True(t, mock.headCalled)
+	assert.False(t, mock.getCalled)
+}
+
+func TestS3Storage_Exists_NotFound(t *testing.T) {
+	mock := &mockS3API{headErr: &smithy.GenericAPIError{Code: "NoSuchKey", Message: "not found"}}
+	st := NewS3Storage(S3StorageConfig{
+		Client: mock,
+		Bucket: "bucket",
+	})
+
+	ok, err := st.Exists("missing")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestS3Storage_Exists_APIError(t *testing.T) {
+	mock := &mockS3API{headErr: errors.New("access denied")}
+	st := NewS3Storage(S3StorageConfig{
+		Client: mock,
+		Bucket: "bucket",
+	})
+
+	ok, err := st.Exists("key1")
+	assert.Error(t, err)
+	assert.False(t, ok)
+	assert.Contains(t, err.Error(), "s3 head")
 }
 
 func TestS3Storage_Delete_HappyPath(t *testing.T) {

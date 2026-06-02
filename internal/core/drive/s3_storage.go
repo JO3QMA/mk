@@ -3,6 +3,7 @@ package drive
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
 )
 
 // S3API abstracts the subset of S3 client operations used by S3Storage.
@@ -18,6 +20,7 @@ import (
 type S3API interface {
 	PutObject(ctx context.Context, input *s3.PutObjectInput, opts ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	GetObject(ctx context.Context, input *s3.GetObjectInput, opts ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, input *s3.HeadObjectInput, opts ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	DeleteObject(ctx context.Context, input *s3.DeleteObjectInput, opts ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
@@ -118,6 +121,33 @@ func (s *S3Storage) Put(accessKey string, body io.Reader) (string, error) {
 		return "", fmt.Errorf("s3 put %s: %w", key, err)
 	}
 	return s.publicURL(accessKey), nil
+}
+
+// Exists reports whether an object is present in the bucket without downloading it.
+func (s *S3Storage) Exists(accessKey string) (bool, error) {
+	key := s.objectKey(accessKey)
+	_, err := s.client.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err == nil {
+		return true, nil
+	}
+	if isS3ObjectMissing(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("s3 head %s: %w", key, err)
+}
+
+func isS3ObjectMissing(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NotFound", "NoSuchKey":
+			return true
+		}
+	}
+	return false
 }
 
 // Get retrieves an object from S3 and returns an io.ReadCloser.

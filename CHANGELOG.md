@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Change: `useObjectStorage=true` かつ `storedInternal=false` の `GET /files/:accessKey` は公開 URL（S3 / CDN）へ 302 リダイレクトする。ローカル→S3 移行ジョブ（`driveLocalToObjectStorage`）の有無に関わらず、object storage 運用インスタンス全体に適用される。same-origin プロキシで付与していた `Cache-Control: no-transform` はリダイレクト先に引き継がれない（#730 / #1476）
+- Fix: ローカルドライブ→S3 移行のフォールバック存在確認で `S3Storage.Get` のレスポンスボディを破棄していた問題を修正。`HeadObject` ベースの `Exists` に切り替え（#1476）
 - Fix: 管理画面のプロモーション登録 (`/api/admin/promo/create`) で、公開範囲が public 以外のノート (フォロワー限定 / ホーム / specified) も登録できていた問題を修正 (将来 promo 表示エンドポイントが実装された際に非公開ノートが全閲覧者に漏れる潜在的問題を作成段階で防止)
 - Fix: ユーザーリストのタイムライン (`/api/notes/user-list-timeline` の REST 経路は #1442 で修正済) について、WebSocket `userList` チャネルと fanout 配信が他ユーザーのフォロワー限定ノートをリスト所有者のフォロー関係に関係なくプッシュしていた問題を修正 (任意のユーザーをリストに追加しただけで、フォローしていない相手のフォロワー限定ノートをリアルタイムに受信できていた)
 - Fix: アンテナが他ユーザーのフォロワー限定 / specified ノートを公開範囲チェックを経ずに pickup し、`/api/antennas/notes` と WebSocket `antenna` チャネルの両方からそれらが取得できる問題を修正 (アンテナ作成だけで `src=all` / `src=users` 経由のキーワード検索で非公開投稿が漏れていた)

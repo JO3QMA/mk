@@ -210,7 +210,11 @@ func (m *Migrator) migrateObject(local Storage, s3 *S3Storage, accessKey *string
 	body, err := local.Get(key)
 	if err != nil {
 		if errors.Is(err, ErrObjectNotFound) {
-			if _, headErr := s3.Get(key); headErr == nil {
+			exists, existsErr := s3.Exists(key)
+			if existsErr != nil {
+				return "", existsErr
+			}
+			if exists {
 				return s3.publicURL(key), nil
 			}
 			return "", fmt.Errorf("local object missing for key %s: %w", key, err)

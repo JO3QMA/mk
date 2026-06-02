@@ -1,14 +1,12 @@
 package drive
 
 import (
-	"bytes"
 	"context"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	smithy "github.com/aws/smithy-go"
 	"github.com/shiroha-a/mk/internal/config"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/testutil"
@@ -53,7 +51,7 @@ func TestMigrator_MigrateObject_FromLocal(t *testing.T) {
 func TestMigrator_MigrateObject_FallbackWhenLocalMissing(t *testing.T) {
 	dir := t.TempDir()
 	key := "only-s3"
-	mock := &mockS3API{getBody: io.NopCloser(bytes.NewReader([]byte("x")))}
+	mock := &mockS3API{}
 	s3 := NewS3Storage(S3StorageConfig{
 		Client:  mock,
 		Bucket:  "bucket",
@@ -65,6 +63,25 @@ func TestMigrator_MigrateObject_FallbackWhenLocalMissing(t *testing.T) {
 	url, err := m.migrateObject(local, s3, &key)
 	require.NoError(t, err)
 	assert.Equal(t, "https://cdn.example.com/only-s3", url)
+	assert.True(t, mock.headCalled)
+	assert.False(t, mock.getCalled)
+}
+
+func TestMigrator_MigrateObject_FallbackUsesHeadNotGet(t *testing.T) {
+	key := "s3-only"
+	mock := &mockS3API{}
+	s3 := NewS3Storage(S3StorageConfig{
+		Client:  mock,
+		Bucket:  "bucket",
+		BaseURL: "https://cdn.example.com",
+	})
+	local := NewLocalStorage(t.TempDir(), "https://example.com/files")
+
+	m := &Migrator{}
+	_, err := m.migrateObject(local, s3, &key)
+	require.NoError(t, err)
+	assert.True(t, mock.headCalled, "fallback must use HeadObject, not GetObject")
+	assert.False(t, mock.getCalled)
 }
 
 func TestMigrator_MigrateObject_EmptyKey(t *testing.T) {
@@ -178,7 +195,11 @@ func TestMigrator_MigrateFile_SkipsLink(t *testing.T) {
 func TestMigrator_MigrateObject_LocalMissingNoS3(t *testing.T) {
 	key := "missing"
 	local := NewLocalStorage(t.TempDir(), "https://example.com/files")
-	s3 := NewS3Storage(S3StorageConfig{Client: &mockS3API{getErr: errors.New("not found")}, Bucket: "b", BaseURL: "https://cdn.example.com"})
+	s3 := NewS3Storage(S3StorageConfig{
+		Client:  &mockS3API{headErr: &smithy.GenericAPIError{Code: "NoSuchKey", Message: "not found"}},
+		Bucket:  "b",
+		BaseURL: "https://cdn.example.com",
+	})
 	m := &Migrator{}
 	_, err := m.migrateObject(local, s3, &key)
 	require.Error(t, err)

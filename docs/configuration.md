@@ -145,7 +145,7 @@ mk-go 固有。`meta` テーブルで object storage を有効化したあと、
 5. `enabled: false` に戻して再起動する（完了後の誤再実行防止）
 6. 任意: ローカルディレクトリをバックアップして削除する
 
-移行後の `GET /files/:accessKey` は、DB 上 `storedInternal=false` の行について公開 URL へ **302 リダイレクト** する。リクエストキーに応じて `drive_file.url` / `thumbnailUrl` / `webpublicUrl` を出し分ける。
+object storage 利用時（`meta.useObjectStorage=true`）の `GET /files/:accessKey` は、DB 上 `storedInternal=false` の行について公開 URL へ **302 リダイレクト** する（`driveLocalToObjectStorage` の有無に関わらず、S3 へ直接アップロードしたファイルも含む）。リクエストキーに応じて `drive_file.url` / `thumbnailUrl` / `webpublicUrl` を出し分ける。drop-in 互換・CORS・同一オリジン URL を前提としたクライアントは、リダイレクト先ドメインへの影響を確認すること。
 
 **配信と CDN (#730)**: 302 化により same-origin プロキシで付与していた `Cache-Control: no-transform` はリダイレクト先へ引き継がれない。Cloudflare Polish 等による再エンコードを避けるには、S3 / CloudFront / CDN 側で同等のヘッダを設定すること。private bucket + pre-signed URL 運用は想定外（公開 URL / CloudFront 前提）。
 
