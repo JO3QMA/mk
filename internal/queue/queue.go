@@ -49,8 +49,10 @@ const WebhookQueueName = "webhook"
 // drop-in compat.
 const InboxQueueName = "inbox"
 
-// ObjectStorageQueueName migrates locally stored drive files to S3 (#1476).
-// Name matches Misskey TS BullMQ queue for drop-in admin job-queue tabs.
+// ObjectStorageQueueName holds local→S3 drive migration tasks (#1476).
+// The queue name matches Misskey TS BullMQ "objectStorage" for drop-in
+// admin job-queue tab compat; upstream TS uses this queue for file deletion
+// and remote cleanup, while mk-go reuses the name for migration work.
 const ObjectStorageQueueName = "objectStorage"
 
 // Enqueuer abstracts task enqueueing for callers (DeliverService,
@@ -456,17 +458,26 @@ func (c *Client) EnqueueObjectStorageMigrateScan() error {
 // EnqueueObjectStorageMigrateScanFrom continues a chained scan from untilID.
 func (c *Client) EnqueueObjectStorageMigrateScanFrom(untilID string) error {
 	body := mustMarshal(ObjectStorageMigrateScanPayload{UntilID: untilID})
-	base := []driver.EnqueueOption{driver.WithQueue(ObjectStorageQueueName)}
-	base = append(base, c.retentionOpts(ObjectStorageQueueName)...)
-	return c.inner.Enqueue(context.Background(), TaskTypeObjectStorageMigrateScan, body, base...)
+	return c.enqueueObjectStorage(context.Background(), TaskTypeObjectStorageMigrateScan, body)
 }
 
 // EnqueueObjectStorageMigrateFile enqueues migration for one drive_file row.
 func (c *Client) EnqueueObjectStorageMigrateFile(fileID string) error {
 	body := mustMarshal(ObjectStorageMigrateFilePayload{FileID: fileID})
+	return c.enqueueObjectStorage(context.Background(), TaskTypeObjectStorageMigrateFile, body)
+}
+
+// enqueueObjectStorage applies objectStorage queue Policy (MaxAttempts,
+// backoff, retention) like EnqueueInbox (#1476 review: mkq default was no retry).
+func (c *Client) enqueueObjectStorage(ctx context.Context, taskType string, body []byte) error {
+	p := c.policyFor(ObjectStorageQueueName)
 	base := []driver.EnqueueOption{driver.WithQueue(ObjectStorageQueueName)}
-	base = append(base, c.retentionOpts(ObjectStorageQueueName)...)
-	return c.inner.Enqueue(context.Background(), TaskTypeObjectStorageMigrateFile, body, base...)
+	if p.MaxAttempts > 0 {
+		base = append(base, driver.WithMaxRetry(p.MaxAttempts-1))
+	}
+	base = append(base, backoffOptFromPolicy(p))
+	base = append(base, retentionOptsFromPolicy(p)...)
+	return c.inner.Enqueue(ctx, taskType, body, base...)
 }
 
 // Close releases the underlying client connection.

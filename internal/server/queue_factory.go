@@ -111,6 +111,11 @@ func perQueueRatesFromConfig(cfg *config.Config) map[string]int {
 const (
 	defaultDeliverJobMaxAttempts = 12
 	defaultInboxJobMaxAttempts   = 8
+	// defaultObjectStorageMigrateMaxAttempts is the total tries for local→S3
+	// migrate jobs when no YAML override exists (#1476 review). Smaller than
+	// deliver/inbox; transient S3/network errors should retry without waiting
+	// for a full re-scan on restart.
+	defaultObjectStorageMigrateMaxAttempts = 5
 )
 
 // defaultKeepFailed bounds the failed bucket retention applied to inbox /
@@ -157,6 +162,8 @@ func applyClientPolicies(c *queue.Client, cfg *config.Config) {
 	c.SetPolicy(queue.ExportQueueName, defaultPolicy())
 	c.SetPolicy(queue.PushQueueName, defaultPolicy())
 	c.SetPolicy(queue.WebhookQueueName, defaultPolicy())
+	c.SetPolicy(queue.ObjectStorageQueueName,
+		buildPolicy(nil, defaultObjectStorageMigrateMaxAttempts, nil, nil))
 }
 
 // defaultPolicy returns the queue.Policy applied when no operator config

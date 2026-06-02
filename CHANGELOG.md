@@ -4,7 +4,11 @@
 
 ### Upgrade notes (object storage / #1476)
 
-`meta.useObjectStorage=true` のインスタンスは、**`driveLocalToObjectStorage` を有効にしていなくても**、`storedInternal=false` の `GET /files/:accessKey` が公開 URL（S3 / CDN）へ **302** になります（従来は mk-go が same-origin でプロキシ配信し `Cache-Control: no-transform` を付与）。
+> **リリース時**: この小節を GitHub Release 本文にそのままコピーし、object storage 運用インスタンスの運用者へ周知すること。
+
+`meta.useObjectStorage=true` のインスタンスは、**`driveLocalToObjectStorage.enabled` の有無に関わらず**（ローカル→S3 移行ジョブを有効にしていない既存 S3 運用も含む）、`storedInternal=false` の `GET /files/:accessKey` が公開 URL（S3 / CDN）へ **302** になります（従来は mk-go が same-origin でプロキシ配信し `Cache-Control: no-transform` を付与）。Misskey TS 互換の意図的な配信経路変更です。
+
+**same-origin でプロキシが継続する条件**: `drive_file.url`（および該当する thumb/webpublic URL）がまだ `https://<instance>/files/...` のとき、または `objectStorage.baseUrl` を同一オリジンに向けた proxy 運用のときは 302 せず mk-go が `storage.Get` で配信します（`URLUsesDrivePrefix`）。
 
 - **確認**: アップグレード前後で代表ファイルに `curl -I https://<instance>/files/<accessKey>` を実行し、`Location` が想定 CDN か確認する
 - **CDN (#730)**: `no-transform` はリダイレクト先に引き継がれない。Cloudflare Polish 等を使う場合は S3 / CloudFront / CDN 側で同等ヘッダを設定する

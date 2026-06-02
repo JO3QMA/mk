@@ -223,6 +223,18 @@ func TestApplyClientPolicies_DeliverInboxDefaultAttempts(t *testing.T) {
 	assert.Equal(t, defaultInboxJobMaxAttempts-1, rec.lastOpts.MaxRetry)
 }
 
+func TestApplyClientPolicies_ObjectStorageDefaultAttempts(t *testing.T) {
+	rec := &recordingDriverClient{}
+	c := queue.NewClient(&stubDriver{client: rec})
+	defer func() { _ = c.Close() }()
+
+	applyClientPolicies(c, &config.Config{})
+
+	require.NoError(t, c.EnqueueObjectStorageMigrateFile("f1"))
+	assert.True(t, rec.lastOpts.MaxRetrySet, "objectStorage migrate default attempts must propagate")
+	assert.Equal(t, defaultObjectStorageMigrateMaxAttempts-1, rec.lastOpts.MaxRetry)
+}
+
 // TestApplyClientPolicies_OperatorAttemptsOptOut: operator が
 // deliverJobMaxAttempts=0 を明示すると opt-out (リトライ無し) として尊重され、
 // WithMaxRetry が付かない (= mkq attempts=0)。KeepFailed/KeepCompleted と同じ

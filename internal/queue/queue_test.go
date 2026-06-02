@@ -676,6 +676,30 @@ func TestDecodeObjectStorageMigrateFilePayload_Invalid(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestClient_EnqueueObjectStorageMigrate_PolicyMaxAttemptsApplied(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+	c.SetPolicy(queue.ObjectStorageQueueName, queue.Policy{MaxAttempts: 5})
+
+	require.NoError(t, c.EnqueueObjectStorageMigrateFile("f1"))
+	require.NoError(t, c.EnqueueObjectStorageMigrateScanFrom("f200"))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.ObjectStorageQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 2)
+	for _, task := range tasks {
+		info, err := insp.GetTaskInfo(queue.ObjectStorageQueueName, task.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 4, info.MaxRetry, "MaxAttempts=5 (BullMQ-style total) → asynq MaxRetry=4")
+	}
+}
+
 func TestClient_EnqueueObjectStorageMigrate(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
