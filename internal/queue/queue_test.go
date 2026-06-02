@@ -642,6 +642,62 @@ func TestDecodeWebPushPayload_Invalid(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestNewObjectStorageMigrateScanTask_RoundTrip(t *testing.T) {
+	payload := queue.ObjectStorageMigrateScanPayload{UntilID: "f100"}
+	task := queue.NewObjectStorageMigrateScanTask(payload)
+	assert.Equal(t, queue.TaskTypeObjectStorageMigrateScan, task.Type())
+
+	decoded, err := queue.DecodeObjectStorageMigrateScanPayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload, decoded)
+}
+
+func TestDecodeObjectStorageMigrateScanPayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeObjectStorageMigrateScanPayload([]byte(`{bad`))
+	assert.Error(t, err)
+}
+
+func TestNewObjectStorageMigrateFileTask_RoundTrip(t *testing.T) {
+	payload := queue.ObjectStorageMigrateFilePayload{FileID: "f1"}
+	task := queue.NewObjectStorageMigrateFileTask(payload)
+	assert.Equal(t, queue.TaskTypeObjectStorageMigrateFile, task.Type())
+
+	decoded, err := queue.DecodeObjectStorageMigrateFilePayload(task.Payload())
+	require.NoError(t, err)
+	assert.Equal(t, payload, decoded)
+}
+
+func TestDecodeObjectStorageMigrateFilePayload_Invalid(t *testing.T) {
+	_, err := queue.DecodeObjectStorageMigrateFilePayload([]byte(`{bad`))
+	assert.Error(t, err)
+}
+
+func TestClient_EnqueueObjectStorageMigrate(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	flushTestRedis(t)
+
+	c := queue.NewClient(newDriver())
+	defer func() { _ = c.Close() }()
+
+	require.NoError(t, c.EnqueueObjectStorageMigrateScan())
+	require.NoError(t, c.EnqueueObjectStorageMigrateScanFrom("f200"))
+	require.NoError(t, c.EnqueueObjectStorageMigrateFile("f1"))
+
+	insp := asynq.NewInspector(redisOpt())
+	defer func() { _ = insp.Close() }()
+
+	tasks, err := insp.ListPendingTasks(queue.ObjectStorageQueueName)
+	require.NoError(t, err)
+	require.Len(t, tasks, 3)
+
+	types := make([]string, len(tasks))
+	for i, task := range tasks {
+		types[i] = task.Type
+	}
+	assert.Contains(t, types, queue.TaskTypeObjectStorageMigrateScan)
+	assert.Contains(t, types, queue.TaskTypeObjectStorageMigrateFile)
+}
+
 func TestClient_EnqueueWebPush(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 	flushTestRedis(t)
