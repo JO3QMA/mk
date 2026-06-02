@@ -904,6 +904,9 @@ func (r *failingUserListRepo) ListMembersByListIDs(_ []string) (map[string][]str
 func (r *failingUserListRepo) UpdateList(_ string, _ map[string]any) error { return nil }
 func (r *failingUserListRepo) UpdateMembership(_, _ string, _ bool) error  { return nil }
 func (r *failingUserListRepo) ListIDsByMember(_ string) ([]string, error)  { return nil, nil }
+func (r *failingUserListRepo) ListIDsAndOwnersByMember(_ string) (map[string]string, error) {
+	return nil, nil
+}
 func (r *failingUserListRepo) ListsContainingMember(_, _ string) ([]*model.UserList, error) {
 	return nil, nil
 }
