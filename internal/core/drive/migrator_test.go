@@ -216,6 +216,20 @@ func TestCascadeDenormalizedURLs(t *testing.T) {
 	oldThumb := "https://example.com/files/cascade1-thumb"
 	newThumb := "https://cdn.example.com/files/cascade1-thumb"
 
+	avatarFile := &model.DriveFile{
+		ID:             fileID,
+		MD5:            "cascade_md5",
+		Name:           "cascade.bin",
+		Type:           "application/octet-stream",
+		Size:           1,
+		StoredInternal: true,
+		URL:            oldURL,
+		Properties:     datatypes.JSON([]byte("{}")),
+		RequestHeaders: datatypes.JSON([]byte("{}")),
+	}
+	require.NoError(t, db.Create(avatarFile).Error)
+	t.Cleanup(func() { db.Exec(`DELETE FROM "drive_file" WHERE id = ?`, fileID) })
+
 	user := &model.User{
 		ID:                "ucascade1",
 		Username:          "cascade1",
