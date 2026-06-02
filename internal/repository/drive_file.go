@@ -55,6 +55,12 @@ type DriveFileRepository interface {
 	// remote instance host. Returns affected count. Used by
 	// admin/federation/delete-all-files (#587)。
 	DeleteByHost(host string) (int64, error)
+	// ListStoredInternalIDs returns IDs of locally stored files pending
+	// migration to object storage (#1476). untilID is an exclusive upper
+	// bound on id when non-empty (cursor pagination).
+	ListStoredInternalIDs(untilID string, limit int) ([]string, error)
+	// CountStoredInternal returns rows with storedInternal=true and isLink=false.
+	CountStoredInternal() (int64, error)
 }
 
 type driveFileRepository struct {
@@ -347,4 +353,31 @@ func (r *driveFileRepository) DeleteByHost(host string) (int64, error) {
 	// ローカル user (userHost IS NULL) は誤って巻き込まないよう明示一致のみ。
 	tx := r.db.Where(`"userHost" = ?`, host).Delete(&model.DriveFile{})
 	return tx.RowsAffected, tx.Error
+}
+
+func (r *driveFileRepository) storedInternalQuery() *gorm.DB {
+	return r.db.Model(&model.DriveFile{}).Where(`"storedInternal" = true AND "isLink" = false`)
+}
+
+func (r *driveFileRepository) CountStoredInternal() (int64, error) {
+	var n int64
+	if err := r.storedInternalQuery().Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (r *driveFileRepository) ListStoredInternalIDs(untilID string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	q := r.storedInternalQuery().Select("id")
+	if untilID != "" {
+		q = q.Where("id < ?", untilID)
+	}
+	var ids []string
+	if err := q.Order("id DESC").Limit(limit).Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

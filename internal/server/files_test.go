@@ -90,11 +90,12 @@ func TestFilesHandler_StoredInternalServesFromLocal(t *testing.T) {
 	assert.Equal(t, "max-age=31536000, immutable, no-transform", rec.Header().Get("Cache-Control"))
 }
 
-func TestFilesHandler_NonInternalServesFromPrimary(t *testing.T) {
+func TestFilesHandler_MigratedRowRedirectsToPublicURL(t *testing.T) {
 	key := "s3-key"
+	cdnURL := "https://cdn.example.com/files/s3-key"
 	lookup := &stubFilesLookup{
 		byKey: map[string]*model.DriveFile{
-			key: {ID: "f2", StoredInternal: false},
+			key: {ID: "f2", StoredInternal: false, URL: cdnURL, AccessKey: &key},
 		},
 	}
 	primary := &memStorage{byKey: map[string]string{key: "s3-body"}}
@@ -104,8 +105,8 @@ func TestFilesHandler_NonInternalServesFromPrimary(t *testing.T) {
 	h := filesHandler(lookup, primary, local)
 	require.NoError(t, h(c))
 
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "s3-body", rec.Body.String())
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, cdnURL, rec.Header().Get("Location"))
 }
 
 // DB に行がなければ primary に倒す (旧挙動互換)。

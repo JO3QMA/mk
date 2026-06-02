@@ -217,6 +217,17 @@ proxyBypassHosts:
 #    enableQueryParamLogging: false
 #    disableQueryTruncation: false
 
+#   ┌─────────────────────────────────────┐
+#───┘ Local drive → object storage migration └──────────────────
+
+# mk-go specific (#1476). See default.yml.example for field descriptions.
+#
+#driveLocalToObjectStorage:
+#  enabled: false
+#  deleteLocal: false
+#  localPath: ./drive-files
+#  concurrency: 2
+
 # Expose the Prometheus /metrics endpoint with job-queue metrics.
 # Unauthenticated; restrict access via nginx / LB ACL if exposed outside
 # the cluster. See docs/design/auto-scale-job-workers.md §6.1.

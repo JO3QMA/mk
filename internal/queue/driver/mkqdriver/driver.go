@@ -25,6 +25,7 @@ var QueueNames = []string{
 	"export",
 	"webhook",
 	"maintenance",
+	"objectStorage",
 }
 
 // Config is the per-driver configuration the constructor consumes.
@@ -215,12 +216,13 @@ func (d *Driver) Client() driver.Client {
 // workerPoolSize() で自動的にこの合計 + poolHeadroom に合わせる。operator は
 // <queue>JobConcurrency でいつでも上書きできる (pool も追従する)。
 var defaultQueueConcurrency = map[string]int{
-	"inbox":       16, // = Misskey inboxJobConcurrency ?? 16
-	"deliver":     16, // upstream は 128 だが Go の per-worker 効率を踏まえ抑制
-	"webhook":     4,
-	"push":        4,
-	"export":      2,
-	"maintenance": 2,
+	"inbox":         16, // = Misskey inboxJobConcurrency ?? 16
+	"deliver":       16, // upstream は 128 だが Go の per-worker 効率を踏まえ抑制
+	"webhook":       4,
+	"push":          4,
+	"export":        2,
+	"maintenance":   2,
+	"objectStorage": 2, // local→S3 migration (#1476)
 }
 
 // unknownQueueConcurrency is applied to any queue absent from

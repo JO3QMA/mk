@@ -354,3 +354,38 @@ func DecodePostScheduledNotePayload(body []byte) (PostScheduledNotePayload, erro
 	}
 	return p, nil
 }
+
+// TaskTypeObjectStorageMigrateScan enqueues per-file migration jobs for all
+// storedInternal=true rows (#1476).
+const TaskTypeObjectStorageMigrateScan = "objectStorage:migrateScan"
+
+// TaskTypeObjectStorageMigrateFile migrates a single drive_file row to S3.
+const TaskTypeObjectStorageMigrateFile = "objectStorage:migrateFile"
+
+// ObjectStorageMigrateScanPayload is an empty scan coordinator payload.
+type ObjectStorageMigrateScanPayload struct{}
+
+// ObjectStorageMigrateFilePayload identifies one drive_file to migrate.
+type ObjectStorageMigrateFilePayload struct {
+	FileID string `json:"fileId"`
+}
+
+// NewObjectStorageMigrateScanTask builds a scan task.
+func NewObjectStorageMigrateScanTask() driver.Task {
+	return driver.RawTask{TypeName: TaskTypeObjectStorageMigrateScan, Body: []byte("{}")}
+}
+
+// NewObjectStorageMigrateFileTask builds a per-file migration task.
+func NewObjectStorageMigrateFileTask(payload ObjectStorageMigrateFilePayload) driver.Task {
+	body, _ := json.Marshal(payload)
+	return driver.RawTask{TypeName: TaskTypeObjectStorageMigrateFile, Body: body}
+}
+
+// DecodeObjectStorageMigrateFilePayload extracts a file migration payload.
+func DecodeObjectStorageMigrateFilePayload(body []byte) (ObjectStorageMigrateFilePayload, error) {
+	var p ObjectStorageMigrateFilePayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ObjectStorageMigrateFilePayload{}, err
+	}
+	return p, nil
+}

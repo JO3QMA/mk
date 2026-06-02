@@ -49,6 +49,10 @@ const WebhookQueueName = "webhook"
 // drop-in compat.
 const InboxQueueName = "inbox"
 
+// ObjectStorageQueueName migrates locally stored drive files to S3 (#1476).
+// Name matches Misskey TS BullMQ queue for drop-in admin job-queue tabs.
+const ObjectStorageQueueName = "objectStorage"
+
 // Enqueuer abstracts task enqueueing for callers (DeliverService,
 // admin handlers, etc.). The interface is driver-neutral so callers
 // can be unit-tested with mocks.
@@ -441,6 +445,22 @@ func (c *Client) EnqueueUnfollow(payload UnfollowPayload) error {
 	}
 	base = append(base, c.retentionOpts(QueueName)...)
 	return c.inner.Enqueue(context.Background(), TaskTypeUnfollow, body, base...)
+}
+
+// EnqueueObjectStorageMigrateScan starts a coordinator that fans out
+// per-file migration jobs (#1476).
+func (c *Client) EnqueueObjectStorageMigrateScan() error {
+	base := []driver.EnqueueOption{driver.WithQueue(ObjectStorageQueueName)}
+	base = append(base, c.retentionOpts(ObjectStorageQueueName)...)
+	return c.inner.Enqueue(context.Background(), TaskTypeObjectStorageMigrateScan, []byte("{}"), base...)
+}
+
+// EnqueueObjectStorageMigrateFile enqueues migration for one drive_file row.
+func (c *Client) EnqueueObjectStorageMigrateFile(fileID string) error {
+	body := mustMarshal(ObjectStorageMigrateFilePayload{FileID: fileID})
+	base := []driver.EnqueueOption{driver.WithQueue(ObjectStorageQueueName)}
+	base = append(base, c.retentionOpts(ObjectStorageQueueName)...)
+	return c.inner.Enqueue(context.Background(), TaskTypeObjectStorageMigrateFile, body, base...)
 }
 
 // Close releases the underlying client connection.

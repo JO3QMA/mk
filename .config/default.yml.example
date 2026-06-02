@@ -354,6 +354,19 @@ proxyBypassHosts:
 #    enableQueryParamLogging: false
 #    disableQueryTruncation: false
 
+#   ┌─────────────────────────────────────┐
+#───┘ Local drive → object storage migration └──────────────────
+
+# mk-go specific (#1476). Migrates files under ./drive-files that are still
+# storedInternal=true into the S3 backend configured in the meta table.
+# Requires meta.useObjectStorage=true and a valid bucket before startup.
+#
+#driveLocalToObjectStorage:
+#  enabled: false
+#  deleteLocal: false
+#  localPath: ./drive-files
+#  concurrency: 2
+
 #   ┌──────────────────────────────────┐
 #───┘ Test / debug (mk-go specific) └───────────────────────────
 

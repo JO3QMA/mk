@@ -280,6 +280,51 @@ type Source struct {
 	// distribution rather than pointing at the source repository URL. Exposed
 	// via /api/meta.providesTarball.
 	PublishTarballInsteadOfProvideRepositoryUrl bool `mapstructure:"publishTarballInsteadOfProvideRepositoryUrl"`
+
+	// DriveLocalToObjectStorage controls background migration of legacy
+	// locally stored drive files into object storage (#1476).
+	DriveLocalToObjectStorage *DriveLocalToObjectStorageOptions `mapstructure:"driveLocalToObjectStorage"`
+}
+
+// DriveLocalToObjectStorageOptions is the YAML shape for local→S3 migration.
+type DriveLocalToObjectStorageOptions struct {
+	Enabled     bool   `mapstructure:"enabled"`
+	DeleteLocal bool   `mapstructure:"deleteLocal"`
+	LocalPath   string `mapstructure:"localPath"`
+	Concurrency int    `mapstructure:"concurrency"`
+}
+
+// DriveLocalToObjectStorageConfig is the resolved migration settings.
+type DriveLocalToObjectStorageConfig struct {
+	Enabled     bool
+	DeleteLocal bool
+	LocalPath   string
+	Concurrency int
+}
+
+const (
+	defaultDriveMigrationLocalPath   = "./drive-files"
+	defaultDriveMigrationConcurrency = 2
+)
+
+// ResolveDriveLocalToObjectStorage normalises YAML/env into runtime defaults.
+func ResolveDriveLocalToObjectStorage(src *DriveLocalToObjectStorageOptions) DriveLocalToObjectStorageConfig {
+	cfg := DriveLocalToObjectStorageConfig{
+		LocalPath:   defaultDriveMigrationLocalPath,
+		Concurrency: defaultDriveMigrationConcurrency,
+	}
+	if src == nil {
+		return cfg
+	}
+	cfg.Enabled = src.Enabled
+	cfg.DeleteLocal = src.DeleteLocal
+	if p := strings.TrimSpace(src.LocalPath); p != "" {
+		cfg.LocalPath = p
+	}
+	if src.Concurrency > 0 {
+		cfg.Concurrency = src.Concurrency
+	}
+	return cfg
 }
 
 // Config represents the resolved application configuration.
@@ -403,6 +448,10 @@ type Config struct {
 	// PublishTarballInsteadOfProvideRepositoryUrl is exposed to clients via
 	// /api/meta.providesTarball. See the Source struct for details.
 	PublishTarballInsteadOfProvideRepositoryUrl bool
+
+	// DriveLocalToObjectStorage is the resolved local→object-storage migration
+	// settings (#1476).
+	DriveLocalToObjectStorage DriveLocalToObjectStorageConfig
 }
 
 const defaultMaxFileSize int64 = 262144000
@@ -479,6 +528,10 @@ func bindEnvKeys(v *viper.Viper) {
 		"minWorkers",
 		"maxWorkersGlobal",
 		"autoScaleCooldownSeconds",
+		"driveLocalToObjectStorage.enabled",
+		"driveLocalToObjectStorage.deleteLocal",
+		"driveLocalToObjectStorage.localPath",
+		"driveLocalToObjectStorage.concurrency",
 	}
 	for _, k := range keys {
 		_ = v.BindEnv(k)
@@ -634,6 +687,15 @@ func resolve(src *Source) (*Config, error) {
 		SentryForFrontend: src.SentryForFrontend,
 
 		PublishTarballInsteadOfProvideRepositoryUrl: src.PublishTarballInsteadOfProvideRepositoryUrl,
+
+		DriveLocalToObjectStorage: ResolveDriveLocalToObjectStorage(src.DriveLocalToObjectStorage),
+	}
+
+	if cfg.DriveLocalToObjectStorage.Enabled {
+		slog.Info("config: driveLocalToObjectStorage migration is enabled; storedInternal files will be migrated on startup",
+			"localPath", cfg.DriveLocalToObjectStorage.LocalPath,
+			"deleteLocal", cfg.DriveLocalToObjectStorage.DeleteLocal,
+			"concurrency", cfg.DriveLocalToObjectStorage.Concurrency)
 	}
 
 	if cfg.TestMode {

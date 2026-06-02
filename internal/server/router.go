@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/pprof"
 	urlpkg "net/url"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/redis/go-redis/v9"
 	"github.com/shiroha-a/mk/internal/activitypub"
 	apiadmin "github.com/shiroha-a/mk/internal/api/admin"
 	apiannouncements "github.com/shiroha-a/mk/internal/api/announcements"
@@ -116,7 +118,7 @@ import (
 	"log/slog"
 )
 
-func (s *Server) setupRoutes() {
+func (s *Server) setupRoutes() error {
 	idGen, err := id.NewGenerator(s.config.ID)
 	if err != nil {
 		idGen, _ = id.NewGenerator("aidx")
@@ -362,14 +364,25 @@ func (s *Server) setupRoutes() {
 	// localDriveStorage は driveStorage が S3 に切り替わっても、
 	// storedInternal=true な drive_file を `/files/:accessKey` で提供する
 	// fallback として常に保持する (#1414)。
-	localDriveStorage := coredrive.NewLocalStorage("./drive-files", s.config.DriveURL)
+	localPath := s.config.DriveLocalToObjectStorage.LocalPath
+	localDriveStorage := coredrive.NewLocalStorage(localPath, s.config.DriveURL)
+	serverMeta, serverMetaErr := metaRepo.Fetch()
+	if s.config.DriveLocalToObjectStorage.Enabled {
+		if serverMetaErr != nil {
+			return fmt.Errorf("drive migration: fetch meta: %w", serverMetaErr)
+		}
+		if err := validateDriveLocalMigration(s.config, serverMeta); err != nil {
+			return err
+		}
+	}
 	var driveStorage coredrive.Storage
-	if serverMeta, err := metaRepo.Fetch(); err == nil {
-		driveStorage = coredrive.NewStorageFromMeta(serverMeta, "./drive-files", s.config.DriveURL)
+	if serverMetaErr == nil {
+		driveStorage = coredrive.NewStorageFromMeta(serverMeta, localPath, s.config.DriveURL)
 	} else {
 		driveStorage = localDriveStorage
 	}
 	driveService := coredrive.NewService(driveFileRepo, driveFolderRepo, driveStorage, idGen)
+	driveService.SetLegacyLocalStorage(localDriveStorage)
 	// drive/files/show は moderator なら他人 / リモートユーザー所有の file
 	// も返せるようにする (upstream Misskey の roleService.isModerator 経路
 	// と一致)。リモート添付メディアの詳細閲覧に必要。
@@ -459,6 +472,20 @@ func (s *Server) setupRoutes() {
 	})
 	emojiImportProcessor := processors.NewImportCustomEmojisProcessor(emojiImporter)
 	s.queueServer.Handle(queue.TaskTypeImportCustomEmojis, emojiImportProcessor.Handle)
+
+	driveMigrator := coredrive.NewMigrator(metaRepo, driveFileRepo, s.db, s.config.DriveLocalToObjectStorage, s.config.DriveURL)
+	var migrateRedis redis.UniversalClient
+	if s.redis != nil {
+		migrateRedis = s.redis.JobQueue
+	}
+	osMigrateProcessor := processors.NewObjectStorageMigrateProcessor(processors.ObjectStorageMigrateProcessorConfig{
+		Migrator:    driveMigrator,
+		FileRepo:    driveFileRepo,
+		EnqueueFile: s.queueClient.EnqueueObjectStorageMigrateFile,
+		Redis:       migrateRedis,
+	})
+	s.queueServer.Handle(queue.TaskTypeObjectStorageMigrateScan, osMigrateProcessor.Handle)
+	s.queueServer.Handle(queue.TaskTypeObjectStorageMigrateFile, osMigrateProcessor.Handle)
 
 	// Search (Phase 4.6)
 	// 設定に従って provider を選択する。Meilisearch が設定されていれば
@@ -2529,6 +2556,11 @@ func (s *Server) setupRoutes() {
 
 	// Frontend HTML shell — SPA catchall (最後に登録)
 	s.echo.GET("/*", frontend)
+
+	if err := s.maybeEnqueueDriveLocalMigration(driveFileRepo); err != nil {
+		return err
+	}
+	return nil
 }
 
 // notifReaderAdapter bridges stream.NotificationReader to

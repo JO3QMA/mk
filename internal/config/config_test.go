@@ -84,6 +84,33 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, int64(262144000), cfg.MaxFileSize)
 	assert.Equal(t, 1000, cfg.PerChannelMaxNoteCacheCount)
 	assert.Equal(t, 500, cfg.PerUserNotificationsMaxCount)
+	assert.False(t, cfg.DriveLocalToObjectStorage.Enabled)
+	assert.Equal(t, "./drive-files", cfg.DriveLocalToObjectStorage.LocalPath)
+	assert.Equal(t, 2, cfg.DriveLocalToObjectStorage.Concurrency)
+}
+
+func TestLoad_DriveLocalToObjectStorage(t *testing.T) {
+	yaml := testYAML + `
+driveLocalToObjectStorage:
+  enabled: true
+  deleteLocal: true
+  localPath: /data/drive
+  concurrency: 4
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.DriveLocalToObjectStorage.Enabled)
+	assert.True(t, cfg.DriveLocalToObjectStorage.DeleteLocal)
+	assert.Equal(t, "/data/drive", cfg.DriveLocalToObjectStorage.LocalPath)
+	assert.Equal(t, 4, cfg.DriveLocalToObjectStorage.Concurrency)
+}
+
+func TestResolveDriveLocalToObjectStorage_Nil(t *testing.T) {
+	cfg := ResolveDriveLocalToObjectStorage(nil)
+	assert.False(t, cfg.Enabled)
+	assert.Equal(t, "./drive-files", cfg.LocalPath)
+	assert.Equal(t, 2, cfg.Concurrency)
 }
 
 func TestLoad_DisableEndpointRateLimitsTrue(t *testing.T) {

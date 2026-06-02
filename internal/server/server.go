@@ -239,7 +239,9 @@ func New(cfg *config.Config, db *gorm.DB, redis *cache.RedisClients) (*Server, e
 		queueMetrics:   newQueueMetrics(queueDriver),
 	}
 
-	s.setupRoutes()
+	if err := s.setupRoutes(); err != nil {
+		return nil, fmt.Errorf("server: setup routes: %w", err)
+	}
 
 	return s, nil
 }

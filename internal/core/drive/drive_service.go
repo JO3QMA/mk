@@ -103,6 +103,7 @@ type Service struct {
 	fileRepo            repository.DriveFileRepository
 	folderRepo          repository.DriveFolderRepository
 	storage             Storage
+	legacyLocalStorage  Storage // optional ./drive-files for dual-delete after S3 migration (#1476)
 	idGen               id.Generator
 	publisher           StreamingPublisher
 	mainStreamPublisher MainStreamPublisher
@@ -121,6 +122,10 @@ type Service struct {
 // inspect any file (matching upstream Misskey's drive/files/show behaviour).
 // Nil keeps the existing owner-only check.
 func (s *Service) SetRoleChecker(rc RoleChecker) { s.roleChecker = rc }
+
+// SetLegacyLocalStorage keeps the local FS backend for deleting blobs left
+// after migrating rows to object storage (#1476).
+func (s *Service) SetLegacyLocalStorage(st Storage) { s.legacyLocalStorage = st }
 
 // SetSensitiveDetection attaches the sensitive media detector and config.
 func (s *Service) SetSensitiveDetection(detector SensitiveDetector, cfg SensitiveConfig) {
@@ -342,6 +347,11 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (*model.DriveFile,
 		userIDPtr = &uid
 		userHostPtr = in.User.Host
 	}
+	storedInternal := true
+	if _, ok := s.storage.(*S3Storage); ok {
+		// S3 保存時は TS 互換で storedInternal=false（実体は object storage のみ）
+		storedInternal = false
+	}
 	f := &model.DriveFile{
 		ID:                 fileID,
 		UserID:             userIDPtr,
@@ -353,7 +363,7 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (*model.DriveFile,
 		Comment:            in.Comment,
 		Blurhash:           blurhash,
 		Properties:         properties,
-		StoredInternal:     true,
+		StoredInternal:     storedInternal,
 		URL:                url,
 		ThumbnailURL:       thumbnailURL,
 		WebpublicURL:       webpublicURL,
@@ -622,6 +632,21 @@ func (s *Service) Update(user *model.User, id string, in UpdateInput) (*model.Dr
 	return updated, nil
 }
 
+func (s *Service) deleteLegacyLocalKeys(f *model.DriveFile) {
+	if s.legacyLocalStorage == nil {
+		return
+	}
+	if f.AccessKey != nil {
+		_ = s.legacyLocalStorage.Delete(*f.AccessKey)
+	}
+	if f.ThumbnailAccessKey != nil {
+		_ = s.legacyLocalStorage.Delete(*f.ThumbnailAccessKey)
+	}
+	if f.WebpublicAccessKey != nil {
+		_ = s.legacyLocalStorage.Delete(*f.WebpublicAccessKey)
+	}
+}
+
 // Delete removes a file from storage and the database.
 // Owner-only: moderator が他ユーザーの file を削除できないよう
 // findOwnedFile() を使う (#499)。
@@ -642,6 +667,7 @@ func (s *Service) Delete(user *model.User, id string) error {
 	if f.WebpublicAccessKey != nil {
 		_ = s.storage.Delete(*f.WebpublicAccessKey)
 	}
+	s.deleteLegacyLocalKeys(f)
 	if err := s.fileRepo.Delete(f); err != nil {
 		return err
 	}

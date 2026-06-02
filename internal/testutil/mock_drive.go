@@ -489,3 +489,41 @@ func (m *MockDriveFileRepository) DeleteByHost(host string) (int64, error) {
 	}
 	return n, nil
 }
+
+func (m *MockDriveFileRepository) CountStoredInternal() (int64, error) {
+	var n int64
+	for _, f := range m.Files {
+		if f.StoredInternal && !f.IsLink {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MockDriveFileRepository) ListStoredInternalIDs(untilID string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	var ids []string
+	for id, f := range m.Files {
+		if !f.StoredInternal || f.IsLink {
+			continue
+		}
+		if untilID != "" && id >= untilID {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	// desc order by id (aidx sorts lexicographically as time order)
+	for i := 0; i < len(ids); i++ {
+		for j := i + 1; j < len(ids); j++ {
+			if ids[j] > ids[i] {
+				ids[i], ids[j] = ids[j], ids[i]
+			}
+		}
+	}
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, nil
+}

@@ -72,6 +72,9 @@ func perQueueConcurrencyFromConfig(cfg *config.Config) map[string]int {
 	if cfg.InboxJobConcurrency != nil && *cfg.InboxJobConcurrency > 0 {
 		out["inbox"] = *cfg.InboxJobConcurrency
 	}
+	if cfg.DriveLocalToObjectStorage.Concurrency > 0 {
+		out[queue.ObjectStorageQueueName] = cfg.DriveLocalToObjectStorage.Concurrency
+	}
 	if len(out) == 0 {
 		return nil
 	}

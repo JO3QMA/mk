@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -46,8 +48,12 @@ func filesHandler(lookup filesDriveLookup, primary, local coredrive.Storage) ech
 		key := c.Param("accessKey")
 		storage := primary
 		if lookup != nil && local != nil {
-			if f, err := lookup.FindByAnyAccessKey(key); err == nil && f.StoredInternal {
-				storage = local
+			if f, err := lookup.FindByAnyAccessKey(key); err == nil {
+				if f.StoredInternal {
+					storage = local
+				} else if target := redirectURLForAccessKey(f, key); target != "" {
+					return c.Redirect(http.StatusFound, target)
+				}
 			}
 		}
 		body, err := storage.Get(key)
@@ -96,4 +102,28 @@ func filesHandler(lookup filesDriveLookup, primary, local coredrive.Storage) ech
 		http.ServeContent(c.Response(), c.Request(), key, modtime, seeker)
 		return nil
 	}
+}
+
+// redirectURLForAccessKey returns the public CDN/S3 URL for a migrated file row.
+func redirectURLForAccessKey(f *model.DriveFile, accessKey string) string {
+	if f == nil {
+		return ""
+	}
+	var u string
+	if f.AccessKey != nil && *f.AccessKey == accessKey {
+		u = f.URL
+	} else if f.ThumbnailAccessKey != nil && *f.ThumbnailAccessKey == accessKey && f.ThumbnailURL != nil {
+		u = *f.ThumbnailURL
+	} else if f.WebpublicAccessKey != nil && *f.WebpublicAccessKey == accessKey && f.WebpublicURL != nil {
+		u = *f.WebpublicURL
+	} else {
+		return ""
+	}
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return ""
+	}
+	if _, err := url.Parse(u); err != nil {
+		return ""
+	}
+	return u
 }
