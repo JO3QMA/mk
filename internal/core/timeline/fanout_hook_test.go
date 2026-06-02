@@ -598,9 +598,17 @@ func TestFanoutHook_StreamingFanoutAcrossPages(t *testing.T) {
 // calls. 旧実装は Redis push と streaming publish で同じ followers ページネ
 // ーションを 2 回繰り返していた。マージ後は 1 ページにつき 1 call で済む
 // ことを担保する (#300 2-4)。
+//
+// #1468 review の N+1 解消で `Exists` から `FilterFollowingsToAnchor` へ
+// 切り替えた regression gate にも使う。`existsCalls` / `filterToAnchorCalls` /
+// `lastCandidates` を見て「Exists は呼ばれない」「batch query は 1 回・
+// candidates は distinct owner」を assert する。
 type countingFollowingRepo struct {
 	*testutil.MockFollowingRepository
-	listFollowersCalls atomic.Int64
+	listFollowersCalls  atomic.Int64
+	existsCalls         int
+	filterToAnchorCalls int
+	lastCandidates      []string
 }
 
 func (c *countingFollowingRepo) ListFollowers(userID string, limit, offset int) ([]*model.Following, error) {
@@ -608,9 +616,33 @@ func (c *countingFollowingRepo) ListFollowers(userID string, limit, offset int) 
 	return c.MockFollowingRepository.ListFollowers(userID, limit, offset)
 }
 
+func (c *countingFollowingRepo) Exists(followerID, followeeID string) (bool, error) {
+	c.existsCalls++
+	return c.MockFollowingRepository.Exists(followerID, followeeID)
+}
+
+func (c *countingFollowingRepo) FilterFollowingsToAnchor(anchorID string, candidateIDs []string) ([]string, error) {
+	c.filterToAnchorCalls++
+	c.lastCandidates = append([]string(nil), candidateIDs...)
+	return c.MockFollowingRepository.FilterFollowingsToAnchor(anchorID, candidateIDs)
+}
+
 // インターフェース実装は完全に MockFollowingRepository に委譲するための
 // コンパイル時アサート。
 var _ repository.FollowingRepository = (*countingFollowingRepo)(nil)
+
+// failingFilterFollowingRepo wraps MockFollowingRepository so
+// FilterFollowingsToAnchor always errors. Used to assert the fail-closed branch
+// of fanoutToUserLists when batch follow check is unavailable (#1468 review).
+type failingFilterFollowingRepo struct {
+	*testutil.MockFollowingRepository
+}
+
+func (f *failingFilterFollowingRepo) FilterFollowingsToAnchor(_ string, _ []string) ([]string, error) {
+	return nil, assertError{}
+}
+
+var _ repository.FollowingRepository = (*failingFilterFollowingRepo)(nil)
 
 func TestFanoutHook_FollowersFanoutSinglePassListsFollowersOnce(t *testing.T) {
 	testRedis.FlushAll(context.Background())
@@ -928,6 +960,104 @@ func TestFanoutHook_FanoutToUserLists_PublicNote_NoFollowCheck(t *testing.T) {
 	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
 	require.NoError(t, err)
 	assert.Equal(t, []string{noteID}, out)
+}
+
+// #1468 review: distinct owner 集合に対する FilterFollowingsToAnchor 1 query で
+// 「author を follow している owner」を判定し、per-owner Exists の N+1 を消す。
+// 5 list / 4 distinct owner (うち 1 名重複所有) のシナリオで、batch query は
+// 1 回・候補は distinct owner 数 (3 名、本人除く) だけ渡る・本人 list は
+// 無条件 push される、を assert する。
+func TestFanoutHook_FanoutToUserLists_FollowersVisibility_BatchFollowCheck_SingleCall(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	// list1 / list2 -> alice (follower / 同一 owner で 2 list)
+	// list3 -> bob (follower)
+	// list4 -> carol (non-follower)
+	// list5 -> author (本人)
+	lookup := &stubUserListLookup{
+		memberToLists: map[string][]string{"author": {"list1", "list2", "list3", "list4", "list5"}},
+		listOwners: map[string]string{
+			"list1": "alice", "list2": "alice",
+			"list3": "bob",
+			"list4": "carol",
+			"list5": "author",
+		},
+	}
+	h.SetUserListRepo(lookup)
+
+	counting := &countingFollowingRepo{
+		MockFollowingRepository: testutil.NewMockFollowingRepository(),
+	}
+	require.NoError(t, counting.Create(&model.Following{ID: "f1", FollowerID: "alice", FolloweeID: "author"}))
+	require.NoError(t, counting.Create(&model.Following{ID: "f2", FollowerID: "bob", FolloweeID: "author"}))
+	h.followingRepo = counting
+
+	noteID := idGen.Generate(time.Now())
+	h.OnNoteCreated(
+		&model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityFollowers},
+		&model.User{ID: "author"},
+	)
+
+	// follower 所有 list + 本人 list には push、non-follower には push されない
+	for _, listID := range []string{"list1", "list2", "list3", "list5"} {
+		out, err := fanout.Get(ctx, UserListTimelineName(listID), "", "", 10)
+		require.NoError(t, err)
+		assert.Equal(t, []string{noteID}, out, "%s should receive followers note", listID)
+	}
+	out, err := fanout.Get(ctx, UserListTimelineName("list4"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out, "list4 (non-follower carol) should NOT receive followers note")
+
+	// N+1 解消の核心: batch query は 1 回・per-owner Exists は呼ばれない
+	assert.Equal(t, 1, counting.filterToAnchorCalls,
+		"FilterFollowingsToAnchor should be called exactly once for the whole fanout")
+	assert.Equal(t, 0, counting.existsCalls,
+		"Exists should not be called after #1468 review N+1 fix")
+	// distinct owner 数 (本人除外) が候補に渡っていることを assert
+	require.Len(t, counting.lastCandidates, 3)
+	assert.ElementsMatch(t, []string{"alice", "bob", "carol"}, counting.lastCandidates,
+		"candidates should be the distinct non-self owners")
+}
+
+// #1468 review: FilterFollowingsToAnchor がエラーを返した時は本人 list 以外を
+// push しない fail-closed 挙動。旧実装は per-owner Exists エラーをスキップして
+// 他 owner を続行していたが、batch query では「誰が follow しているか分からない」
+// 状況なので全体を保守的に閉じる。
+func TestFanoutHook_FanoutToUserLists_FollowersVisibility_BatchFollowCheck_Error_FailClosed(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	lookup := &stubUserListLookup{
+		memberToLists: map[string][]string{"author": {"list1", "self-list"}},
+		listOwners: map[string]string{
+			"list1":     "alice", // 本来 follow しているが query が落ちる経路
+			"self-list": "author",
+		},
+	}
+	h.SetUserListRepo(lookup)
+
+	failing := &failingFilterFollowingRepo{
+		MockFollowingRepository: testutil.NewMockFollowingRepository(),
+	}
+	// alice は author を follow しているが、 batch query 自体が boom する
+	require.NoError(t, failing.Create(&model.Following{ID: "f1", FollowerID: "alice", FolloweeID: "author"}))
+	h.followingRepo = failing
+
+	noteID := idGen.Generate(time.Now())
+	h.OnNoteCreated(
+		&model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityFollowers},
+		&model.User{ID: "author"},
+	)
+
+	// 本人 list には push される
+	out, err := fanout.Get(ctx, UserListTimelineName("self-list"), "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out)
+	// 他 owner の list は fail-closed で push されない
+	out, err = fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out, "non-self list must not receive note when batch follow check errors out")
 }
 
 // followers visibility 経路の lookup error はベストエフォートで握り潰す。

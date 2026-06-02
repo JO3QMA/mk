@@ -362,15 +362,49 @@ func (h *FanoutHook) fanoutToUserLists(ctx context.Context, n *model.Note, autho
 		}
 		return
 	}
+	// distinct な non-self owner を 1 query で「author を follow しているか」
+	// 判定する (#1144 batch method の前例に揃える)。owner ごとに `Exists` を
+	// ループすると、author が多数の異なる owner 所有 list の member の場合に
+	// N+1 になり、同一 owner が複数 list を持つ場合は重複呼び出しになる
+	// (#1468 review)。
+	distinctOwners := make(map[string]struct{}, len(owners))
+	for _, ownerID := range owners {
+		if ownerID == author.ID {
+			continue
+		}
+		distinctOwners[ownerID] = struct{}{}
+	}
+	followingOwners := make(map[string]struct{}, len(distinctOwners))
+	if len(distinctOwners) > 0 {
+		candidates := make([]string, 0, len(distinctOwners))
+		for ownerID := range distinctOwners {
+			candidates = append(candidates, ownerID)
+		}
+		// rows where followerID IN owners AND followeeID = author → returns the
+		// subset of owners that follow author. err 時は fail-closed: 本人 list
+		// 以外は push しない (= 旧 per-owner Exists 失敗時より厳しめだが、
+		// "誰が author を follow しているか" 全く分からない状況で部分 push する
+		// より安全寄り)。
+		filtered, ferr := h.followingRepo.FilterFollowingsToAnchor(author.ID, candidates)
+		if ferr != nil {
+			slog.Warn("fanoutToUserLists: batch follow check failed",
+				"err", ferr, "author", author.ID, "owners", len(candidates))
+			for listID, ownerID := range owners {
+				if ownerID != author.ID {
+					continue
+				}
+				h.pushWithLimit(ctx, UserListTimelineName(listID), n.ID, listCap)
+				h.publishNote("userListTimeline:"+listID, n, author)
+			}
+			return
+		}
+		for _, ownerID := range filtered {
+			followingOwners[ownerID] = struct{}{}
+		}
+	}
 	for listID, ownerID := range owners {
 		if ownerID != author.ID {
-			follows, err := h.followingRepo.Exists(ownerID, author.ID)
-			if err != nil {
-				slog.Warn("fanoutToUserLists: follow check failed",
-					"err", err, "owner", ownerID, "author", author.ID)
-				continue
-			}
-			if !follows {
+			if _, ok := followingOwners[ownerID]; !ok {
 				continue
 			}
 		}
