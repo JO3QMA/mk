@@ -101,6 +101,10 @@ func (f *fakeDriveFileRepo) FindByAccessKey(_ string) (*model.DriveFile, error) 
 func (f *fakeDriveFileRepo) FindByAnyAccessKey(_ string) (*model.DriveFile, error) {
 	return nil, errors.New("not implemented")
 }
+func (f *fakeDriveFileRepo) CountStoredInternal() (int64, error) { return 0, nil }
+func (f *fakeDriveFileRepo) ListStoredInternalIDs(_ string, _ int) ([]string, error) {
+	return nil, nil
+}
 
 // Ensure fakeDriveFileRepo implements the real repository interface so the
 // reader accepts it.

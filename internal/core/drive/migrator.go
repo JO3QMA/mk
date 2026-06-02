@@ -14,6 +14,9 @@ import (
 // ErrMigrationNotConfigured is returned when object storage is not enabled in meta.
 var ErrMigrationNotConfigured = errors.New("object storage is not configured in meta")
 
+// storageFromMeta is the factory used by MigrateFile; tests may replace it to inject S3Storage.
+var storageFromMeta = NewStorageFromMeta
+
 // Migrator moves locally stored drive files into object storage (#1476).
 type Migrator struct {
 	metaRepo repository.MetaRepository
@@ -62,7 +65,7 @@ func (m *Migrator) MigrateFile(ctx context.Context, fileID string) error {
 	}
 
 	local := NewLocalStorage(m.cfg.LocalPath, m.driveURL)
-	remote := NewStorageFromMeta(meta, m.cfg.LocalPath, m.driveURL)
+	remote := storageFromMeta(meta, m.cfg.LocalPath, m.driveURL)
 	s3, ok := remote.(*S3Storage)
 	if !ok {
 		return ErrMigrationNotConfigured

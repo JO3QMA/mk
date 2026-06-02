@@ -551,4 +551,39 @@ func TestDriveFileRepository_DeleteByUser(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestDriveFileRepository_StoredInternalMigrationQueries(t *testing.T) {
+	repo := NewDriveFileRepository(testDB)
+	user := insertTestUser(t, "u_df_mig", "dfmig")
+	defer cleanupUser(t, user.ID)
+
+	local := newTestDriveFile("f_mig_local", user.ID, "mig1", nil)
+	local.StoredInternal = true
+	require.NoError(t, repo.Create(local))
+	defer cleanupDriveFile(t, local.ID)
+
+	migrated := newTestDriveFile("f_mig_done", user.ID, "mig2", nil)
+	migrated.StoredInternal = false
+	require.NoError(t, repo.Create(migrated))
+	defer cleanupDriveFile(t, migrated.ID)
+
+	link := newTestDriveFile("f_mig_link", user.ID, "mig3", nil)
+	link.StoredInternal = false
+	link.IsLink = true
+	require.NoError(t, repo.Create(link))
+	defer cleanupDriveFile(t, link.ID)
+
+	n, err := repo.CountStoredInternal()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+
+	ids, err := repo.ListStoredInternalIDs("", 10)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+	assert.Equal(t, "f_mig_local", ids[0])
+
+	ids, err = repo.ListStoredInternalIDs("f_mig_local", 10)
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+}
+
 var _ = context.Background // import guard
