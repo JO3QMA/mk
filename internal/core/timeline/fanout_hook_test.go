@@ -693,10 +693,33 @@ func TestFanoutHook_StreamingPublisherNilFollowingRepo(t *testing.T) {
 type stubUserListLookup struct {
 	// memberToLists maps userID -> list IDs containing that user.
 	memberToLists map[string][]string
+	// listOwners maps listID -> ownerID. ListIDsAndOwnersByMember (#1465) で
+	// followers visibility note の per-list owner follow gate を再現する。
+	// 旧テストで未設定なら listID 自身を owner として扱う (= public note 経路の
+	// 既存挙動を保つ defensive fallback)。
+	listOwners map[string]string
 }
 
 func (s *stubUserListLookup) ListIDsByMember(userID string) ([]string, error) {
 	return s.memberToLists[userID], nil
+}
+
+// ListIDsAndOwnersByMember returns {listID: ownerID} for lists containing memberID.
+// listOwners が nil の test では listID 自身を owner として返す
+// (= follow gate に到達しない public note path の既存挙動を破壊しない)。
+func (s *stubUserListLookup) ListIDsAndOwnersByMember(memberID string) (map[string]string, error) {
+	out := make(map[string]string)
+	for _, listID := range s.memberToLists[memberID] {
+		if s.listOwners != nil {
+			if owner, ok := s.listOwners[listID]; ok {
+				out[listID] = owner
+				continue
+			}
+		}
+		// fallback: listID 自体を owner 扱い (test compat)
+		out[listID] = listID
+	}
+	return out, nil
 }
 
 func TestFanoutHook_FanoutToUserLists(t *testing.T) {
@@ -778,6 +801,10 @@ func (f *failingUserListLookup) ListIDsByMember(_ string) ([]string, error) {
 	return nil, assertError{}
 }
 
+func (f *failingUserListLookup) ListIDsAndOwnersByMember(_ string) (map[string]string, error) {
+	return nil, assertError{}
+}
+
 func TestFanoutHook_FanoutToUserLists_LookupError(t *testing.T) {
 	h, fanout, _ := newTestHook(t)
 	ctx := context.Background()
@@ -787,6 +814,132 @@ func TestFanoutHook_FanoutToUserLists_LookupError(t *testing.T) {
 	noteID := idGen.Generate(time.Now())
 	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
 	// エラーがあっても上位に伝搬しない（ログ出力のみ）
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+// --- followers visibility user list fanout gate (#1465) ----------------------
+
+// followers visibility note: list owner が author を follow していない場合、
+// その list には push されない。
+func TestFanoutHook_FanoutToUserLists_FollowersVisibility_NonFollowerOwnerDropped(t *testing.T) {
+	h, fanout, following := newTestHook(t)
+	ctx := context.Background()
+
+	// list1 は owner=alice、list2 は owner=bob。author は両 list の member。
+	lookup := &stubUserListLookup{
+		memberToLists: map[string][]string{"author": {"list1", "list2"}},
+		listOwners:    map[string]string{"list1": "alice", "list2": "bob"},
+	}
+	h.SetUserListRepo(lookup)
+	// alice だけが author を follow。bob は follow していない。
+	following.Followings["f1"] = &model.Following{ID: "f1", FollowerID: "alice", FolloweeID: "author"}
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityFollowers}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// alice の list は push される
+	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out, "list1 (owned by follower alice) should receive followers note")
+
+	// bob の list は push されない
+	out, err = fanout.Get(ctx, UserListTimelineName("list2"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out, "list2 (owned by non-follower bob) should NOT receive followers note")
+}
+
+// followers visibility note: owner == author の list には follow check 無しで
+// push される (本人 short-circuit)。
+func TestFanoutHook_FanoutToUserLists_FollowersVisibility_SelfOwnedList(t *testing.T) {
+	h, fanout, following := newTestHook(t)
+	ctx := context.Background()
+
+	// author 自身が owner の self-list。following は空 (= author は誰も follow していない)。
+	lookup := &stubUserListLookup{
+		memberToLists: map[string][]string{"author": {"self-list"}},
+		listOwners:    map[string]string{"self-list": "author"},
+	}
+	h.SetUserListRepo(lookup)
+	_ = following // 未使用だが setup の対称性のため取得
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityFollowers}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	out, err := fanout.Get(ctx, UserListTimelineName("self-list"), "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out, "self-owned list should always receive own followers note")
+}
+
+// followers visibility note + followingRepo 未配線 → fail-closed (= 他 owner の
+// list へは push しない)。NewFanoutHook の constructor が必ず followingRepo を
+// 受け取るので production では起きない経路だが、safety net として確認する。
+func TestFanoutHook_FanoutToUserLists_FollowersVisibility_NilFollowingRepoFailClosed(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	// followingRepo を解除 (production では起きない nil state)。
+	h.followingRepo = nil
+
+	lookup := &stubUserListLookup{
+		memberToLists: map[string][]string{"author": {"list1", "self-list"}},
+		listOwners:    map[string]string{"list1": "alice", "self-list": "author"},
+	}
+	h.SetUserListRepo(lookup)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityFollowers}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	// 本人 list には push される
+	out, err := fanout.Get(ctx, UserListTimelineName("self-list"), "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out)
+
+	// 他 owner の list には push されない (fail-closed)
+	out, err = fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+// public/home visibility note は per-list owner follow check を経ずに全 list
+// に push される (旧経路 hot path の regression guard)。
+func TestFanoutHook_FanoutToUserLists_PublicNote_NoFollowCheck(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	// list1 は owner=alice (author を follow していない)。にもかかわらず public
+	// note は push される。
+	lookup := &stubUserListLookup{
+		memberToLists: map[string][]string{"author": {"list1"}},
+		listOwners:    map[string]string{"list1": "alice"},
+	}
+	h.SetUserListRepo(lookup)
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityPublic}
+	h.OnNoteCreated(n, &model.User{ID: "author"})
+
+	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{noteID}, out)
+}
+
+// followers visibility 経路の lookup error はベストエフォートで握り潰す。
+func TestFanoutHook_FanoutToUserLists_FollowersVisibility_LookupError(t *testing.T) {
+	h, fanout, _ := newTestHook(t)
+	ctx := context.Background()
+
+	h.SetUserListRepo(&failingUserListLookup{})
+
+	noteID := idGen.Generate(time.Now())
+	n := &model.Note{ID: noteID, UserID: "author", Visibility: model.NoteVisibilityFollowers}
+	// エラーが上位に伝搬しないこと
 	h.OnNoteCreated(n, &model.User{ID: "author"})
 
 	out, err := fanout.Get(ctx, UserListTimelineName("list1"), "", "", 10)

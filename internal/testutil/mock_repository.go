@@ -4910,6 +4910,20 @@ func (m *MockUserListRepository) ListIDsByMember(userID string) ([]string, error
 	return ids, nil
 }
 
+// ListIDsAndOwnersByMember returns {listID: ownerID} for lists containing memberID.
+func (m *MockUserListRepository) ListIDsAndOwnersByMember(memberID string) (map[string]string, error) {
+	out := make(map[string]string)
+	for _, mem := range m.Members {
+		if mem.UserID != memberID {
+			continue
+		}
+		if list, ok := m.Lists[mem.UserListID]; ok {
+			out[mem.UserListID] = list.UserID
+		}
+	}
+	return out, nil
+}
+
 func (m *MockUserListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {
 	listIDs := make(map[string]struct{})
 	for _, mem := range m.Members {
