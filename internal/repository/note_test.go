@@ -1128,16 +1128,16 @@ func TestNoteRepository_ListMentions(t *testing.T) {
 	require.NoError(t, testDB.Create(n).Error)
 	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
 
-	notes, err := repo.ListMentions(mentionee.ID, 10, "", "")
+	notes, err := repo.ListMentions(mentionee.ID, "", 10, "", "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, notes)
 
 	// with cursors
-	notes, err = repo.ListMentions(mentionee.ID, 10, "", "zzz")
+	notes, err = repo.ListMentions(mentionee.ID, "", 10, "", "zzz")
 	require.NoError(t, err)
 	assert.NotEmpty(t, notes)
 
-	notes, err = repo.ListMentions(mentionee.ID, 10, "000", "")
+	notes, err = repo.ListMentions(mentionee.ID, "", 10, "000", "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, notes)
 }
@@ -1179,7 +1179,7 @@ func TestNoteRepository_ListMentions_VisibilityPushDown(t *testing.T) {
 	}
 
 	// follow なし / visibleUserIds 非対象 -> public のみ (followers/specified は隠れる)。
-	out, err := repo.ListMentions(victim.ID, 50, "", "")
+	out, err := repo.ListMentions(victim.ID, "", 50, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"n_lm_pub"}, idsOf(out))
 
@@ -1187,20 +1187,20 @@ func TestNoteRepository_ListMentions_VisibilityPushDown(t *testing.T) {
 	f := &model.Following{ID: "fl_lm_1", FollowerID: victim.ID, FolloweeID: author.ID}
 	require.NoError(t, followingRepo.Create(f))
 	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, f.ID)
-	out, err = repo.ListMentions(victim.ID, 50, "", "")
+	out, err = repo.ListMentions(victim.ID, "", 50, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"n_lm_fol", "n_lm_pub"}, idsOf(out))
 
 	// specified の visibleUserIds に victim を含めると specified も見える。
 	require.NoError(t, repo.UpdateFields("n_lm_spec", map[string]any{"visibleUserIds": pq.StringArray{victim.ID}}))
-	out, err = repo.ListMentions(victim.ID, 50, "", "")
+	out, err = repo.ListMentions(victim.ID, "", 50, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"n_lm_fol", "n_lm_pub", "n_lm_spec"}, idsOf(out))
 }
 
 func TestNoteRepository_ListMentions_DefaultLimit(t *testing.T) {
 	repo := NewNoteRepository(testDB)
-	notes, err := repo.ListMentions("nobody", 0, "", "")
+	notes, err := repo.ListMentions("nobody", "", 0, "", "")
 	require.NoError(t, err)
 	assert.Empty(t, notes)
 }
@@ -1209,8 +1209,60 @@ func TestNoteRepository_ListMentions_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	repo := NewNoteRepository(testDB.WithContext(ctx))
-	_, err := repo.ListMentions("x", 10, "", "")
+	_, err := repo.ListMentions("x", "", 10, "", "")
 	assert.Error(t, err)
+}
+
+// #1451: visibility 絞り込みを LIMIT 前に SQL push-down するので、別種別の mention
+// でページが埋まって under-fill することがない。未指定は upstream TS 同様に全種別を
+// 返す。
+func TestNoteRepository_ListMentions_VisibilityFilter(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	author := insertTestUser(t, "mvf_a", "mvfauthor")
+	me := insertTestUser(t, "mvf_m", "mvfme")
+	defer cleanupUser(t, author.ID)
+	defer cleanupUser(t, me.ID)
+
+	// public mention と specified(me を visibleUserIds に含む) mention を交互に
+	// 10 件作る。id 連番で混在させ、片種別だけ要求したときに別種別がページ枠を
+	// 食わないことを確認する。
+	ids := []string{"mvf_00", "mvf_01", "mvf_02", "mvf_03", "mvf_04", "mvf_05", "mvf_06", "mvf_07", "mvf_08", "mvf_09"}
+	for i, nid := range ids {
+		n := &model.Note{
+			ID: nid, UserID: author.ID,
+			Mentions:  pq.StringArray{me.ID},
+			Reactions: datatypes.JSON([]byte("{}")),
+		}
+		if i%2 == 0 {
+			n.Visibility = model.NoteVisibilityPublic
+		} else {
+			n.Visibility = model.NoteVisibilitySpecified
+			n.VisibleUserIDs = pq.StringArray{me.ID}
+		}
+		require.NoError(t, repo.Create(n))
+		defer cleanupNote(t, n.ID)
+	}
+
+	// public のみ limit=5 -> public が 5 件きっちり (specified がスロットを食わない)。
+	pub, err := repo.ListMentions(me.ID, "public", 5, "", "")
+	require.NoError(t, err)
+	require.Len(t, pub, 5, "public 指定で under-fill しない")
+	for _, n := range pub {
+		assert.Equal(t, model.NoteVisibilityPublic, n.Visibility)
+	}
+
+	// specified のみ limit=5 -> specified が 5 件。
+	spec, err := repo.ListMentions(me.ID, "specified", 5, "", "")
+	require.NoError(t, err)
+	require.Len(t, spec, 5, "specified 指定で under-fill しない")
+	for _, n := range spec {
+		assert.Equal(t, model.NoteVisibilitySpecified, n.Visibility)
+	}
+
+	// 未指定 (default) -> 全種別 (TS 一致): public + specified の両方が出る。
+	all, err := repo.ListMentions(me.ID, "", 100, "", "")
+	require.NoError(t, err)
+	assert.Len(t, all, 10, "default は全種別を返す")
 }
 
 func TestNoteRepository_SearchByTag(t *testing.T) {
@@ -1887,6 +1939,45 @@ func TestNoteRepository_ListByFileID_Cursor(t *testing.T) {
 	require.Len(t, rows, 2)
 	assert.Equal(t, "n_lbfi_c", rows[0].ID)
 	assert.Equal(t, "n_lbfi_d", rows[1].ID)
+}
+
+// TestNoteRepository_MentionsFileIdsGINIndexes verifies that the #1427 GIN
+// indexes (migration 000054 / 000055) are created and actually usable for the
+// array-containment (@>) queries behind ListMentions / ListByFileID. これらが
+// 落ちると seq scan に戻り、note テーブル肥大に比例して静かに性能退行するため
+// regression guard として固定する。
+func TestNoteRepository_MentionsFileIdsGINIndexes(t *testing.T) {
+	// 1. index が存在し GIN 型であること (CONCURRENTLY migration が適用された
+	//    ことの確認も兼ねる)。
+	for _, idx := range []string{"IDX_note_mentions", "IDX_note_fileIds"} {
+		var indexdef string
+		err := testDB.Raw(
+			`SELECT indexdef FROM pg_indexes WHERE tablename = 'note' AND indexname = ?`, idx,
+		).Scan(&indexdef).Error
+		require.NoError(t, err)
+		require.NotEmpty(t, indexdef, "GIN index %s must exist (migration applied)", idx)
+		assert.Contains(t, indexdef, "USING gin", "%s must be a GIN index", idx)
+	}
+
+	// 2. planner が @> containment に GIN index を選べること。小さな test
+	//    テーブルでは planner が seq scan を選ぶため、同一接続上で
+	//    enable_seqscan=off を効かせて index 経路を強制し、plan に index 名が
+	//    現れることを確認する (index が無ければ強制しても seq scan のまま)。
+	//    SET LOCAL は transaction スコープなので Begin/Rollback で閉じる。
+	checkPlanUsesIndex := func(query, arg, indexName string) {
+		tx := testDB.Begin()
+		defer tx.Rollback()
+		require.NoError(t, tx.Exec(`SET LOCAL enable_seqscan = off`).Error)
+		var lines []string
+		require.NoError(t, tx.Raw(`EXPLAIN `+query, arg).Scan(&lines).Error)
+		plan := strings.Join(lines, "\n")
+		assert.Contains(t, plan, indexName,
+			"@> query should use %s under enable_seqscan=off; plan was:\n%s", indexName, plan)
+	}
+	checkPlanUsesIndex(
+		`SELECT * FROM "note" WHERE "mentions" @> ARRAY[?]::varchar[]`, "u1", "IDX_note_mentions")
+	checkPlanUsesIndex(
+		`SELECT * FROM "note" WHERE "fileIds" @> ARRAY[?]::varchar[]`, "f1", "IDX_note_fileIds")
 }
 
 func TestNoteRepository_IncrementUserNotesCount(t *testing.T) {

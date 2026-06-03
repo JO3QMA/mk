@@ -1102,13 +1102,19 @@ func (m *MockNoteRepository) FindRenoteByUser(userID, renoteID string) (*model.N
 	return nil, ErrNotFound
 }
 
-func (m *MockNoteRepository) ListMentions(userID string, limit int, sinceID, untilID string) ([]*model.Note, error) {
+func (m *MockNoteRepository) ListMentions(userID, visibility string, limit int, sinceID, untilID string) ([]*model.Note, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	return m.listFiltered(func(n *model.Note) bool {
 		// viewer (= mention 対象 = userID) が見られる note のみ (#1441)。
 		if !m.canViewerSeeNote(userID, n) {
+			return false
+		}
+		// visibility 指定時は exact-match で絞る (#1451)。listFiltered は
+		// filter -> sort -> limit 順なので、ここで弾けば SQL push-down 同様に
+		// LIMIT 前で絞られ under-fill しない。
+		if visibility != "" && string(n.Visibility) != visibility {
 			return false
 		}
 		for _, mention := range n.Mentions {
@@ -2487,6 +2493,10 @@ type MockInstanceRepository struct {
 	// behaviour in callers (e.g. instance.ShouldSkipDelivery, #1407). Not
 	// goroutine-safe; tests asserting on it must drive the service serially.
 	FindCalls int
+	// UpdateCalls counts UpdateFields invocations so tests can assert that
+	// instance health bookkeeping skips redundant writes (#1429: TS-aligned
+	// state-transition guard / CollapsedQueue throttling). Not goroutine-safe.
+	UpdateCalls int
 }
 
 // NewMockInstanceRepository creates an empty MockInstanceRepository.
@@ -2528,6 +2538,7 @@ func (m *MockInstanceRepository) FindManyByHosts(hosts []string) ([]*model.Insta
 }
 
 func (m *MockInstanceRepository) UpdateFields(host string, fields map[string]any) error {
+	m.UpdateCalls++
 	if m.UpdateErr != nil {
 		return m.UpdateErr
 	}
@@ -4912,6 +4923,20 @@ func (m *MockUserListRepository) ListIDsByMember(userID string) ([]string, error
 		}
 	}
 	return ids, nil
+}
+
+// ListIDsAndOwnersByMember returns {listID: ownerID} for lists containing memberID.
+func (m *MockUserListRepository) ListIDsAndOwnersByMember(memberID string) (map[string]string, error) {
+	out := make(map[string]string)
+	for _, mem := range m.Members {
+		if mem.UserID != memberID {
+			continue
+		}
+		if list, ok := m.Lists[mem.UserListID]; ok {
+			out[mem.UserListID] = list.UserID
+		}
+	}
+	return out, nil
 }
 
 func (m *MockUserListRepository) ListsContainingMember(ownerID, memberUserID string) ([]*model.UserList, error) {
