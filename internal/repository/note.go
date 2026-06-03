@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,12 @@ import (
 // misc/id パッケージに同値の非公開定数があるが、本ファイル内で時刻→ID 先頭
 // 変換に使うため独自に定義する。
 const aidxTime2000Ms int64 = 946684800000
+
+// featuredNotesPerUserPoolSize は users/featured-notes の selection 段で
+// engagement DESC top-N を SQL から取得する際の上限。upstream
+// FeaturedService.getPerUserNotesRanking の threshold (50) と揃える (#1487 / #1491)。
+// 選抜後は id DESC + untilID cursor + limit でページングする。
+const featuredNotesPerUserPoolSize = 50
 
 // aidxCutoffID は与えられた time に対応する最小のaidx ID文字列を返す。
 // aidxは「時刻base36(8) + nodeID(4) + counter(4)」の 16 文字で、先頭 8 文字が
@@ -91,6 +98,24 @@ type NoteRepository interface {
 	// pagination (id < untilID). offset is honoured only when no cursor
 	// is given.
 	ListFeatured(channelID, untilID string, limit, offset int) ([]*model.Note, error)
+	// ListFeaturedByUser returns userID's featured notes for users/featured-notes.
+	// upstream は Redis sorted set (FeaturedService.getPerUserNotesRanking) で
+	// engagement 上位を選抜してから id DESC で並べ替え untilID でページング
+	// する 2 段構成。mk-go も同じ 2 段で揃える (#1487 Option B):
+	//
+	//  1. selection: engagement = (renoteCount + repliesCount) DESC, id DESC で
+	//     featuredNotesPerUserPoolSize (=50, upstream 同値) 件を SQL push-down で
+	//     選抜。visibility 条件と channel 除外もここで同時に絞る (LIMIT 前)。
+	//     post-fetch FilterVisible だとページ過少充填 + followers 判定 N+1 を
+	//     起こすため (#1418 / #1440 と同 doctrine)。
+	//  2. display: 選抜結果を Go 側で id DESC に並べ替え、untilID < id でページング
+	//     してから先頭 limit 件を返す。これで「engagement で選抜・id で表示」が
+	//     upstream と一致し、id cursor とソート順がずれて発生する重複/欠落を
+	//     回避する (#1491 review)。
+	//
+	// viewerID は viewer 視点の visibility push-down 用。空文字は匿名
+	// (public/home のみ)。
+	ListFeaturedByUser(userID, viewerID, untilID string, limit int) ([]*model.Note, error)
 	FindRenoteByUser(userID, renoteID string) (*model.Note, error)
 	// ListMentions returns notes mentioning userID that userID can see.
 	// visibility が空でなければ note.visibility = visibility の exact-match で
@@ -630,6 +655,57 @@ func (r *noteRepository) ListFeatured(channelID, untilID string, limit, offset i
 		return nil, err
 	}
 	return notes, nil
+}
+
+func (r *noteRepository) ListFeaturedByUser(userID, viewerID, untilID string, limit int) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	// === selection: engagement DESC top-N を SQL push-down で選抜 ===
+	// upstream FeaturedService.getPerUserNotesRanking が Redis sorted set
+	// 上位 50 件を引いてくる工程に相当。visibility 条件と channel 除外も
+	// LIMIT 前に同じ SQL で適用する (#1487 / #1491, ListByUserIDFiltered と
+	// 同 pattern)。post-fetch FilterVisible だと limit が削られページ過少充填、
+	// followers 判定が N+1。untilID はここでは適用しない (engagement プール
+	// を id DESC でページングする display 段で適用する)。
+	q := preloadNoteRelations(r.db).
+		Where(`"userId" = ?`, userID).
+		Where(`"channelId" IS NULL`)
+	if viewerID == "" {
+		q = q.Where(`"visibility" IN ('public','home')`)
+	} else {
+		q = q.Where(
+			`("visibility" IN ('public','home') `+
+				`OR "userId" = ? `+
+				`OR ("visibility" = 'followers' AND "userId" IN (SELECT f."followeeId" FROM "following" f WHERE f."followerId" = ?)) `+
+				`OR ("visibility" = 'specified' AND ? = ANY("visibleUserIds")))`,
+			viewerID, viewerID, viewerID)
+	}
+	q = q.Order(`("renoteCount" + "repliesCount") DESC, id DESC`).Limit(featuredNotesPerUserPoolSize)
+	var pool []*model.Note
+	if err := q.Find(&pool).Error; err != nil {
+		return nil, err
+	}
+	// === display: id DESC sort → untilID filter → 先頭 limit 件 ===
+	// upstream featured-notes.ts:100-104 と同じ手順。engagement プールを
+	// id DESC で見せると id cursor とソート順が一致してページングが整合的に
+	// なる (engagement DESC で表示すると untilId 進行時に重複/欠落するため)。
+	sort.Slice(pool, func(i, j int) bool {
+		return pool[i].ID > pool[j].ID
+	})
+	if untilID != "" {
+		filtered := pool[:0]
+		for _, n := range pool {
+			if n.ID < untilID {
+				filtered = append(filtered, n)
+			}
+		}
+		pool = filtered
+	}
+	if len(pool) > limit {
+		pool = pool[:limit]
+	}
+	return pool, nil
 }
 
 func (r *noteRepository) FindRenoteByUser(userID, renoteID string) (*model.Note, error) {

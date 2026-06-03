@@ -413,6 +413,74 @@ func TestFeaturedNotes_AnonymousExcludesNonPublicVisibility(t *testing.T) {
 	assert.False(t, ids["fn_spec"], "specified は対象外 viewer に漏らさない")
 }
 
+// #1487 Option B / #1491 review: upstream featured-notes.ts は engagement で
+// 上位を選抜したあと id DESC で表示する。mk-go も同じ 2 段で揃えるため、
+// engagement の高低と id の大小が一致しない fixture で表示順が id DESC に
+// なることを覆う (engagement DESC のままだと untilId cursor とソート順が
+// ずれてページングで重複/欠落するため逆の挙動を見せたい)。
+func TestFeaturedNotes_OrderedByIDDescAfterEngagementSelection(t *testing.T) {
+	h, _, noteRepo := newExtraHandler(t)
+	h.SetFollowingRepo(testutil.NewMockFollowingRepository())
+	// engagement と id の並びが逆になる fixture:
+	//   id DESC:        fn_x3, fn_x2, fn_x1
+	//   engagement DESC: fn_x1 (10), fn_x2 (5), fn_x3 (1)
+	noteRepo.Notes["fn_x1"] = &model.Note{ID: "fn_x1", UserID: "u1", Visibility: "public", RenoteCount: 10, User: &model.User{ID: "u1"}}
+	noteRepo.Notes["fn_x2"] = &model.Note{ID: "fn_x2", UserID: "u1", Visibility: "public", RenoteCount: 5, User: &model.User{ID: "u1"}}
+	noteRepo.Notes["fn_x3"] = &model.Note{ID: "fn_x3", UserID: "u1", Visibility: "public", RenoteCount: 1, User: &model.User{ID: "u1"}}
+
+	rec := postExtra(h.FeaturedNotes, `{"userId":"u1","limit":10}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out, 3)
+	assert.Equal(t, "fn_x3", out[0]["id"], "display は id DESC")
+	assert.Equal(t, "fn_x2", out[1]["id"])
+	assert.Equal(t, "fn_x1", out[2]["id"])
+}
+
+// #1491 review: untilId は display 段 (id DESC + id < untilId) で適用され、
+// engagement DESC で発生する重複/欠落なしにページングできることを覆う。
+func TestFeaturedNotes_UntilIDPaginatesByIDDesc(t *testing.T) {
+	h, _, noteRepo := newExtraHandler(t)
+	h.SetFollowingRepo(testutil.NewMockFollowingRepository())
+	noteRepo.Notes["fn_x1"] = &model.Note{ID: "fn_x1", UserID: "u1", Visibility: "public", RenoteCount: 10, User: &model.User{ID: "u1"}}
+	noteRepo.Notes["fn_x2"] = &model.Note{ID: "fn_x2", UserID: "u1", Visibility: "public", RenoteCount: 5, User: &model.User{ID: "u1"}}
+	noteRepo.Notes["fn_x3"] = &model.Note{ID: "fn_x3", UserID: "u1", Visibility: "public", RenoteCount: 1, User: &model.User{ID: "u1"}}
+
+	// untilId="fn_x2" → id < fn_x2 = fn_x1 のみ。fn_x3 は除外され、fn_x2 自身も除外。
+	rec := postExtra(h.FeaturedNotes, `{"userId":"u1","limit":10,"untilId":"fn_x2"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out, 1)
+	assert.Equal(t, "fn_x1", out[0]["id"])
+}
+
+// #1487: post-fetch FilterVisible → SQL push-down に変更されたことで、limit に
+// 達するまでに非表示 note が間引かれないことを覆う (under-fill 回帰防止)。
+func TestFeaturedNotes_LimitNotUnderfilled(t *testing.T) {
+	h, _, noteRepo := newExtraHandler(t)
+	h.SetFollowingRepo(testutil.NewMockFollowingRepository())
+	// public 5 件 + non-visible (followers) 5 件、limit=5 で public のみ 5 件返る。
+	for i := 0; i < 5; i++ {
+		id := "fn_p" + string(rune('0'+i))
+		noteRepo.Notes[id] = &model.Note{ID: id, UserID: "u1", Visibility: "public", RenoteCount: int16(10 - i), User: &model.User{ID: "u1"}}
+	}
+	for i := 0; i < 5; i++ {
+		id := "fn_f" + string(rune('0'+i))
+		noteRepo.Notes[id] = &model.Note{ID: id, UserID: "u1", Visibility: "followers", RenoteCount: int16(100), User: &model.User{ID: "u1"}}
+	}
+	rec := postExtra(h.FeaturedNotes, `{"userId":"u1","limit":5}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Len(t, out, 5, "push-down で limit ぶん必ず埋まる")
+	for _, n := range out {
+		// followers は出ない。
+		assert.NotContains(t, n["id"].(string), "fn_f")
+	}
+}
+
 // --- SearchByUsernameAndHost ---
 
 func TestSearchByUsernameAndHost_Success(t *testing.T) {
@@ -524,9 +592,19 @@ func (f *failingListByUserRepo) ListByUserID(_ string, _, _ string, _ int) ([]*m
 	return nil, assert.AnError
 }
 
+// FeaturedNotes は #1487 で ListFeaturedByUser に切り替わったため、500 経路は
+// 当該メソッドが err を返す stub で覆う。
+type failingListFeaturedByUserRepo struct {
+	*testutil.MockNoteRepository
+}
+
+func (f *failingListFeaturedByUserRepo) ListFeaturedByUser(_, _, _ string, _ int) ([]*model.Note, error) {
+	return nil, assert.AnError
+}
+
 func TestFeaturedNotes_Error(t *testing.T) {
 	userRepo := testutil.NewMockUserRepository()
-	noteRepo := &failingListByUserRepo{testutil.NewMockNoteRepository()}
+	noteRepo := &failingListFeaturedByUserRepo{testutil.NewMockNoteRepository()}
 	piningRepo := testutil.NewMockUserNotePiningRepository()
 	idGen, _ := id.NewGenerator("aidx")
 	userSvc := coreuser.NewService(userRepo, noteRepo, piningRepo, idGen)

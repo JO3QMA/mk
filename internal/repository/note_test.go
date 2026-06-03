@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -1089,6 +1090,162 @@ func TestNoteRepository_ListFeatured_Error(t *testing.T) {
 	cancel()
 	repo := NewNoteRepository(testDB.WithContext(ctx))
 	_, err := repo.ListFeatured("", "", 10, 0)
+	assert.Error(t, err)
+}
+
+// #1487 Option B / #1491 review: users/featured-notes は selection 段で
+// engagement DESC + visibility push-down + channel 除外、display 段で id DESC +
+// untilID + limit という 2 段構成。selection は engagement 由来、display は
+// id DESC + id cursor で一致するように分離されていることを覆う。
+//
+// id と engagement の並びが意図的にずれた fixture (z>m>a の id に対し engagement
+// は a=10, m=5, z=1) を使い、display が id DESC で並ぶ (engagement DESC でない)
+// ことを断定する。
+func TestNoteRepository_ListFeaturedByUser(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	author := insertTestUser(t, "feat_by_u", "featbyu")
+	defer cleanupUser(t, author.ID)
+	follower := insertTestUser(t, "feat_by_f", "featbyf")
+	defer cleanupUser(t, follower.ID)
+	stranger := insertTestUser(t, "feat_by_s", "featbys")
+	defer cleanupUser(t, stranger.ID)
+	specified := insertTestUser(t, "feat_by_sp", "featbysp")
+	defer cleanupUser(t, specified.ID)
+
+	// follower → author の follow を seed。
+	require.NoError(t, testDB.Create(&model.Following{
+		ID: "f_feat_by_1", FollowerID: follower.ID, FolloweeID: author.ID,
+	}).Error)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "f_feat_by_1")
+
+	// channel 投稿はランキング対象外。
+	chID := "feat_by_ch"
+	require.NoError(t, testDB.Exec(`INSERT INTO channel (id, name, "userId") VALUES (?, ?, ?)`, chID, "feat-by-ch", author.ID).Error)
+	defer testDB.Exec(`DELETE FROM channel WHERE id = ?`, chID)
+
+	chPtr := chID
+	// engagement と id の並びが逆になる fixture。display 段が id DESC である
+	// ことを明示的に断定するため意図的にずらしている (= engagement DESC で
+	// 返してしまうとこのテストが落ちる)。
+	notes := []*model.Note{
+		{ID: "feat_by_aaa", UserID: author.ID, Visibility: "public", RenoteCount: 10},                                                  // 最大 engagement / 最小 id
+		{ID: "feat_by_mmm", UserID: author.ID, Visibility: "public", RenoteCount: 3, RepliesCount: 2},                                  //
+		{ID: "feat_by_zzz", UserID: author.ID, Visibility: "public", RenoteCount: 1},                                                   // 最小 engagement / 最大 id
+		{ID: "feat_by_fol", UserID: author.ID, Visibility: "followers", RenoteCount: 100},                                              //
+		{ID: "feat_by_spc", UserID: author.ID, Visibility: "specified", VisibleUserIDs: pq.StringArray{specified.ID}, RenoteCount: 50}, //
+		{ID: "feat_by_chn", UserID: author.ID, Visibility: "public", RenoteCount: 999, ChannelID: &chPtr},                              //
+	}
+	for _, n := range notes {
+		require.NoError(t, testDB.Create(n).Error)
+		defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
+	}
+
+	// stranger: public 3 件、display は id DESC (zzz > mmm > aaa)。
+	got, err := repo.ListFeaturedByUser(author.ID, stranger.ID, "", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	assert.Equal(t, "feat_by_zzz", got[0].ID, "display は id DESC (engagement DESC ではない)")
+	assert.Equal(t, "feat_by_mmm", got[1].ID)
+	assert.Equal(t, "feat_by_aaa", got[2].ID)
+
+	// anonymous も同じ shape (channel 除外を含む)。
+	got, err = repo.ListFeaturedByUser(author.ID, "", "", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+
+	// follower は public 3 + followers 1 = 4 件。id DESC で zzz > mmm > fol > aaa。
+	got, err = repo.ListFeaturedByUser(author.ID, follower.ID, "", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 4)
+	assert.Equal(t, "feat_by_zzz", got[0].ID)
+	assert.Equal(t, "feat_by_mmm", got[1].ID)
+	assert.Equal(t, "feat_by_fol", got[2].ID)
+	assert.Equal(t, "feat_by_aaa", got[3].ID)
+
+	// specified target は public 3 + specified 1 = 4 件。
+	got, err = repo.ListFeaturedByUser(author.ID, specified.ID, "", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 4)
+	ids := map[string]bool{}
+	for _, n := range got {
+		ids[n.ID] = true
+	}
+	assert.True(t, ids["feat_by_spc"], "specified target に specified note が見える")
+	assert.False(t, ids["feat_by_fol"], "specified target は follower ではないので followers note は出ない")
+
+	// author 自身は channel 以外の全 visibility = 5 件。
+	got, err = repo.ListFeaturedByUser(author.ID, author.ID, "", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 5)
+	for _, n := range got {
+		assert.NotEqual(t, "feat_by_chn", n.ID, "channel 投稿は除外")
+	}
+
+	// limit <= 0 は 10 にデフォルト。
+	got, err = repo.ListFeaturedByUser(author.ID, author.ID, "", 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 5)
+
+	// untilID="feat_by_mmm" → id DESC で id < mmm のもの (= feat_by_aaa) のみ
+	// 残る。display 段で適用するため id DESC と一致したページングになる
+	// (engagement DESC + id cursor の重複/欠落が起きない、#1491 review)。
+	got, err = repo.ListFeaturedByUser(author.ID, stranger.ID, "feat_by_mmm", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "feat_by_aaa", got[0].ID)
+}
+
+// #1491 re-review 指摘A: selection 段が「engagement DESC top-50 で絞る」核心
+// 挙動の回帰検出。fixture を 51 件にして pool cap を踏ませ、low engagement の
+// 1 件 (最大 id) が pool 外に出て display に現れないこと、選抜される 50 件が
+// engagement=10 の note (id prefix `feat_cap_pool_`) であることを断定する。
+//
+// 6 件以下の小規模 fixture では pool = 全件となり、選抜順序が engagement 順
+// でも id 順でも結果が変わらないため、`featuredNotesPerUserPoolSize` を 51 に
+// すれば落ちる test がここまで存在しなかった。本 test は cap を取り除くと
+// 必ず落ちる強い regression gate になる。
+func TestNoteRepository_ListFeaturedByUser_EngagementPoolCap(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	author := insertTestUser(t, "feat_cap_u", "featcapu")
+	defer cleanupUser(t, author.ID)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id LIKE 'feat_cap_%'`)
+
+	// engagement=10 の note を 50 件 (id: feat_cap_pool_01 .. feat_cap_pool_50)。
+	// すべて pool に入る想定。
+	for i := 1; i <= 50; i++ {
+		id := fmt.Sprintf("feat_cap_pool_%02d", i)
+		require.NoError(t, testDB.Create(&model.Note{
+			ID: id, UserID: author.ID, Visibility: "public", RenoteCount: 10,
+		}).Error)
+	}
+	// engagement=0 の note を 1 件、最大 id (feat_cap_zzz_low) で。pool は
+	// engagement DESC top-50 で絞られるので、これは pool 外になる想定。
+	// id 順で並べたら一番上に来てしまうが、selection が engagement 順なので
+	// 出てこないことが重要。
+	const lowID = "feat_cap_zzz_low"
+	require.NoError(t, testDB.Create(&model.Note{
+		ID: lowID, UserID: author.ID, Visibility: "public", RenoteCount: 0,
+	}).Error)
+
+	got, err := repo.ListFeaturedByUser(author.ID, "", "", 100)
+	require.NoError(t, err)
+	// pool cap=50 で 50 件返る。limit=100 でも cap が優先。
+	require.Len(t, got, 50, "engagement pool cap=50 で 50 件に絞られる")
+	for _, n := range got {
+		assert.NotEqual(t, lowID, n.ID, "engagement 最下位の note は pool 外に落ちる")
+		assert.True(t, strings.HasPrefix(n.ID, "feat_cap_pool_"),
+			"engagement DESC 上位 50 件 (feat_cap_pool_*) のみが選抜される")
+	}
+	// display は id DESC: feat_cap_pool_50, _49, ..., _01。
+	assert.Equal(t, "feat_cap_pool_50", got[0].ID)
+	assert.Equal(t, "feat_cap_pool_01", got[49].ID)
+}
+
+func TestNoteRepository_ListFeaturedByUser_Error(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := NewNoteRepository(testDB.WithContext(ctx))
+	_, err := repo.ListFeaturedByUser("u", "", "", 10)
 	assert.Error(t, err)
 }
 
