@@ -1196,7 +1196,7 @@ func (m *MockNoteRepository) ListByUserList(_ string, _ int, _, _ string) ([]*mo
 	return nil, nil
 }
 
-func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
+func (m *MockNoteRepository) CountReplyTargets(userID, viewerID string, limit int) ([]model.ReplyTargetCount, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -1206,6 +1206,10 @@ func (m *MockNoteRepository) CountReplyTargets(userID string, limit int) ([]mode
 			continue
 		}
 		if *n.ReplyUserID == userID {
+			continue
+		}
+		// visibility push-down: viewer が見られない note は集計しない (#1486)。
+		if !noteVisibleToViewer(viewerID, n, m.Following) {
 			continue
 		}
 		counts[*n.ReplyUserID]++

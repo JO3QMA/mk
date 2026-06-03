@@ -129,7 +129,12 @@ type NoteRepository interface {
 	// CountReplyTargets returns the users that userID most frequently replies
 	// to, ordered by reply count descending. Used by
 	// users/get-frequently-replied-users.
-	CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error)
+	//
+	// viewerID は viewer 視点での visibility push-down に使う。userID の reply note
+	// のうち viewer が core/note.CanSeeNote で見られるものだけを集計する。空文字は
+	// 匿名 (public/home のみ)。これが無いと userID の followers/specified reply の
+	// 対人関係が第三者に leak する (#1486)。
+	CountReplyTargets(userID, viewerID string, limit int) ([]model.ReplyTargetCount, error)
 	// CountLocalNotes returns the number of notes authored by local users
 	// (userHost IS NULL). nodeinfo `usage.localPosts` 相当 (#403)。
 	CountLocalNotes() (int64, error)
@@ -953,16 +958,30 @@ func (r *noteRepository) ListByUserList(listID string, limit int, sinceID, until
 	return notes, nil
 }
 
-func (r *noteRepository) CountReplyTargets(userID string, limit int) ([]model.ReplyTargetCount, error) {
+func (r *noteRepository) CountReplyTargets(userID, viewerID string, limit int) ([]model.ReplyTargetCount, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	var rows []model.ReplyTargetCount
 	// replyUserIdがNULLのもの (通常起こり得ないが防御)と自己返信は集計から除外する。
-	err := r.db.Model(&model.Note{}).
+	q := r.db.Model(&model.Note{}).
 		Select(`"replyUserId", COUNT(*) AS count`).
-		Where(`"userId" = ? AND "replyId" IS NOT NULL AND "replyUserId" IS NOT NULL AND "replyUserId" <> ?`, userID, userID).
-		Group(`"replyUserId"`).
+		Where(`"userId" = ? AND "replyId" IS NOT NULL AND "replyUserId" IS NOT NULL AND "replyUserId" <> ?`, userID, userID)
+	// visibility push-down: 集計対象 reply note のうち viewer が CanSeeNote で
+	// 見られるものだけを残す。これが無いと第三者 viewer が author の
+	// followers/specified reply の対人関係を集計値経由で観測できる (#1486)。
+	// 条件は ListByUserIDFiltered / ListMentions / SearchByTag と同一。
+	if viewerID == "" {
+		q = q.Where(`"visibility" IN ('public','home')`)
+	} else {
+		q = q.Where(
+			`("visibility" IN ('public','home') `+
+				`OR "userId" = ? `+
+				`OR ("visibility" = 'followers' AND "userId" IN (SELECT f."followeeId" FROM "following" f WHERE f."followerId" = ?)) `+
+				`OR ("visibility" = 'specified' AND ? = ANY("visibleUserIds")))`,
+			viewerID, viewerID, viewerID)
+	}
+	err := q.Group(`"replyUserId"`).
 		Order(`count DESC`).
 		Limit(limit).
 		Scan(&rows).Error

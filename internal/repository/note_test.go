@@ -1776,7 +1776,8 @@ func TestNoteRepository_CountReplyTargets(t *testing.T) {
 		defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
 	}
 
-	rows, err := repo.CountReplyTargets(author.ID, 10)
+	// viewer == author 自身は全 visibility 見える (= 既存挙動)
+	rows, err := repo.CountReplyTargets(author.ID, author.ID, 10)
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
 	assert.Equal(t, t1.ID, rows[0].UserID)
@@ -1785,16 +1786,94 @@ func TestNoteRepository_CountReplyTargets(t *testing.T) {
 	assert.EqualValues(t, 1, rows[1].Count)
 
 	// limit <= 0 は 10 にデフォルト。
-	rows2, err := repo.CountReplyTargets(author.ID, 0)
+	rows2, err := repo.CountReplyTargets(author.ID, author.ID, 0)
 	require.NoError(t, err)
 	assert.Len(t, rows2, 2)
+}
+
+func TestNoteRepository_CountReplyTargets_VisibilityPushdown(t *testing.T) {
+	repo := NewNoteRepository(testDB)
+	author := insertTestUser(t, "u_crt_vp_a", "crtVpA")
+	defer cleanupUser(t, author.ID)
+	t1 := insertTestUser(t, "u_crt_vp_t1", "crtVpT1")
+	defer cleanupUser(t, t1.ID)
+	t2 := insertTestUser(t, "u_crt_vp_t2", "crtVpT2")
+	defer cleanupUser(t, t2.ID)
+	stranger := insertTestUser(t, "u_crt_vp_s", "crtVpS")
+	defer cleanupUser(t, stranger.ID)
+	follower := insertTestUser(t, "u_crt_vp_f", "crtVpF")
+	defer cleanupUser(t, follower.ID)
+	specified := insertTestUser(t, "u_crt_vp_sp", "crtVpSp")
+	defer cleanupUser(t, specified.ID)
+
+	// follower → author の follow を seed。
+	require.NoError(t, testDB.Create(&model.Following{
+		ID:           "f_crt_vp_1",
+		FollowerID:   follower.ID,
+		FolloweeID:   author.ID,
+		FollowerHost: nil,
+		FolloweeHost: nil,
+	}).Error)
+	defer testDB.Exec(`DELETE FROM "following" WHERE id = ?`, "f_crt_vp_1")
+
+	replyID := "n_crt_vp_src"
+	require.NoError(t, testDB.Create(&model.Note{ID: replyID, UserID: t1.ID, Visibility: model.NoteVisibilityPublic}).Error)
+	defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, replyID)
+
+	// author → t1: public 1 件, followers 1 件
+	// author → t2: specified (visibleUserIds=[specified]) 1 件
+	pubNote := &model.Note{ID: "n_crt_vp_pub", UserID: author.ID, ReplyID: &replyID, ReplyUserID: &t1.ID, Visibility: model.NoteVisibilityPublic}
+	folNote := &model.Note{ID: "n_crt_vp_fol", UserID: author.ID, ReplyID: &replyID, ReplyUserID: &t1.ID, Visibility: model.NoteVisibilityFollowers}
+	spNote := &model.Note{ID: "n_crt_vp_sp", UserID: author.ID, ReplyID: &replyID, ReplyUserID: &t2.ID, Visibility: model.NoteVisibilitySpecified, VisibleUserIDs: pq.StringArray{specified.ID}}
+	for _, n := range []*model.Note{pubNote, folNote, spNote} {
+		require.NoError(t, testDB.Create(n).Error)
+		defer testDB.Exec(`DELETE FROM "note" WHERE id = ?`, n.ID)
+	}
+
+	// stranger (非フォロワー、非 specified) は public のみ集計。t1=1, t2 は出ない。
+	rows, err := repo.CountReplyTargets(author.ID, stranger.ID, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, t1.ID, rows[0].UserID)
+	assert.EqualValues(t, 1, rows[0].Count)
+
+	// anonymous (viewerID="") も同じく public のみ。
+	rows, err = repo.CountReplyTargets(author.ID, "", 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, t1.ID, rows[0].UserID)
+	assert.EqualValues(t, 1, rows[0].Count)
+
+	// follower は public + followers が見える。t1=2, t2 は specified 対象外で出ない。
+	rows, err = repo.CountReplyTargets(author.ID, follower.ID, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, t1.ID, rows[0].UserID)
+	assert.EqualValues(t, 2, rows[0].Count)
+
+	// specified は visibleUserIds 経由で t2 への specified 1 件が見える + public 1 件。
+	rows, err = repo.CountReplyTargets(author.ID, specified.ID, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	// 順序は count DESC で同数なら不定 (どちらも 1 件)
+	gotIDs := map[string]int64{}
+	for _, r := range rows {
+		gotIDs[r.UserID] = r.Count
+	}
+	assert.Equal(t, int64(1), gotIDs[t1.ID])
+	assert.Equal(t, int64(1), gotIDs[t2.ID])
+
+	// author 自身は全 visibility 集計可能。
+	rows, err = repo.CountReplyTargets(author.ID, author.ID, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
 }
 
 func TestNoteRepository_CountReplyTargets_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	repo := NewNoteRepository(testDB.WithContext(ctx))
-	_, err := repo.CountReplyTargets("me", 10)
+	_, err := repo.CountReplyTargets("me", "", 10)
 	assert.Error(t, err)
 }
 
