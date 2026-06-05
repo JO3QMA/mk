@@ -3,6 +3,7 @@ package admin
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
@@ -17,6 +18,10 @@ func (h *Handler) AccountsDelete(c echo.Context) error {
 	}
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.NoContent(http.StatusNoContent)
+	}
+	// root / system アカウントの削除は連合を壊すため拒否する (#parity review F1)。
+	if h.isProtectedAccount(req.UserID) {
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Cannot delete a root or system account.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
 	}
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true}); err == nil {
 		// 論理削除直後の auth bypass 防止 (#965)。target の全 token cache
@@ -64,6 +69,10 @@ func (h *Handler) DeleteAccount(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.UserID == "" {
 		return c.NoContent(http.StatusNoContent)
 	}
+	// root / system アカウントの削除は連合を壊すため拒否する (#parity review F1)。
+	if h.isProtectedAccount(req.UserID) {
+		return c.JSON(http.StatusForbidden, apierr.Error("ACCESS_DENIED", "Cannot delete a root or system account.", "1fb7cb09-d46a-4fff-b8df-057708cce513"))
+	}
 	if err := h.userRepo.UpdateUser(req.UserID, map[string]any{"isSuspended": true, "isDeleted": true}); err == nil {
 		// AccountsDelete と同じ。target の全 token cache entry を即時
 		// invalidate (#965)。
@@ -72,6 +81,37 @@ func (h *Handler) DeleteAccount(c echo.Context) error {
 	}
 	h.scheduleAccountCascade(req.UserID)
 	return c.NoContent(http.StatusNoContent)
+}
+
+// isProtectedAccount reports whether the given user ID is an account that must
+// never be deleted: the instance root account or a local system account
+// (instance.actor / relay.actor / proxy.actor 等)。upstream DeleteAccountService
+// の `meta.rootUserId === user.id` (root) と `user.host === null &&
+// username.includes('.')` (system account) ガードに対応する (#parity review F1)。
+// Returns false when the user cannot be resolved.
+func (h *Handler) isProtectedAccount(userID string) bool {
+	if h.userRepo == nil || userID == "" {
+		return false
+	}
+	// root user id は meta が権威ソース (role service の isRootUser と揃える)。
+	if h.metaRepo != nil {
+		if meta, err := h.metaRepo.Fetch(); err == nil && meta != nil && meta.RootUserID != nil && *meta.RootUserID == userID {
+			return true
+		}
+	}
+	u, err := h.userRepo.FindByID(userID)
+	if err != nil || u == nil {
+		return false
+	}
+	if u.IsRoot {
+		return true
+	}
+	// ローカル system account: host=null かつ username に '.' を含む
+	// (systemaccount は `<kind>.actor` 形式で作られる)。
+	if u.Host == nil && strings.Contains(u.Username, ".") {
+		return true
+	}
+	return false
 }
 
 // scheduleAccountCascade queues the background cascade deletion. Errors

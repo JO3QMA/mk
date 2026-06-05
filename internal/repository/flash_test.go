@@ -177,6 +177,15 @@ func TestFlashRepository_ListFeatured(t *testing.T) {
 	}
 	flashes[0].LikedCount = 5
 	flashes[1].LikedCount = 10
+	// likedCount=0 は featured 対象外。
+	zeroLiked := newTestFlash("fl_ft_zero", user.ID, "ftzero")
+	zeroLiked.LikedCount = 0
+	flashes = append(flashes, zeroLiked)
+	// 非公開 flash は likedCount>0 でも featured から除外される。
+	private := newTestFlash("fl_ft_priv", user.ID, "ftpriv")
+	private.LikedCount = 99
+	private.Visibility = "private"
+	flashes = append(flashes, private)
 	for _, f := range flashes {
 		require.NoError(t, repo.Create(f))
 		defer cleanupFlash(t, f.ID)
@@ -189,9 +198,32 @@ func TestFlashRepository_ListFeatured(t *testing.T) {
 			found = append(found, f)
 		}
 	}
-	require.Len(t, found, 2)
+	require.Len(t, found, 2, "likedCount=0 と非公開 flash は除外される")
 	assert.Equal(t, "fl_ft_2", found[0].ID)
 	assert.Equal(t, "fl_ft_1", found[1].ID)
+}
+
+// cursor (untilID) モードでも visibility / likedCount フィルタが効くこと。
+func TestFlashRepository_ListFeatured_CursorExcludesPrivate(t *testing.T) {
+	repo := NewFlashRepository(testDB)
+	user := insertTestUser(t, "u_fla_cur", "flashusercur")
+	defer cleanupUser(t, user.ID)
+
+	pub := newTestFlash("fl_cur_pub", user.ID, "pub")
+	pub.LikedCount = 3
+	priv := newTestFlash("fl_cur_priv", user.ID, "priv")
+	priv.LikedCount = 99
+	priv.Visibility = "private"
+	for _, f := range []*model.Flash{pub, priv} {
+		require.NoError(t, repo.Create(f))
+		defer cleanupFlash(t, f.ID)
+	}
+	// untilID をテスト対象 ID より大きい値にして両方を candidate に含める。
+	rows, err := repo.ListFeatured("", "fl_cur_zzzz", 10, 0)
+	require.NoError(t, err)
+	for _, f := range rows {
+		assert.NotEqual(t, "fl_cur_priv", f.ID, "cursor モードでも非公開は除外される")
+	}
 }
 
 func TestFlashRepository_ListFeatured_LimitClamp(t *testing.T) {
@@ -226,6 +258,11 @@ func TestFlashRepository_Search(t *testing.T) {
 		require.NoError(t, repo.Create(f))
 		defer cleanupFlash(t, f.ID)
 	}
+	// 非公開 flash は title が一致しても検索結果に出ない。
+	priv := newTestFlash("fl_sr_priv", user.ID, "delta calc secret")
+	priv.Visibility = "private"
+	require.NoError(t, repo.Create(priv))
+	defer cleanupFlash(t, priv.ID)
 
 	rows, err := repo.Search("calc", "", "", 10, 0)
 	require.NoError(t, err)
@@ -235,7 +272,10 @@ func TestFlashRepository_Search(t *testing.T) {
 			found = append(found, f)
 		}
 	}
-	assert.Len(t, found, 2)
+	assert.Len(t, found, 2, "非公開 flash は検索対象外")
+	for _, f := range found {
+		assert.NotEqual(t, "fl_sr_priv", f.ID)
+	}
 }
 
 func TestFlashRepository_Search_LimitClamp(t *testing.T) {
