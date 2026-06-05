@@ -88,9 +88,15 @@ type NoteRepository interface {
 	// 取り込む形に統合した (#1439 / #1441 と同じパターン)。
 	ListByChannelID(channelID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error)
 	FindManyByIDsWithUser(ids []string) ([]*model.Note, error)
-	ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
-	ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
-	ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error)
+	// ListRenotesOf / ListRepliesOf / ListChildrenOf は viewerID 視点の可視性を
+	// LIMIT 前に SQL push-down する (#1500)。viewerID="" は匿名 (public/home のみ)。
+	// 条件は core/note.CanSeeNote 完全版 (specified 込み): スレッドの reply/renote は
+	// viewer が visibleUserIds 対象なら specified note も見えるため、timeline 系の
+	// specified 除外版を流用しないこと。post-fetch filter だとページ過少充填 +
+	// followers 判定 N+1 になるため (#1418 / #1452 と同 doctrine)。
+	ListRenotesOf(noteID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error)
+	ListRepliesOf(noteID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error)
+	ListChildrenOf(noteID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error)
 	SearchByFilter(filter model.NoteSearchFilter) ([]*model.Note, error)
 	// ListFeatured returns ranked public notes (renote+reply count). When
 	// channelID is non-empty restricts to that channel, mirroring upstream
@@ -405,9 +411,11 @@ func (r *noteRepository) ListByChannelID(channelID, viewerID, untilID, sinceID s
 
 // ListRenotesOf returns notes whose renoteId equals noteID.
 // テキストやファイルを伴わない pure renote だけでなく quote renote も含む。
-func (r *noteRepository) ListRenotesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+func (r *noteRepository) ListRenotesOf(noteID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
 	q := preloadNoteRelations(r.db).Where("\"renoteId\" = ?", noteID)
+	// visibility push-down (#1500): viewer が見られる renote のみ LIMIT 前に絞る。
+	q = applyViewerVisibility(q, viewerID)
 	if untilID != "" {
 		q = q.Where("id < ?", untilID)
 	}
@@ -422,9 +430,11 @@ func (r *noteRepository) ListRenotesOf(noteID string, untilID, sinceID string, l
 
 // ListRepliesOf returns notes whose replyId equals noteID.
 // すべてのユーザーからの返信を返す(ミュート判定はServiceで行う)。
-func (r *noteRepository) ListRepliesOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+func (r *noteRepository) ListRepliesOf(noteID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
 	q := preloadNoteRelations(r.db).Where("\"replyId\" = ?", noteID)
+	// visibility push-down (#1500): viewer が見られる reply のみ LIMIT 前に絞る。
+	q = applyViewerVisibility(q, viewerID)
 	if untilID != "" {
 		q = q.Where("id < ?", untilID)
 	}
@@ -439,10 +449,16 @@ func (r *noteRepository) ListRepliesOf(noteID string, untilID, sinceID string, l
 
 // ListChildrenOf returns notes that are either replies or quote-renotes of the given noteID.
 // notes/childrenでスレッドツリーの直下を取得するために使用する。
-func (r *noteRepository) ListChildrenOf(noteID string, untilID, sinceID string, limit int) ([]*model.Note, error) {
+func (r *noteRepository) ListChildrenOf(noteID, viewerID, untilID, sinceID string, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
+	// base 条件の OR は明示的に括弧で囲む。GORM は複数 Where の生 OR 文字列を暗黙に
+	// グルーピングするが、その挙動に依存せず「後続 AND の visibility 述語が
+	// replyId/renoteId の OR 全体に係る」意図を明示するための defensive clarity
+	// (#1500)。実際のリーク防止は ListChildrenOf_VisibilityPushDown の回帰テストで担保。
 	q := preloadNoteRelations(r.db).
-		Where("\"replyId\" = ? OR \"renoteId\" = ?", noteID, noteID)
+		Where("(\"replyId\" = ? OR \"renoteId\" = ?)", noteID, noteID)
+	// visibility push-down (#1500): viewer が見られる child のみ LIMIT 前に絞る。
+	q = applyViewerVisibility(q, viewerID)
 	if untilID != "" {
 		q = q.Where("id < ?", untilID)
 	}
