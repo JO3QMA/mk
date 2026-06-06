@@ -186,6 +186,37 @@ func TestAvatarDecorationsCreate_Success(t *testing.T) {
 	assert.Equal(t, []string(got.RoleIDs), []string{"r1", "r2"})
 }
 
+// create レスポンスに createdAt (aidx ID 由来) が含まれ、roleIds が省略時でも
+// null でなく [] で返ること (TS schema は nullable:false)。
+func TestAvatarDecorationsCreate_IncludesCreatedAt(t *testing.T) {
+	h, _ := setupAvatarDecorationHandler(t)
+	rec := doPost(h.AvatarDecorationsCreate,
+		`{"name":"deco","description":"d","url":"https://i"}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.NotNil(t, resp["createdAt"], "create response must include createdAt")
+	createdAt, _ := resp["createdAt"].(string)
+	assert.Regexp(t, `^\d{4}-\d{2}-\d{2}T`, createdAt, "createdAt は ISO 文字列")
+	assert.Equal(t, []any{}, resp["roleIdsThatCanBeUsedThisDecoration"], "roleIds 省略時は null でなく []")
+}
+
+// list は handler 生成 (有効 aidx) の行で createdAt が非 null になること。
+func TestAvatarDecorationsList_IncludesCreatedAt(t *testing.T) {
+	h, _ := setupAvatarDecorationHandler(t)
+	// 有効な aidx を持つ行を handler 経由で作る。
+	require.Equal(t, http.StatusOK,
+		doPost(h.AvatarDecorationsCreate, `{"name":"deco","description":"d","url":"https://i"}`, adminUser).Code)
+
+	rec := doPost(h.AvatarDecorationsList, `{}`, adminUser)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.NotNil(t, rows[0]["createdAt"], "list row must have non-null createdAt")
+	assert.Equal(t, []any{}, rows[0]["roleIdsThatCanBeUsedThisDecoration"])
+}
+
 func TestAvatarDecorationsCreate_MissingName(t *testing.T) {
 	h, _ := setupAvatarDecorationHandler(t)
 	assert.Equal(t, http.StatusBadRequest,

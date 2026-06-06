@@ -1775,8 +1775,9 @@ func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) err
 	if m.UpdateErr != nil {
 		return m.UpdateErr
 	}
-	for _, e := range m.Emojis {
+	for oldKey, e := range m.Emojis {
 		if e.ID == id {
+			oldName := e.Name
 			for k, v := range fields {
 				switch k {
 				case "name":
@@ -1831,7 +1832,31 @@ func (m *MockEmojiRepository) UpdateFields(id string, fields map[string]any) err
 					if sp, ok := v.(*string); ok {
 						e.URI = sp
 					}
+				case "type":
+					switch s := v.(type) {
+					case string:
+						e.Type = &s
+					case *string:
+						e.Type = s
+					}
+				case "roleIdsThatCanBeUsedThisEmojiAsReaction":
+					switch arr := v.(type) {
+					case pq.StringArray:
+						e.RoleIDsThatCanBeUsedThisEmojiAsReaction = arr
+					case []string:
+						e.RoleIDsThatCanBeUsedThisEmojiAsReaction = arr
+					}
 				}
+			}
+			// rename 時は map key (name+"@"+host) を張り替えて、production の
+			// name-unique 検索意味論 (FindByNameAndHost) と整合させる。
+			if e.Name != oldName {
+				host := ""
+				if e.Host != nil {
+					host = *e.Host
+				}
+				delete(m.Emojis, oldKey)
+				m.Emojis[e.Name+"@"+host] = e
 			}
 			return nil
 		}
