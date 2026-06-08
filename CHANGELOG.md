@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix(security): `/api/i/import-following` ・ `import-blocking` ・ `import-muting` ・ `import-user-lists` ・ `import-antennas` が fileId の所有者を検証せず、任意の認証 user が他人 (や system) の drive file を import パイプラインに流し込めた cross-user file read を修正 (issue #1555 HIGH)。本家は各 import endpoint で `driveFilesRepository.findOneBy({id, userId: me.id})` で所有を検証し、非所有/不在/system file (userId NULL) は `NO_SUCH_FILE` を返す。mk-go の共通 `importHandler` は fileId 存在のみ確認して即 enqueue し、`Importer.Import` も `Drive.Fetch(fileID)` を userID スコープ無しで引いていた。enqueue 前に `DriveFileRepository` で所有を検証し fail-closed (未配線/不在/非所有は `NO_SUCH_FILE`) にする。`NO_SUCH_FILE` の UUID は本家のエンドポイント別 id に揃える。
+
 - Fix(security): `/api/users/lists/push` がメンバー追加前に対象 user の存在と block 関係を検証していなかった問題と、`users/lists/favorite` ・ `unfavorite` の error/shape が本家と異なっていた問題を修正 (issue #1550 HIGH)。(1) 本家 `users/lists/push` は AddMember 前に対象 user の存在 (`NO_SUCH_USER`) と「対象が自分を block していないか」(`YOU_HAVE_BEEN_BLOCKED`) を検証する。mk-go は欠いており、block されていても任意 user をリストに追加できた。既存 `blockingRepo` を流用し fail-closed で検証。(2) `favorite` は重複時に 204 ではなく本家同様 `ALREADY_FAVORITED` (400)、`unfavorite` はリスト public 検証と `NO_SUCH_USER_LIST` / `ALREADY_FAVORITED` を返すよう本家 shape に揃える。
 
 - Fix: 連合受信した Create(Note) の可視性導出で activity の `to`/`cc` が Note object に union されておらず、可視性 (public/home/followers/specified) と `visibleUserIds` が本家とずれていた問題を修正 (issue #1560)。本家 `ApNoteService` は inbound Create(Note) を取り込む際、activity の `to`/`cc` を Note object の `to`/`cc` に union してから audience を導出する。mk-go は Note object 自身の `to`/`cc` のみ見て activity 側の audience を無視していたため、連合 note の可視性を誤判定しうる。本家準拠で activity audience を合成してから導出するよう修正。
