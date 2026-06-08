@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: `/api/notes/polls/recommendation` が常に空配列を返すスタブだった問題を実装で修正 (issue #1538)。本家 `recommendation.ts` 準拠で、ローカル (userHost IS NULL) public かつ未期限切れの poll のうち、閲覧者自身の投稿でない / 未投票 (NOT EXISTS poll_vote) / 投稿者を mute していないものを `noteId` DESC で返す (`excludeChannels` でチャンネル poll を除外可、limit 既定10/上限100 + offset)。`PollRepository.ListRecommendation` を追加し handler に配線。可視性は public 限定なので追加 gate 不要。
 - Fix: `/api/notes/thread-muting/create` ・ `/delete` が noteId 検証後に 204 を返すだけでスレッドミュートを永続化していなかった問題を修正 (issue #1538)。`notes/state` の `isMutedThread` 読み取り経路は実装済み (`note_thread_muting` を引く) だったため、write 側が stub なことでスレッドミュートが一切機能していなかった。本家 `thread-muting/{create,delete}.ts` 同様に note を解決し (可視性 gate 無し、不在は `NO_SUCH_NOTE`)、`threadId`(無ければ note id)で `note_thread_muting` 行を冪等に作成/削除する (`NoteThreadMutingRepository` を notes handler に配線)。
 - Fix(stream): hashtag の WebSocket チャンネルが live note を1件も受信しておらず、かつ q の複数タグ (AND グループ / OR グループ) を無視して第1タグのみ購読していた問題を修正 (issue #1549 のうち hashtag 分)。`hashtag:<tag>` への publisher が存在しなかった。`FanoutHook.OnNoteCreated` で note.Tags の各タグを `searchnorm.Normalize` (NFKC+lower) して `hashtag:<normalized>` へ publish (重複正規化キーは1回)。consumer (`HashtagChannel`) は q を正規化して全グループの全タグの distinct キーを購読し (旧実装は `q[0][0]` のみ)、`OnRedisEvent` で payload の tags に対し本家 `q.some(group => group.every(tag => …))` の OR-of-ANDs を再評価 + noteId で重複配信を dedupe (複数 subscribed tag topic 経由の二重到着対策) + 受信者可視性 (`streamNoteVisibleForViewer`) + 既存 filter + embed hide。正規化は publish/subscribe 両側で揃える。
 
