@@ -1627,6 +1627,7 @@ func (s *Server) setupRoutes() {
 	federationHandler := apifederation.NewHandler(instanceService)
 	federationHandler.SetFollowingRepo(followingRepo)
 	federationHandler.SetUserRepo(userRepo)
+	federationHandler.SetIDGen(idGen)
 	federationHandler.SetResolver(federationResolver)
 	// moderationNote は公開エンドポイントで moderator にのみ返す (情報漏洩対策)。
 	federationHandler.SetModeratorChecker(roleService)
