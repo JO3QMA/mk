@@ -42,6 +42,30 @@ make dev
 
 ## Makefileターゲット
 
+引数なしの `make` (= `make help`) で全ターゲットの一覧が出る。以下はグループごとの説明と、詳細ドキュメントへの入口。
+
+### まとめて実行
+
+| ターゲット | 内容 |
+|---|---|
+| `make check` | `fmt` → `lint` → `test`。コミット前に必須 |
+| `make gates` | 静的 parity ゲート 4 種を一括実行 |
+| `make version` | mk-go / 互換 Misskey / submodule のバージョンを表示 |
+| `make frontend-check` | 同梱フロントエンドを型チェック (`vue-tsc --noEmit`)。ビルド成果物を作らないので安全 |
+| `make diff-check` | 差分比較ハーネスを作り直して実行 (クリーン DB 前提のため) |
+| `make playwright-check` | Playwright を作り直して実行 (同上) |
+| `make e2e-down-all` | 検証用スタックを一括撤去。**本番 project `mk` は対象外** |
+
+### 更新 (運用)
+
+| ターゲット | 内容 |
+|---|---|
+| `make update` | `git pull --recurse-submodules` して、フロントエンド再ビルドの要否を知らせる |
+| `make docker-update` | pull → フロントエンドビルド → イメージ再ビルド → 再起動 (Docker Compose 構成) |
+| `make uds-update` | 同上 (UDS 本番構成) |
+
+`docker-update` / `uds-update` は**フロントエンドの再ビルドと再起動を必ずセットで実行する**。mk-go はエントリポイントを起動時に 1 回だけ解決してキャッシュするため、ビルドだけして再起動しないと HTML が消えた古い `scripts/<hash>.js` を指したまま 404 になる。手順の詳細は[デプロイ](deployment.md#アップデート)を参照。
+
 ### ビルド・実行
 
 | ターゲット | 内容 |
