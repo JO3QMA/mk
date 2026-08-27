@@ -70,7 +70,28 @@ compose logs を `playwright-results-<backend>-<shard>` /
 vite の hash class を selector に使わない (`[class*="_button_"]` 等)。production
 ビルドで hash が変わると落ちる。`data-testid` か role / text で取る。
 
-どちらも実際に踏んだ罠。
+**`.ts` の隣に `.js` を残さない。** import は拡張子なし
+(`from '../../../../fixtures/rate_limit'`) で、同名の `.js` があると playwright は
+そちらを先に解決する。`tsc` を手で走らせた残骸が典型で、import 先だけでなく
+**spec 本体の `.js` も出る** — そちらは shadow されず `.ts` と両方走る (既定の
+`testMatch` が `.js` も拾う)。**エラーの有無で切り分けない**
+— 症状が「`.ts` を直したのに効かない」だけのこともあれば、欠けた export が
+`undefined` として流れて無関係に見える場所で落ちることもある。
+
+`tests/playwright/.gitignore` の `*.js` が止めるのは commit までで、**手元の
+shadowing は止まらない** (生成された時点で import 先の `.ts` は読まれていない)。container 実行
+(`make playwright-check`) も spec を bind mount するので同じ。疑ったら探して `rm`:
+
+```bash
+find tests/playwright -name '*.js' \
+  -not -path '*/node_modules/*' -not -path '*/playwright-report/*'
+```
+
+素の `git status` には出ず (`--ignored` が要る)、`git clean -fd` も消してくれない。
+`playwright-report/` は `--reporter=html` を手で渡したときだけ生成されるが、その
+viewer 資産で `.js` が 7 本出るので除外に入れてある。
+
+3 件とも実際に踏んだ罠。
 
 ## 関連
 
