@@ -158,7 +158,12 @@ git add third_party/misskey
 
 upstream release の取り込み以外で fork frontend だけを直す PR でも、**submodule の gitlink は同じ規律で扱う**。
 
-mk の `develop` が追跡しているのは fork の **`mk-2026.x.x` 系列**（例: `mk-2026.9.0`）であり、fork の `develop` とは別系列。`develop` は `mk-2026.x.x` から見て数十コミット手前に分岐していることが多く、**misskey-ts 側の PR を `develop` にマージしただけでは mk の submodule 系列には入らない**。
+mk の `develop` が追跡しているのは fork の **`mk-2026.x.x` 系列**（例: `mk-2026.9.0`）であり、fork の `develop` とは別系列。系列ごとに独自コミットが積まれており、**misskey-ts 側の PR を `develop` にマージしただけでは mk の submodule 系列には入らない**。差分の大きさは時期で変わるので、手元では次で数える:
+
+```bash
+git fetch origin develop mk-2026.9.0   # 例: mk が指す系列
+git rev-list --left-right --count origin/develop...origin/mk-2026.9.0
+```
 
 | やること | 理由 |
 |---|---|
@@ -177,7 +182,7 @@ git rev-list --count "$NEW..$OLD"    # 失われる mk 独自コミット数。0
 git diff --diff-filter=D --name-only "$OLD" "$NEW" | wc -l   # 削除ファイル。0 であること
 ```
 
-**CI は巻き戻りを検出しない。** `build` / `test` / `lint` の required check は submodule を checkout しない。`frontend-check` は型・eslint・vitest を見るが、**ファイルが消えても型が通る**場合がある（実測: プラグイン UI 等 52 ファイル分が消えても `vue-tsc` は緑）。pointer の妥当性は上のコマンドで人手確認する。
+**CI は祖先関係の巻き戻りを検出しない。** `build` job は gitlink の SHA が fork に **push 済みか**は見るが、fast-forward 可能か（祖先関係）は見ない。`build` / `test` / `lint` の required check は submodule を checkout しない。`frontend-check` は型・eslint・vitest を見るが、**ファイルが消えても型が通る**場合がある。pointer の妥当性は上のコマンドで人手確認する。
 
 ### submodule bump 後に必須: shape drift snapshot の再生成
 
