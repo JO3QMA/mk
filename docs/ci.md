@@ -179,7 +179,7 @@ package load エラーで解析が空振りしうる。**ローカルの `go` �
 
 fork frontend (`third_party/misskey`) の型・eslint・vitest のいずれか、または
 submodule のソースを読むゲートの失敗 (#2892)。型とゲートは `make frontend-check`
-で再現するが、**eslint と vitest はそこに入っていない** (#2843 / #2844)。
+で再現するが、**eslint と vitest はそこに入っていない**。
 
 **手元再現（CI job 全体）:**
 
@@ -196,7 +196,7 @@ bind-mount している `third_party/misskey/built` を書き換えてしまう�
 出力物を作らない。
 
 **submodule の gitlink 巻き戻りはこの job でも検出できない。** 型が通るだけで
-ファイルが消えている場合がある (#2860)。pointer の確認は
+ファイルが消えている場合がある。pointer の確認は
 [upstream-catch-up.md](upstream-catch-up.md#mk-固有パッチだけを載せるときrelease-bump-以外)。
 
 ## nightly のみ
