@@ -48,8 +48,7 @@ PR を出すと十数個の check が走る。**required なのは `build` / `te
 ## fork frontend (`third_party/misskey`) を触るとき
 
 mk-go 1.0 以降は fork frontend を独自に進化させる。Go 側の `make check` だけでは
-frontend の規約違反を拾えないので、submodule を変える PR では以下も確認する
-(#2860 / #2879 の review で繰り返し指摘された型)。
+frontend の規約違反を拾えないので、submodule を変える PR では以下も確認する。
 
 ### submodule の系列
 
