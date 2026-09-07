@@ -65,7 +65,7 @@ misskey-ts への PR は base を mk の gitlink が指す系列に合わせ、m
 cd third_party/misskey && pnpm install && pnpm build-pre && pnpm -r build
 make plugins-all && go build -o /dev/null ./cmd/misskey   # CI と同じ統合ビルド
 make frontend-check
-cd third_party/misskey/packages/frontend && pnpm eslint --quiet "src/**/*.{ts,vue}"
+cd third_party/misskey/packages/frontend && pnpm eslint
 make frontend-test
 ```
 
@@ -76,7 +76,7 @@ make frontend-test
 
 | 規約 | 詳細 |
 |---|---|
-| i18n | パラメータ付き文字列は `i18n.tsx._key.func({ n })`。`i18n.t()` は `@deprecated` で、本番ビルド (`_DEV_=false`) では `TypeError` になる |
+| i18n | パラメータ付き文字列は `i18n.tsx._key.func({ n })`。`i18n.t()` は `@deprecated`（`ts` / `tsx` 直接参照のほうが Vue のキャッシュ効率が良い） |
 | import | 型は top-level の `import type { Foo } from '...'`。値 import 内の `type Foo` は eslint `import/consistent-type-specifier-style` で落ちる |
 | vitest | `vitest.config.unit.ts` の include は `test/unit/**/*.test.ts` のみ。**`src/` 直下の `.test.ts` は CI でも手元でも実行されない** |
 
