@@ -45,6 +45,45 @@ PR を出すと十数個の check が走る。**required なのは `build` / `te
 残りは非ブロッキング。どれが何を見ていて落ちたとき何を疑うかは [CI で回る項目](ci.md) に
 まとめてある。
 
+## fork frontend (`third_party/misskey`) を触るとき
+
+mk-go 1.0 以降は fork frontend を独自に進化させる。Go 側の `make check` だけでは
+frontend の規約違反を拾えないので、submodule を変える PR では以下も確認する
+(#2860 / #2879 の review で繰り返し指摘された型)。
+
+### submodule の系列
+
+mk が追跡するのは fork の **`mk-2026.x.x` 系列**であり、fork `develop` ではない。
+misskey-ts への PR は base を mk の gitlink が指す系列に合わせ、mk 側では
+[upstream-catch-up.md の祖先確認](upstream-catch-up.md#mk-固有パッチだけを載せるときrelease-bump-以外)
+を bump 前に必ず行う。
+
+### 手元での確認（CI `frontend-check` job 相当）
+
+`make frontend-check` は **型 (`vue-tsc`) だけ**。job 全体は eslint と vitest も走る。
+
+```bash
+cd third_party/misskey && pnpm install && pnpm build-pre && pnpm -r build
+make plugins-all && go build -o /dev/null ./cmd/misskey   # CI と同じ統合ビルド
+make frontend-check
+cd third_party/misskey/packages/frontend && pnpm eslint --quiet "src/**/*.{ts,vue}"
+make frontend-test
+```
+
+`make uds-frontend-build` / `make e2e-frontend-build` は本番の `built/` を書き換えるので
+検証には使わない ([development.md](development.md))。
+
+### コーディング規約（fork frontend）
+
+| 規約 | 詳細 |
+|---|---|
+| i18n | パラメータ付き文字列は `i18n.tsx._key.func({ n })`。`i18n.t()` は `@deprecated` で、本番ビルド (`_DEV_=false`) では `TypeError` になる |
+| import | 型は top-level の `import type { Foo } from '...'`。値 import 内の `type Foo` は eslint `import/consistent-type-specifier-style` で落ちる |
+| vitest | `vitest.config.unit.ts` の include は `test/unit/**/*.test.ts` のみ。**`src/` 直下の `.test.ts` は CI でも手元でも実行されない** |
+
+Playwright spec を足すときは [playwright.md](playwright.md) の selector 規約も読む
+（位置依存の `querySelector` はフォーム項目が増えると壊れる）。
+
 ## ドキュメントを直すときのレビュー条件
 
 **doc の誤りを直す作業は、直した先で新しい誤りを作りやすい。** #2640 では敵対的
