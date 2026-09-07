@@ -192,9 +192,10 @@ vite の hash class を selector に使わない (`[class*="_button_"]` 等)。p
 必須 `details` と任意 `evidence` の 2 textarea）。`data-testid` を付けるか、
 ラベル文字列から親要素を辿って `textarea` を取る。
 
-Playwright は **required check ではない**。fixture や selector の回帰は
-CI では自動検出されない。手元で `make playwright-check` を回すか、spec 追加時に
-上の規約を守る。
+Playwright は **required check ではない**（`spec (mk-go …)` は PR で走り、落ちれば
+check に fail が出るが、マージはブロックされない）。paths フィルタ外の変更だけだと
+workflow が発火しないので、fixture を触った PR では check を見る。手元では
+`make playwright-check` でも再現できる。spec 追加時は上の規約を守る。
 
 **`.ts` の隣に `.js` を残さない。** import は拡張子なし
 (`from '../../../../fixtures/rate_limit'`) で、同名の `.js` があると playwright は

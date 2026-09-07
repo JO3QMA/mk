@@ -158,9 +158,10 @@ git add third_party/misskey
 
 upstream release の取り込み以外で fork frontend だけを直す PR でも、**submodule の gitlink は同じ規律で扱う**。
 
-mk の `develop` が追跡しているのは fork の **`mk-2026.x.x` 系列**（例: `mk-2026.9.0`）であり、fork の `develop` とは別系列。系列ごとに独自コミットが積まれており、**misskey-ts 側の PR を `develop` にマージしただけでは mk の submodule 系列には入らない**。差分の大きさは時期で変わるので、手元では次で数える:
+mk の `develop` が追跡しているのは fork の **`mk-2026.x.x` 系列**（例: `mk-2026.9.0`）であり、fork の `develop` とは別系列。系列ごとに独自コミットが積まれており、**misskey-ts 側の PR を `develop` にマージしただけでは mk の submodule 系列には入らない**。差分の大きさは時期で変わるので、**fork 側** (`third_party/misskey`) で次を実行する:
 
 ```bash
+cd third_party/misskey
 git fetch origin develop mk-2026.9.0   # 例: mk が指す系列
 git rev-list --left-right --count origin/develop...origin/mk-2026.9.0
 ```
