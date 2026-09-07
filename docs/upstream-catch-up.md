@@ -154,6 +154,31 @@ git add third_party/misskey
 
 `<tag>-mk.N` の `N` は revision 番号。同 release base で追加 patch が増えたら `.1` `.2` と上げる。
 
+#### mk 固有パッチだけを載せるとき（release bump 以外）
+
+upstream release の取り込み以外で fork frontend だけを直す PR でも、**submodule の gitlink は同じ規律で扱う** (#2860 / #2879 で review 指摘)。
+
+mk の `develop` が追跡しているのは fork の **`mk-2026.x.x` 系列**（例: `mk-2026.9.0`）であり、fork の `develop` とは別系列。`develop` は `mk-2026.x.x` から見て数十コミット手前に分岐していることが多く、**misskey-ts 側の PR を `develop` にマージしただけでは mk の submodule 系列には入らない**。
+
+| やること | 理由 |
+|---|---|
+| misskey-ts の PR base を **mk が指している `mk-2026.x.x`** に合わせる | マージ後に submodule を fast-forward で載せられる |
+| mk 側の bump 前に祖先関係を確認する | 誤った SHA だと fork 独自コミットが巻き戻る |
+| **閉じた PR の head SHA** を gitlink に使わない | 別系列・古い base のコミットを指しやすい |
+
+bump 前の確認（`third_party/misskey` 内で実行）:
+
+```bash
+OLD=<現在の mk develop が指す submodule SHA>
+NEW=<misskey-ts PR マージ後に載せたい SHA>
+
+git merge-base --is-ancestor "$OLD" "$NEW" && echo "fast-forward 可"
+git rev-list --count "$NEW..$OLD"    # 失われる mk 独自コミット数。0 であること
+git diff --diff-filter=D --name-only "$OLD" "$NEW" | wc -l   # 削除ファイル。0 であること
+```
+
+**CI は巻き戻りを検出しない。** `build` / `test` / `lint` の required check は submodule を checkout しない。`frontend-check` は型・eslint・vitest を見るが、**ファイルが消えても型が通る**場合がある (#2860 で実測: プラグイン UI 等 52 ファイル分が消えても `vue-tsc` は緑)。pointer の妥当性は上のコマンドで人手確認する。
+
 ### submodule bump 後に必須: shape drift snapshot の再生成
 
 `third_party/misskey` を bump したら、entity shape drift gate の golden snapshot を

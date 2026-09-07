@@ -46,7 +46,7 @@ PR を出すと十数個の check が走る。**どれが何を見ていて、�
 | check | workflow | 見ているもの | 実測 | 手元での再現 |
 |---|---|---|---|---|
 | `vulncheck` | CI | 依存・Go stdlib の**到達可能な**既知脆弱性 + Go version の pin 整合 | 1 min | `GOOS=linux govulncheck ./...` |
-| `frontend-check` | CI | fork frontend の型 (`vue-tsc --noEmit`) + submodule のソースを読むゲート + `make plugins-all` と統合バイナリの build | 1.5 min | `make frontend-check` + `make plugins-all && go build ./cmd/misskey` |
+| `frontend-check` | CI | fork frontend の型 (`vue-tsc --noEmit`) + submodule のソースを読むゲート + eslint (`src/**/*.{ts,vue}`) + vitest + `make plugins-all` と統合バイナリの build | 1.5 min | 下の「frontend-check の手元再現」 |
 | `plugin-tests` | CI | 同梱プラグインのテスト (別 module なので `go list ./...` に入らない) | 1 min | `make plugin-test` |
 | `e2e (1/4)` 〜 `4/4` | Upstream backend e2e | **本家の backend e2e 1256 テスト**が mk-go に対して通るか | 3-7 min | `make upstream-e2e` |
 | `diff` | Diff e2e | mk-go と TS の**レスポンスの値**が一致するか (endpoint 比較 35 件) | 4 min | `make diff-check` |
@@ -177,12 +177,27 @@ package load エラーで解析が空振りしうる。**ローカルの `go` �
 
 ### `frontend-check` が落ちたとき
 
-fork frontend (`third_party/misskey`) の型崩れ、または submodule のソースを読む
-ゲートの失敗 (#2892)。どちらも `make frontend-check` で再現する。
+fork frontend (`third_party/misskey`) の型・eslint・vitest のいずれか、または
+submodule のソースを読むゲートの失敗 (#2892)。型とゲートは `make frontend-check`
+で再現するが、**eslint と vitest はそこに入っていない** (#2843 / #2844)。
+
+**手元再現（CI job 全体）:**
+
+```bash
+cd third_party/misskey && pnpm install && pnpm build-pre && pnpm -r build
+make plugins-all && go build -o /dev/null ./cmd/misskey
+make frontend-check
+cd third_party/misskey/packages/frontend && pnpm eslint --quiet "src/**/*.{ts,vue}"
+make frontend-test
+```
 
 **`make uds-frontend-build` / `e2e-frontend-build` は検証に使わないこと。** 本番が
 bind-mount している `third_party/misskey/built` を書き換えてしまう。`vue-tsc --noEmit` なら
 出力物を作らない。
+
+**submodule の gitlink 巻き戻りはこの job でも検出できない。** 型が通るだけで
+ファイルが消えている場合がある (#2860)。pointer の確認は
+[upstream-catch-up.md](upstream-catch-up.md#mk-固有パッチだけを載せるときrelease-bump-以外)。
 
 ## nightly のみ
 

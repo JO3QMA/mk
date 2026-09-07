@@ -186,6 +186,16 @@ issue #2788 の主目的 (shell に hash 無しの inline script が入る) は�
 vite の hash class を selector に使わない (`[class*="_button_"]` 等)。production
 ビルドで hash が変わると落ちる。`data-testid` か role / text で取る。
 
+**同種の要素が複数あるとき、DOM 上の位置（先頭・末尾）で取らない。**
+`document.querySelector('textarea')` や `querySelectorAll(...)[length - 1]` は、
+フォームに項目が 1 つ増えただけで別フィールドを指す (#2860 / #2879: 通報フォームの
+必須 `details` と任意 `evidence` の 2 textarea)。`data-testid` を付けるか、
+ラベル文字列から親要素を辿って `textarea` を取る。
+
+Playwright は **required check ではない** (#2609)。fixture や selector の回帰は
+CI では自動検出されない。手元で `make playwright-check` を回すか、spec 追加時に
+上の規約を守る。
+
 **`.ts` の隣に `.js` を残さない。** import は拡張子なし
 (`from '../../../../fixtures/rate_limit'`) で、同名の `.js` があると playwright は
 そちらを先に解決する。`tsc` を手で走らせた残骸が典型で、import 先だけでなく
