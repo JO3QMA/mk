@@ -170,7 +170,7 @@ jobs:
     continue-on-error: ${{ matrix.continue_on_error }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # pull_request では github.ref が refs/pull/<n>/merge になるので
           # PR の内容が checkout される。'develop' 固定のままだと PR の変更を
@@ -204,7 +204,7 @@ jobs:
       - name: Cache misskey workspace (built + node_modules)
         id: cache-misskey
         if: matrix.backend == 'mk-go'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # packages/*/node_modules で全 workspace package を glob 対応
           # (新 package 追加時に手動更新不要)。built/ は pnpm build の成果物。
@@ -216,9 +216,9 @@ jobs:
 
       - name: Set up Node.js
         if: matrix.backend == 'mk-go' && steps.cache-misskey.outputs.cache-hit != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version-file: third_party/misskey/.node-version
 
       - name: Build third_party/misskey frontend bundle
         if: matrix.backend == 'mk-go' && steps.cache-misskey.outputs.cache-hit != 'true'
@@ -283,7 +283,7 @@ jobs:
       # 45 min timeout した TS job の失敗内容を追えなかった (#2289)。
       - name: Upload test-results on failure
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results-${{ matrix.backend }}-${{ matrix.shard }}
           path: tests/playwright/test-results/
@@ -301,7 +301,7 @@ jobs:
 
       - name: Upload logs artifact on failure
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-logs-${{ matrix.backend }}-${{ matrix.shard }}
           path: /tmp/playwright-logs/
