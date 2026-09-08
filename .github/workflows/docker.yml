@@ -49,7 +49,7 @@ jobs:
       IMAGE_NAME: ${{ github.repository }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # tag input が指定されていればそのタグを、無ければ通常どおり
           # イベントの ref を build する。
@@ -63,11 +63,9 @@ jobs:
       # 配下にあり、pnpm install 後にしか存在しない。runner上で事前にinstallして
       # Docker build contextに含める (issue #359)。
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          # third_party/misskey/packages/backend は engines.node で
-          # ^22.15.0 || ^24.10.0 を要求するため 22 系を使う。
-          node-version: "22"
+          node-version-file: third_party/misskey/.node-version
 
       - name: Install third_party/misskey node_modules
         working-directory: third_party/misskey
@@ -147,7 +145,7 @@ jobs:
       IMAGE_NAME: ${{ github.repository }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
         # submodule は不要。Dockerfile.bundled は third_party/misskey を参照せず、

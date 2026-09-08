@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 35
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || 'develop' }}
           # stage 3 の mk-go image build (tests/federation/common/Dockerfile.mkgo)
@@ -44,9 +44,9 @@ jobs:
           submodules: recursive
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: third_party/misskey/.node-version
 
       # frontend bundle (built/_frontend_vite_ / _frontend_dist_ / _sw_dist_) は
       # repo に commit されていないのでここで生成する。playwright workflow が
@@ -101,7 +101,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dropin-frontend-logs
           path: /tmp/dropin-frontend-logs/
