@@ -61,7 +61,7 @@ jobs:
           pnpm build
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Pre-pull heavy images
         # 旧版は `&` で background 化していたが、GitHub Actions の `run:`
