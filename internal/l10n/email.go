@@ -7,11 +7,18 @@ import (
 
 // singleLangEmail maps bilingual and unknown locales to English for templates
 // that upstream never sent bilingually (reset, signup, verify, footer).
+// NOTE: the "en" case is currently equivalent to default; kept explicit so
+// bilingual/unknown intentionally falling back to English is visible, and to
+// give future en-specific branches a place to land.
 func singleLangEmail(lang string) string {
-	if lang == "ja" {
+	switch lang {
+	case "ja":
 		return "ja"
+	case "en":
+		return "en"
+	default:
+		return "en"
 	}
-	return "en"
 }
 
 // SignupConfirm returns localized signup confirmation email strings.
