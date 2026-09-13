@@ -17,6 +17,7 @@ import (
 	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
 	"github.com/shiroha-a/mk/internal/repository"
+	"github.com/shiroha-a/mk/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -221,6 +222,36 @@ func TestRequestReset_Success(t *testing.T) {
 	assert.Equal(t, "Password reset", sent.Subject)
 	assert.NotEmpty(t, sent.Text, "text body は必須")
 	assert.Contains(t, sent.HTML, "<!doctype html>", "HTML wrapper が同送される (#600 item 4)")
+	mu.Unlock()
+}
+
+func TestRequestReset_SendsJapaneseEmailWhenProfileLangIsJa(t *testing.T) {
+	h, userRepo, resetRepo := newTestHandler()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", Langs: []string{"en-US", "ja-JP"}}
+	h.SetMetaRepo(metaRepo)
+
+	email := "test@example.com"
+	ja := "ja-JP"
+	userRepo.users["u1"] = &model.User{ID: "u1", Username: "testuser", UsernameLower: "testuser"}
+	userRepo.profiles["u1"] = &model.UserProfile{UserID: "u1", Email: &email, EmailVerified: true, Lang: &ja}
+
+	var mu sync.Mutex
+	var sent miscsmtp.Message
+	h.SetEmailSender(func(_ string, msg miscsmtp.Message) {
+		mu.Lock()
+		defer mu.Unlock()
+		sent = msg
+	})
+
+	rec := post(h.RequestReset, `{"username":"testuser","email":"test@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, resetRepo.requests, 1)
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	assert.Equal(t, "パスワードのリセット", sent.Subject)
+	assert.Contains(t, sent.Text, "パスワードをリセット")
 	mu.Unlock()
 }
 

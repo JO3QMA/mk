@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreemail "github.com/shiroha-a/mk/internal/core/email"
+	"github.com/shiroha-a/mk/internal/l10n"
 	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/repository"
 	"github.com/shiroha-a/mk/internal/server/middleware"
@@ -116,16 +117,24 @@ func (h *Handler) UpdateEmail(c echo.Context) error {
 		fields["emailVerifyCode"] = code
 
 		if h.emailSender != nil {
-			lead := "Click the link to verify your email:"
-			text, bodyHTML := coreemail.LinkText(lead, "Verify email", h.verifyURL(code))
+			var metaLangs []string
+			if h.metaRepo != nil {
+				if m, err := h.metaRepo.Fetch(); err == nil {
+					metaLangs = l10n.LangsFromMeta(m)
+				}
+			}
+			lang := l10n.Resolve(profile.Lang, metaLangs)
+			subject, lead, linkLabel := l10n.VerifyEmail(lang)
+			text, bodyHTML := coreemail.LinkText(lead, linkLabel, h.verifyURL(code))
 			html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
-				SiteURL:          h.serverURL,
-				Subject:          "Verify your email",
-				EmailSettingsURL: h.serverURL + "/settings/email",
-				BodyHTML:         bodyHTML,
+				SiteURL:            h.serverURL,
+				Subject:            subject,
+				EmailSettingsURL:   h.serverURL + "/settings/email",
+				EmailSettingsLabel: l10n.EmailSettingsLabel(lang),
+				BodyHTML:           bodyHTML,
 			})
 			go h.emailSender(addr, miscsmtp.Message{
-				Subject: "Verify your email",
+				Subject: subject,
 				Text:    text,
 				HTML:    html,
 			})

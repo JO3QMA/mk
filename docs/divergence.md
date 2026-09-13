@@ -3,7 +3,7 @@
 mk-go が持つ「純正 Misskey (misskey-dev/misskey) には無い、または挙動が異なる」ものを 1 枚に集約したリファレンス。
 
 - 基準: **mk-go 1.3.0** ⇔ Misskey TS `2026.9.0`
-- 最終更新: 2026-09-07
+- 最終更新: 2026-09-13
 
 > ベースラインを固定したのは 1.0.0 (= Misskey TS `2026.7.0` 追従完了時点)。1.1.x は
 > upstream を追従したのではなく、**mk-go 側の独自変更と互換性 fix** を積んだもので、比較対象の
@@ -685,6 +685,7 @@ cron の多重実行防止は **job option ではなく mkq の job ID 設計**�
 | mention による reply filter escape | viewer が `note.mentions` に含まれれば withReplies 設定に関係なく reply gate を pass。streaming と fanout の両方に実装 |
 | streaming publish 時の suspended フィルタ | 凍結ユーザー (本人 / reply 先 / renote 先) の note を WebSocket publish から除外する (#2624)。**upstream は streaming に suspended フィルタを持たない** (`packages/backend/src/server/api/stream/` に `isSuspended` の参照が無い)。upstream で顕在化しないのは suspended ユーザーが投稿できないためで、mk-go では**凍結したリモートユーザーの note を対象にした inbound Announce が相手インスタンスから届き続ける**ため、取得経路にしかフィルタが無いと「リアルタイムには流れるがリロードで消える」という食い違いになっていた。gate は `internal/stream` の publish 1 箇所に置く (home / local / global / userList / channel / hashtag / roleTimeline / antenna が全て同じ publisher を通る)。**Redis の timeline list には従来どおり積む** — fanout 側で打ち切ると凍結を解除しても list に ID が無いままになり、取得は list が limit を満たす限り DB へ fallback しないため復活しなくなる。あわせて channel 一覧 (`ListByChannelID`) と hashtag 一覧 (`SearchByTag`) にも同じ 3 author の除外を追加した (これらは `applyTimelineFilter` を通らないため、publish だけ止めると逆向きの食い違いになる) |
 | effective-policy provider | build-time pluginがnative role解決へ動的に寄与するmk-go独自機構。成功結果は明示的invalidationまでLRUへ保持する。寄与はnative roleやDBへ永続化されないため、plugin停止・buildからの除外・Misskey TSへの切り戻しで消え、利用者の実効権限が変わる。特に制限方向の寄与は切り戻しで権限を緩めうる。停止後も維持すべき判定はnative roleとして永続化し、切り戻し前に`admin/server-plugins`の`effectivePolicies`宣言とnative fallbackを確認する |
+| トランザクションメールの l10n | `internal/l10n` で件名・本文・CTA ラベル・HTML wrapper の footer link 文言を出し分ける (#2986)。**upstream は backend のメール文面を locale 化していない** — `SignupApiService` / `request-reset-password` / `i/update-email` / `SigninService` / `CheckModeratorsActivityProcessorService` は英語固定 (`locales/*.yml` にも載っていない)。mk-go は初版で **ja / en** の 2 言語。解決順は **認証済み利用者向け** (`reset-password` / `i/update-email` / new-login / モデレーター通知): `user_profile.lang` → `meta.langs[0]` → `en`。**未登録の signup 確認**: `Accept-Language` を `meta.langs` と突き合わせ → `meta.langs[0]` → `en` (pending 行に lang は無い)。モデレーター通知は**受信者ごと**に上記を解決する (一括で英語固定にしない)。対象外は `admin/send-email` (管理者が件名・本文を指定するため)。**#2986 以前からあった文面差は残る** — signup 確認は upstream 件名 `Signup` / 本文 `To complete signup…` に対し mk-go は `Confirm your account` / HTML CTA 付き (#600 item 4)、reset は upstream `Password reset requested` に対し mk-go は `Password reset`。l10n 化で英語側の文言は固定のまま、日本語 UI のインスタンスでも英語メールが届く問題だけを解消する。**#2986 で新たに変わるのは日英併記の廃止** — upstream / mk-go とも new-login とモデレーター不在通知は `New login / ログインがありました` のような**1 通に英日を並べる**形だった。mk-go は選択言語のみ送る (ja 利用者には日本語だけ)。TS へ swap back すると併記に戻る。HTML footer の `Email setting` も upstream `EmailService.ts` 同様に英語固定だったが、mk-go は `EmailSettingsLabel` で l10n する |
 
 ---
 

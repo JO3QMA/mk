@@ -19,6 +19,7 @@ import (
 	coresignup "github.com/shiroha-a/mk/internal/core/signup"
 	"github.com/shiroha-a/mk/internal/core/signupform"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/l10n"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
 	"github.com/shiroha-a/mk/internal/model"
@@ -287,7 +288,7 @@ func (h *Handler) Signup(c echo.Context) error {
 				slog.Warn("signup: failed to mark invitation ticket pending", "ticketId", ticket.ID, "err", merr)
 			}
 		}
-		h.sendSignupConfirmation(meta, req.EmailAddress, pending.Code)
+		h.sendSignupConfirmation(meta, req.EmailAddress, pending.Code, c.Request().Header.Get("Accept-Language"))
 		// TS 互換: 本体は何も返さない (frontend は確認メールを待つ)。
 		return c.NoContent(http.StatusNoContent)
 	}
@@ -426,7 +427,7 @@ func (h *Handler) SignupPending(c echo.Context) error {
 // 承認制の登録 (#2571) も同じメールに合流させるため helper 化している。
 // **2 箇所に同じ文面を書かない** — 片方だけ直すと、どちらの経路で登録したかで
 // 届く内容が変わる。
-func (h *Handler) sendSignupConfirmation(meta *model.Meta, to, code string) {
+func (h *Handler) sendSignupConfirmation(meta *model.Meta, to, code, acceptLanguage string) {
 	if h.emailSender == nil {
 		return
 	}
@@ -434,17 +435,18 @@ func (h *Handler) sendSignupConfirmation(meta *model.Meta, to, code string) {
 	if meta != nil && meta.Name != nil && *meta.Name != "" {
 		siteName = *meta.Name
 	}
+	lang := l10n.ResolveFromHeader(acceptLanguage, l10n.LangsFromMeta(meta))
+	subject, lead, linkLabel := l10n.SignupConfirm(lang, siteName)
 	confirmURL := h.signupConfirmURL(code)
-	lead := "Welcome to " + siteName + "! Click the link to complete your signup:"
-	text, bodyHTML := coreemail.LinkText(lead, "Complete signup", confirmURL)
+	text, bodyHTML := coreemail.LinkText(lead, linkLabel, confirmURL)
 	html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
 		SiteName: siteName,
 		SiteURL:  h.serverURL,
-		Subject:  "Confirm your account",
+		Subject:  subject,
 		BodyHTML: bodyHTML,
 	})
 	go h.emailSender(to, miscsmtp.Message{
-		Subject: "Confirm your account",
+		Subject: subject,
 		Text:    text,
 		HTML:    html,
 	})
