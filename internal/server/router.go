@@ -1534,6 +1534,7 @@ func (s *Server) setupRoutes(plugins []plugin.Definition, openPluginStorage plug
 	// new-login 通知メール (#2454)。SenderFromMeta が per-call で meta を読み直すので
 	// admin UI の SMTP 設定変更が再起動なしで効く。SMTP 未設定なら no-op。
 	signinHandler.SetEmailSender(s.config.URL, miscsmtp.SenderFromMeta(metaRepo, s.config.ProxySmtp))
+	signinHandler.SetMetaRepo(metaRepo)
 	// アカウント作成時も signin 副作用 (履歴 / login 通知 / main publish) を通す (#1804)。
 	signupHandler.SetSigninRecorder(signinHandler)
 	api.POST("/signin", signinHandler.Signin)
@@ -1546,6 +1547,7 @@ func (s *Server) setupRoutes(plugins []plugin.Definition, openPluginStorage plug
 	resetHandler.SetServerURL(s.config.URL)
 	// password reset の確認メール送信。配線パターンは signup と同じく
 	// SenderFromMeta で per-call 再 Fetch、runtime 設定変更追従 (#1112)。
+	resetHandler.SetMetaRepo(metaRepo)
 	resetHandler.SetEmailSender(miscsmtp.SenderFromMeta(metaRepo, s.config.ProxySmtp))
 	api.POST("/request-reset-password", resetHandler.RequestReset)
 	api.POST("/reset-password", resetHandler.Reset)

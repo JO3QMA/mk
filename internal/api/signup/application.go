@@ -376,7 +376,7 @@ func (h *Handler) registerViaEmailConfirmation(
 			c.Logger().Warnf("signup application: mark ticket pending failed: %v", merr)
 		}
 	}
-	h.sendSignupConfirmation(meta, email, pending.Code)
+	h.sendSignupConfirmation(meta, email, pending.Code, c.Request().Header.Get("Accept-Language"))
 	// TS の signup と同じく本体は返さない (frontend は確認メールを待つ)。
 	return c.NoContent(http.StatusNoContent)
 }

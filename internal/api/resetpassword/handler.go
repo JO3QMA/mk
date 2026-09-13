@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/shiroha-a/mk/internal/api/apierr"
 	coreemail "github.com/shiroha-a/mk/internal/core/email"
+	"github.com/shiroha-a/mk/internal/l10n"
 	"github.com/shiroha-a/mk/internal/misc"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/misc/password"
@@ -25,6 +26,7 @@ type EmailSender func(to string, msg miscsmtp.Message)
 type Handler struct {
 	userRepo  repository.UserRepository
 	resetRepo repository.PasswordResetRequestRepository
+	metaRepo  repository.MetaRepository
 	idGen     id.Generator
 	email     EmailSender
 	serverURL string
@@ -34,6 +36,9 @@ type Handler struct {
 func NewHandler(userRepo repository.UserRepository, resetRepo repository.PasswordResetRequestRepository, idGen id.Generator) *Handler {
 	return &Handler{userRepo: userRepo, resetRepo: resetRepo, idGen: idGen}
 }
+
+// SetMetaRepo wires meta lookup for email locale fallback.
+func (h *Handler) SetMetaRepo(r repository.MetaRepository) { h.metaRepo = r }
 
 // SetEmailSender attaches an EmailSender for sending reset emails.
 func (h *Handler) SetEmailSender(s EmailSender) { h.email = s }
@@ -78,19 +83,27 @@ func (h *Handler) RequestReset(c echo.Context) error {
 
 	// リセットメール送信 (text + html multipart)
 	if h.email != nil {
+		var metaLangs []string
+		if h.metaRepo != nil {
+			if meta, err := h.metaRepo.Fetch(); err == nil {
+				metaLangs = l10n.LangsFromMeta(meta)
+			}
+		}
+		lang := l10n.Resolve(profile.Lang, metaLangs)
+		subject, lead, linkLabel := l10n.PasswordReset(lang)
 		link := fmt.Sprintf("%s/reset-password/%s", h.serverURL, token)
-		lead := "Use the following link to reset your password:"
-		text, bodyHTML := coreemail.LinkText(lead, "Reset password", link)
+		text, bodyHTML := coreemail.LinkText(lead, linkLabel, link)
 		html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
 			SiteURL: h.serverURL,
-			Subject: "Password reset",
+			Subject: subject,
 			// reset-password は認証済 user 向けなので email-settings 二段 footer
 			// を出す (TS の sendEmail と同じ二段構造)。
-			EmailSettingsURL: h.serverURL + "/settings/email",
-			BodyHTML:         bodyHTML,
+			EmailSettingsURL:   h.serverURL + "/settings/email",
+			EmailSettingsLabel: l10n.EmailSettingsLabel(lang),
+			BodyHTML:           bodyHTML,
 		})
 		go h.email(*profile.Email, miscsmtp.Message{
-			Subject: "Password reset",
+			Subject: subject,
 			Text:    text,
 			HTML:    html,
 		})

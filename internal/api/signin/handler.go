@@ -16,6 +16,7 @@ import (
 	coreemail "github.com/shiroha-a/mk/internal/core/email"
 	"github.com/shiroha-a/mk/internal/core/twofactor"
 	"github.com/shiroha-a/mk/internal/entity"
+	"github.com/shiroha-a/mk/internal/l10n"
 	"github.com/shiroha-a/mk/internal/misc/id"
 	"github.com/shiroha-a/mk/internal/misc/password"
 	miscsmtp "github.com/shiroha-a/mk/internal/misc/smtp"
@@ -69,6 +70,8 @@ type Handler struct {
 	emailSender func(to string, msg miscsmtp.Message)
 	// serverURL はメール footer の link 先。emailSender とセットで設定。
 	serverURL string
+	// metaRepo はメール l10n の instance fallback 用。未配線なら英語 fallback。
+	metaRepo repository.MetaRepository
 }
 
 // LoginNotifier records a 'login' notification on signin success (#1559)。
@@ -89,6 +92,9 @@ func (h *Handler) SetEmailSender(serverURL string, send func(to string, msg misc
 	h.serverURL = serverURL
 	h.emailSender = send
 }
+
+// SetMetaRepo wires meta lookup for email locale fallback.
+func (h *Handler) SetMetaRepo(r repository.MetaRepository) { h.metaRepo = r }
 
 // SetIPLogger attaches an IPLogger and enables IP logging.
 func (h *Handler) SetIPLogger(logger IPLogger, enabled bool) {
@@ -541,15 +547,6 @@ func (h *Handler) RecordSuccessfulSignin(userID, ip string, headers http.Header)
 	}
 }
 
-// newLoginEmailSubject / newLoginEmailBody are upstream's wording, verbatim.
-//
-// 文面を変えない。TS から切り替えた instance の利用者が、同じ通知を別の文面で
-// 受け取ると「別のサービスから届いた」と読めてしまう。
-const (
-	newLoginEmailSubject = "New login / ログインがありました"
-	newLoginEmailBody    = "There is a new login. If you do not recognize this login, update the security status of your account, including changing your password. / 新しいログインがありました。このログインに心当たりがない場合は、パスワードを変更するなど、アカウントのセキュリティ状態を更新してください。"
-)
-
 // sendNewLoginEmail notifies the user by email that their account was signed
 // into. Mirrors upstream SigninService: only when the address is present *and*
 // verified.
@@ -570,16 +567,25 @@ func (h *Handler) sendNewLoginEmail(userID string) {
 	if profile == nil || profile.Email == nil || *profile.Email == "" || !profile.EmailVerified {
 		return
 	}
-	text, bodyHTML := coreemail.PlainText(newLoginEmailBody)
+	var metaLangs []string
+	if h.metaRepo != nil {
+		if meta, err := h.metaRepo.Fetch(); err == nil {
+			metaLangs = l10n.LangsFromMeta(meta)
+		}
+	}
+	lang := l10n.Resolve(profile.Lang, metaLangs)
+	subject, body := l10n.NewLogin(lang)
+	text, bodyHTML := coreemail.PlainText(body)
 	html := coreemail.WrapHTML(coreemail.HTMLWrapInput{
 		SiteURL: h.serverURL,
-		Subject: newLoginEmailSubject,
+		Subject: subject,
 		// 認証済 user 向けなので二段 footer (reset-password / email 変更と同じ)。
-		EmailSettingsURL: h.serverURL + "/settings/email",
-		BodyHTML:         bodyHTML,
+		EmailSettingsURL:   h.serverURL + "/settings/email",
+		EmailSettingsLabel: l10n.EmailSettingsLabel(lang),
+		BodyHTML:           bodyHTML,
 	})
 	h.emailSender(*profile.Email, miscsmtp.Message{
-		Subject: newLoginEmailSubject,
+		Subject: subject,
 		Text:    text,
 		HTML:    html,
 	})
