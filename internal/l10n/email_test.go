@@ -60,7 +60,7 @@ func TestNewLogin(t *testing.T) {
 func TestEmailSettingsLabel(t *testing.T) {
 	assert.Equal(t, "メール設定", EmailSettingsLabel("ja"))
 	assert.Equal(t, "Email setting", EmailSettingsLabel("en"))
-	assert.Equal(t, "Email setting / メール設定", EmailSettingsLabel(LangBilingual))
+	assert.Equal(t, "Email setting", EmailSettingsLabel(LangBilingual))
 }
 
 func TestModeratorInactivityWarning(t *testing.T) {

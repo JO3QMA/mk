@@ -225,6 +225,34 @@ func TestRequestReset_Success(t *testing.T) {
 	mu.Unlock()
 }
 
+func TestRequestReset_SendsJapaneseEmailFromMetaLangsWhenProfileLangUnset(t *testing.T) {
+	h, userRepo, resetRepo := newTestHandler()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", Langs: []string{"ja-JP"}}
+	h.SetMetaRepo(metaRepo)
+
+	email := "test@example.com"
+	userRepo.users["u1"] = &model.User{ID: "u1", Username: "testuser", UsernameLower: "testuser"}
+	userRepo.profiles["u1"] = &model.UserProfile{UserID: "u1", Email: &email, EmailVerified: true}
+
+	var mu sync.Mutex
+	var sent miscsmtp.Message
+	h.SetEmailSender(func(_ string, msg miscsmtp.Message) {
+		mu.Lock()
+		defer mu.Unlock()
+		sent = msg
+	})
+
+	rec := post(h.RequestReset, `{"username":"testuser","email":"test@example.com"}`)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Len(t, resetRepo.requests, 1)
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	assert.Equal(t, "パスワードのリセット", sent.Subject)
+	mu.Unlock()
+}
+
 func TestRequestReset_SendsJapaneseEmailWhenProfileLangIsJa(t *testing.T) {
 	h, userRepo, resetRepo := newTestHandler()
 	metaRepo := testutil.NewMockMetaRepository()
