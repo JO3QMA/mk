@@ -3,6 +3,7 @@ package l10n
 import (
 	"testing"
 
+	"github.com/shiroha-a/mk/internal/model"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -29,4 +30,19 @@ func TestResolveFromHeader_MatchesInstanceLang(t *testing.T) {
 func TestResolveFromHeader_FallsBackToMeta(t *testing.T) {
 	got := ResolveFromHeader("fr-FR", []string{"ja-JP"})
 	assert.Equal(t, "ja", got)
+}
+
+func TestResolveFromHeader_SkipsWildcardAndUnknown(t *testing.T) {
+	got := ResolveFromHeader("*,fr-FR,en-US", []string{"en-US"})
+	assert.Equal(t, "en", got)
+}
+
+func TestResolveFromHeader_EmptyHeaderUsesMeta(t *testing.T) {
+	assert.Equal(t, "ja", ResolveFromHeader("", []string{"ja-JP"}))
+}
+
+func TestLangsFromMeta(t *testing.T) {
+	assert.Nil(t, LangsFromMeta(nil))
+	meta := &model.Meta{Langs: []string{"ja-JP", "en-US"}}
+	assert.Equal(t, []string{"ja-JP", "en-US"}, LangsFromMeta(meta))
 }
