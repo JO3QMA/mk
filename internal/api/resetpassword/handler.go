@@ -40,6 +40,9 @@ func NewHandler(userRepo repository.UserRepository, resetRepo repository.Passwor
 // SetMetaRepo wires meta lookup for email locale fallback.
 func (h *Handler) SetMetaRepo(r repository.MetaRepository) { h.metaRepo = r }
 
+// HasMetaRepo reports whether the meta repository was wired for email l10n.
+func (h *Handler) HasMetaRepo() bool { return h.metaRepo != nil }
+
 // SetEmailSender attaches an EmailSender for sending reset emails.
 func (h *Handler) SetEmailSender(s EmailSender) { h.email = s }
 

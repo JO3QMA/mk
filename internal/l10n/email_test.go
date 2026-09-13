@@ -49,11 +49,18 @@ func TestNewLogin(t *testing.T) {
 	subject, body = NewLogin("en")
 	assert.Equal(t, "New login", subject)
 	assert.Contains(t, body, "There is a new login")
+
+	subject, body = NewLogin(LangBilingual)
+	assert.Contains(t, subject, "New login")
+	assert.Contains(t, subject, "ログインがありました")
+	assert.Contains(t, body, "There is a new login")
+	assert.Contains(t, body, "新しいログインがありました")
 }
 
 func TestEmailSettingsLabel(t *testing.T) {
 	assert.Equal(t, "メール設定", EmailSettingsLabel("ja"))
 	assert.Equal(t, "Email setting", EmailSettingsLabel("en"))
+	assert.Equal(t, "Email setting / メール設定", EmailSettingsLabel(LangBilingual))
 }
 
 func TestModeratorInactivityWarning(t *testing.T) {
@@ -80,4 +87,14 @@ func TestModeratorInvitationOnlyChanged(t *testing.T) {
 	subject, body = ModeratorInvitationOnlyChanged("en", 7)
 	assert.Equal(t, "Change to Invitation-Only", subject)
 	assert.Contains(t, body, "7 days")
+
+	_, bodyBi := ModeratorInactivityWarning(LangBilingual, 0, 6)
+	assert.Contains(t, bodyBi, "6 hours")
+	assert.Contains(t, bodyBi, "6時間")
+
+	subject, body = ModeratorInvitationOnlyChanged(LangBilingual, 7)
+	assert.Contains(t, subject, "Invitation-Only")
+	assert.Contains(t, subject, "招待制")
+	assert.Contains(t, body, "7 days")
+	assert.Contains(t, body, "7日間")
 }
