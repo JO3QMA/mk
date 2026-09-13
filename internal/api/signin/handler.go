@@ -96,6 +96,9 @@ func (h *Handler) SetEmailSender(serverURL string, send func(to string, msg misc
 // SetMetaRepo wires meta lookup for email locale fallback.
 func (h *Handler) SetMetaRepo(r repository.MetaRepository) { h.metaRepo = r }
 
+// HasMetaRepo reports whether the meta repository was wired for email l10n.
+func (h *Handler) HasMetaRepo() bool { return h.metaRepo != nil }
+
 // SetIPLogger attaches an IPLogger and enables IP logging.
 func (h *Handler) SetIPLogger(logger IPLogger, enabled bool) {
 	h.ipLogger = logger

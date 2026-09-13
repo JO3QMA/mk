@@ -348,6 +348,38 @@ func TestSignup_EmailRequired_SendsJapaneseEmailFromAcceptLanguage(t *testing.T)
 	assert.Contains(t, sent.Text, "登録を完了")
 }
 
+func TestSignup_EmailRequired_SendsJapaneseEmailFromAcceptLanguageWithoutMetaLangs(t *testing.T) {
+	userRepo := testutil.NewMockUserRepository()
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", EmailRequiredForSignup: true}
+	pendingRepo := testutil.NewMockUserPendingRepository()
+	idGen, _ := id.NewGenerator("aidx")
+	svc := coresignup.NewService(userRepo, metaRepo, idGen)
+	svc.SetUserPendingRepo(pendingRepo)
+	h := apisignup.NewHandler(svc, metaRepo, idGen)
+
+	var sent miscsmtp.Message
+	done := make(chan struct{})
+	h.SetEmailSender("https://example.test", func(_ string, msg miscsmtp.Message) {
+		sent = msg
+		close(done)
+	})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"username":"alice","password":"pass1234","emailAddress":"alice@example.com"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.Header.Set("Accept-Language", "ja-JP,en;q=0.8")
+	rec := httptest.NewRecorder()
+	require.NoError(t, h.Signup(e.NewContext(req, rec)))
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emailSender was not invoked")
+	}
+	assert.Equal(t, "アカウントの確認", sent.Subject)
+}
+
 // emailRequiredForSignup=true 経路でも 73 byte 以上 password は CreatePending が
 // ErrPasswordTooLong を返し、handler が 400 + PASSWORD_TOO_LONG に変換する (#1075)。
 // user_pending row は作成されない (early return)。

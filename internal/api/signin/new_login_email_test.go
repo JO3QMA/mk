@@ -94,9 +94,9 @@ func TestNewLoginEmail_SentWhenVerified(t *testing.T) {
 
 	m := sender.waitMail(t)
 	assert.Equal(t, "user@example.test", m.to)
-	assert.Equal(t, "New login", m.msg.Subject)
+	assert.Equal(t, "New login / ログインがありました", m.msg.Subject)
 	assert.Contains(t, m.msg.Text, "There is a new login.")
-	assert.NotContains(t, m.msg.Text, "新しいログインがありました")
+	assert.Contains(t, m.msg.Text, "新しいログインがありました")
 	// HTML 版は wrapper に載り、認証済 user 向けの email 設定 link を持つ。
 	assert.Contains(t, m.msg.HTML, "https://example.test/settings/email")
 }

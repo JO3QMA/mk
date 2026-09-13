@@ -5,9 +5,16 @@ import (
 	"strings"
 )
 
+func singleLangEmail(lang string) string {
+	if lang == LangBilingual {
+		return "en"
+	}
+	return lang
+}
+
 // SignupConfirm returns localized signup confirmation email strings.
 func SignupConfirm(lang, siteName string) (subject, lead, linkLabel string) {
-	switch lang {
+	switch singleLangEmail(lang) {
 	case "ja":
 		return "アカウントの確認",
 			siteName + "へようこそ！以下のリンクをクリックして登録を完了してください：",
@@ -21,7 +28,7 @@ func SignupConfirm(lang, siteName string) (subject, lead, linkLabel string) {
 
 // PasswordReset returns localized password reset email strings.
 func PasswordReset(lang string) (subject, lead, linkLabel string) {
-	switch lang {
+	switch singleLangEmail(lang) {
 	case "ja":
 		return "パスワードのリセット", "以下のリンクからパスワードをリセットしてください：", "パスワードをリセット"
 	default:
@@ -31,7 +38,7 @@ func PasswordReset(lang string) (subject, lead, linkLabel string) {
 
 // VerifyEmail returns localized email-address verification strings.
 func VerifyEmail(lang string) (subject, lead, linkLabel string) {
-	switch lang {
+	switch singleLangEmail(lang) {
 	case "ja":
 		return "メールアドレスの確認", "以下のリンクをクリックしてメールアドレスを確認してください：", "メールアドレスを確認"
 	default:
@@ -45,6 +52,9 @@ func NewLogin(lang string) (subject, body string) {
 	case "ja":
 		return "ログインがありました",
 			"新しいログインがありました。このログインに心当たりがない場合は、パスワードを変更するなど、アカウントのセキュリティ状態を更新してください。"
+	case LangBilingual:
+		return "New login / ログインがありました",
+			"There is a new login. If you do not recognize this login, update the security status of your account, including changing your password. / 新しいログインがありました。このログインに心当たりがない場合は、パスワードを変更するなど、アカウントのセキュリティ状態を更新してください。"
 	default:
 		return "New login",
 			"There is a new login. If you do not recognize this login, update the security status of your account, including changing your password."
@@ -56,6 +66,8 @@ func EmailSettingsLabel(lang string) string {
 	switch lang {
 	case "ja":
 		return "メール設定"
+	case LangBilingual:
+		return "Email setting / メール設定"
 	default:
 		return "Email setting"
 	}
@@ -64,9 +76,25 @@ func EmailSettingsLabel(lang string) string {
 // ModeratorInactivityWarning returns subject and plain-text body for the
 // moderator inactivity warning email.
 func ModeratorInactivityWarning(lang string, remainingDays, remainingHours int) (subject, body string) {
-	timeVariant := formatRemaining(lang, remainingDays, remainingHours)
 	switch lang {
+	case LangBilingual:
+		timeEn := formatRemaining("en", remainingDays, remainingHours)
+		timeJa := formatRemaining("ja", remainingDays, remainingHours)
+		subject = "Moderator Inactivity Warning / モデレーター不在の通知"
+		body = strings.Join([]string{
+			"To moderators,",
+			"",
+			"A moderator has been inactive for a period of time. If there are " + timeEn + " of inactivity left, it will switch to invitation only.",
+			"If you do not want it to switch to invitation only, log in to Misskey to update your last active date.",
+			"",
+			"モデレーター各位",
+			"",
+			"モデレーターが一定期間活動していないようです。あと" + timeJa + "活動していない状態が続くと招待制に切り替わります。",
+			"招待制に切り替わることを望まない場合は、Misskeyにログインして最終アクティブ日時を更新してください。",
+		}, "\n")
+		return subject, body
 	case "ja":
+		timeVariant := formatRemaining(lang, remainingDays, remainingHours)
 		subject = "モデレーター不在の通知"
 		body = strings.Join([]string{
 			"モデレーター各位",
@@ -75,6 +103,7 @@ func ModeratorInactivityWarning(lang string, remainingDays, remainingHours int) 
 			"招待制に切り替わることを望まない場合は、Misskeyにログインして最終アクティブ日時を更新してください。",
 		}, "\n")
 	default:
+		timeVariant := formatRemaining(lang, remainingDays, remainingHours)
 		subject = "Moderator Inactivity Warning"
 		body = strings.Join([]string{
 			"To moderators,",
@@ -91,6 +120,20 @@ func ModeratorInactivityWarning(lang string, remainingDays, remainingHours int) 
 func ModeratorInvitationOnlyChanged(lang string, inactivityLimitDays int) (subject, body string) {
 	days := strconv.Itoa(inactivityLimitDays)
 	switch lang {
+	case LangBilingual:
+		subject = "Change to Invitation-Only / 招待制に変更されました"
+		body = strings.Join([]string{
+			"To moderators,",
+			"",
+			"Changed to invitation only because no moderator activity was detected for " + days + " days.",
+			"To turn off invitation only, you need to access the control panel.",
+			"",
+			"モデレーター各位",
+			"",
+			"モデレーターの活動が" + days + "日間検出されなかったため、招待制に変更されました。",
+			"招待制を解除するには、コントロールパネルにアクセスする必要があります。",
+		}, "\n")
+		return subject, body
 	case "ja":
 		subject = "招待制に変更されました"
 		body = strings.Join([]string{

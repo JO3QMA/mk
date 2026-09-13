@@ -16,10 +16,10 @@ func TestResolve_MetaLangsFallback(t *testing.T) {
 	assert.Equal(t, "ja", Resolve(nil, []string{"ja-JP"}))
 }
 
-func TestResolve_EnglishDefault(t *testing.T) {
-	assert.Equal(t, "en", Resolve(nil, nil))
+func TestResolve_BilingualWhenNoKnownLocale(t *testing.T) {
+	assert.Equal(t, LangBilingual, Resolve(nil, nil))
 	unknown := "fr-FR"
-	assert.Equal(t, "en", Resolve(&unknown, []string{"de-DE"}))
+	assert.Equal(t, LangBilingual, Resolve(&unknown, []string{"de-DE"}))
 }
 
 func TestResolveFromHeader_MatchesInstanceLang(t *testing.T) {
@@ -39,6 +39,11 @@ func TestResolveFromHeader_SkipsWildcardAndUnknown(t *testing.T) {
 
 func TestResolveFromHeader_EmptyHeaderUsesMeta(t *testing.T) {
 	assert.Equal(t, "ja", ResolveFromHeader("", []string{"ja-JP"}))
+}
+
+func TestResolveFromHeader_UsesHeaderWhenMetaLangsEmpty(t *testing.T) {
+	assert.Equal(t, "ja", ResolveFromHeader("ja-JP,en;q=0.8", nil))
+	assert.Equal(t, LangBilingual, ResolveFromHeader("", nil))
 }
 
 func TestLangsFromMeta(t *testing.T) {
