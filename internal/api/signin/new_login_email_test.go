@@ -84,6 +84,22 @@ func TestNewLoginEmail_SentInJapaneseWhenProfileLangIsJa(t *testing.T) {
 	assert.Contains(t, m.msg.Text, "新しいログインがありました")
 }
 
+func TestNewLoginEmail_SentInJapaneseFromMetaLangsWhenProfileLangUnset(t *testing.T) {
+	h, repo := newTestHandler(t)
+	sender := newChanEmailSender()
+	h.SetEmailSender("https://example.test", sender.send)
+	metaRepo := testutil.NewMockMetaRepository()
+	metaRepo.Meta = &model.Meta{ID: "x", Langs: []string{"ja-JP"}}
+	h.SetMetaRepo(metaRepo)
+	setProfileEmail(repo, "u1", strptr("user@example.test"), true)
+
+	h.RecordSuccessfulSignin("u1", "1.2.3.4", http.Header{})
+
+	m := sender.waitMail(t)
+	assert.Equal(t, "ログインがありました", m.msg.Subject)
+	assert.Contains(t, m.msg.Text, "新しいログインがありました")
+}
+
 func TestNewLoginEmail_SentWhenVerified(t *testing.T) {
 	h, repo := newTestHandler(t)
 	sender := newChanEmailSender()
