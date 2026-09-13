@@ -5,11 +5,13 @@ import (
 	"strings"
 )
 
+// singleLangEmail maps bilingual and unknown locales to English for templates
+// that upstream never sent bilingually (reset, signup, verify, footer).
 func singleLangEmail(lang string) string {
-	if lang == LangBilingual {
-		return "en"
+	if lang == "ja" {
+		return "ja"
 	}
-	return lang
+	return "en"
 }
 
 // SignupConfirm returns localized signup confirmation email strings.
@@ -63,11 +65,9 @@ func NewLogin(lang string) (subject, body string) {
 
 // EmailSettingsLabel is the footer link label in HTML transactional emails.
 func EmailSettingsLabel(lang string) string {
-	switch lang {
+	switch singleLangEmail(lang) {
 	case "ja":
 		return "メール設定"
-	case LangBilingual:
-		return "Email setting / メール設定"
 	default:
 		return "Email setting"
 	}

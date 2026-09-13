@@ -33,8 +33,8 @@ func Resolve(profileLang *string, metaLangs []string) string {
 // empty, the first known tag in the header wins. Falls back to Resolve(nil,
 // metaLangs) when the header has no usable tag.
 //
-// ponytail: q= は読み落とし、ヘッダの並び順で採用する。主要 UA は優先順に並べるので
-// 実害は小さい。RFC 7231 の quality 並べ替えが要るならここに足す。
+// Accept-Language の q= は読み落とし、ヘッダの並び順で採用する。主要 UA は優先順に
+// 並べるので実害は小さい。RFC 7231 の quality 並べ替えが要るならここに足す。
 func ResolveFromHeader(acceptLanguage string, metaLangs []string) string {
 	if acceptLanguage != "" {
 		for _, part := range strings.Split(acceptLanguage, ",") {
